@@ -60,6 +60,7 @@ from music_assistant.helpers.util import (
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
+    warn_if_missing_x86_64_v2,
 )
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
@@ -173,6 +174,7 @@ class MusicAssistant:
             self.running_as_hass_addon,
             self.safe_mode,
         )
+        await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
         self.cache = CacheController(self)
         self.webserver = WebserverController(self)

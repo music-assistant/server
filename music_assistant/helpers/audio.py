@@ -9,13 +9,14 @@ import re
 import struct
 import time
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from functools import partial
 from io import BytesIO
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import aiofiles
 import shortuuid
-from aiohttp import ClientTimeout
+from aiohttp import ClientConnectorSSLError, ClientTimeout
 from music_assistant_models.dsp import DSPConfig, DSPDetails, DSPState
 from music_assistant_models.enums import (
     ContentType,
@@ -51,6 +52,7 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
+from . import ssl as ssl_util
 from .audio_buffer import AudioBuffer
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
@@ -91,7 +93,7 @@ def get_mime_type(format_str: str) -> str:
     :param format_str: The audio format string (e.g. "mp3", "flac",
         "pcm;codec=pcm;rate=44100;bitrate=16;channels=2").
     """
-    base_format = format_str.split(";")[0]
+    base_format = format_str.split(";", maxsplit=1)[0]
     if override := _MIME_TYPE_OVERRIDES.get(base_format):
         return override
     return f"audio/{format_str}"
@@ -757,6 +759,31 @@ def create_wave_header(
     return file.getvalue()
 
 
+@asynccontextmanager
+async def _connect_radio_stream(
+    mass: MusicAssistant, url: str, **kwargs: Any
+) -> AsyncGenerator[Any, None]:
+    """Connect to a radio stream URL with fallback for legacy SSL/TLS configurations.
+
+    Some radio servers use outdated TLS configurations that reject modern cipher suites.
+    Since radio streams are public broadcast content, relaxing cipher requirements is acceptable.
+    :param mass: The MusicAssistant instance.
+    :param url: The radio stream URL to connect to.
+    :param kwargs: Additional keyword arguments passed to aiohttp get().
+    """
+    try:
+        async with mass.http_session_no_ssl.get(url, **kwargs) as resp:
+            yield resp
+    except ClientConnectorSSLError:
+        LOGGER.info(
+            "SSL handshake failed for %s, retrying with permissive cipher configuration",
+            url,
+        )
+        insecure_ssl_context = ssl_util.client_context_no_verify(ssl_util.SSLCipherList.INSECURE)
+        async with mass.http_session_no_ssl.get(url, ssl=insecure_ssl_context, **kwargs) as resp:
+            yield resp
+
+
 async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, StreamType]:
     """
     Resolve a streaming radio URL.
@@ -778,8 +805,8 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
     resolved_url = url
     timeout = ClientTimeout(total=None, connect=10, sock_read=5)
     try:
-        async with mass.http_session_no_ssl.get(
-            url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout
+        async with _connect_radio_stream(
+            mass, url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout
         ) as resp:
             headers = resp.headers
             resp.raise_for_status()
@@ -830,8 +857,8 @@ async def get_icy_radio_stream(
     """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
     timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
     LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
-    async with mass.http_session_no_ssl.get(
-        url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
+    async with _connect_radio_stream(
+        mass, url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
     ) as resp:
         headers = resp.headers
         meta_int = int(headers["icy-metaint"])

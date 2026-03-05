@@ -24,6 +24,8 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
+    DB_TABLE_PLAYLOG,
+    DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
 )
 from music_assistant.controllers.media.genres import GenreController
@@ -1077,3 +1079,207 @@ class TestBaseClassIntegration:
         favs = await genre_ctrl.library_items(favorite=True, hide_empty=False)
         assert all(g.favorite for g in favs)
         assert any(g.name == "FavYes" for g in favs)
+
+
+# ===================================================================
+# Group K: _cleanup_stale_genre_mappings (7 tests)
+# ===================================================================
+
+
+async def _set_track_genres(mass: MusicAssistant, track_id: int, genres: list[str]) -> None:
+    """Set metadata.genres on a track row directly in the DB."""
+    await mass.music.database.execute(
+        f"UPDATE {DB_TABLE_TRACKS} "
+        "SET metadata = json_set(metadata, '$.genres', json(:genres)) "
+        "WHERE item_id = :id",
+        {"genres": json.dumps(genres), "id": track_id},
+    )
+    await mass.music.database.commit()
+
+
+class TestCleanupStaleMappings:
+    """Tests for _cleanup_stale_genre_mappings."""
+
+    async def test_stale_mapping_removed_on_call(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A stale mapping is removed when cleanup is called."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CsCountGenre"))
+        track = await _add_test_track(mass, "CsCount Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+        # Track has no metadata.genres — mapping is immediately stale
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track.item_id, "CsCountGenre"
+        )
+        await genre_ctrl._cleanup_stale_genre_mappings()
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(rows) == 0
+
+    async def test_empty_metadata_genres_removes_mapping(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Mapping is removed when the track has no genres in metadata."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CsStale1Genre"))
+        track = await _add_test_track(mass, "CsStale1 Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+        await genre_ctrl.add_media_mapping(
+            genre_id, MediaType.TRACK, track.item_id, "CsStale1Genre"
+        )
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(rows) == 0
+
+    async def test_live_alias_mapping_preserved(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Mapping is kept when the alias is still present in track metadata.genres."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CsLive1Genre"))
+        track = await _add_test_track(mass, "CsLive1 Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+        await _set_track_genres(mass, track_id, ["CsLive1Genre"])
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track.item_id, "CsLive1Genre")
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_orphaned_mapping_removed(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Mapping is removed when the media item no longer exists in the DB."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CsOrphan1Genre"))
+        track = await _add_test_track(mass, "CsOrphan1 Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+        await _set_track_genres(mass, track_id, ["CsOrphan1Genre"])
+        await genre_ctrl.add_media_mapping(
+            genre_id, MediaType.TRACK, track.item_id, "CsOrphan1Genre"
+        )
+
+        # Delete the track directly, leaving behind an orphaned mapping row
+        await mass.music.database.execute(
+            f"DELETE FROM {DB_TABLE_TRACKS} WHERE item_id = :id", {"id": track_id}
+        )
+        await mass.music.database.commit()
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(rows) == 0
+
+    async def test_empty_nondefault_genre_deleted(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Non-default genre (translation_key IS NULL) with no mappings is deleted."""
+        # _find_genres_for_alias creates genres without translation_key
+        found = await genre_ctrl._find_genres_for_alias("CsNonDefault1XYZ99")
+        assert len(found) == 1
+        genre_id = found[0]
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row is not None
+        assert row["translation_key"] is None
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        row_after = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row_after is None
+
+    async def test_default_genre_without_mappings_preserved(
+        self, genre_ctrl: GenreController, mass: MusicAssistant
+    ) -> None:
+        """Default genre (translation_key IS NOT NULL) is never deleted by cleanup."""
+        await genre_ctrl.restore_default_genres(full_restore=False)
+        default_entry = next(e for e in DEFAULT_GENRE_MAPPING if e.get("translation_key"))
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE translation_key = :tk",
+            {"tk": default_entry["translation_key"]},
+            limit=1,
+        )
+        assert len(rows) == 1
+        genre_id = int(rows[0]["item_id"])
+        # Confirm no active mappings for this genre
+        mapping_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} WHERE genre_id = :gid",
+            {"gid": genre_id},
+            limit=0,
+        )
+        if mapping_rows:
+            pytest.skip("Default genre already has mappings")
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        row_after = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row_after is not None
+
+    async def test_nondefault_genre_with_active_mappings_preserved(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Non-default genre with at least one active mapping is NOT deleted."""
+        track = await _add_test_track(mass, "CsKeep Track")
+        track_id = int(track.item_id)
+        await _set_track_genres(mass, track_id, ["CsKeepGenreXYZ"])
+        found = await genre_ctrl._find_genres_for_alias("CsKeepGenreXYZ")
+        genre_id = found[0]
+        await genre_ctrl.add_media_mapping(
+            genre_id, MediaType.TRACK, track.item_id, "CsKeepGenreXYZ"
+        )
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        row_after = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row_after is not None
+
+    async def test_playlog_entries_cleaned_for_deleted_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Playlog entries for a deleted empty non-default genre are removed."""
+        found = await genre_ctrl._find_genres_for_alias("CsPlaylog1XYZ99")
+        genre_id = found[0]
+        # Insert a fake playlog entry for this genre
+        cols = (
+            "(item_id, provider, media_type, name, fully_played, seconds_played, timestamp, userid)"
+        )
+        await mass.music.database.execute(
+            f"INSERT OR IGNORE INTO {DB_TABLE_PLAYLOG} {cols} "
+            "VALUES (:item_id, 'library', :media_type, 'CsPlaylog1XYZ99', 0, 0, 0, 'testuser')",
+            {"item_id": str(genre_id), "media_type": "genre"},
+        )
+        await mass.music.database.commit()
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        # Both the genre and its playlog entry should be gone
+        genre_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert genre_row is None
+        playlog_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type = 'genre' AND item_id = :id",
+            {"id": str(genre_id)},
+            limit=0,
+        )
+        assert len(playlog_rows) == 0

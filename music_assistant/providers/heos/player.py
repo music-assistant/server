@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from copy import copy
 from typing import TYPE_CHECKING, cast
 
@@ -10,7 +11,10 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, const
 
-from music_assistant.constants import create_sample_rates_config_entry
+from music_assistant.constants import (
+    VERBOSE_LOG_LEVEL,
+    create_sample_rates_config_entry,
+)
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
@@ -128,8 +132,16 @@ class HeosPlayer(Player):
 
     async def _player_event_received(self, event: str) -> None:
         """Handle player device events."""
-        self.logger.debug("[%s] Event received: %s", self._device.name, event)
-
+        self.logger.log(
+            (
+                VERBOSE_LOG_LEVEL
+                if event == const.EVENT_PLAYER_NOW_PLAYING_PROGRESS
+                else logging.DEBUG
+            ),
+            "[%s] Event received: %s",
+            self._device.name,
+            event,
+        )
         match event:
             case const.EVENT_PLAYER_STATE_CHANGED:
                 self._update_player_state()
@@ -264,7 +276,9 @@ class HeosPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
-        await self._device.clear_queue()
+        queue_items = await self._device.get_queue(range_start=0, range_end=1)
+        if queue_items:
+            await self._device.clear_queue()
 
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await self._device.play_url(url)
@@ -300,6 +314,11 @@ class HeosPlayer(Player):
         else:
             await self._heos.set_group([int(player) for player in members])
         # group_members will be updated when group_changed event is handled
+
+    async def select_source(self, source: str) -> None:
+        """Handle SELECT SOURCE command on the player."""
+        self.logger.debug("[%s] Selecting source %s", self._device.name, source)
+        await self._device.play_input_source(source)
 
     async def get_config_entries(
         self,
