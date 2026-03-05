@@ -19,6 +19,7 @@ from aioaudiobookshelf.schema.library import (
     LibraryItemPodcast as AbsLibraryItemPodcast,
 )
 from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
+from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
@@ -33,8 +34,44 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     UniqueList,
 )
+from music_assistant_models.media_items import Playlist as MassPlaylist
 from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
+
+
+def parse_playlist(
+    *,
+    abs_playlist: AbsPlaylistExpanded,
+    instance_id: str,
+    domain: str,
+    token: str,
+    base_url: str,
+    owner: str,
+    media_type: MediaType,
+) -> MassPlaylist:
+    """Translate AbsPlaylist to MassPlaylist."""
+    mass_playlist = MassPlaylist(
+        item_id=abs_playlist.id_,
+        provider=instance_id,
+        name=abs_playlist.name,
+        sort_name=abs_playlist.name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=abs_playlist.id_, provider_domain=domain, provider_instance=instance_id
+            )
+        },
+        supported_mediatypes={media_type},
+        is_editable=True,
+        owner=owner,
+    )
+    # cover
+    if abs_playlist.cover_path is not None:
+        api_url = f"/api/items/{abs_playlist.id_}/cover?token={token}"
+        cover_url = f"{base_url}{api_url}"
+        mass_playlist.metadata.images = UniqueList(
+            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
+        )
+    return mass_playlist
 
 
 def parse_podcast(

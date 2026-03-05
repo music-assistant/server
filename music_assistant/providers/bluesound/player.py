@@ -366,11 +366,14 @@ class BluesoundPlayer(Player):
         self._attr_elapsed_time = self.status.seconds
         self._attr_elapsed_time_last_updated = time.time()
 
-        if self.sync_status.volume == -1:
-            # -1 is fixed volume
-            self._attr_volume_level = 100
-        else:
-            self._attr_volume_level = self.sync_status.volume
+        # Only allow volume reports when playing Bluesound as native input
+        # E.g. Airplay reports are on a different scale, causing volume jumps
+        if self.status.input_id is None:
+            if self.sync_status.volume == -1:
+                # -1 is fixed volume
+                self._attr_volume_level = 100
+            else:
+                self._attr_volume_level = self.sync_status.volume
         self._attr_volume_muted = self.status.mute
 
         self.logger.debug(

@@ -1491,9 +1491,9 @@ class PlexRemoteControlServer:
         volume = 0
         if player:
             volume = (
-                int(player.group_volume)
+                int(player.group_volume or 0)
                 if (player.type == PlayerType.GROUP or player.group_members)
-                else (int(player.volume_level) if player.volume_level else 0)
+                else (int(player.volume_level or 0))
             )
 
         # Get shuffle (0/1) and repeat (0=off, 1=one, 2=all)

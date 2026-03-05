@@ -23,6 +23,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidCommand,
     InvalidToken,
+    MusicAssistantError,
 )
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
@@ -242,6 +243,12 @@ class WebsocketClientHandler:
             elif inspect.iscoroutine(result):
                 result = await result
             await self._send_message(SuccessResultMessage(msg.message_id, result))
+        except MusicAssistantError as err:
+            # Expected operational errors (player unavailable, queue empty, etc.)
+            # Log at warning level since these are normal error responses, not crashes.
+            self._logger.warning("%s: %s", msg.command, err)
+            err_msg = str(err) or err.__class__.__name__
+            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
