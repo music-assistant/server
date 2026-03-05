@@ -1,8 +1,8 @@
 """Bandcamp music provider support for MusicAssistant."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import asynccontextmanager, suppress
 from typing import cast
 
 from bandcamp_async_api import (
@@ -21,7 +21,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ImageType,
     MediaType,
-    ProviderFeature,
     StreamType,
 )
 from music_assistant_models.errors import (
@@ -50,24 +49,22 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
+from .constants import (
+    BROWSE_FANS,
+    BROWSE_FOLLOWERS,
+    BROWSE_FOLLOWING,
+    BROWSE_WISHLIST,
+    CACHE_EMPTY_RESULTS,
+    CACHE_METADATA,
+    CACHE_USER_LISTS,
+    CONF_IDENTITY,
+    CONF_TOP_TRACKS_LIMIT,
+    DEFAULT_TOP_TRACKS_LIMIT,
+    PERSON_SUB_FOLDERS,
+    PERSON_SUB_ROUTES,
+    SUPPORTED_FEATURES,
+)
 from .converters import BandcampConverters
-
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.SEARCH,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-    ProviderFeature.BROWSE,
-}
-
-CONF_IDENTITY = "identity"
-CONF_TOP_TRACKS_LIMIT = "top_tracks_limit"
-DEFAULT_TOP_TRACKS_LIMIT = 50
-CACHE_METADATA = 3600 * 24 * 30  # 30 days - artist/album/track metadata rarely changes
-CACHE_USER_LISTS = 3600 * 4  # 4 hours - wishlists/following change with user activity
-CACHE_EMPTY_RESULTS = 300  # 5 minutes - avoid hammering API for genuinely empty lists
 
 
 async def setup(
@@ -433,17 +430,6 @@ class BandcampProvider(MusicProvider):
 
         return tracks[: self.top_tracks_limit]
 
-    # Maps person sub-route names to (method_suffix, CollectionType).
-    # "content" → _browse_person_content, "following" → _browse_person_following,
-    # "people" → _browse_person_people.
-    _PERSON_SUB_ROUTES: dict[str, tuple[str, CollectionType]] = {
-        "collection": ("content", CollectionType.COLLECTION),
-        "wishlist": ("content", CollectionType.WISHLIST),
-        "following": ("following", CollectionType.FOLLOWING),
-        "fans": ("people", CollectionType.FOLLOWING_FANS),
-        "followers": ("people", CollectionType.FOLLOWERS),
-    }
-
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
@@ -455,12 +441,12 @@ class BandcampProvider(MusicProvider):
         base = f"{self.instance_id}://"
 
         # Route fan/follower paths (supports arbitrary nesting depth)
-        if path_parts and path_parts[0] in ("fans", "followers"):
+        if path_parts and path_parts[0] in (BROWSE_FANS, BROWSE_FOLLOWERS):
             return await self._browse_person(path_parts, base)
 
-        if path_parts == ["wishlist"]:
+        if path_parts == [BROWSE_WISHLIST]:
             return await self._browse_person_content(None, CollectionType.WISHLIST)
-        if path_parts == ["following"]:
+        if path_parts == [BROWSE_FOLLOWING]:
             return await self._browse_person_following(None)
 
         # Delegate standard library paths and root listing to the base class
@@ -471,11 +457,12 @@ class BandcampProvider(MusicProvider):
         # person-specific paths (e.g. fans/42/wishlist) work without authentication
         # since the Bandcamp API only requires identity for the "me" shortcut.
         if not path_parts and self._client.identity:
+            # Collection is excluded — the user's own collection is the standard library.
             for folder_id, folder_name in (
-                ("wishlist", "Wishlist"),
-                ("following", "Following"),
-                ("fans", "Fans"),
-                ("followers", "Followers"),
+                (BROWSE_WISHLIST, "Wishlist"),
+                (BROWSE_FOLLOWING, "Following"),
+                (BROWSE_FANS, "Fans"),
+                (BROWSE_FOLLOWERS, "Followers"),
             ):
                 result.append(
                     BrowseFolder(
@@ -501,7 +488,7 @@ class BandcampProvider(MusicProvider):
         if len(path_parts) == 1:
             collection_type = (
                 CollectionType.FOLLOWING_FANS
-                if path_parts[0] == "fans"
+                if path_parts[0] == BROWSE_FANS
                 else CollectionType.FOLLOWERS
             )
             return await self._browse_person_people(collection_type, f"{base}{path_parts[0]}")
@@ -524,7 +511,7 @@ class BandcampProvider(MusicProvider):
         if person_id <= 0:
             raise InvalidDataError(f"Invalid person ID in browse path: {path_parts[-2]}")
 
-        route = self._PERSON_SUB_ROUTES.get(tail)
+        route = PERSON_SUB_ROUTES.get(tail)
         if route is None:
             raise InvalidDataError(f"Unknown browse sub-category: {tail}")
 
@@ -591,13 +578,6 @@ class BandcampProvider(MusicProvider):
 
     def _browse_person_root(self, person_id: int, base_path: str) -> list[BrowseFolder]:
         """Return the 5 sub-folders for a person's profile."""
-        sub_folders = [
-            ("collection", "Collection"),
-            ("wishlist", "Wishlist"),
-            ("following", "Following"),
-            ("fans", "Fans"),
-            ("followers", "Followers"),
-        ]
         return [
             BrowseFolder(
                 item_id=f"person_{person_id}_{sub_id}",
@@ -605,11 +585,11 @@ class BandcampProvider(MusicProvider):
                 path=f"{base_path}/{sub_id}",
                 name=name,
             )
-            for sub_id, name in sub_folders
+            for sub_id, name in PERSON_SUB_FOLDERS
         ]
 
-    @contextmanager
-    def _map_api_errors(self, context: str) -> Iterator[None]:
+    @asynccontextmanager
+    async def _map_api_errors(self, context: str) -> AsyncIterator[None]:
         """Map Bandcamp API exceptions to MusicAssistant exceptions."""
         try:
             yield
@@ -637,7 +617,8 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             return cached
         items: list[Album | Track] = []
-        with self._map_api_errors(f"Failed to get {collection_type.value} for person {person_id}"):
+        context = f"Failed to get {collection_type.value} for person {person_id}"
+        async with self._map_api_errors(context):
             collection = await self._client.get_collection_items(collection_type, fan_id=person_id)
             for item in collection.items:
                 with suppress(MediaNotFoundError):
@@ -666,7 +647,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             return cached
         artists: list[Artist] = []
-        with self._map_api_errors(f"Failed to get following for person {person_id}"):
+        async with self._map_api_errors(f"Failed to get following for person {person_id}"):
             collection = await self._client.get_collection_items(
                 CollectionType.FOLLOWING, fan_id=person_id
             )
@@ -705,7 +686,8 @@ class BandcampProvider(MusicProvider):
         )
         if cached is not None:
             return cached
-        with self._map_api_errors(f"Failed to get {collection_type.value} for person {person_id}"):
+        context = f"Failed to get {collection_type.value} for person {person_id}"
+        async with self._map_api_errors(context):
             collection = await self._client.get_collection_items(collection_type, fan_id=person_id)
             items = cast("list[FanItem]", collection.items)
             folders = self._people_to_folders(items, base_path)

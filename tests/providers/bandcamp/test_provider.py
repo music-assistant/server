@@ -32,13 +32,12 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import BrowseFolder
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.bandcamp import (
+from music_assistant.providers.bandcamp import BandcampProvider, split_id
+from music_assistant.providers.bandcamp.constants import (
     CACHE_EMPTY_RESULTS,
     CACHE_USER_LISTS,
     DEFAULT_TOP_TRACKS_LIMIT,
     SUPPORTED_FEATURES,
-    BandcampProvider,
-    split_id,
 )
 
 
@@ -1010,39 +1009,33 @@ async def test_browse_wishlist_ignores_unknown_item_types(provider: BandcampProv
 # --- _map_api_errors context manager tests ---
 
 
-def test_map_api_errors_login_error(provider: BandcampProvider) -> None:
+async def test_map_api_errors_login_error(provider: BandcampProvider) -> None:
     """Test _map_api_errors maps BandcampMustBeLoggedInError to LoginFailed."""
-    with (
-        pytest.raises(LoginFailed, match="Wrong Bandcamp identity token"),
-        provider._map_api_errors("test context"),
-    ):
-        raise BandcampMustBeLoggedInError("Must be logged in")
+    with pytest.raises(LoginFailed, match="Wrong Bandcamp identity token"):
+        async with provider._map_api_errors("test context"):
+            raise BandcampMustBeLoggedInError("Must be logged in")
 
 
-def test_map_api_errors_rate_limit(provider: BandcampProvider) -> None:
+async def test_map_api_errors_rate_limit(provider: BandcampProvider) -> None:
     """Test _map_api_errors maps BandcampRateLimitError to ResourceTemporarilyUnavailable."""
     rate_error = BandcampRateLimitError("Rate limited")
     rate_error.retry_after = 5
 
-    with (
-        pytest.raises(ResourceTemporarilyUnavailable, match="rate limit"),
-        provider._map_api_errors("test context"),
-    ):
-        raise rate_error
+    with pytest.raises(ResourceTemporarilyUnavailable, match="rate limit"):
+        async with provider._map_api_errors("test context"):
+            raise rate_error
 
 
-def test_map_api_errors_generic_api_error(provider: BandcampProvider) -> None:
+async def test_map_api_errors_generic_api_error(provider: BandcampProvider) -> None:
     """Test _map_api_errors maps BandcampAPIError to MediaNotFoundError with context."""
-    with (
-        pytest.raises(MediaNotFoundError, match="my custom context"),
-        provider._map_api_errors("my custom context"),
-    ):
-        raise BandcampAPIError("Something went wrong")
+    with pytest.raises(MediaNotFoundError, match="my custom context"):
+        async with provider._map_api_errors("my custom context"):
+            raise BandcampAPIError("Something went wrong")
 
 
-def test_map_api_errors_no_exception(provider: BandcampProvider) -> None:
+async def test_map_api_errors_no_exception(provider: BandcampProvider) -> None:
     """Test _map_api_errors passes through when no exception is raised."""
-    with provider._map_api_errors("test context"):
+    async with provider._map_api_errors("test context"):
         pass  # no exception
 
 
