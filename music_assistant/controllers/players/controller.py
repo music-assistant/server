@@ -1363,7 +1363,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Schedule debounced update of all players since can_group_with values may change
         # when a new player is added (provider IDs expand to include the new player)
-        self._schedule_update_all_players(5)
+        self._schedule_update_all_players(2)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
