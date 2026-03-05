@@ -260,7 +260,6 @@ class ITunesPodcastsProvider(MusicProvider):
                 yield podcast
                 continue
 
-            assert parsed_podcast is not None  # for type checking
             yield parse_podcast(
                 feed_url=feed_url,
                 parsed_feed=parsed_podcast,
