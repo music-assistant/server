@@ -481,6 +481,53 @@ Enable verbose logging in Music Assistant to see:
 - **OwnTone**: AirPlay 2 implementation - https://github.com/OwnTone
 - **pyatv**: Reference for HAP pairing protocol - https://github.com/postlund/pyatv
 
+## Sendspin Bridge
+
+AirPlay players can be bridged to the Sendspin protocol, enabling cross-protocol grouping between AirPlay devices and native Sendspin players.
+
+### How It Works
+
+When the Sendspin provider is enabled, each AirPlay player is automatically registered as an external Sendspin client:
+
+1. **Registration**: The bridge registers the AirPlay player with the Sendspin server using the device's MAC address as the `client_id`
+2. **Protocol Linking**: The player controller links the SendspinPlayer (created by Sendspin provider) with the AirPlayPlayer via MAC address matching
+3. **Audio Flow**: When grouped, Sendspin handles timing and synchronization while AirPlay streams the audio
+
+```
+┌─────────────────────┐     ┌─────────────────────┐
+│   SendspinPlayer    │◀───▶│   AirPlayPlayer     │
+│  (protocol linked)  │     │                     │
+└─────────┬───────────┘     └──────────┬──────────┘
+          │                            │
+          │ MAC address match          │
+          │                            │
+┌─────────▼───────────┐     ┌──────────▼──────────┐
+│ Sendspin PushStream │────▶│ BridgePlayerRole    │
+│  (timing/sync)      │     │      │              │
+└─────────────────────┘     │      ▼              │
+                            │ AirPlay CLI Process │
+                            └─────────────────────┘
+```
+
+### Architecture
+
+The bridge consists of:
+
+- **`BridgePlayerRole`**: A custom Sendspin role that receives audio chunks from PushStream
+- **`SendspinAirPlayBridge`**: Manages the bridge for a single AirPlay player
+- **`SendspinBridgeManager`**: Manages bridges for all AirPlay players
+
+### Requirements
+
+- Sendspin provider must be enabled
+- AirPlay player must have a valid MAC address for protocol linking
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `sendspin_bridge.py` | Bridge implementation for Sendspin to AirPlay integration |
+
 ## Future Enhancements
 
 - **Companion protocol**: Implement idle state monitoring for Apple devices

@@ -94,17 +94,34 @@ class AirPlayProtocol(ABC):
         """
         # always send stop command first
         await self.send_cli_command("ACTION=STOP")
-        if self._cli_proc:
-            await self._cli_proc.write_eof()
         self._stopped = True
         await self.commands_pipe.remove()
         if force:
+            # Kill immediately - skip write_eof() as it can block indefinitely
+            # when the CLI stops reading from stdin after receiving STOP.
             if self._cli_proc and not self._cli_proc.closed:
                 await self._cli_proc.kill()
-        elif self._cli_proc and not self._cli_proc.closed:
-            await self._cli_proc.close()
-        if not force:
+        else:
+            if self._cli_proc:
+                await self._cli_proc.write_eof()
+            if self._cli_proc and not self._cli_proc.closed:
+                await self._cli_proc.close()
             self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+
+    async def write_audio(self, data: bytes) -> None:
+        """Write raw audio data to the CLI process stdin.
+
+        :param data: Raw audio bytes to send to the streaming process.
+        """
+        if self._stopped or not self._cli_proc or self._cli_proc.closed:
+            return
+        await self._cli_proc.write(data)
+
+    async def write_audio_eof(self) -> None:
+        """Signal end-of-stream to the CLI process stdin."""
+        if self._stopped or not self._cli_proc or self._cli_proc.closed:
+            return
+        await self._cli_proc.write_eof()
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLI binary."""

@@ -18,11 +18,6 @@ CONF_API_TOKEN = "api_token"  # with jwt api token (>= v2.26)
 CONF_VERIFY_SSL = "verify_ssl"
 # optionally hide podcasts with no episodes
 CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
-# hls options
-CONF_USE_HLS = "use_session_hls"
-CONF_HLS_FORMATS = "hls_formats"
-HLS_FORMATS_SPLIT = ";"
-HLS_ALL_FORMATS = "all"
 
 # CACHE
 CACHE_CATEGORY_LIBRARIES = 0
@@ -40,6 +35,8 @@ class AbsBrowsePaths(StrEnum):
     SERIES = "s"
     COLLECTIONS = "c"
     AUDIOBOOKS = "b"
+    PODCASTS = "p"
+    PLAYLISTS = "pl"
 
 
 class AbsBrowseItemsBookTranslationKey(StrEnum):
@@ -49,21 +46,29 @@ class AbsBrowseItemsBookTranslationKey(StrEnum):
     NARRATORS = "narrators"
     SERIES = "series_plural"
     COLLECTIONS = "collections"
+    PLAYLISTS = "playlists"
     AUDIOBOOKS = "audiobooks"
 
 
 class AbsBrowseItemsPodcastTranslationKey(StrEnum):
     """Folder names in browse view for podcasts."""
 
+    PLAYLISTS = "playlists"
     PODCASTS = "podcasts"
 
 
-ABS_BROWSE_ITEMS_TO_PATH: dict[str, str] = {
+ABS_BROWSE_ITEMS_BOOK_TO_PATH: dict[str, str] = {
     AbsBrowseItemsBookTranslationKey.AUTHORS: AbsBrowsePaths.AUTHORS,
     AbsBrowseItemsBookTranslationKey.NARRATORS: AbsBrowsePaths.NARRATORS,
     AbsBrowseItemsBookTranslationKey.SERIES: AbsBrowsePaths.SERIES,
     AbsBrowseItemsBookTranslationKey.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
     AbsBrowseItemsBookTranslationKey.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
+    AbsBrowseItemsBookTranslationKey.PLAYLISTS: AbsBrowsePaths.PLAYLISTS,
+}
+
+ABS_BROWSE_ITEMS_PODCAST_TO_PATH: dict[str, str] = {
+    AbsBrowseItemsPodcastTranslationKey.PODCASTS: AbsBrowsePaths.PODCASTS,
+    AbsBrowseItemsPodcastTranslationKey.PLAYLISTS: AbsBrowsePaths.PLAYLISTS,
 }
 
 ABS_SHELF_ID_ICONS: dict[str, str] = {
