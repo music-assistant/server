@@ -30,7 +30,6 @@ from music_assistant_models.enums import IdentifierType
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
-    BRIDGE_BYTES_PER_SAMPLE,
     BRIDGE_CHANNELS,
     BRIDGE_ROLE_ID,
     BRIDGE_SAMPLE_RATE,
@@ -99,13 +98,13 @@ class SendspinAirPlayBridge:
         self._sendspin_client: SendspinClient | None = None
         self._bridge_client_id: str | None = None
         self._bridge_role: BridgePlayerRole | None = None
-        self._protocol: AirPlayProtocol | None = None
+        self._airplay_stream: AirPlayProtocol | None = None
         self._is_streaming = False
         self._next_expected_timestamp_us: int | None = None
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=500)
         self._writer_task: asyncio.Task[None] | None = None
-        self._protocol_start_task: asyncio.Task[None] | None = None
-        self._protocol_ready = asyncio.Event()
+        self._airplay_stream_start_task: asyncio.Task[None] | None = None
+        self._airplay_stream_ready = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
 
@@ -217,21 +216,21 @@ class SendspinAirPlayBridge:
         # Capture and detach old stream resources before scheduling their cleanup.
         # This prevents the async cleanup from accidentally destroying the new
         # stream's resources, which reuse the same instance variables.
-        old_protocol = self._protocol
+        old_stream = self._airplay_stream
         old_writer_task = self._writer_task
-        old_protocol_start_task = self._protocol_start_task
+        old_stream_start_task = self._airplay_stream_start_task
 
-        self._protocol = None
+        self._airplay_stream = None
         self._writer_task = None
-        self._protocol_start_task = None
+        self._airplay_stream_start_task = None
         self.airplay_player.stream = None
-        self._protocol_ready.clear()
+        self._airplay_stream_ready.clear()
 
-        if old_protocol or old_writer_task or old_protocol_start_task:
+        if old_stream or old_writer_task or old_stream_start_task:
             prev_cleanup = self._cleanup_task
             self._cleanup_task = self.mass.create_task(
                 self._cleanup_old_stream(
-                    old_protocol, old_writer_task, old_protocol_start_task, prev_cleanup
+                    old_stream, old_writer_task, old_stream_start_task, prev_cleanup
                 )
             )
 
@@ -252,8 +251,8 @@ class SendspinAirPlayBridge:
         # the async cleanup scheduled by _on_stream_start may have cleared
         # _is_streaming and _protocol_start_task between then and now.
         self._is_streaming = True
-        self._protocol_start_task = None
-        self._protocol_ready.clear()
+        self._airplay_stream_start_task = None
+        self._airplay_stream_ready.clear()
         self._next_expected_timestamp_us = None
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
@@ -278,17 +277,22 @@ class SendspinAirPlayBridge:
             if cleanup and not cleanup.done():
                 await cleanup
 
-            future_s = (chunk.timestamp_us - time.monotonic() * 1_000_000) / 1_000_000
+            future_s = chunk.timestamp_us / 1_000_000 - time.monotonic()
             start_ntp = unix_time_to_ntp(time.time() + future_s)
 
             if self.airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-                self._protocol = AirPlay2Stream(self.airplay_player)
+                # AP2 doesn't allow us to send a timestamp in the past
+                # (or one it can't reach in time)
+                # TODO: revisit this once sendspin allows to report a static
+                # delay of the client, so we can report a delay that meets AP2's requirements.
+                self.logger.warning("AirPlay2 detected - playback might be out of sync")
+                self._airplay_stream = AirPlay2Stream(self.airplay_player)
             else:
-                self._protocol = RaopStream(self.airplay_player)
-            self.airplay_player.stream = self._protocol
+                self._airplay_stream = RaopStream(self.airplay_player)
+            self.airplay_player.stream = self._airplay_stream
 
-            await self._protocol.start(start_ntp)
-            self._protocol_ready.set()
+            await self._airplay_stream.start(start_ntp)
+            self._airplay_stream_ready.set()
             self.logger.info(
                 "Bridge protocol started for %s (NTP=%s, lookahead=%.0fms)",
                 self.airplay_player.display_name,
@@ -303,22 +307,22 @@ class SendspinAirPlayBridge:
                 err,
             )
             # Clean up partially created protocol
-            if self._protocol:
+            if self._airplay_stream:
                 with suppress(Exception):
-                    await self._protocol.stop(force=True)
-                self._protocol = None
+                    await self._airplay_stream.stop(force=True)
+                self._airplay_stream = None
                 self.airplay_player.stream = None
             # Stop accepting chunks, unblock the writer, and schedule full cleanup
             self._is_streaming = False
-            self._protocol_ready.set()
+            self._airplay_stream_ready.set()
             self._schedule_cleanup()
 
     async def _wait_for_airplay_connection(self) -> None:
         """Wait for AirPlay connection in the background and log the result."""
-        if not self._protocol:
+        if not self._airplay_stream:
             return
         try:
-            await self._protocol.wait_for_connection()
+            await self._airplay_stream.wait_for_connection()
             self.logger.info(
                 "AirPlay connection established for %s", self.airplay_player.display_name
             )
@@ -336,8 +340,8 @@ class SendspinAirPlayBridge:
 
     async def _send_volume_command(self, volume: int) -> None:
         """Send VOLUME command to the AirPlay CLI."""
-        if self._protocol and self._protocol.running:
-            await self._protocol.send_cli_command(f"VOLUME={volume}")
+        if self._airplay_stream and self._airplay_stream.running:
+            await self._airplay_stream.send_cli_command(f"VOLUME={volume}")
 
     def _on_bridge_stream_end(self) -> None:
         """Stop the AirPlay protocol immediately when the stream ends.
@@ -366,9 +370,9 @@ class SendspinAirPlayBridge:
 
     async def _cleanup_old_stream(
         self,
-        protocol: AirPlayProtocol | None,
+        stream: AirPlayProtocol | None,
         writer_task: asyncio.Task[None] | None,
-        protocol_start_task: asyncio.Task[None] | None,
+        stream_start_task: asyncio.Task[None] | None,
         prev_cleanup: asyncio.Task[None] | None = None,
     ) -> None:
         """Clean up captured resources from a previous stream.
@@ -378,9 +382,9 @@ class SendspinAirPlayBridge:
         async cleanup runs after a new stream has already reused the instance
         variables, accidentally destroying the new stream's protocol/writer.
 
-        :param protocol: The old AirPlay protocol to stop.
+        :param stream: The old AirPlay stream to stop.
         :param writer_task: The old writer task to cancel.
-        :param protocol_start_task: The old protocol start task to cancel.
+        :param stream_start_task: The old stream start task to cancel.
         :param prev_cleanup: A prior cleanup task to await first (chaining).
         """
         # Wait for any chained prior cleanup to complete first
@@ -388,17 +392,17 @@ class SendspinAirPlayBridge:
             with suppress(Exception):
                 await prev_cleanup
 
-        if protocol_start_task and not protocol_start_task.done():
-            protocol_start_task.cancel()
+        if stream_start_task and not stream_start_task.done():
+            stream_start_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
-                await protocol_start_task
+                await stream_start_task
         if writer_task and not writer_task.done():
             writer_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await writer_task
-        if protocol:
+        if stream:
             with suppress(Exception):
-                await protocol.stop(force=True)
+                await stream.stop(force=True)
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle audio chunk from Sendspin PushStream."""
@@ -406,13 +410,13 @@ class SendspinAirPlayBridge:
             return
 
         # Detect a done/failed protocol start task and stop streaming
-        if self._protocol_start_task is not None and self._protocol_start_task.done():
+        if self._airplay_stream_start_task is not None and self._airplay_stream_start_task.done():
             exc = (
-                self._protocol_start_task.exception()
-                if not self._protocol_start_task.cancelled()
+                self._airplay_stream_start_task.exception()
+                if not self._airplay_stream_start_task.cancelled()
                 else None
             )
-            if self._protocol_start_task.cancelled() or exc:
+            if self._airplay_stream_start_task.cancelled() or exc:
                 self.logger.warning(
                     "Protocol start task failed for %s, stopping streaming",
                     self.airplay_player.display_name,
@@ -421,28 +425,19 @@ class SendspinAirPlayBridge:
                 self._schedule_cleanup()
                 return
 
-        if self._protocol_start_task is None:
-            self._protocol_start_task = self.mass.create_task(
+        if self._airplay_stream_start_task is None:
+            self._airplay_stream_start_task = self.mass.create_task(
                 self._start_protocol_from_chunk(chunk)
             )
 
         if self._next_expected_timestamp_us is not None:
             gap_us = chunk.timestamp_us - self._next_expected_timestamp_us
-            if gap_us > 1_000:
-                # Forward gap: fill with silence, capped at 2 seconds to avoid huge fills on seeks
-                fill_us = min(gap_us, 2_000_000)
-                bytes_per_us = (
-                    BRIDGE_SAMPLE_RATE * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE / 1_000_000
+            if abs(gap_us) > 1_000:
+                self.logger.warning(
+                    "Unexpected timestamp gap of %d µs for %s",
+                    gap_us,
+                    self.airplay_player.display_name,
                 )
-                silence = bytes(int(fill_us * bytes_per_us))
-                try:
-                    self._write_queue.put_nowait(silence)
-                except asyncio.QueueFull:
-                    self.logger.debug("Write queue full, dropping audio chunk")
-                    return
-            elif gap_us < -1_000:
-                self.logger.debug("Discarding late audio chunk (%d µs behind)", -gap_us)
-                return
 
         self._next_expected_timestamp_us = chunk.timestamp_us + chunk.duration_us
         try:
@@ -468,7 +463,7 @@ class SendspinAirPlayBridge:
                 if self._cleanup_task is cleanup_task:
                     self._cleanup_task = None
             try:
-                await asyncio.wait_for(self._protocol_ready.wait(), timeout=30.0)
+                await asyncio.wait_for(self._airplay_stream_ready.wait(), timeout=30.0)
             except TimeoutError:
                 self.logger.warning(
                     "Timed out waiting for AirPlay protocol to become ready for %s",
@@ -479,16 +474,16 @@ class SendspinAirPlayBridge:
                 return
             while True:
                 data = await self._write_queue.get()
-                if not self._protocol:
+                if not self._airplay_stream:
                     if data is None:
                         return
                     continue
                 if data is None:
                     with suppress(Exception):
-                        await self._protocol.write_audio_eof()
+                        await self._airplay_stream.write_audio_eof()
                     return
                 with suppress(Exception):
-                    await self._protocol.write_audio(data)
+                    await self._airplay_stream.write_audio(data)
         finally:
             # Only clear if this writer is still the active one.
             if self._writer_task is asyncio.current_task():
@@ -498,12 +493,12 @@ class SendspinAirPlayBridge:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
         self._next_expected_timestamp_us = None
-        self._protocol_ready.clear()
-        if self._protocol_start_task:
-            self._protocol_start_task.cancel()
+        self._airplay_stream_ready.clear()
+        if self._airplay_stream_start_task:
+            self._airplay_stream_start_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
-                await self._protocol_start_task
-            self._protocol_start_task = None
+                await self._airplay_stream_start_task
+            self._airplay_stream_start_task = None
         if self._writer_task:
             self._writer_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
@@ -511,9 +506,9 @@ class SendspinAirPlayBridge:
             self._writer_task = None
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        if self._protocol:
-            await self._protocol.stop(force=True)
-            self._protocol = None
+        if self._airplay_stream:
+            await self._airplay_stream.stop(force=True)
+            self._airplay_stream = None
             self.airplay_player.stream = None
 
 
@@ -548,9 +543,18 @@ class SendspinBridgeManager:
 
     async def setup_bridge(self, airplay_player: AirPlayPlayer) -> None:
         """Set up a Sendspin bridge for an AirPlay player."""
+        if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
+            # AP2 doesn't allow us to send a timestamp in the past
+            # (or one it can't reach in time) so we skip setting up the bridge.
+            # TODO: revisit this once sendspin allows to report a static
+            # delay of the client, so we can report a delay that meets AP2's requirements.
+            self.logger.warning(
+                "Sendspin bridge is not yet compatible with AirPlay2, skipping bridge for %s",
+                airplay_player.display_name,
+            )
+            return
         async with self._lock:
             player_id = airplay_player.player_id
-
             sendspin_server = self.sendspin_server
             if not sendspin_server:
                 self.logger.debug(
@@ -599,6 +603,17 @@ class SendspinBridgeManager:
             self._bridges.clear()
 
         self.logger.debug("All Sendspin bridges stopped")
+
+    def stop_streaming(self, airplay_player_id: str) -> bool:
+        """Stop streaming for a bridged AirPlay player.
+
+        :param airplay_player_id: The AirPlay player ID.
+        :return: True if a bridge was found and stopped, False otherwise.
+        """
+        if bridge := self._bridges.get(airplay_player_id):
+            bridge._on_bridge_stream_end()
+            return True
+        return False
 
     def get_bridge(self, airplay_player_id: str) -> SendspinAirPlayBridge | None:
         """Get the bridge for an AirPlay player."""

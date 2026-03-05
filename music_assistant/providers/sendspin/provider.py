@@ -10,6 +10,7 @@ from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEve
 from music_assistant_models.enums import IdentifierType, ProviderFeature
 from music_assistant_models.errors import AlreadyRegisteredError
 
+from music_assistant.constants import CONF_ENABLED
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -97,6 +98,9 @@ class SendspinProvider(PlayerProvider):
             self.logger.debug(
                 "Client %s already registered, skipping duplicate add event", client_id
             )
+            return
+        if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
+            self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
             return
         player = SendspinPlayer(self, client_id)
         # Apply any bridge identifiers that were pre-registered by the bridge manager.
