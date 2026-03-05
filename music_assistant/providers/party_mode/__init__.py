@@ -59,10 +59,10 @@ CONF_QR_SHOW_INSTRUCTION_TEXT = "qr_show_instruction_text"
 CONF_QR_INSTRUCTION_TEXT = "qr_instruction_text"
 
 # Color options for badges (name, hex value)
-# Blue and Orange are listed first as they are the defaults
+# Green and Orange are listed first as they are the defaults
 BADGE_COLOR_OPTIONS = [
-    ("Blue", "#2196F3"),
-    ("Orange", "#FF5722"),
+    ("Green", "#2D6A4F"),
+    ("Orange", "#B55522"),
     ("Magenta", "#E91E63"),
     ("Pink", "#F06292"),
     ("Purple", "#9C27B0"),
@@ -346,7 +346,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_REQUEST_BADGE_COLOR,
             type=ConfigEntryType.STRING,
-            default_value="#2196F3",  # Blue
+            default_value="#2D6A4F",  # Green
             label="Request Badge Color",
             description="Color for the 'Request' badge shown on guest-added queue items.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
@@ -356,7 +356,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BOOST_BADGE_COLOR,
             type=ConfigEntryType.STRING,
-            default_value="#FF5722",  # Orange
+            default_value="#B55522",  # Orange
             label="Boost Badge Color",
             description="Color for the 'Boost' badge shown on priority guest requests.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
