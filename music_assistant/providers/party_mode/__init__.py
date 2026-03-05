@@ -275,7 +275,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PARTY_MODE_BOOST_LIMIT,
             type=ConfigEntryType.INTEGER,
-            default_value=3,
+            default_value=1,
             label="Boost Token Limit",
             description=(
                 "Maximum number of 'Boost' actions a guest can perform before "
