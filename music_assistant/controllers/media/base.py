@@ -1109,8 +1109,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if (album_images := track_album.get("images")) and (
                 album_thumb := next((x for x in album_images if x["type"] == "thumb"), None)
             ):
-                # copy album image to itemmapping single image
+                # copy album image to itemmapping single image (on the track)
                 db_row_dict["image"] = album_thumb
+                # also set image on the album dict for ItemMapping compatibility
+                track_album["image"] = album_thumb
                 if db_row_dict["metadata"].get("images"):
                     # merge album image with existing images
                     db_row_dict["metadata"]["images"] = [
@@ -1119,6 +1121,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     ]
                 else:
                     db_row_dict["metadata"]["images"] = [album_thumb]
+
         return db_row_dict
 
     @final

@@ -1254,51 +1254,56 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if not player.state.enabled:
                 return
 
-            # Save the original MAC reported by the provider (before ARP enrichment)
-            reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
-
-            # Try to use cached ARP MAC from config for fast matching on restart.
-            # This allows protocol linking to work immediately even if ARP is slow/fails.
             conf_base = f"{CONF_PLAYERS}/{player_id}/values"
-            cached_arp_mac: str | None = self.mass.config.get(
-                f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
-            )
-            if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
-                player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+            if player.type not in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+                # Save the original MAC reported by the provider (before ARP enrichment)
+                reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
 
-            # Enrich device MAC address via ARP if needed
-            # (handles invalid MACs, locally-administered MACs, and missing MACs)
-            await enrich_device_mac_address(player.device_info, self.logger)
-
-            # Cache the resolved MAC for fast matching on subsequent restarts
-            current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
-            if current_mac and is_valid_mac_address(current_mac) and current_mac != cached_arp_mac:
-                self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
-
-            # Store original reported MAC if it differs from the resolved MAC.
-            # This enables multi-MAC matching for devices with multiple interfaces
-            # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
-            # protocol reports the other.
-            if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
-                if reported_mac.upper() != current_mac.upper():
-                    player.extra_data["reported_mac"] = reported_mac
-                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
-                else:
-                    # Provider's reported MAC matches the resolved MAC; clear any stale
-                    # stored reported MAC to avoid false-positive multi-MAC matches.
-                    self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
-            elif not reported_mac or not is_valid_mac_address(reported_mac):
-                # Restore reported MAC from config on restart only when the provider
-                # did not supply a usable MAC address.
-                cached_reported_mac: str | None = self.mass.config.get(
-                    f"{conf_base}/{CONF_REPORTED_MAC}", None
+                # Try to use cached ARP MAC from config for fast matching on restart.
+                # This allows protocol linking to work immediately even if ARP is slow/fails.
+                cached_arp_mac: str | None = self.mass.config.get(
+                    f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
                 )
-                if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
-                    if current_mac and cached_reported_mac.upper() == current_mac.upper():
-                        # Cached value matches the resolved MAC; clear stale entry.
-                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
+                    player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+
+                # Enrich device MAC address via ARP if needed
+                # (handles invalid MACs, locally-administered MACs, and missing MACs)
+                await enrich_device_mac_address(player.device_info, self.logger)
+
+                # Cache the resolved MAC for fast matching on subsequent restarts
+                current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+                if (
+                    current_mac
+                    and is_valid_mac_address(current_mac)
+                    and current_mac != cached_arp_mac
+                ):
+                    self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
+
+                # Store original reported MAC if it differs from the resolved MAC.
+                # This enables multi-MAC matching for devices with multiple interfaces
+                # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
+                # protocol reports the other.
+                if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
+                    if reported_mac.upper() != current_mac.upper():
+                        player.extra_data["reported_mac"] = reported_mac
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
                     else:
-                        player.extra_data["reported_mac"] = cached_reported_mac
+                        # Provider's reported MAC matches the resolved MAC; clear any stale
+                        # stored reported MAC to avoid false-positive multi-MAC matches.
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                elif not reported_mac or not is_valid_mac_address(reported_mac):
+                    # Restore reported MAC from config on restart only when the provider
+                    # did not supply a usable MAC address.
+                    cached_reported_mac: str | None = self.mass.config.get(
+                        f"{conf_base}/{CONF_REPORTED_MAC}", None
+                    )
+                    if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
+                        if current_mac and cached_reported_mac.upper() == current_mac.upper():
+                            # Cached value matches the resolved MAC; clear stale entry.
+                            self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                        else:
+                            player.extra_data["reported_mac"] = cached_reported_mac
 
             # register throttler for this player
             self._player_throttlers[player_id] = Throttler(1, 0.05)
@@ -1324,10 +1329,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # We use the 'initialized' attribute to indicate that the player
             # is still in the process of being registered so we can filter it out where needed.
             self._players[player_id] = player
+            # update state to ensure player.state reflects the final attributes
+            # (e.g. player type) set after super().__init__() in the player subclass,
+            # before we fetch config (which relies on state.type for entry resolution)
+            player.update_state(signal_event=False)
             # ensure we fetch and set the latest/full config for the player
             player_config = await self.mass.config.get_player_config(player_id)
             player.set_config(player_config)
-            # update state without signaling event first (ensures all attributes are set)
+            # update state again now that config is loaded
             player.update_state(signal_event=False)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
@@ -1354,7 +1363,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Schedule debounced update of all players since can_group_with values may change
         # when a new player is added (provider IDs expand to include the new player)
-        self._schedule_update_all_players(5)
+        self._schedule_update_all_players(2)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
@@ -1494,10 +1503,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # nothing changed
             return
 
-        # always signal update to the playerqueue
-        if player.state.type != PlayerType.PROTOCOL:
-            self.mass.player_queues.on_player_update(player, changed_values)
-
         # to prevent spamming the eventbus on small changes (e.g. elapsed time),
         # we check if there are only changes in the elapsed time
         clean_changed_keys = set(changed_values.keys()) - {"current_media.elapsed_time"}
@@ -1507,6 +1512,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             new_value = changed_values[ATTR_ELAPSED_TIME][1] or 0
             if abs(prev_value - new_value) < 5:
                 return
+
+        # signal update to the playerqueue
+        if player.state.type != PlayerType.PROTOCOL:
+            self.mass.call_later(
+                0.5,
+                self.mass.player_queues.on_player_update,
+                player,
+                changed_values,
+                task_id=f"queue_on_player_update_{player.player_id}",
+            )
 
         # handle DSP reload of the leader when grouping/ungrouping
         if ATTR_GROUP_MEMBERS in changed_values:
@@ -2154,11 +2169,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = player.state.playback_state == PlaybackState.PLAYING
-                if player_playing:
-                    self.mass.loop.call_soon(
+                if player_playing and player.type != PlayerType.PROTOCOL:
+                    self.mass.call_later(
+                        0.5,
                         self.mass.player_queues.on_player_update,
                         player,
-                        {"corrected_elapsed_time": (None, player.corrected_elapsed_time)},
+                        {"corrected_elapsed_time": (None, player.state.corrected_elapsed_time)},
+                        task_id=f"queue_on_player_update_{player.player_id}",
                     )
                 # Poll player;
                 if not player.needs_poll:
@@ -2494,7 +2511,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Forward command to the appropriate player after all (base) sanity checks
         # GROUP players (sync_group, universal_group) manage their own members internally
         # and don't need protocol translation - call their set_members directly
-        if parent_player.type == PlayerType.GROUP:
+        if (
+            parent_player.type == PlayerType.GROUP
+            and PlayerFeature.SET_MEMBERS in parent_player.state.supported_features
+        ):
             await parent_player.set_members(
                 player_ids_to_add=final_player_ids_to_add,
                 player_ids_to_remove=final_player_ids_to_remove,
@@ -2999,7 +3019,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # If there are still protocol group members, keep the protocol active so that
         # when playback resumes it continues on the same protocol.
         if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
-            player.set_active_output_protocol(None)
+            self.mass.call_later(
+                5,
+                player.set_active_output_protocol,
+                None,
+                task_id=f"clear_active_protocol_{player_id}",
+            )
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """

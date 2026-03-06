@@ -219,7 +219,6 @@ class AuthenticationManager:
                 use_count INTEGER DEFAULT 0,
                 last_used_at TEXT,
                 device_name TEXT,
-                provider_name TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
             """
@@ -296,7 +295,6 @@ class AuthenticationManager:
                     use_count INTEGER DEFAULT 0,
                     last_used_at TEXT,
                     device_name TEXT,
-                    provider_name TEXT,
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
                 """
@@ -874,9 +872,7 @@ class AuthenticationManager:
             # Create new link
             await self.link_user_to_provider(user, provider_type, provider_user_id)
 
-    async def create_token(
-        self, user: User, name: str, is_long_lived: bool = False, provider_name: str | None = None
-    ) -> str:
+    async def create_token(self, user: User, name: str, is_long_lived: bool = False) -> str:
         """
         Create a new JWT access token for a user.
 
@@ -885,7 +881,6 @@ class AuthenticationManager:
         :param is_long_lived: Whether this is a long-lived token (default: False).
             Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
             Long-lived tokens (True): No auto-renewal, expire after 10 years.
-        :param provider_name: Optional provider name that created this token (e.g., "party_mode").
         :return: JWT token string.
         """
         # Generate unique token ID
@@ -907,7 +902,6 @@ class AuthenticationManager:
             token_name=name,
             expires_at=expires_at,
             is_long_lived=is_long_lived,
-            provider_name=provider_name,
         )
 
         # Store token hash in database for revocation checking
@@ -948,6 +942,38 @@ class AuthenticationManager:
 
         # Disconnect any WebSocket connections using this token
         self.webserver.disconnect_websockets_for_token(token_id)
+
+        self.logger.info(
+            "Token revoked by user '%s' (token_id=%s)",
+            user.username,
+            token_id,
+        )
+
+    async def revoke_tokens_for_user(self, user: User) -> int:
+        """Revoke all auth tokens for a user.
+
+        This is an internal method for programmatic use (e.g., when disabling guest access).
+        Unlike revoke_token(), this does not require an authenticated user context.
+
+        :param user: The user whose tokens should be revoked.
+        :return: Number of tokens revoked.
+        """
+        token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
+        if not token_rows:
+            return 0
+
+        # Disconnect any WebSocket connections using these tokens
+        for token_row in token_rows:
+            self.webserver.disconnect_websockets_for_token(token_row["token_id"])
+
+        # Delete all tokens in one go
+        await self.database.execute(
+            "DELETE FROM auth_tokens WHERE user_id = :user_id",
+            {"user_id": user.user_id},
+        )
+
+        self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
+        return len(token_rows)
 
     @api_command("auth/tokens")
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
@@ -1022,10 +1048,18 @@ class AuthenticationManager:
         if not user_row:
             return False
 
+        old_role = user_row["role"]
         await self.database.update(
             "users",
             {"user_id": user_id},
             {"role": new_role.value},
+        )
+        self.logger.info(
+            "User role changed: '%s' from '%s' to '%s' by admin '%s'",
+            user_row["username"],
+            old_role,
+            new_role.value,
+            admin_user.username,
         )
         return True
 
@@ -1041,6 +1075,7 @@ class AuthenticationManager:
             {"user_id": user_id},
             {"enabled": 1},
         )
+        self.logger.info("User account enabled (user_id=%s)", user_id)
 
     @api_command("auth/user/disable", required_role="admin")
     async def disable_user(self, user_id: str) -> None:
@@ -1065,6 +1100,8 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        self.logger.info("User account disabled (user_id=%s)", user_id)
 
     async def get_login_providers(self) -> list[dict[str, Any]]:
         """Get list of available login providers (dynamically checks for HA provider)."""
@@ -1114,6 +1151,11 @@ class AuthenticationManager:
         auth_result = await self.authenticate_with_credentials(provider_id, credentials)
 
         if not auth_result.success:
+            self.logger.warning(
+                "Login failed for username '%s' via provider '%s'",
+                username or "<not provided>",
+                provider_id,
+            )
             return {
                 "success": False,
                 "error": auth_result.error or "Authentication failed",
@@ -1131,6 +1173,12 @@ class AuthenticationManager:
             auth_result.user,
             is_long_lived=False,
             name=token_name,
+        )
+
+        self.logger.info(
+            "User '%s' logged in via provider '%s'",
+            auth_result.user.username,
+            provider_id,
         )
 
         return {
@@ -1325,12 +1373,23 @@ class AuthenticationManager:
         if user_id == admin_user.user_id:
             raise InvalidDataError("Cannot delete your own account")
 
+        # Look up the username before deleting
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            raise InvalidDataError("User not found")
+
         # Delete user from database
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        self.logger.info(
+            "User '%s' deleted by admin '%s'",
+            user_row["username"],
+            admin_user.username,
+        )
 
     @api_command("auth/me")
     async def get_current_user_info(self) -> User:
@@ -1506,6 +1565,8 @@ class AuthenticationManager:
             # Disconnect any WebSocket connections using this token
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
+        self.logger.info("User '%s' logged out", user.username)
+
     @api_command("auth/user/providers")
     async def get_my_providers(self) -> list[dict[str, Any]]:
         """
@@ -1535,38 +1596,39 @@ class AuthenticationManager:
             "user_auth_providers", {"user_id": user_id, "provider_type": provider_type}
         )
         await self.database.commit()
+
+        self.logger.info(
+            "Auth provider '%s' unlinked from user (user_id=%s)",
+            provider_type,
+            user_id,
+        )
         return True
 
     # ==================== Join Code Methods ====================
 
     async def generate_join_code(
         self,
-        user_id: str,
+        user: User,
         expires_in_hours: int = JOIN_CODE_DEFAULT_EXPIRY_HOURS,
         max_uses: int = 1,
         device_name: str = "Short Code Login",
-        provider_name: str | None = None,
     ) -> tuple[str, datetime]:
         """Generate a short join code for link/QR-based login.
 
         This creates a short alphanumeric code that can be exchanged for a JWT token.
-        Providers can use this to implement features like party mode guest access,
-        device pairing, or other short-code authentication flows.
+        Used for features like party mode guest access, device pairing,
+        or other short-code authentication flows.
 
-        :param user_id: The user ID that tokens created from this code will belong to.
+        :param user: The guest user that tokens created from this code will belong to.
         :param expires_in_hours: Hours until code expires (default: 8).
         :param max_uses: Maximum number of uses (0 = unlimited).
         :param device_name: Device name for tokens created with this code.
-        :param provider_name: Optional provider name identifier (e.g., "party_mode").
         :return: Tuple of (code, expires_at datetime).
         """
         if expires_in_hours <= 0:
             raise ValueError("expires_in_hours must be positive")
         if max_uses < 0:
             raise ValueError("max_uses must be non-negative (0 = unlimited)")
-        user = await self.get_user(user_id)
-        if not user:
-            raise ValueError(f"User not found: {user_id}")
         if user.role != UserRole.GUEST:
             raise ValueError("Join codes can only be generated for guest accounts")
 
@@ -1578,23 +1640,21 @@ class AuthenticationManager:
             code_data = {
                 "code_id": secrets.token_urlsafe(32),
                 "code": code,
-                "user_id": user_id,
+                "user_id": user.user_id,
                 "created_at": now.isoformat(),
                 "expires_at": expires_at.isoformat(),
                 "max_uses": max_uses,
                 "use_count": 0,
                 "device_name": device_name,
-                "provider_name": provider_name,
             }
             try:
                 await self.database.insert("join_codes", code_data)
                 await self.database.commit()
                 self.logger.info(
-                    "Join code generated for user %s (expires: %s, max_uses: %s, provider: %s)",
+                    "Join code generated for user %s (expires: %s, max_uses: %s)",
                     user.username,
                     expires_at,
                     max_uses,
-                    provider_name,
                 )
                 return code, expires_at
             except IntegrityError:
@@ -1606,8 +1666,7 @@ class AuthenticationManager:
     async def _exchange_join_code(self, code: str) -> str | None:
         """Exchange a join code for a JWT access token.
 
-        The token is created for the user associated with the join code,
-        using the provider_name that was specified when the code was generated.
+        The token is created for the user associated with the join code.
 
         :param code: The short join code.
         :return: JWT token string if valid, None otherwise.
@@ -1622,7 +1681,7 @@ class AuthenticationManager:
             WHERE code = :code
             AND expires_at > :now
             AND (max_uses = 0 OR use_count < max_uses)
-            RETURNING user_id, provider_name, device_name
+            RETURNING user_id, device_name
             """,
             {"now": now.isoformat(), "code": code.upper()},
         )
@@ -1645,51 +1704,51 @@ class AuthenticationManager:
             user,
             device_name,
             is_long_lived=False,
-            provider_name=row["provider_name"],
         )
 
         self.logger.info(
-            "Join code exchanged for token (user=%s, provider=%s)",
+            "Join code exchanged for token (user=%s)",
             user.username,
-            row["provider_name"],
         )
         return token
 
-    async def revoke_join_codes(
-        self,
-        user_id: str | None = None,
-        provider_name: str | None = None,
-    ) -> int:
-        """Revoke join codes filtered by user and/or provider.
+    async def revoke_join_codes(self, user: User) -> int:
+        """Revoke all join codes for a user.
 
-        At least one filter parameter must be provided to prevent accidental deletion of all codes.
-
-        :param user_id: User ID to revoke codes for.
-        :param provider_name: Provider name to revoke codes for.
+        :param user: The user whose join codes should be revoked.
         :return: Number of codes revoked.
         """
-        if not user_id and not provider_name:
-            raise ValueError("At least one of user_id or provider_name must be provided")
-
-        conditions = []
-        params = {}
-
-        if user_id:
-            conditions.append("user_id = :user_id")
-            params["user_id"] = user_id
-        if provider_name:
-            conditions.append("provider_name = :provider_name")
-            params["provider_name"] = provider_name
-
         cursor = await self.database.execute(
-            f"DELETE FROM join_codes WHERE {' AND '.join(conditions)}", params
+            "DELETE FROM join_codes WHERE user_id = :user_id",
+            {"user_id": user.user_id},
         )
         await self.database.commit()
 
         count = int(cursor.rowcount)
         if count > 0:
-            self.logger.info("Revoked %d join code(s)", count)
+            self.logger.info("Revoked %d join code(s) for user %s", count, user.username)
         return count
+
+    async def get_active_join_code(self, user: User) -> str | None:
+        """Get the most recently created, non-expired join code for a user.
+
+        :param user: The user to look up codes for.
+        :return: The join code string if found, None otherwise.
+        """
+        now = utc()
+        cursor = await self.database.execute(
+            """
+            SELECT code FROM join_codes
+            WHERE user_id = :user_id
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            {"user_id": user.user_id, "now": now.isoformat()},
+        )
+        row = await cursor.fetchone()
+        return str(row["code"]) if row else None
 
     async def _cleanup_expired_join_codes(self) -> None:
         """Delete expired and exhausted join codes from the database."""
