@@ -290,7 +290,7 @@ async def test_play_track(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         await client.close()
 
 
-async def test_play_unknown_player(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+async def test_play_unknown_player(provider: MSXBridgeProvider) -> None:
     """POST /api/play with unknown player_id should return 404."""
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
@@ -359,7 +359,7 @@ async def test_quick_stop(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         await client.close()
 
 
-async def test_control_unknown_player(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+async def test_control_unknown_player(provider: MSXBridgeProvider) -> None:
     """Control endpoints with unknown player_id should return 404."""
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
