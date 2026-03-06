@@ -450,6 +450,25 @@ class YandexMusicStreamingManager:
             return attempt, delay
         raise MediaNotFoundError(f"Encrypted stream {label} after retries were exhausted") from err
 
+    @staticmethod
+    def _is_content_range_eof(headers: Any, window_end: int) -> bool:
+        """Return True when Content-Range indicates *window_end* reached the last file byte.
+
+        Parses ``Content-Range: bytes start-end/total`` and checks whether
+        ``window_end >= total - 1``.  Returns False on any malformed header so
+        the caller falls back to the next window safely.
+        """
+        content_range = headers.get("Content-Range", "")
+        if not content_range.startswith("bytes "):
+            return False
+        try:
+            _, range_spec = content_range.split(" ", 1)
+            _, total_str = range_spec.split("/", 1)
+            total_str = total_str.strip()
+            return total_str.isdigit() and window_end >= int(total_str) - 1
+        except ValueError:
+            return False
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
@@ -538,6 +557,11 @@ class YandexMusicStreamingManager:
                     window_got = bytes_yielded - bytes_before
                     if response.status == 200 or window_got < _RANGE_WINDOW:
                         return  # full file received or last partial window
+                    # Exact-boundary guard: if file size is an exact multiple of
+                    # _RANGE_WINDOW the size check above won't catch EOF.
+                    # Use Content-Range to confirm no bytes remain.
+                    if self._is_content_range_eof(response.headers, window_end):
+                        return
                     # more data expected: advance to next window
                     attempt = 0
                     retry_delay = 0.0

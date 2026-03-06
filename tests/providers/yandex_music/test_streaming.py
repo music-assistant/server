@@ -13,6 +13,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.providers.yandex_music import streaming as _streaming_mod
 from music_assistant.providers.yandex_music.constants import (
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
@@ -382,6 +383,7 @@ class _MockResponse:
         error: Exception | None = None,
         drop_payload_error: bool = False,
         drop_error: Exception | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.content = _MockContent(
             chunks,
@@ -390,6 +392,7 @@ class _MockResponse:
         )
         self.status = status
         self._error = error
+        self.headers: dict[str, str] = headers or {}
 
     def raise_for_status(self) -> None:
         """Raise stored error if set, simulating a non-2xx HTTP response."""
@@ -693,3 +696,45 @@ async def test_get_audio_stream_fails_immediately_when_url_refresh_returns_nothi
 
     # Should have given up after attempt 0 (refresh returned None → no stale URL reuse)
     assert streaming_provider_stub.client.get_track_file_info_lossless.call_count == 1
+
+
+async def test_get_audio_stream_exact_window_boundary(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """File whose size is an exact multiple of _RANGE_WINDOW does not trigger a 416 error.
+
+    Without the Content-Range EOF guard the loop would request the next window after
+    receiving exactly _RANGE_WINDOW bytes in a 206 response, which would result in a
+    416 Range Not Satisfiable error raised as MediaNotFoundError.  With the fix the
+    loop detects EOF via the Content-Range header and returns cleanly.
+    """
+    # Use a tiny window (16 bytes = one AES block) so the test stays fast.
+    small_window = 16
+    key = b"\xab" * 32
+    plaintext = b"x" * small_window  # file size == window size (exact boundary)
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    # Content-Range: bytes 0-15/16  — signals that byte 15 is the last one
+    first_resp = _MockResponse(
+        [ciphertext],
+        status=206,
+        headers={"Content-Range": f"bytes 0-{small_window - 1}/{small_window}"},
+    )
+    # Second response must never be reached; if it is, the test will fail.
+    second_resp = _MockResponse([], status=416, error=RuntimeError("should not be requested"))
+    session = _MultiCallHttpSession([first_resp, second_resp])
+    streaming_provider_stub.mass.http_session = session
+
+    result = b""
+    with unittest.mock.patch.object(_streaming_mod, "_RANGE_WINDOW", small_window):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    assert result == plaintext
+    assert len(session.calls) == 1, "second window must not be requested when EOF is detected"
