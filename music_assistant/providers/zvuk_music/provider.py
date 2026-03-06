@@ -403,13 +403,12 @@ class ZvukMusicProvider(MusicProvider):
         playlists («Плейлисты для вас»: IDs 3, 4, 6, 11, 12, 13, 14, 15).
         """
         collection_items = await self.client.get_user_playlists()
-        if not collection_items:
-            return
-        ids = [str(item.id) for item in collection_items if item.id]
-        async for playlist in self._iter_batched(
-            ids, self.client.get_playlists, parse_playlist, "playlist"
-        ):
-            yield playlist
+        if collection_items:
+            ids = [str(item.id) for item in collection_items if item.id]
+            async for playlist in self._iter_batched(
+                ids, self.client.get_playlists, parse_playlist, "playlist"
+            ):
+                yield playlist
 
         # Synthesis playlists — personalized AI playlists («Плейлисты для вас»)
         synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
@@ -541,6 +540,11 @@ class ZvukMusicProvider(MusicProvider):
         except (ResourceTemporarilyUnavailable, ProviderUnavailableError, LoginFailed) as err:
             self.logger.debug("Failed to fetch lyrics for track %s: %s", track_id, err)
             return None
+        except Exception as err:
+            self.logger.debug(
+                "Unexpected error while fetching lyrics for track %s: %s", track_id, err
+            )
+            return None
         if not result:
             return None
 
@@ -649,7 +653,7 @@ class ZvukMusicProvider(MusicProvider):
 
     # Playlist management
 
-    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist.
 
         :param name: Playlist name.

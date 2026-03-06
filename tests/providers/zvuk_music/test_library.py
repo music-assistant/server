@@ -255,14 +255,18 @@ class TestGetLibraryPlaylists:
     """Tests for ZvukMusicProvider.get_library_playlists()."""
 
     @pytest.mark.asyncio
-    async def test_empty_user_playlists_yields_nothing(self) -> None:
-        """When get_user_playlists() returns None, nothing is yielded."""
+    async def test_empty_user_playlists_still_yields_synthesis(self) -> None:
+        """When get_user_playlists() returns None, synthesis playlists are still yielded."""
         provider = _make_provider()
         provider.client.get_user_playlists = AsyncMock(return_value=None)
+        raw_synth = Mock()
+        provider.client.get_short_playlists = AsyncMock(return_value=[raw_synth])
 
-        results = [p async for p in provider.get_library_playlists()]
+        parsed_synth = Mock()
+        with patch(f"{_PROVIDER_MODULE}.parse_playlist", return_value=parsed_synth):
+            results = [p async for p in provider.get_library_playlists()]
 
-        assert results == []
+        assert results == [parsed_synth]
 
     @pytest.mark.asyncio
     async def test_user_playlists_are_fetched_and_parsed(self) -> None:
