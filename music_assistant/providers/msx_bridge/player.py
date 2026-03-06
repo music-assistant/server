@@ -283,6 +283,15 @@ class MSXPlayer(Player):
                 other = self.mass.players.get_player(pid)
                 if other and isinstance(other, MSXPlayer):
                     self._attr_group_members.append(pid)
+
+        # Normalize group membership: leader must be first when grouped,
+        # and the list must be empty when no other members exist.
+        members_except_self = [pid for pid in self._attr_group_members if pid != self.player_id]
+        if not members_except_self:
+            self._attr_group_members = []
+        else:
+            self._attr_group_members = [self.player_id, *members_except_self]
+
         self.update_state()
 
     async def play(self) -> None:

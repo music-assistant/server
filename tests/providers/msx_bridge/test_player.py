@@ -272,12 +272,14 @@ async def test_set_members_add_and_remove(provider: Any, mass_mock: Mock) -> Non
 
     await leader.set_members(player_ids_to_add=["msx_member"])
 
-    assert "msx_member" in leader._attr_group_members
+    # Leader must be first, member second
+    assert leader._attr_group_members == ["msx_leader", "msx_member"]
     leader.update_state.assert_called()
 
     await leader.set_members(player_ids_to_remove=["msx_member"])
 
-    assert "msx_member" not in leader._attr_group_members
+    # No other members: list must be empty (solo player)
+    assert leader._attr_group_members == []
 
 
 async def test_set_members_ignores_self_and_non_msx(provider: Any, mass_mock: Mock) -> None:
