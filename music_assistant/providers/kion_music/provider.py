@@ -163,8 +163,8 @@ class KionMusicProvider(MusicProvider):
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
         self._client = KionMusicClient(str(token), base_url=str(base_url))
         await self._client.connect()
-        # Suppress kion_music library DEBUG dumps (full API request/response JSON)
-        logging.getLogger("kion_music").setLevel(self.logger.level + 10)
+        # Suppress yandex_music library DEBUG dumps (full API request/response JSON)
+        logging.getLogger("yandex_music").setLevel(self.logger.level + 10)
         self._streaming = KionMusicStreamingManager(self)
         # Initialize My Mix duplicate tracking
         self._my_wave_seen_track_ids = set()
