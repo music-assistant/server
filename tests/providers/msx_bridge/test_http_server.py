@@ -260,8 +260,18 @@ async def test_search_missing_query(http_client: TestClient[Any, Any]) -> None:
 # --- Playback control ---
 
 
+def _register_msx_player(mass_mock: Mock, provider: MSXBridgeProvider, player_id: str) -> MSXPlayer:
+    """Create an MSXPlayer and register it with the mass_mock so _get_msx_player passes."""
+    player = MSXPlayer(provider=provider, player_id=player_id)
+    mass_mock.players.get_player = Mock(
+        side_effect=lambda pid, **_kwargs: player if pid == player_id else None
+    )
+    return player
+
+
 async def test_play_track(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
     """POST /api/play should call player_queues.play_media."""
+    _register_msx_player(mass_mock, provider, "msx_test")
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -280,6 +290,21 @@ async def test_play_track(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         await client.close()
 
 
+async def test_play_unknown_player(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+    """POST /api/play with unknown player_id should return 404."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        resp = await client.post(
+            "/api/play",
+            json={"track_uri": "library://track/1", "player_id": "msx_test"},
+        )
+        assert resp.status == 404
+    finally:
+        await client.close()
+
+
 async def test_play_invalid_body(http_client: TestClient[Any, Any]) -> None:
     """POST /api/play with invalid JSON should return 400."""
     resp = await http_client.post(
@@ -292,6 +317,7 @@ async def test_play_invalid_body(http_client: TestClient[Any, Any]) -> None:
 
 async def test_pause(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
     """POST /api/pause/{id} should call cmd_pause."""
+    _register_msx_player(mass_mock, provider, "msx_test")
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -305,6 +331,7 @@ async def test_pause(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
 
 async def test_stop(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
     """POST /api/stop/{id} should call cmd_stop."""
+    _register_msx_player(mass_mock, provider, "msx_test")
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -318,6 +345,7 @@ async def test_stop(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
 
 async def test_quick_stop(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
     """POST /api/quick-stop/{id} should call cmd_stop and notify_play_stopped."""
+    _register_msx_player(mass_mock, provider, "msx_test")
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -327,6 +355,19 @@ async def test_quick_stop(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
         assert resp.status == 200
         mass_mock.players.cmd_stop.assert_awaited_once_with("msx_test")
         mock_notify.assert_called_once_with("msx_test")
+    finally:
+        await client.close()
+
+
+async def test_control_unknown_player(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+    """Control endpoints with unknown player_id should return 404."""
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        for path in ("/api/pause/unknown", "/api/stop/unknown", "/api/quick-stop/unknown"):
+            resp = await client.post(path)
+            assert resp.status == 404, f"{path} should return 404 for unknown player"
     finally:
         await client.close()
 

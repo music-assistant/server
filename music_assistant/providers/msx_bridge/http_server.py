@@ -385,19 +385,13 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
         return handler
 
-    async def _handle_msx_plugin_html(self, _request: web.Request) -> web.Response:
+    async def _handle_msx_plugin_html(self, _request: web.Request) -> web.StreamResponse:
         """Serve plugin.html with cache-busting headers."""
-        path = STATIC_DIR / "plugin.html"
-        content = path.read_text(encoding="utf-8")
-        return web.Response(
-            text=content,
-            content_type="text/html",
-            headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            },
-        )
+        response = cast("web.StreamResponse", web.FileResponse(STATIC_DIR / "plugin.html"))
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
     async def _handle_msx_input_html(self, request: web.Request) -> web.FileResponse:
         """Serve input.html and ensure player is registered when Search is opened."""
@@ -2041,6 +2035,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if not track_uri or not player_id:
             return web.json_response({"error": "Missing track_uri or player_id"}, status=400)
 
+        if self._get_msx_player(player_id) is None:
+            return web.json_response({"error": "Unknown MSX player"}, status=404)
+
         await self.provider.mass.player_queues.play_media(
             player_id, track_uri, username=await self.provider.get_owner_username()
         )
@@ -2049,6 +2046,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_pause(self, request: web.Request) -> web.Response:
         """Pause playback."""
         player_id = _strip_known_extension(request.match_info["player_id"])
+        if self._get_msx_player(player_id) is None:
+            return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_pause(player_id)
         return web.json_response({"status": "ok"})
@@ -2056,6 +2055,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_stop(self, request: web.Request) -> web.Response:
         """Stop playback."""
         player_id = _strip_known_extension(request.match_info["player_id"])
+        if self._get_msx_player(player_id) is None:
+            return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_stop(player_id)
         return web.json_response({"status": "ok"})
@@ -2063,6 +2064,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_quick_stop(self, request: web.Request) -> web.Response:
         """Stop playback on MSX immediately (same signal as Disable)."""
         player_id = _strip_known_extension(request.match_info["player_id"])
+        if self._get_msx_player(player_id) is None:
+            return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_stop(player_id)
         self.provider.notify_play_stopped(player_id)
@@ -2074,6 +2077,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_next(self, request: web.Request) -> web.Response:
         """Skip to next track."""
         player_id = _strip_known_extension(request.match_info["player_id"])
+        if self._get_msx_player(player_id) is None:
+            return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_next_track(player_id)
         return web.json_response({"status": "ok"})
@@ -2081,11 +2086,20 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     async def _handle_previous(self, request: web.Request) -> web.Response:
         """Skip to previous track."""
         player_id = _strip_known_extension(request.match_info["player_id"])
+        if self._get_msx_player(player_id) is None:
+            return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
         await self.provider.mass.players.cmd_previous_track(player_id)
         return web.json_response({"status": "ok"})
 
     # --- Helpers ---
+
+    def _get_msx_player(self, player_id: str) -> MSXPlayer | None:
+        """Return the MSXPlayer for player_id if it belongs to this provider, else None."""
+        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        if isinstance(player, MSXPlayer) and player.provider == self.provider:
+            return player
+        return None
 
     def _get_prefix(self, request: web.Request) -> str:
         """Build URL prefix for JSON content, using our known port.
