@@ -719,7 +719,7 @@ class KionMusicClient:
             # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
             # Kion API expects exactly 43 chars (one "=" removed).
             # Matches kion-music-downloader-realflac reference implementation.
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode().rstrip("=")
             url = f"{client.base_url}/get-file-info"
             return url, params
 

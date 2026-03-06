@@ -201,7 +201,7 @@ class KionMusicStreamingManager:
         )
 
         # Superb: Prefer FLAC (backward compatibility with "lossless")
-        if preferred_normalized == QUALITY_LOSSLESS or "lossless" in preferred_normalized:
+        if preferred_normalized in {QUALITY_LOSSLESS, "lossless"}:
             # Note: flac-mp4 typically comes from get-file-info API, not download-info,
             # but we check here for forward compatibility in case the API changes.
             for codec in ("flac-mp4", "flac"):
@@ -469,7 +469,7 @@ class KionMusicStreamingManager:
         except ValueError:
             return False
 
-    async def get_audio_stream(
+    async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with on-the-fly decryption.
@@ -535,10 +535,17 @@ class KionMusicStreamingManager:
                                 "after retries exhausted"
                             )
                         encrypted_url, key_hex = refreshed
-                        key_bytes = bytes.fromhex(key_hex)
+                        try:
+                            key_bytes = bytes.fromhex(key_hex)
+                        except ValueError as err:
+                            raise MediaNotFoundError(
+                                "Invalid decryption key format after URL refresh"
+                            ) from err
                         retry_delay = 0.0
                         attempt += 1  # consume one retry slot, same as TCP-drop path
                         continue
+                    if response.status == 416:
+                        return  # Range Not Satisfiable — file size is exact window multiple
                     try:
                         response.raise_for_status()
                     except Exception as err:
