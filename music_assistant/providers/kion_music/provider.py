@@ -1946,7 +1946,7 @@ class KionMusicProvider(MusicProvider):
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
         """Get Mood Mix recommendation folder for a specific tag.
 
-        :param mood_tag: Pre-selected mood tag slug.
+        :param mood_tag: Preselected mood tag slug.
         :return: RecommendationFolder with mood playlists, or None if unavailable.
         """
         playlists = await self.client.get_tag_playlists(mood_tag)
@@ -1977,7 +1977,7 @@ class KionMusicProvider(MusicProvider):
     ) -> RecommendationFolder | None:
         """Get Activity Mix recommendation folder for a specific tag.
 
-        :param activity_tag: Pre-selected activity tag slug.
+        :param activity_tag: Preselected activity tag slug.
         :return: RecommendationFolder with activity playlists, or None if unavailable.
         """
         playlists = await self.client.get_tag_playlists(activity_tag)

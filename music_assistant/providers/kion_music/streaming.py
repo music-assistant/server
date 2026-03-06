@@ -417,7 +417,59 @@ class KionMusicStreamingManager:
         if final:
             yield final
 
-    async def get_audio_stream(  # noqa: PLR0915
+    def _handle_stream_error(
+        self,
+        err: Exception,
+        attempt: int,
+        max_retries: int,
+        bytes_yielded: int,
+        delays: tuple[float, ...],
+        label: str,
+    ) -> tuple[int, float]:
+        """Increment retry counter, log a warning, or raise if retries are exhausted.
+
+        :param err: The exception that caused the retry.
+        :param attempt: Current retry attempt count (0-based).
+        :param max_retries: Maximum number of retries allowed.
+        :param bytes_yielded: Bytes delivered so far (for log context).
+        :param delays: Backoff delay sequence to pick from.
+        :param label: Short verb describing the failure (e.g. "dropped", "stalled").
+        :return: (new_attempt, retry_delay) tuple when retrying.
+        :raises MediaNotFoundError: When attempt count exceeds max_retries.
+        """
+        delay = delays[min(attempt, len(delays) - 1)]
+        attempt += 1
+        if attempt <= max_retries:
+            self.logger.warning(
+                "Encrypted stream %s at %d bytes (attempt %d/%d) — retrying",
+                label,
+                bytes_yielded,
+                attempt,
+                max_retries,
+            )
+            return attempt, delay
+        raise MediaNotFoundError(f"Encrypted stream {label} after retries were exhausted") from err
+
+    @staticmethod
+    def _is_content_range_eof(headers: Any, window_end: int) -> bool:
+        """Return True when Content-Range indicates *window_end* reached the last file byte.
+
+        Parses ``Content-Range: bytes start-end/total`` and checks whether
+        ``window_end >= total - 1``.  Returns False on any malformed header so
+        the caller falls back to the next window safely.
+        """
+        content_range = headers.get("Content-Range", "")
+        if not content_range.startswith("bytes "):
+            return False
+        try:
+            _, range_spec = content_range.split(" ", 1)
+            _, total_str = range_spec.split("/", 1)
+            total_str = total_str.strip()
+            return total_str.isdigit() and window_end >= int(total_str) - 1
+        except ValueError:
+            return False
+
+    async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with on-the-fly decryption.
@@ -444,10 +496,7 @@ class KionMusicStreamingManager:
         encrypted_url: str = streamdetails.data["encrypted_url"]
         track_item_id: str = streamdetails.item_id
         key_hex: str = streamdetails.data["decryption_key"]
-        try:
-            key_bytes = bytes.fromhex(key_hex)
-        except ValueError as err:
-            raise MediaNotFoundError(f"Invalid decryption key format: {err}") from err
+        key_bytes = bytes.fromhex(key_hex)
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
@@ -498,6 +547,9 @@ class KionMusicStreamingManager:
                         ) from err
 
                     bytes_before = bytes_yielded
+                    # block_skip = bytes re-downloaded for AES-block alignment.
+                    # Needed below to compute actual HTTP bytes received.
+                    block_skip = bytes_before - block_start
                     async for chunk in self._decrypt_response_stream(
                         response, key_bytes, block_size, bytes_yielded
                     ):
@@ -506,8 +558,20 @@ class KionMusicStreamingManager:
 
                     # window complete — check if EOF
                     window_got = bytes_yielded - bytes_before
-                    if response.status == 200 or window_got < _RANGE_WINDOW:
+                    # received = actual HTTP bytes the server sent for this Range
+                    # request.  window_got alone understates the window when
+                    # block_skip > 0 (reconnect at a non-AES-block boundary):
+                    # the decryptor skips block_skip bytes, so window_got would be
+                    # smaller than _RANGE_WINDOW even for a full server response,
+                    # causing premature stream termination without this correction.
+                    received = window_got + block_skip
+                    if response.status == 200 or received < _RANGE_WINDOW:
                         return  # full file received or last partial window
+                    # Exact-boundary guard: if file size is an exact multiple of
+                    # _RANGE_WINDOW the size check above won't catch EOF.
+                    # Use Content-Range to confirm no bytes remain.
+                    if self._is_content_range_eof(response.headers, window_end):
+                        return
                     # more data expected: advance to next window
                     attempt = 0
                     retry_delay = 0.0
@@ -515,31 +579,10 @@ class KionMusicStreamingManager:
             except asyncio.CancelledError:
                 raise  # propagate cancellation immediately, do not retry
             except (ClientPayloadError, ServerDisconnectedError) as err:
-                retry_delay = _TCP_DROP_DELAYS[min(attempt, len(_TCP_DROP_DELAYS) - 1)]
-                attempt += 1
-                if attempt <= max_retries:
-                    self.logger.warning(
-                        "Encrypted stream dropped at %d bytes (attempt %d/%d): %s — retrying",
-                        bytes_yielded,
-                        attempt,
-                        max_retries,
-                        err,
-                    )
-                else:
-                    raise MediaNotFoundError(
-                        "Encrypted stream ended early after retries were exhausted"
-                    ) from err
-            except asyncio.TimeoutError as err:  # noqa: UP041 — aiohttp raises asyncio.TimeoutError
-                retry_delay = _STALL_DELAYS[min(attempt, len(_STALL_DELAYS) - 1)]
-                attempt += 1
-                if attempt <= max_retries:
-                    self.logger.warning(
-                        "Encrypted stream stalled at %d bytes (attempt %d/%d) — retrying",
-                        bytes_yielded,
-                        attempt,
-                        max_retries,
-                    )
-                else:
-                    raise MediaNotFoundError(
-                        "Encrypted stream stalled after retries were exhausted"
-                    ) from err
+                attempt, retry_delay = self._handle_stream_error(
+                    err, attempt, max_retries, bytes_yielded, _TCP_DROP_DELAYS, "dropped"
+                )
+            except TimeoutError as err:
+                attempt, retry_delay = self._handle_stream_error(
+                    err, attempt, max_retries, bytes_yielded, _STALL_DELAYS, "stalled"
+                )

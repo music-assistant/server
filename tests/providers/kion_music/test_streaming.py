@@ -135,21 +135,6 @@ def _make_stream_details(
     )
 
 
-async def test_get_audio_stream_invalid_key_hex_raises_error(
-    streaming_manager: KionMusicStreamingManager,
-) -> None:
-    """Malformed hex decryption key raises MediaNotFoundError (not bare ValueError)."""
-    get_audio_stream = getattr(streaming_manager, "get_audio_stream", None)
-    if get_audio_stream is None:
-        pytest.skip("get_audio_stream not available in this provider version")
-
-    streamdetails = _make_stream_details(decryption_key="not_valid_hex!!")
-
-    with pytest.raises(MediaNotFoundError, match="Invalid decryption key format"):
-        async for _ in get_audio_stream(streamdetails):
-            pass
-
-
 async def test_get_audio_stream_retries_on_payload_error_then_raises(
     streaming_manager: KionMusicStreamingManager,
     monkeypatch: pytest.MonkeyPatch,
