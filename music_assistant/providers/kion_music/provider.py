@@ -164,7 +164,7 @@ class KionMusicProvider(MusicProvider):
         self._client = KionMusicClient(str(token), base_url=str(base_url))
         await self._client.connect()
         # Suppress kion_music library DEBUG dumps (full API request/response JSON)
-        logging.getLogger("kion_music").setLevel(self.logger.level + 10)
+        logging.getLogger("yandex_music").setLevel(self.logger.level + 10)
         self._streaming = KionMusicStreamingManager(self)
         # Initialize My Mix duplicate tracking
         self._my_wave_seen_track_ids = set()
@@ -203,13 +203,15 @@ class KionMusicProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names and My Mix.
+        """Browse provider items with locale-based folder names.
 
-        Root level shows My Mix, artists, albums, liked tracks, playlists. Names
-        are in Russian when MA locale is ru_*, otherwise in English. My Mix
-        tracks use item_id format track_id@station_id for rotor feedback.
+        Root level shows My Mix (personalised radio), For You (picks & mixes),
+        Collection (liked tracks/albums/artists/playlists), Radio (rotor stations
+        by genre/mood/activity/era/local) and AI Mix Sets. Names are in Russian
+        when MA locale is ru_*, otherwise in English. My Mix tracks use item_id
+        format track_id@station_id for rotor feedback.
 
-        :param path: The path to browse (e.g. provider_id:// or provider_id://artists).
+        :param path: The path to browse (e.g. provider_id:// or provider_id://waves).
         """
         if ProviderFeature.BROWSE not in self.supported_features:
             raise NotImplementedError

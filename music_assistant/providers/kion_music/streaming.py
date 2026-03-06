@@ -496,7 +496,10 @@ class KionMusicStreamingManager:
         encrypted_url: str = streamdetails.data["encrypted_url"]
         track_item_id: str = streamdetails.item_id
         key_hex: str = streamdetails.data["decryption_key"]
-        key_bytes = bytes.fromhex(key_hex)
+        try:
+            key_bytes = bytes.fromhex(key_hex)
+        except ValueError as exc:
+            raise MediaNotFoundError("Invalid decryption key format") from exc
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
