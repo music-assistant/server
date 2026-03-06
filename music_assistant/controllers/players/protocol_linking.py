@@ -460,23 +460,27 @@ class ProtocolLinkingMixin:
         self, universal_player: UniversalPlayer, protocol_player: Player
     ) -> None:
         """
-        Update universal player's device info from protocol player if needed.
+        Update universal player's device info from protocol player.
 
-        When a universal player is restored from config, it has generic device info
-        (model="Universal Player", manufacturer="Music Assistant"). This method
-        updates those values from a protocol player that has real device info.
+        Always syncs model and manufacturer from the protocol player so that
+        version upgrades (e.g. bridge firmware update) are reflected without
+        requiring an MA restart.
         """
-        # Check if universal player has generic device info (from restore)
         device_info = universal_player.device_info
         protocol_info = protocol_player.device_info
 
-        # Update model if universal player has generic value
-        if device_info.model in (None, "Universal Player") and protocol_info.model:
-            device_info.model = protocol_info.model
+        changed = False
 
-        # Update manufacturer if universal player has generic value
-        if device_info.manufacturer in (None, "Music Assistant") and protocol_info.manufacturer:
+        if protocol_info.model and device_info.model != protocol_info.model:
+            device_info.model = protocol_info.model
+            changed = True
+
+        if protocol_info.manufacturer and device_info.manufacturer != protocol_info.manufacturer:
             device_info.manufacturer = protocol_info.manufacturer
+            changed = True
+
+        if changed:
+            self._save_universal_player_data(universal_player)
 
     def _save_universal_player_data(self, universal_player: UniversalPlayer) -> None:
         """

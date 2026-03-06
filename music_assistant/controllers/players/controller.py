@@ -1373,6 +1373,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.player_id in self._players:
             self._players[player.player_id] = player
             player.update_state()
+            # Re-evaluate protocol links so that universal player wrappers
+            # pick up updated device_info (e.g. after a bridge version upgrade).
+            if player.state.type == PlayerType.PROTOCOL:
+                self._evaluate_protocol_links(player)
             # Also schedule update when replacing existing player
             self._schedule_update_all_players()
             return
