@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
 )
+from music_assistant.helpers.util import lock
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import CONF_ENTRY_SGP_NOTE, CONF_MEMBERS_FILTER, EXTRA_FEATURES_FROM_MEMBERS
@@ -42,9 +43,6 @@ class SyncGroupPlayer(Player):
         self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
-        # Allow grouping with any player that supports syncing
-        # The actual compatibility is checked via can_group_with on each player
-        self._attr_can_group_with = set()
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -214,17 +212,17 @@ class SyncGroupPlayer(Player):
             # in case of static members,
             # we can only group with the players defined in the config, so we return those directly
             return set(self._attr_static_group_members)
-        # if we already have a sync leader, we use its can_group_with as reference
-        if self.sync_leader:
-            return {
-                self.sync_leader.player_id,
-                *self.sync_leader.state.can_group_with,
-            }
         members_filter = (
             cast("list[str]", self.config.get_value(CONF_MEMBERS_FILTER, []))
             if self.is_dynamic
             else []
         )
+        # if we already have a sync leader, we use its can_group_with as reference
+        if self.sync_leader:
+            return {
+                self.sync_leader.player_id,
+                *self.sync_leader.state.can_group_with.difference(members_filter),
+            }
         # If we have no syncleader, but we do have group members
         # grab 'can_group_with' from the first available member
         for member_id in self._attr_group_members:
@@ -363,6 +361,7 @@ class SyncGroupPlayer(Player):
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
+    @lock
     async def set_members(  # noqa: PLR0915
         self,
         player_ids_to_add: list[str] | None = None,
@@ -467,11 +466,11 @@ class SyncGroupPlayer(Player):
                 player_ids_to_add=final_players_to_add,
                 player_ids_to_remove=final_players_to_remove,
             )
-        else:
-            # If we weren't playing before, we don't need to do anything else,
-            # since the syncing will be done once playback starts
-            self.update_state()
+        # NOTE: If we weren't playing before, we don't need to do anything else,
+        # since the syncing will be done once playback starts
+        self.mass.players.trigger_player_update(self.player_id)
 
+    @lock
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
         self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
@@ -508,6 +507,7 @@ class SyncGroupPlayer(Player):
                 await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
 
+    @lock
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
         if sync_leader := self.sync_leader:
