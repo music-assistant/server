@@ -30,6 +30,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
@@ -69,6 +73,22 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
 }
 
+CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_LIBRARY_SYNC_PODCASTS.to_dict(),
+        "hidden": True,
+        "default_value": True,
+    }
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS_MOD = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS.to_dict(),
+        "label": "In-library podcast sync interval",
+        "description": "The interval at which the podcast feed added to the library are refreshed. "
+        "A podcast must have been either added to the library or favorited, to make this work.",
+    }
+)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -97,6 +117,8 @@ async def get_config_entries(
 
     language_options = [ConfigValueOption(val, key.lower()) for key, val in country_codes.items()]
     return (
+        CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS_MOD,
         ConfigEntry(
             key=CONF_LOCALE,
             type=ConfigEntryType.STRING,
