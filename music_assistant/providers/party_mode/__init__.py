@@ -501,13 +501,34 @@ class PartyModePlugin(PluginProvider):
     async def get_party_mode_player(self) -> str | None:
         """Get the configured party mode player/queue ID.
 
+        If the configured player is part of a group (synced to a leader),
+        resolves to the group leader since the queue lives there.
+
         :returns: The queue ID for party mode, or None to use active player.
         """
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
 
         player_id = self.config.get_value(CONF_PARTY_MODE_PLAYER)
-        return str(player_id) if player_id else None
+        if not player_id:
+            return None
+
+        player_id = str(player_id)
+
+        # Resolve group leader: if the configured player is synced to another
+        # player or part of an active group, the queue lives on the leader.
+        player = self.mass.players.get_player(player_id)
+        if player:
+            resolved_id = player.state.active_group or player.state.synced_to
+            if resolved_id:
+                self.logger.debug(
+                    "Configured player %s is grouped, resolving to leader %s",
+                    player_id,
+                    resolved_id,
+                )
+                return resolved_id
+
+        return player_id
 
     async def get_party_mode_config(self) -> PartyModeConfig:
         """Get the party mode configuration for guest rate limiting.
