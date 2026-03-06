@@ -400,6 +400,9 @@ class PartyModePlugin(PluginProvider):
             self.mass.register_api_command("party_mode/add_to_queue", self.add_to_queue)
         )
         self._unregister_handles.append(
+            self.mass.register_api_command("party_mode/boost_queue_item", self.boost_queue_item)
+        )
+        self._unregister_handles.append(
             self.mass.register_api_command("party_mode/skip", self.skip_current)
         )
 
@@ -654,6 +657,109 @@ class PartyModePlugin(PluginProvider):
             "success": True,
             "queue_id": queue_id,
             "boosted": boost,
+            "started_playback": started_playback,
+        }
+
+    async def boost_queue_item(self, queue_item_id: str) -> dict[str, Any]:
+        """Boost an existing queue item by moving it to the boosted section.
+
+        Finds the item in the queue, marks it as boosted, and moves it to the
+        end of the boosted priority section (right after the currently playing track).
+
+        :param queue_item_id: The queue_item_id of the item to boost.
+        :returns: Result dict with success status.
+        """
+        user = get_current_user()
+
+        if not user or user.username != PARTY_MODE_GUEST_USER:
+            raise InvalidDataError("This endpoint is only available to party mode guests")
+
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            raise InvalidDataError("Party mode guest access is disabled")
+
+        if not self.config.get_value(CONF_ENABLE_BOOST):
+            raise InvalidDataError("Boost feature is disabled")
+
+        queue_id = await self.get_party_mode_player()
+        if not queue_id:
+            raise InvalidDataError("Could not get player queue")
+
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            raise InvalidDataError(f"Queue not found: {queue_id}")
+
+        started_playback = False
+
+        async with self._queue_lock:
+            queue_items = self.mass.player_queues.items(queue_id)
+
+            # Find the item by queue_item_id
+            item_index = None
+            for i, item in enumerate(queue_items):
+                if item.queue_item_id == queue_item_id:
+                    item_index = i
+                    break
+
+            if item_index is None:
+                raise InvalidDataError(f"Queue item {queue_item_id} not found")
+
+            if queue.state == PlaybackState.PLAYING:
+                # Use index_in_buffer to avoid moving already-buffered items
+                current_index = (
+                    queue.index_in_buffer
+                    if queue.index_in_buffer is not None
+                    else (queue.current_index if queue.current_index is not None else 0)
+                )
+
+                if item_index <= current_index:
+                    raise InvalidDataError(
+                        "Cannot boost an already played or currently playing item"
+                    )
+
+                # Find the end of the boosted section and move item there
+                insert_index = self._find_section_end(
+                    queue_items, current_index, ATTR_PARTY_MODE_BOOSTED
+                )
+
+                queue_items_copy = queue_items.copy()
+                moved_item = queue_items_copy.pop(item_index)
+                moved_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+                moved_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+
+                # Adjust insert index if the item was before the insert position
+                if item_index < insert_index:
+                    insert_index -= 1
+
+                queue_items_copy.insert(insert_index, moved_item)
+                self.mass.player_queues.update_items(queue_id, queue_items_copy)
+            else:
+                # Queue is not playing — move item to the play position and start playback
+                current_index = queue.current_index or 0
+                play_index = current_index + 1 if queue.current_index is not None else 0
+
+                queue_items_copy = queue_items.copy()
+                moved_item = queue_items_copy.pop(item_index)
+                moved_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+                moved_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+
+                # Adjust play_index if the item was before it
+                if item_index < play_index:
+                    play_index -= 1
+
+                queue_items_copy.insert(play_index, moved_item)
+                self.mass.player_queues.update_items(queue_id, queue_items_copy)
+                await self.mass.player_queues.play_index(queue_id, play_index)
+                started_playback = True
+
+        self.logger.info(
+            "Guest boosted queue item: %s (started_playback=%s)",
+            queue_item_id,
+            started_playback,
+        )
+
+        return {
+            "success": True,
+            "queue_id": queue_id,
             "started_playback": started_playback,
         }
 
