@@ -1167,25 +1167,37 @@ def test_fan_slug_empty_string_url() -> None:
 # --- _resolve_person_segment unit tests ---
 
 
-def test_resolve_person_segment_slug_hit(provider: BandcampProvider) -> None:
+async def test_resolve_person_segment_slug_hit(provider: BandcampProvider) -> None:
     """Test slug cache hit takes priority over numeric parse."""
     provider._slug_to_fan_id["42"] = 999  # slug "42" maps to fan 999
-    assert provider._resolve_person_segment("42") == 999  # slug wins over int parse
+    assert await provider._resolve_person_segment("42") == 999  # slug wins over int parse
 
 
-def test_resolve_person_segment_numeric(provider: BandcampProvider) -> None:
+async def test_resolve_person_segment_numeric(provider: BandcampProvider) -> None:
     """Test numeric segment returns int when no slug match."""
-    assert provider._resolve_person_segment("123") == 123
+    assert await provider._resolve_person_segment("123") == 123
 
 
-def test_resolve_person_segment_unknown_slug(provider: BandcampProvider) -> None:
-    """Test unknown non-numeric segment returns None."""
-    assert provider._resolve_person_segment("nonexistent") is None
+async def test_resolve_person_segment_unknown_slug(provider: BandcampProvider) -> None:
+    """Test unknown non-numeric slug triggers rebuild, returns None if still missing."""
+    with patch.object(provider, "_rebuild_slug_cache", new_callable=AsyncMock) as mock_rebuild:
+        assert await provider._resolve_person_segment("nonexistent") is None
+        mock_rebuild.assert_called_once()
 
 
-def test_resolve_person_segment_zero(provider: BandcampProvider) -> None:
+async def test_resolve_person_segment_zero(provider: BandcampProvider) -> None:
     """Test zero is returned as valid int (caller validates)."""
-    assert provider._resolve_person_segment("0") == 0
+    assert await provider._resolve_person_segment("0") == 0
+
+
+async def test_resolve_person_segment_rebuild_finds_slug(provider: BandcampProvider) -> None:
+    """Test unknown slug is resolved after _rebuild_slug_cache populates the map."""
+
+    async def fake_rebuild() -> None:
+        provider._slug_to_fan_id["yerhot"] = 12345
+
+    with patch.object(provider, "_rebuild_slug_cache", side_effect=fake_rebuild):
+        assert await provider._resolve_person_segment("yerhot") == 12345
 
 
 def test_people_to_folders_no_url_falls_back_to_id(provider: BandcampProvider) -> None:
@@ -1627,3 +1639,56 @@ async def test_browse_person_people_api_error(provider: BandcampProvider) -> Non
         await provider._browse_person_people(
             CollectionType.FOLLOWERS, "bandcamp_test://followers", person_id=42
         )
+
+
+async def test_browse_person_people_cache_hit_rebuilds_slugs(
+    provider: BandcampProvider,
+) -> None:
+    """Test that cache-hit path in _browse_person_people repopulates slug map."""
+    cached_folders = [
+        BrowseFolder(
+            item_id="person_111",
+            provider="bandcamp_test",
+            path="bandcamp_test://fans/coolslug",
+            name="Cool User",
+        ),
+        BrowseFolder(
+            item_id="person_222",
+            provider="bandcamp_test",
+            path="bandcamp_test://fans/anotherslug",
+            name="Another User",
+        ),
+    ]
+
+    async def fake_cache_get(key: str, **kwargs: object) -> list[BrowseFolder] | None:  # noqa: ARG001
+        if "_browse_person_people_" in key:
+            return cached_folders
+        return None
+
+    provider._slug_to_fan_id.clear()
+
+    with patch.object(provider.mass.cache, "get", new_callable=AsyncMock) as mock_cache_get:
+        mock_cache_get.side_effect = fake_cache_get
+
+        result = await provider._browse_person_people(
+            CollectionType.FOLLOWING_FANS, "bandcamp_test://fans"
+        )
+
+    assert result == cached_folders
+    assert provider._slug_to_fan_id["coolslug"] == 111
+    assert provider._slug_to_fan_id["anotherslug"] == 222
+
+
+async def test_rebuild_slug_cache_calls_browse_person_people(
+    provider: BandcampProvider,
+) -> None:
+    """Test _rebuild_slug_cache fetches both fans and followers lists."""
+    with patch.object(provider, "_browse_person_people", new_callable=AsyncMock) as mock_browse:
+        mock_browse.return_value = []
+
+        await provider._rebuild_slug_cache()
+
+        assert mock_browse.call_count == 2
+        calls = mock_browse.call_args_list
+        assert calls[0].args == (CollectionType.FOLLOWING_FANS, "bandcamp_test://fans")
+        assert calls[1].args == (CollectionType.FOLLOWERS, "bandcamp_test://followers")

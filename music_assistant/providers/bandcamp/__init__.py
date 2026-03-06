@@ -485,7 +485,7 @@ class BandcampProvider(MusicProvider):
         tail = path_parts[-1]
 
         # Path ends with a person identifier (numeric ID or slug) → show their 5 sub-folders
-        person_id = self._resolve_person_segment(tail)
+        person_id = await self._resolve_person_segment(tail)
         if person_id is not None:
             if person_id <= 0:
                 raise InvalidDataError(f"Invalid person ID in browse path: {tail}")
@@ -494,7 +494,7 @@ class BandcampProvider(MusicProvider):
         # Path ends with a sub-category → person identifier is second-to-last
         if len(path_parts) < 2:
             raise InvalidDataError(f"Invalid browse path: {base}{'/'.join(path_parts)}")
-        person_id = self._resolve_person_segment(path_parts[-2])
+        person_id = await self._resolve_person_segment(path_parts[-2])
         if person_id is None:
             raise InvalidDataError(f"Invalid browse path: {base}{'/'.join(path_parts)}")
         if person_id <= 0:
@@ -516,18 +516,36 @@ class BandcampProvider(MusicProvider):
 
     # --- Person browse helpers (fans, followers, and social graph traversal) ---
 
-    def _resolve_person_segment(self, segment: str) -> int | None:
+    async def _resolve_person_segment(self, segment: str) -> int | None:
         """Resolve a path segment to a fan_id.
 
         Checks the slug→fan_id cache first, then tries numeric parse.
-        Returns None if the segment is neither a known slug nor a valid int.
+        For unknown slugs, rebuilds the cache from fan/follower lists and retries.
+        Returns None if the segment is neither a known slug nor a valid int,
+        or if it is a known sub-route name (e.g. "collection", "wishlist").
         """
         if segment in self._slug_to_fan_id:
             return self._slug_to_fan_id[segment]
         try:
             return int(segment)
         except ValueError:
+            pass
+        # Known sub-route names are structural, not user slugs
+        if segment in PERSON_SUB_ROUTES:
             return None
+        # Slug not in cache and not numeric — rebuild from parent lists and retry
+        await self._rebuild_slug_cache()
+        return self._slug_to_fan_id.get(segment)
+
+    async def _rebuild_slug_cache(self) -> None:
+        """Re-fetch fan/follower lists to rebuild the slug→fan_id map."""
+        base = f"{self.instance_id}://"
+        for collection_type, folder_id in (
+            (CollectionType.FOLLOWING_FANS, BROWSE_FANS),
+            (CollectionType.FOLLOWERS, BROWSE_FOLLOWERS),
+        ):
+            with suppress(Exception):
+                await self._browse_person_people(collection_type, f"{base}{folder_id}")
 
     @staticmethod
     def _fan_slug(person: FanItem) -> str | None:
@@ -674,6 +692,11 @@ class BandcampProvider(MusicProvider):
             cache_key, provider=self.instance_id
         )
         if cached is not None:
+            for folder in cached:
+                segment = folder.path.rstrip("/").rsplit("/", 1)[-1]
+                fan_id_str = folder.item_id.removeprefix("person_")
+                with suppress(ValueError):
+                    self._slug_to_fan_id[segment] = int(fan_id_str)
             return cached
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):
