@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, cast
 
 from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEvent, SendspinServer
 from music_assistant_models.enums import IdentifierType, ProviderFeature
-from music_assistant_models.errors import AlreadyRegisteredError
 
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.mass import MusicAssistant
@@ -94,11 +93,7 @@ class SendspinProvider(PlayerProvider):
         else:
             self.logger.warning("Client %s hello not received within timeout", client_id)
             return
-        if self.mass.players.get_player(client_id) is not None:
-            self.logger.debug(
-                "Client %s already registered, skipping duplicate add event", client_id
-            )
-            return
+        existing = self.mass.players.get_player(client_id)
         if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
             self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
             return
@@ -118,12 +113,16 @@ class SendspinProvider(PlayerProvider):
                 player._attr_name = (
                     hass_device["name_by_user"] or hass_device["name"] or player.name
                 )
-        try:
+        if existing is not None:
+            # Player reconnected (e.g. bridge restart / version upgrade).
+            # Update device_info in place so MA picks up new manufacturer,
+            # model, and software_version without requiring an MA restart.
+            self.logger.debug("Client %s reconnected, updating device info", client_id)
+            # Properly unload the old player instance to avoid leaking sessions and listeners.
+            await cast("SendspinPlayer", existing).on_unload()
+            await self.mass.players.register_or_update(player)
+        else:
             await self.mass.players.register(player)
-        except AlreadyRegisteredError:
-            self.logger.debug("Client %s already registered while handling add event", client_id)
-            player.unsub_event_cb()
-            player.unsub_group_event_cb()
 
     async def _handle_client_removed(self, client_id: str) -> None:
         """Handle a client disconnection asynchronously."""
