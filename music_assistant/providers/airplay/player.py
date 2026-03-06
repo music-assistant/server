@@ -126,7 +126,9 @@ class AirPlayPlayer(Player):
     @property
     def needs_setup(self) -> bool:
         """Return if the player needs setup."""
-        if self._requires_pin_pairing() or self._requires_password():
+        if self._requires_pin_pairing() or (
+            self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
+        ):
             # check if we have credentials stored for the current protocol
             creds_key = self._get_credentials_key(self.protocol)
             if not self.config.get_value(creds_key):
@@ -165,7 +167,7 @@ class AirPlayPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries: list[ConfigEntry] = []
-        require_authentication = self._requires_pin_pairing() or self._requires_password()
+        require_authentication = self._requires_pin_pairing() or self._requires_password_pairing()
         self.logger.debug(f"Player requires authentication: {require_authentication}")
 
         # Handle pairing actions
@@ -286,7 +288,7 @@ class AirPlayPlayer(Player):
         """
         return bool(self._get_flags() & (LEGACY_PAIRING_BIT | PIN_REQUIRED))
 
-    def _requires_password(self) -> bool:
+    def _requires_password_pairing(self) -> bool:
         """Check if this device requires password authentication.
 
         Password can be used for pairing instead of interactive PIN entry.
@@ -365,7 +367,7 @@ class AirPlayPlayer(Player):
                             category="protocol_generic",
                         )
                     )
-                elif self._requires_password():
+                elif self._requires_password_pairing():
                     self.logger.debug(f"Device requires password pairing for {protocol_name}")
                     entries.append(
                         ConfigEntry(
@@ -533,7 +535,7 @@ class AirPlayPlayer(Player):
             return
 
         # determine the PIN/password to use
-        if self._requires_password():
+        if self._requires_password_pairing():
             pin = values.get(CONF_AP2PASSWORD)
             if not pin:
                 self.logger.warning("No password configured for pairing")
