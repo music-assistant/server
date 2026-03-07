@@ -24,6 +24,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_PLAYLISTS,
@@ -141,6 +142,20 @@ class GenreController(MediaControllerBase[Genre]):
         self.mass.register_api_command(
             "music/genres/genres_for_media_item",
             self.get_genres_for_media_item,
+        )
+        self.mass.register_api_command(
+            "music/genres/genre_exclusions_for_media_item",
+            self.get_genre_exclusions_for_media_item,
+        )
+        self.mass.register_api_command(
+            "music/genres/exclude_genre_from_media_item",
+            self.exclude_genre_from_media_item,
+            required_role="admin",
+        )
+        self.mass.register_api_command(
+            "music/genres/remove_genre_exclusion",
+            self.remove_genre_exclusion,
+            required_role="admin",
         )
         self.mass.register_api_command(
             "music/genres/merge",
@@ -436,6 +451,32 @@ class GenreController(MediaControllerBase[Genre]):
             },
         )
 
+    async def get_genre_exclusions_for_media_item(
+        self, media_type: MediaType, media_id: str | int
+    ) -> list[Genre]:
+        """Return all genres excluded from a given media item.
+
+        :param media_type: The type of media item.
+        :param media_id: The database ID of the media item.
+        """
+        try:
+            media_id_int = int(media_id)
+        except (ValueError, TypeError):
+            return []
+        excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
+        query = (
+            f"EXISTS(SELECT 1 FROM {excl} e "
+            f"WHERE e.genre_id = {self.db_table}.item_id "
+            "AND e.media_type = :media_type AND e.media_id = :media_id)"
+        )
+        return await self.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={
+                "media_type": media_type.value,
+                "media_id": media_id_int,
+            },
+        )
+
     async def get_radio_mode_base_tracks(
         self,
         item_id: str,
@@ -663,6 +704,7 @@ class GenreController(MediaControllerBase[Genre]):
             )
             cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
 
+            excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
             for table, media_type in MEDIA_TABLES:
                 full_query = (
                     f"{cte} INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
@@ -673,7 +715,12 @@ class GenreController(MediaControllerBase[Genre]):
                     f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
                     f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
                     f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-                    f"AND json_extract({table}.metadata, '$.genres') != '[]'"
+                    f"AND json_extract({table}.metadata, '$.genres') != '[]' "
+                    f"AND NOT EXISTS ("
+                    f"SELECT 1 FROM {excl} e "
+                    f"WHERE e.genre_id = gl.genre_id "
+                    f"AND e.media_id = {table}.item_id "
+                    f"AND e.media_type = '{media_type.value}')"
                 )
                 await db.execute(full_query)
             await db.commit()
@@ -722,6 +769,7 @@ class GenreController(MediaControllerBase[Genre]):
         # orphaned playlog rows pointing to genres that no longer exist.
         # 'WHERE translation_key IS NULL' is used because it is only set for default genres, so this
         # keeps all default genres even if they become unmapped/empty.
+        excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         await db.delete_where_query(
             DB_TABLE_PLAYLOG,
             f"media_type = '{MediaType.GENRE.value}' "
@@ -730,6 +778,9 @@ class GenreController(MediaControllerBase[Genre]):
             f"  WHERE translation_key IS NULL "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
+            f"  ) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {excl} WHERE {excl}.genre_id = {DB_TABLE_GENRES}.item_id"
             f"  )"
             f")",
         )
@@ -739,6 +790,9 @@ class GenreController(MediaControllerBase[Genre]):
             f"translation_key IS NULL "
             f"AND NOT EXISTS ("
             f"  SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
+            f") "
+            f"AND NOT EXISTS ("
+            f"  SELECT 1 FROM {excl} WHERE {excl}.genre_id = {DB_TABLE_GENRES}.item_id"
             f")",
         )
         genres_deleted = genres_before - await db.get_count(DB_TABLE_GENRES)
@@ -838,6 +892,7 @@ class GenreController(MediaControllerBase[Genre]):
         )
         cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
 
+        excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         count_before = await db.get_count(gm)
         for table, media_type in MEDIA_TABLES:
             full_query = (
@@ -854,7 +909,12 @@ class GenreController(MediaControllerBase[Genre]):
                 f"SELECT 1 FROM {gm} ex "
                 f"WHERE ex.genre_id = gl.genre_id "
                 f"AND ex.media_id = {table}.item_id "
-                f"AND ex.media_type = '{media_type.value}')"
+                f"AND ex.media_type = '{media_type.value}') "
+                f"AND NOT EXISTS ("
+                f"SELECT 1 FROM {excl} e "
+                f"WHERE e.genre_id = gl.genre_id "
+                f"AND e.media_id = {table}.item_id "
+                f"AND e.media_type = '{media_type.value}')"
             )
             await db.execute(full_query)
         await db.commit()
@@ -962,6 +1022,50 @@ class GenreController(MediaControllerBase[Genre]):
         """
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": int(genre_id),
+                "media_id": int(media_id),
+                "media_type": media_type.value,
+            },
+        )
+
+    async def exclude_genre_from_media_item(
+        self,
+        genre_id: str | int,
+        media_type: MediaType,
+        media_id: str | int,
+    ) -> None:
+        """Permanently exclude a genre from being mapped to a media item.
+
+        Records the exclusion so the scanner will never re-add this mapping.
+        Any existing mapping for this genre/media pair is removed immediately.
+
+        :param genre_id: Database ID of the genre.
+        :param media_type: Type of media item (track, album, artist, etc.).
+        :param media_id: Database ID of the media item.
+        """
+        match = {
+            "genre_id": int(genre_id),
+            "media_id": int(media_id),
+            "media_type": media_type.value,
+        }
+        await self.mass.music.database.insert_or_replace(DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, match)
+        await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, match)
+
+    async def remove_genre_exclusion(
+        self,
+        genre_id: str | int,
+        media_type: MediaType,
+        media_id: str | int,
+    ) -> None:
+        """Remove a genre exclusion, allowing the scanner to re-map it on the next run.
+
+        :param genre_id: Database ID of the genre.
+        :param media_type: Type of media item (track, album, artist, etc.).
+        :param media_id: Database ID of the media item.
+        """
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
             {
                 "genre_id": int(genre_id),
                 "media_id": int(media_id),
