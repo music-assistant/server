@@ -34,7 +34,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import MultiPartPath
+from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
 from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_LIMITER,
@@ -56,6 +56,7 @@ from . import ssl as ssl_util
 from .audio_buffer import AudioBuffer
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
+from .ogg_handler import get_chained_ogg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
 from .util import detect_charset
@@ -101,6 +102,10 @@ def get_mime_type(format_str: str) -> str:
 
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+
+# Ogg stream constants
+OGG_SYNC_PATTERN = b"OggS"
+OGG_HEADER_SIZE = 27  # Minimum Ogg page header size
 
 
 def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
@@ -348,12 +353,17 @@ async def get_stream_details(
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
-            # Set up metadata monitoring callback for HLS radio streams
+            # Set up metadata monitoring callback for radio streams
             if stream_type == StreamType.HLS:
                 streamdetails.stream_metadata_update_callback = partial(
                     _update_hls_radio_metadata, mass
                 )
                 streamdetails.stream_metadata_update_interval = 5
+            elif stream_type == StreamType.IN_BAND:
+                streamdetails.stream_metadata_update_callback = partial(
+                    _update_inband_radio_metadata, mass
+                )
+                streamdetails.stream_metadata_update_interval = 10
         # handle volume normalization details
         if result := await mass.music.get_loudness(
             streamdetails.item_id,
@@ -573,6 +583,13 @@ async def get_media_stream(
         assert isinstance(streamdetails.path, str)  # for type checking
         audio_source = get_icy_radio_stream(mass, streamdetails.path, streamdetails)
         seek_position = 0  # seeking not possible on radio streams
+    elif stream_type == StreamType.IN_BAND:
+        assert isinstance(streamdetails.path, str)  # for type checking
+        # For IN_BAND (OGG/Opus) radio streams, use chained OGG handler.
+        # This handles the chained OGG format by stitching logical bitstreams together
+        # so FFmpeg sees a single continuous stream. Metadata is extracted in-band.
+        audio_source = get_chained_ogg_stream(mass, streamdetails.path)
+        seek_position = 0  # seeking not possible on radio streams
     elif stream_type == StreamType.HLS:
         assert isinstance(streamdetails.path, str)  # for type checking
         substream = await get_hls_substream(mass, streamdetails.path)
@@ -604,6 +621,7 @@ async def get_media_stream(
     finished = False
     cancelled = False
     first_chunk_received = False
+    ffmpeg_loglevel = "debug" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
     ffmpeg_proc = FFMpeg(
         audio_input=audio_source,
         input_format=streamdetails.audio_format,
@@ -611,7 +629,7 @@ async def get_media_stream(
         filter_params=filter_params,
         extra_input_args=extra_input_args,
         collect_log_history=True,
-        loglevel="debug" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "info",
+        loglevel=ffmpeg_loglevel,
     )
 
     try:
@@ -642,9 +660,14 @@ async def get_media_stream(
             bytes_sent += len(chunk)
 
         # end of audio/track reached
-        logger.log(VERBOSE_LOG_LEVEL, "End of stream reached.")
+        logger.debug("End of ffmpeg output stream reached for %s", streamdetails.uri)
         # wait until stderr also completed reading
         await ffmpeg_proc.wait_with_timeout(5)
+        logger.debug(
+            "FFmpeg process ended with return code %s for %s",
+            ffmpeg_proc.returncode,
+            streamdetails.uri,
+        )
         if ffmpeg_proc.returncode not in (0, None):
             log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
             raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
@@ -767,6 +790,7 @@ async def _connect_radio_stream(
 
     Some radio servers use outdated TLS configurations that reject modern cipher suites.
     Since radio streams are public broadcast content, relaxing cipher requirements is acceptable.
+
     :param mass: The MusicAssistant instance.
     :param url: The radio stream URL to connect to.
     :param kwargs: Additional keyword arguments passed to aiohttp get().
@@ -789,11 +813,11 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
     Resolve a streaming radio URL.
 
     Unwraps any playlists if needed.
-    Determines if the stream supports ICY metadata.
+    Determines if the stream supports ICY metadata or in-band metadata.
 
     Returns tuple;
     - unfolded URL as string
-    - StreamType to determine ICY (radio) or HLS stream.
+    - StreamType to determine ICY (radio), HLS, or IN_BAND stream.
     """
     if cache := await mass.cache.get(
         key=url, provider=CACHE_PROVIDER, category=CACHE_CATEGORY_RESOLVED_RADIO_URL
@@ -812,8 +836,12 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
             resp.raise_for_status()
             if not resp.headers:
                 raise InvalidDataError("no headers found")
+        content_type = headers.get("content-type", "")
         if headers.get("icy-metaint") is not None:
             stream_type = StreamType.ICY
+        elif content_type in ("application/ogg", "audio/ogg"):
+            # Ogg streams (Opus/Vorbis) have in-band metadata via Vorbis comments
+            stream_type = StreamType.IN_BAND
         if (
             url.endswith((".m3u", ".m3u8", ".pls"))
             or ".m3u?" in url
@@ -897,6 +925,175 @@ async def get_icy_radio_stream(
                     cleaned_stream_title,
                 )
                 streamdetails.stream_title = cleaned_stream_title
+
+
+def _parse_ogg_vorbis_comments(data: bytes) -> dict[str, str]:
+    """Parse Vorbis comment structure from Ogg packet data.
+
+    Vorbis comments have the format:
+    - 4 bytes: vendor string length (little-endian)
+    - N bytes: vendor string
+    - 4 bytes: number of comments (little-endian)
+    - For each comment:
+      - 4 bytes: comment length (little-endian)
+      - N bytes: comment string in "KEY=value" format
+
+    :param data: Raw bytes of the Vorbis comment packet (after any codec header).
+    """
+    comments: dict[str, str] = {}
+    try:
+        if len(data) < 8:
+            return comments
+
+        offset = 0
+        # Read vendor string length
+        vendor_length = struct.unpack_from("<I", data, offset)[0]
+        offset += 4
+
+        # Skip vendor string
+        offset += vendor_length
+        if offset + 4 > len(data):
+            return comments
+
+        # Read number of comments
+        num_comments = struct.unpack_from("<I", data, offset)[0]
+        offset += 4
+
+        # Read each comment
+        for _ in range(num_comments):
+            if offset + 4 > len(data):
+                break
+            comment_length = struct.unpack_from("<I", data, offset)[0]
+            offset += 4
+
+            if offset + comment_length > len(data):
+                break
+
+            comment_bytes = data[offset : offset + comment_length]
+            offset += comment_length
+
+            # Decode and parse KEY=value
+            try:
+                comment_str = comment_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                comment_str = comment_bytes.decode("latin-1", errors="replace")
+
+            if "=" in comment_str:
+                key, value = comment_str.split("=", 1)
+                comments[key.lower()] = value
+
+    except (struct.error, IndexError):
+        pass
+
+    return comments
+
+
+def _parse_ogg_page(data: bytes, offset: int = 0) -> tuple[bytes, bytes, int, bool] | None:
+    """Parse a single Ogg page from the data buffer.
+
+    Returns tuple of (page_data, segment_data, new_offset, is_bos) or None if incomplete.
+
+    :param data: Buffer containing Ogg stream data.
+    :param offset: Offset in the buffer to start parsing from.
+    """
+    if len(data) < offset + OGG_HEADER_SIZE:
+        return None
+
+    if data[offset : offset + 4] != OGG_SYNC_PATTERN:
+        return None
+
+    header_type = data[offset + 5]  # 0x02 = BOS, 0x04 = EOS
+    is_bos = bool(header_type & 0x02)
+    num_segments = data[offset + 26]
+
+    header_size = OGG_HEADER_SIZE + num_segments
+    if len(data) < offset + header_size:
+        return None
+
+    segment_table = data[offset + OGG_HEADER_SIZE : offset + header_size]
+    segment_data_size = sum(segment_table)
+
+    total_page_size = header_size + segment_data_size
+    if len(data) < offset + total_page_size:
+        return None
+
+    segment_data = data[offset + header_size : offset + total_page_size]
+    page_data = data[offset : offset + total_page_size]
+
+    return (page_data, segment_data, offset + total_page_size, is_bos)
+
+
+def _extract_inband_metadata(segment_data: bytes) -> dict[str, str] | None:
+    """Extract in-band metadata from stream segment data.
+
+    Currently handles Ogg-based formats:
+    - Opus (OpusTags)
+    - Vorbis comments
+
+    :param segment_data: The segment data from a stream packet/page.
+    """
+    # Check for OpusTags header (Opus streams)
+    if segment_data.startswith(b"OpusTags"):
+        return _parse_ogg_vorbis_comments(segment_data[8:])
+
+    # Check for Vorbis comment header (type 0x03)
+    if len(segment_data) > 7 and segment_data[0] == 0x03 and segment_data[1:7] == b"vorbis":
+        return _parse_ogg_vorbis_comments(segment_data[7:])
+
+    return None
+
+
+async def get_reconnecting_radio_stream(
+    mass: MusicAssistant, url: str
+) -> AsyncGenerator[bytes, None]:
+    """Get a continuous radio stream that automatically reconnects on disconnection.
+
+    This generator keeps yielding audio data across HTTP reconnections, ensuring
+    the pipe to ffmpeg stays open. This is essential for OGG/Opus radio streams
+    where the server may close the connection at track boundaries.
+
+    :param mass: MusicAssistant instance.
+    :param url: URL of the radio stream.
+    """
+    timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
+    reconnect_count = 0
+    max_reconnects = 1000  # Allow many reconnects for long-running radio
+
+    while reconnect_count <= max_reconnects:
+        try:
+            async with _connect_radio_stream(
+                mass, url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
+            ) as resp:
+                chunk_count = 0
+                async for chunk in resp.content.iter_any():
+                    chunk_count += 1
+                    yield chunk
+
+                # Connection closed normally - reconnect
+                LOGGER.debug(
+                    "Radio stream connection closed after %d chunks, reconnecting... "
+                    "(reconnect #%d)",
+                    chunk_count,
+                    reconnect_count,
+                )
+                reconnect_count += 1
+                await asyncio.sleep(0.1)  # Brief delay before reconnect
+
+        except asyncio.CancelledError:
+            LOGGER.warning("Reconnecting radio stream CANCELLED for %s", url)
+            raise
+        except Exception as err:
+            LOGGER.warning(
+                "Radio stream error (reconnect #%d): %s",
+                reconnect_count,
+                err,
+            )
+            reconnect_count += 1
+            if reconnect_count > max_reconnects:
+                raise
+            await asyncio.sleep(0.5)
+
+    LOGGER.warning("Radio stream reached max reconnects (%d) for %s", max_reconnects, url)
 
 
 def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
@@ -999,6 +1196,103 @@ async def _update_hls_radio_metadata(
     except Exception as err:
         LOGGER.debug(
             "Error fetching HLS metadata: %s",
+            err,
+        )
+
+
+async def _update_inband_radio_metadata(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    elapsed_time: int,  # noqa: ARG001
+) -> None:
+    """Update in-band (OGG/Opus) radio stream metadata by sampling the stream.
+
+    Connects briefly to the stream to read OGG headers containing Vorbis comments.
+
+    :param mass: MusicAssistant instance
+    :param streamdetails: StreamDetails object to update with metadata
+    :param elapsed_time: Current playback position in seconds (unused for live radio)
+    """
+    try:
+        assert isinstance(streamdetails.path, str)  # for type checking
+        timeout = ClientTimeout(total=5, connect=5, sock_read=5)
+        station_name = (
+            streamdetails.stream_metadata.album if streamdetails.stream_metadata else None
+        )
+
+        async with _connect_radio_stream(
+            mass, streamdetails.path, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
+        ) as resp:
+            if station_name is None:
+                station_name = resp.headers.get("icy-name")
+            buffer = b""
+            bytes_read = 0
+            max_bytes = 32768  # Read up to 32KB to find metadata
+
+            async for chunk in resp.content.iter_any():
+                buffer += chunk
+                bytes_read += len(chunk)
+
+                # Parse OGG pages looking for metadata
+                offset = 0
+                while True:
+                    sync_pos = buffer.find(OGG_SYNC_PATTERN, offset)
+                    if sync_pos == -1:
+                        break
+
+                    offset = max(offset, sync_pos)
+                    result = _parse_ogg_page(buffer, offset)
+                    if result is None:
+                        break
+
+                    _page_data, segment_data, new_offset, _is_bos = result
+                    metadata = _extract_inband_metadata(segment_data)
+
+                    if metadata:
+                        title = metadata.get("title", "")
+                        artist = metadata.get("artist", "")
+                        album = metadata.get("album", "") or station_name
+
+                        if title or artist:
+                            if artist and title:
+                                stream_title = f"{artist} - {title}"
+                            elif title:
+                                stream_title = title
+                            else:
+                                stream_title = artist
+
+                            cleaned_title = clean_stream_title(stream_title)
+
+                            if cleaned_title != streamdetails.stream_title and cleaned_title:
+                                LOGGER.warning(
+                                    "IN-BAND METADATA CHANGED: '%s' -> '%s'",
+                                    streamdetails.stream_title,
+                                    cleaned_title,
+                                )
+                                streamdetails.stream_metadata = StreamMetadata(
+                                    title=title or cleaned_title,
+                                    artist=artist or None,
+                                    album=album or None,
+                                )
+                                LOGGER.log(
+                                    VERBOSE_LOG_LEVEL,
+                                    "In-band radio metadata: %s (album: %s)",
+                                    cleaned_title,
+                                    album,
+                                )
+                                streamdetails.stream_title = cleaned_title
+                            # Found metadata, we're done
+                            return
+
+                    offset = new_offset
+
+                # Stop if we've read enough
+                if bytes_read >= max_bytes:
+                    break
+
+    except Exception as err:
+        LOGGER.debug(
+            "Error fetching in-band metadata: %s",
             err,
         )
 
@@ -1567,6 +1861,10 @@ async def analyze_loudness(
     elif stream_type == StreamType.ICY:
         assert isinstance(streamdetails.path, str)  # for type checking
         audio_source = get_icy_radio_stream(mass, streamdetails.path, streamdetails)
+    elif stream_type == StreamType.IN_BAND:
+        assert isinstance(streamdetails.path, str)  # for type checking
+        # Use chained OGG handler for seamless playback across logical bitstreams
+        audio_source = get_chained_ogg_stream(mass, streamdetails.path)
     elif stream_type == StreamType.HLS:
         assert isinstance(streamdetails.path, str)  # for type checking
         substream = await get_hls_substream(mass, streamdetails.path)
@@ -1665,3 +1963,81 @@ def _get_normalization_mode(
 
     # simply return the preference
     return preference
+
+
+# =============================================================================
+# DEVELOPMENT NOTES: OGG/Opus In-Band Metadata Stream Handling
+# =============================================================================
+#
+# PROBLEM:
+# OGG/Opus radio streams (like http://stream.tilos.hu:80/tilos.opus) use
+# "chained" OGG streams where each track is a separate logical bitstream.
+# At track boundaries, the server sends an EOS (End of Stream) marker and
+# starts a new logical bitstream with fresh headers containing the new
+# track's metadata (artist, title, etc. in Vorbis comments).
+#
+# FFmpeg's OGG demuxer fails at track boundaries with:
+#   [ogg @ ...] Packet processing failed: Invalid data found when processing input
+#   [in#0/ogg @ ...] Error during demuxing: Invalid data found when processing input
+#
+# Despite this error, FFmpeg exits with code 0, making it look like a clean exit.
+#
+# SOLUTION IMPLEMENTED (2026-03-06):
+# Created a custom OGG chain handler (helpers/ogg_handler.py) that:
+# 1. Parses incoming OGG pages from the HTTP stream
+# 2. Forwards the first logical bitstream's headers (OpusHead, OpusTags)
+# 3. On chain boundaries (EOS + new BOS), skips new headers but extracts metadata
+# 4. Re-sequences page numbers to appear as one continuous stream
+# 5. Clears EOS flags so FFmpeg sees uninterrupted data
+#
+# The handler stitches multiple chained OGG streams into a single continuous
+# stream that FFmpeg can decode without error.
+#
+# CURRENT STATUS (2026-03-06):
+# - ogg_handler.py is implemented with OGG page parsing, CRC calculation, and chain stitching
+# - Integrated into audio.py at two IN_BAND handling locations (~line 585 and ~line 1865)
+# - ISSUE: FFmpeg still exits at chain boundaries even with stitched stream
+#   Test result: Metadata extracted correctly, chain detected, but FFmpeg stops with
+#   "broken pipe" error right after the first chain transition (exit code 0)
+#
+# NEXT STEPS TO INVESTIGATE:
+# 1. Run FFmpeg with verbose logging to see exact error at chain boundary
+# 2. Check if granule position handling needs adjustment (timestamps might confuse FFmpeg)
+# 3. Verify the first audio page after chain transition has correct continuation flags
+# 4. Consider if FFmpeg detects codec parameter changes between chains
+# 5. Test with a known-good OGG file that was artificially stitched
+#
+# POSSIBLE ISSUES:
+# - Granule position: New chain has reset granule positions starting from 0. FFmpeg might
+#   detect the sudden jump backwards in timestamps and interpret it as stream end.
+#   FIX: Need to track cumulative granule offset and adjust granule positions in new chains.
+# - Codec parameters: If the new chain has different sample rate/channels, FFmpeg fails.
+#   FIX: Would need to actually transcode, not just stitch.
+# - Opus pre-skip: OpusHead contains pre-skip value. If skipped headers change this,
+#   the decoder state might be wrong.
+#
+# BACKGROUND - Why FFmpeg fails:
+# - VLC has its own OGG demuxer that properly handles chained streams
+#   (see modules/demux/ogg.c in VLC source)
+# - VLC detects EOS, marks streams as "finished", reinitializes for new bitstreams
+# - FFmpeg treats EOS + new headers as an error instead of a chain transition
+# - No amount of FFmpeg flags can fix this (tested: -err_detect ignore_err, etc.)
+#
+# TEST STREAM: http://stream.tilos.hu:80/tilos.opus
+# To test raw FFmpeg (will fail): ffmpeg -i "http://stream.tilos.hu:80/tilos.opus" -f null -
+# Expected: Should fail after 1-3 minutes when track changes
+#
+# TEST SCRIPTS (in /tmp):
+# - test_ffmpeg_integration.py - Pipes stitched OGG through FFmpeg
+# - test_long_stream.py - 5-minute test for multiple chain transitions
+# - test_chained_ogg_stream.py - Basic OGG parsing test
+#
+# RELATED FILES:
+# - music_assistant/helpers/ogg_handler.py - Chained OGG stream handler
+# - music_assistant/helpers/ffmpeg.py - FFMpeg class, get_ffmpeg_args()
+#
+# KEY FUNCTIONS:
+# - get_chained_ogg_stream() - handles IN_BAND streams with chain stitching
+# - _update_inband_radio_metadata() - metadata polling callback (backup method)
+# - get_media_stream() - main entry point for media streaming
+# =============================================================================
