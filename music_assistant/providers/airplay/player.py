@@ -585,7 +585,6 @@ class AirPlayPlayer(Player):
         protocol_name: str,
     ) -> None:
         """Clear stored credentials for the given protocol."""
-        self.logger.debug(f"_reset_pairing for protocol: {protocol_name}")
         cred_key = self._get_credentials_key(protocol)
         self.logger.info(f"Resetting {protocol_name} pairing for {self.display_name}")
         if values is not None:
