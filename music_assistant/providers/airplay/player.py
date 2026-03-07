@@ -38,6 +38,7 @@ from .constants import (
     CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
+    CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
@@ -357,7 +358,7 @@ class AirPlayPlayer(Player):
         )
 
         if not has_creds_for_current_protocol:
-            # If pairing was started, show PIN entry (unless device uses password)
+            # If pairing was started, show PIN or password entry (depending on device configuration)
             if self._active_pairing and self._active_pairing.is_pairing:
                 if self._requires_pin_pairing():
                     self.logger.debug(f"Device requires PIN pairing for {protocol_name}")
@@ -383,8 +384,8 @@ class AirPlayPlayer(Player):
                     self.logger.debug(f"Device requires password pairing for {protocol_name}")
                     entries.append(
                         ConfigEntry(
-                            key=CONF_AP2PASSWORD,
-                            type=ConfigEntryType.STRING,
+                            key=CONF_PAIRING_PASSWORD,
+                            type=ConfigEntryType.SECURE_STRING,
                             required=True,
                             label="Enter the device password",
                             category="protocol_generic",
@@ -461,6 +462,19 @@ class AirPlayPlayer(Player):
                     category="protocol_generic",
                 )
             )
+        if protocol is StreamingProtocol.AIRPLAY2:
+            entries.append(
+                ConfigEntry(
+                    key=CONF_AP2PASSWORD,
+                    type=ConfigEntryType.SECURE_STRING,
+                    label=CONF_AP2PASSWORD,
+                    default_value=None,
+                    value=values.get(CONF_PAIRING_PASSWORD) if values else None,
+                    required=False,
+                    hidden=True,
+                    category="protocol_generic",
+                )
+            )
         return entries
 
     async def _handle_pairing_action(
@@ -489,13 +503,7 @@ class AirPlayPlayer(Player):
             await self._reset_pairing(values, protocol, protocol_name)
 
     async def _start_pairing(self, protocol: StreamingProtocol, protocol_name: str) -> None:
-        """Begin a new pairing session for the given protocol.
-
-        The method handles logging, instantiation of ``AirPlayPairing`` and the
-        special case where the device uses a password instead of an interactive
-        PIN.  When password pairing succeeds the helper stores credentials and
-        clears ``_active_pairing`` so the caller can safely return.
-        """
+        """Begin a new pairing session for the given protocol."""
         self.logger.debug(f"_start_pairing for protocol: {protocol_name}")
         if self._active_pairing and self._active_pairing.is_pairing:
             self.logger.warning("Pairing process already in progress for %s", self.display_name)
@@ -539,16 +547,14 @@ class AirPlayPlayer(Player):
     ) -> None:
         """Complete an in-progress pairing session.
 
-        ``values`` may contain a PIN supplied by the user when required.  This
-        helper also handles the case where a password is used instead of a PIN.
+        ``values`` may contain a PIN or a password supplied by the user when required.
         """
         self.logger.debug(f"_finish_pairing for protocol: {protocol_name} with values: {values}")
         if not values:
             return
 
-        # determine the PIN/password to use
         if self._requires_password_pairing():
-            pin = values.get(CONF_AP2PASSWORD)
+            pin = values.get(CONF_PAIRING_PASSWORD)
             if not pin:
                 self.logger.warning("No password configured for pairing")
                 return
