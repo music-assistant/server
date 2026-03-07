@@ -1424,3 +1424,81 @@ class TestGenreExclusion:
             limit=0,
         )
         assert len(mapping_rows) == 0
+
+    async def test_cleanup_preserves_genre_with_exclusion(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """_cleanup_stale_genre_mappings keeps a genre that has an exclusion but no mappings.
+
+        Verifies both that the genre row survives and that a playlog entry for it is
+        also preserved (the playlog DELETE uses the same exclusion guard).
+        """
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CleanupPreservedGenre"))
+        track = await _add_test_track(mass, "CleanupPreserved Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        # Exclude the genre from the track (also removes any mapping that might exist)
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+
+        # Insert a playlog entry for the genre so we can confirm it is also kept
+        cols = (
+            "(item_id, provider, media_type, name, fully_played, seconds_played, timestamp, userid)"
+        )
+        await mass.music.database.execute(
+            f"INSERT OR IGNORE INTO {DB_TABLE_PLAYLOG} {cols} "
+            "VALUES (:item_id, 'library', 'genre', :name, 0, 0, 0, 'testuser')",
+            {"item_id": str(genre_id), "name": "CleanupPreservedGenre"},
+        )
+        await mass.music.database.commit()
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        genre_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert genre_row is not None, "genre with an exclusion must not be deleted by cleanup"
+
+        playlog_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type = 'genre' AND item_id = :id",
+            {"id": str(genre_id)},
+            limit=0,
+        )
+        assert len(playlog_rows) == 1, "playlog entry for an excluded genre must not be deleted"
+
+    async def test_get_genre_exclusions_for_media_item(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns genres excluded from a specific media item."""
+        genre1 = await genre_ctrl.add_item_to_library(_make_genre("ExclQueryGenre1"))
+        genre2 = await genre_ctrl.add_item_to_library(_make_genre("ExclQueryGenre2"))
+        track = await _add_test_track(mass, "ExclQuery Track")
+        await genre_ctrl.exclude_genre_from_media_item(
+            genre1.item_id, MediaType.TRACK, track.item_id
+        )
+        await genre_ctrl.exclude_genre_from_media_item(
+            genre2.item_id, MediaType.TRACK, track.item_id
+        )
+        result = await genre_ctrl.get_genre_exclusions_for_media_item(
+            MediaType.TRACK, track.item_id
+        )
+        names = {g.name for g in result}
+        assert "ExclQueryGenre1" in names
+        assert "ExclQueryGenre2" in names
+
+    async def test_get_genre_exclusions_for_media_item_empty(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns empty list when no genres are excluded from the media item."""
+        track = await _add_test_track(mass, "ExclQuery No Exclusions Track")
+        result = await genre_ctrl.get_genre_exclusions_for_media_item(
+            MediaType.TRACK, track.item_id
+        )
+        assert result == []
+
+    async def test_get_genre_exclusions_for_media_item_non_integer_id(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns empty list for non-integer media IDs."""
+        result = await genre_ctrl.get_genre_exclusions_for_media_item(
+            MediaType.ALBUM, "3957198221-190478553"
+        )
+        assert result == []

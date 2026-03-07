@@ -2498,6 +2498,7 @@ class MusicController(CoreController):
                 [genre_id] INTEGER NOT NULL,
                 [media_id] INTEGER NOT NULL,
                 [media_type] TEXT NOT NULL,
+                FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]) ON DELETE CASCADE,
                 UNIQUE(genre_id, media_id, media_type)
                 );"""
             )
@@ -2721,6 +2722,7 @@ class MusicController(CoreController):
             [genre_id] INTEGER NOT NULL,
             [media_id] INTEGER NOT NULL,
             [media_type] TEXT NOT NULL,
+            FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]) ON DELETE CASCADE,
             UNIQUE(genre_id, media_id, media_type)
             );"""
         )

@@ -1044,13 +1044,25 @@ class GenreController(MediaControllerBase[Genre]):
         :param media_type: Type of media item (track, album, artist, etc.).
         :param media_id: Database ID of the media item.
         """
-        match = {
+        params = {
             "genre_id": int(genre_id),
             "media_id": int(media_id),
             "media_type": media_type.value,
         }
-        await self.mass.music.database.insert_or_replace(DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, match)
-        await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, match)
+        db = self.mass.music.database
+        # Run both statements without committing between them so the exclusion insert
+        # and the mapping delete are committed atomically.
+        await db.execute(
+            f"INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}"
+            "(genre_id, media_id, media_type) VALUES (:genre_id, :media_id, :media_type)",
+            params,
+        )
+        await db.execute(
+            f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :genre_id AND media_id = :media_id AND media_type = :media_type",
+            params,
+        )
+        await db.commit()
 
     async def remove_genre_exclusion(
         self,
