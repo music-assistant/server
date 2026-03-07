@@ -664,6 +664,9 @@ class MusicController(CoreController):
         # Get user provider filter if set
         user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        if user_provider_filter:
+            # a user can always access the library
+            user_provider_filter.append("library")
 
         for db_row in db_rows:
             provider = db_row["provider"]
