@@ -664,15 +664,24 @@ class MusicController(CoreController):
         # Get user provider filter if set
         user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
-        if user_provider_filter:
-            # a user can always access the library
-            user_provider_filter.append("library")
 
         for db_row in db_rows:
             provider = db_row["provider"]
+
             # Apply user provider filter
-            if user_provider_filter and provider not in user_provider_filter:
-                continue
+            if user_provider_filter:
+                if provider == "library" and (
+                    # podcast episodes are never part of the library, this has to be an audiobook
+                    db_row_audiobook := await self.mass.music.database.get_row(
+                        DB_TABLE_PROVIDER_MAPPINGS,
+                        match={"item_id": db_row["item_id"], "media_type": MediaType.AUDIOBOOK},
+                    )
+                ):
+                    if db_row_audiobook["provider_instance"] not in user_provider_filter:
+                        continue
+                elif provider not in user_provider_filter:
+                    continue
+
             result.append(
                 ItemMapping.from_dict(
                     {
