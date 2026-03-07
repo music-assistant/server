@@ -496,6 +496,7 @@ class AirPlayPlayer(Player):
         protocol_name = "RAOP" if protocol == StreamingProtocol.RAOP else "AirPlay"
 
         if action == CONF_ACTION_START_PAIRING:
+            await self._reset_pairing(values, protocol, protocol_name)
             await self._start_pairing(protocol, protocol_name)
         elif action == CONF_ACTION_FINISH_PAIRING:
             await self._finish_pairing(values, protocol, protocol_name)
@@ -589,6 +590,8 @@ class AirPlayPlayer(Player):
         self.logger.info(f"Resetting {protocol_name} pairing for {self.display_name}")
         if values is not None:
             values[cred_key] = None
+            values[CONF_AP2PASSWORD] = None
+        self.config.update({cred_key: None, CONF_AP2PASSWORD: None})
 
     async def stop(self) -> None:
         """Send STOP command to player."""
