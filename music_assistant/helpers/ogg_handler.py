@@ -30,10 +30,12 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from music_assistant_models.errors import ProviderUnavailableError
 
+from music_assistant.constants import MASS_LOGGER_NAME
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.ogg_handler")
 
 # OGG constants
 OGG_SYNC_PATTERN: bytes = b"OggS"

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 
 import aiofiles
 import shortuuid
-from aiohttp import ClientConnectorSSLError, ClientTimeout
+from aiohttp import ClientConnectorSSLError, ClientError, ClientTimeout
 from music_assistant_models.dsp import DSPConfig, DSPDetails, DSPState
 from music_assistant_models.enums import (
     ContentType,
@@ -56,7 +56,11 @@ from . import ssl as ssl_util
 from .audio_buffer import AudioBuffer
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
-from .ogg_handler import get_chained_ogg_stream
+from .ogg_handler import (
+    extract_metadata_from_page,
+    get_chained_ogg_stream,
+    parse_ogg_page,
+)
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
 from .util import detect_charset
@@ -102,10 +106,6 @@ def get_mime_type(format_str: str) -> str:
 
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
-
-# Ogg stream constants
-OGG_SYNC_PATTERN = b"OggS"
-OGG_HEADER_SIZE = 27  # Minimum Ogg page header size
 
 
 def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
@@ -927,122 +927,6 @@ async def get_icy_radio_stream(
                 streamdetails.stream_title = cleaned_stream_title
 
 
-def _parse_ogg_vorbis_comments(data: bytes) -> dict[str, str]:
-    """Parse Vorbis comment structure from Ogg packet data.
-
-    Vorbis comments have the format:
-    - 4 bytes: vendor string length (little-endian)
-    - N bytes: vendor string
-    - 4 bytes: number of comments (little-endian)
-    - For each comment:
-      - 4 bytes: comment length (little-endian)
-      - N bytes: comment string in "KEY=value" format
-
-    :param data: Raw bytes of the Vorbis comment packet (after any codec header).
-    """
-    comments: dict[str, str] = {}
-    try:
-        if len(data) < 8:
-            return comments
-
-        offset = 0
-        # Read vendor string length
-        vendor_length = struct.unpack_from("<I", data, offset)[0]
-        offset += 4
-
-        # Skip vendor string
-        offset += vendor_length
-        if offset + 4 > len(data):
-            return comments
-
-        # Read number of comments
-        num_comments = struct.unpack_from("<I", data, offset)[0]
-        offset += 4
-
-        # Read each comment
-        for _ in range(num_comments):
-            if offset + 4 > len(data):
-                break
-            comment_length = struct.unpack_from("<I", data, offset)[0]
-            offset += 4
-
-            if offset + comment_length > len(data):
-                break
-
-            comment_bytes = data[offset : offset + comment_length]
-            offset += comment_length
-
-            # Decode and parse KEY=value
-            try:
-                comment_str = comment_bytes.decode("utf-8")
-            except UnicodeDecodeError:
-                comment_str = comment_bytes.decode("latin-1", errors="replace")
-
-            if "=" in comment_str:
-                key, value = comment_str.split("=", 1)
-                comments[key.lower()] = value
-
-    except (struct.error, IndexError):
-        pass
-
-    return comments
-
-
-def _parse_ogg_page(data: bytes, offset: int = 0) -> tuple[bytes, bytes, int, bool] | None:
-    """Parse a single Ogg page from the data buffer.
-
-    Returns tuple of (page_data, segment_data, new_offset, is_bos) or None if incomplete.
-
-    :param data: Buffer containing Ogg stream data.
-    :param offset: Offset in the buffer to start parsing from.
-    """
-    if len(data) < offset + OGG_HEADER_SIZE:
-        return None
-
-    if data[offset : offset + 4] != OGG_SYNC_PATTERN:
-        return None
-
-    header_type = data[offset + 5]  # 0x02 = BOS, 0x04 = EOS
-    is_bos = bool(header_type & 0x02)
-    num_segments = data[offset + 26]
-
-    header_size = OGG_HEADER_SIZE + num_segments
-    if len(data) < offset + header_size:
-        return None
-
-    segment_table = data[offset + OGG_HEADER_SIZE : offset + header_size]
-    segment_data_size = sum(segment_table)
-
-    total_page_size = header_size + segment_data_size
-    if len(data) < offset + total_page_size:
-        return None
-
-    segment_data = data[offset + header_size : offset + total_page_size]
-    page_data = data[offset : offset + total_page_size]
-
-    return (page_data, segment_data, offset + total_page_size, is_bos)
-
-
-def _extract_inband_metadata(segment_data: bytes) -> dict[str, str] | None:
-    """Extract in-band metadata from stream segment data.
-
-    Currently handles Ogg-based formats:
-    - Opus (OpusTags)
-    - Vorbis comments
-
-    :param segment_data: The segment data from a stream packet/page.
-    """
-    # Check for OpusTags header (Opus streams)
-    if segment_data.startswith(b"OpusTags"):
-        return _parse_ogg_vorbis_comments(segment_data[8:])
-
-    # Check for Vorbis comment header (type 0x03)
-    if len(segment_data) > 7 and segment_data[0] == 0x03 and segment_data[1:7] == b"vorbis":
-        return _parse_ogg_vorbis_comments(segment_data[7:])
-
-    return None
-
-
 async def get_reconnecting_radio_stream(
     mass: MusicAssistant, url: str
 ) -> AsyncGenerator[bytes, None]:
@@ -1080,9 +964,9 @@ async def get_reconnecting_radio_stream(
                 await asyncio.sleep(0.1)  # Brief delay before reconnect
 
         except asyncio.CancelledError:
-            LOGGER.warning("Reconnecting radio stream CANCELLED for %s", url)
+            LOGGER.debug("Radio stream cancelled for %s", url)
             raise
-        except Exception as err:
+        except ClientError as err:
             LOGGER.warning(
                 "Radio stream error (reconnect #%d): %s",
                 reconnect_count,
@@ -1090,7 +974,9 @@ async def get_reconnecting_radio_stream(
             )
             reconnect_count += 1
             if reconnect_count > max_reconnects:
-                raise
+                raise ProviderUnavailableError(
+                    f"Radio stream failed after {max_reconnects} reconnects: {err}"
+                ) from err
             await asyncio.sleep(0.5)
 
     LOGGER.warning("Radio stream reached max reconnects (%d) for %s", max_reconnects, url)
@@ -1234,19 +1120,14 @@ async def _update_inband_radio_metadata(
                 bytes_read += len(chunk)
 
                 # Parse OGG pages looking for metadata
-                offset = 0
                 while True:
-                    sync_pos = buffer.find(OGG_SYNC_PATTERN, offset)
-                    if sync_pos == -1:
-                        break
-
-                    offset = max(offset, sync_pos)
-                    result = _parse_ogg_page(buffer, offset)
+                    result = parse_ogg_page(buffer, 0)
                     if result is None:
                         break
 
-                    _page_data, segment_data, new_offset, _is_bos = result
-                    metadata = _extract_inband_metadata(segment_data)
+                    page, consumed = result
+                    buffer = buffer[consumed:]
+                    metadata = extract_metadata_from_page(page)
 
                     if metadata:
                         title = metadata.get("title", "")
@@ -1264,8 +1145,9 @@ async def _update_inband_radio_metadata(
                             cleaned_title = clean_stream_title(stream_title)
 
                             if cleaned_title != streamdetails.stream_title and cleaned_title:
-                                LOGGER.warning(
-                                    "IN-BAND METADATA CHANGED: '%s' -> '%s'",
+                                LOGGER.log(
+                                    VERBOSE_LOG_LEVEL,
+                                    "In-band metadata changed: '%s' -> '%s'",
                                     streamdetails.stream_title,
                                     cleaned_title,
                                 )
@@ -1284,17 +1166,14 @@ async def _update_inband_radio_metadata(
                             # Found metadata, we're done
                             return
 
-                    offset = new_offset
-
                 # Stop if we've read enough
                 if bytes_read >= max_bytes:
                     break
 
-    except Exception as err:
-        LOGGER.debug(
-            "Error fetching in-band metadata: %s",
-            err,
-        )
+    except asyncio.CancelledError:
+        raise
+    except ClientError as err:
+        LOGGER.debug("Error fetching in-band metadata: %s", err)
 
 
 async def get_hls_substream(
