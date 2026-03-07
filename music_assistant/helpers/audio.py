@@ -930,11 +930,7 @@ async def get_icy_radio_stream(
 async def get_reconnecting_radio_stream(
     mass: MusicAssistant, url: str
 ) -> AsyncGenerator[bytes, None]:
-    """Get a continuous radio stream that automatically reconnects on disconnection.
-
-    This generator keeps yielding audio data across HTTP reconnections, ensuring
-    the pipe to ffmpeg stays open. This is essential for OGG/Opus radio streams
-    where the server may close the connection at track boundaries.
+    """Yield continuous radio stream data, automatically reconnecting on disconnect.
 
     :param mass: MusicAssistant instance.
     :param url: URL of the radio stream.
@@ -1091,14 +1087,7 @@ async def _update_inband_radio_metadata(
     streamdetails: StreamDetails,
     elapsed_time: int,  # noqa: ARG001
 ) -> None:
-    """Update in-band (OGG/Opus) radio stream metadata by sampling the stream.
-
-    Connects briefly to the stream to read OGG headers containing Vorbis comments.
-
-    :param mass: MusicAssistant instance
-    :param streamdetails: StreamDetails object to update with metadata
-    :param elapsed_time: Current playback position in seconds (unused for live radio)
-    """
+    """Sample OGG stream to extract Vorbis comment metadata."""
     try:
         assert isinstance(streamdetails.path, str)  # for type checking
         timeout = ClientTimeout(total=5, connect=5, sock_read=5)
