@@ -13,6 +13,7 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from xml.parsers.expat import ExpatError
 
 import aiofiles
 import shortuuid
@@ -1117,7 +1118,7 @@ class LocalFileSystemProvider(MusicProvider):
                     artist.metadata.description = description
                 if genre := info.get("genre"):
                     artist.metadata.genres = set(split_items(genre))
-            except Exception as err:
+            except (ExpatError, KeyError) as err:
                 self.logger.warning(
                     "Failed to parse artist NFO file %s: %s",
                     nfo_file,
@@ -1546,7 +1547,7 @@ class LocalFileSystemProvider(MusicProvider):
                         album.year = int(year)
                     if genre := info.get("genre"):
                         album.metadata.genres = set(split_items(genre))
-                except Exception as err:
+                except (ExpatError, KeyError) as err:
                     self.logger.warning(
                         "Failed to parse album NFO file %s: %s",
                         nfo_file,
