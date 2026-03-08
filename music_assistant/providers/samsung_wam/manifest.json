@@ -5,8 +5,8 @@
   "description": "Support for Samsung's Wireless Audio Multiroom (WAM) speakers.",
   "codeowners": ["@oliver-stevens"],
   "requirements": [
-    "pywam==0.2",
-    "async-upnp-client>=0.46.2"
+    "pywam==0.1.0rc6",
+    "async-upnp-client==0.46.2"
   ],
   "documentation": "URL_TO_DOCUMENTATION",
   "multi_instance": false
