@@ -223,12 +223,10 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
         # Get user who initiated the query. Querying the userid as well is most useful
         # in a multi-user environment where a single instance provider is used.
-        podcast = await self.mass.music.get_item(
-            media_type=MediaType.PODCAST,
+        podcast = await self.get(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
-        assert isinstance(podcast, Podcast)  # for type checking
 
         user: User | None = None
         if session_user := get_current_user():
