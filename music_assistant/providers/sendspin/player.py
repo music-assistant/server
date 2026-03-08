@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
@@ -134,8 +135,8 @@ class SendspinPlayer(Player):
     _attr_type = PlayerType.PROTOCOL
 
     api: SendspinClient
-    unsub_event_cb: Callable[[], None]
-    unsub_group_event_cb: Callable[[], None]
+    unsub_event_cb: Callable[[], None] | None
+    unsub_group_event_cb: Callable[[], None] | None
     last_sent_artwork_url: str | None = None
     last_sent_artist_artwork_url: str | None = None
     playback_session: SendspinPlaybackSession
@@ -152,17 +153,11 @@ class SendspinPlayer(Player):
         sendspin_client = provider.server_api.get_client(player_id)
         assert sendspin_client is not None
         self.api = sendspin_client
-        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
-        self.unsub_event_cb = sendspin_client.add_event_listener(self.event_cb)
-        self.unsub_group_event_cb = sendspin_client.group.add_event_listener(self.group_event_cb)
-        if controller_role := self._controller_role:
-            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
-
+        self.unsub_event_cb = None
+        self.unsub_group_event_cb = None
         self.playback_session = SendspinPlaybackSession(self)
 
         self.logger = self.provider.logger.getChild(player_id)
-        # init some static variables
-        self._attr_name = sendspin_client.name
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
@@ -172,6 +167,38 @@ class SendspinPlayer(Player):
         }
         self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
+        self._refresh_client_info(sendspin_client)
+        self._subscribe_client_callbacks()
+
+    def _subscribe_client_callbacks(self) -> None:
+        """Subscribe to client and group events for the currently bound client."""
+        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
+        self.unsub_event_cb = self.api.add_event_listener(self.event_cb)
+        self.unsub_group_event_cb = self.api.group.add_event_listener(self.group_event_cb)
+        if controller_role := self._controller_role:
+            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
+
+    def _unsubscribe_client_callbacks(self) -> None:
+        """Unsubscribe any active client and group listeners."""
+        if self.unsub_event_cb is not None:
+            with suppress(Exception):
+                self.unsub_event_cb()
+            self.unsub_event_cb = None
+        if self.unsub_group_event_cb is not None:
+            with suppress(Exception):
+                self.unsub_group_event_cb()
+            self.unsub_group_event_cb = None
+
+    def _refresh_client_info(
+        self,
+        sendspin_client: SendspinClient,
+        extra_identifiers: dict[IdentifierType, str] | None = None,
+    ) -> None:
+        """Refresh player attributes from a Sendspin client hello/info payload."""
+        # Capture existing identifiers before rebuilding DeviceInfo, so that identifiers
+        # added during previous connections (e.g. bridge UUIDs) are not lost.
+        preserved_identifiers = dict(self._attr_device_info.identifiers)
+        self._attr_name = sendspin_client.name
         if device_info := sendspin_client.info.device_info:
             self._attr_device_info = DeviceInfo(
                 model=device_info.product_name or "Unknown model",
@@ -194,12 +221,17 @@ class SendspinPlayer(Player):
         else:
             self._attr_device_info = DeviceInfo()
             self.is_web_player = False
+        for id_type, id_value in preserved_identifiers.items():
+            self._attr_device_info.add_identifier(id_type, id_value)
+        if extra_identifiers:
+            for id_type, id_value in extra_identifiers.items():
+                self._attr_device_info.add_identifier(id_type, id_value)
         # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
         # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
-        if _mac := mac_from_bridge_client_id(player_id):
+        if _mac := mac_from_bridge_client_id(self.player_id):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
-        elif is_valid_mac_address(player_id):
-            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, player_id)
+        elif is_valid_mac_address(self.player_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.player_id)
         if sendspin_client.info.player_support:
             for role in sendspin_client.roles_by_family("player"):
                 volume = role.get_player_volume()
@@ -216,6 +248,49 @@ class SendspinPlayer(Player):
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if self.is_web_player else PlayerType.PROTOCOL
+
+    def _sync_state_from_group(self) -> None:
+        """Sync immediate playback state from the currently bound Sendspin group."""
+        match self.api.group.state:
+            case PlaybackStateType.PLAYING:
+                self._attr_playback_state = PlaybackState.PLAYING
+            case PlaybackStateType.PAUSED:
+                self._attr_playback_state = PlaybackState.PAUSED
+            case PlaybackStateType.STOPPED:
+                self._attr_playback_state = PlaybackState.IDLE
+                self._attr_elapsed_time = 0
+                self._attr_elapsed_time_last_updated = time.time()
+
+    async def mark_unavailable(self, still_valid: Callable[[], bool] | None = None) -> None:
+        """Mark the player unavailable without unregistering it."""
+        if still_valid is not None and not still_valid():
+            return
+        self._unsubscribe_client_callbacks()
+        await self.playback_session.cancel("client disconnected")
+        if still_valid is not None and not still_valid():
+            return
+        self.last_sent_artwork_url = None
+        self.last_sent_artist_artwork_url = None
+        self._attr_available = False
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
+
+    async def reattach_client(
+        self,
+        sendspin_client: SendspinClient,
+        extra_identifiers: dict[IdentifierType, str] | None = None,
+    ) -> None:
+        """Rebind this player to a freshly connected Sendspin client."""
+        self._unsubscribe_client_callbacks()
+        self.api = sendspin_client
+        self._refresh_client_info(sendspin_client, extra_identifiers)
+        self._subscribe_client_callbacks()
+        self._sync_state_from_group()
+        await self._sync_membership_from_group(sendspin_client.group)
+        await self._apply_preferred_format()
+        self.update_state(force_update=True)
 
     @property
     def _artwork_role(self) -> ArtworkGroupRole | None:
@@ -302,7 +377,8 @@ class SendspinPlayer(Player):
                 self._attr_volume_muted = muted
                 self.update_state()
             case ClientGroupChangedEvent(new_group=new_group):
-                self.unsub_group_event_cb()
+                if self.unsub_group_event_cb is not None:
+                    self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
                 if controller_role := self._controller_role:
                     controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
@@ -683,5 +759,4 @@ class SendspinPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await self.playback_session.close()
         await super().on_unload()
-        self.unsub_event_cb()
-        self.unsub_group_event_cb()
+        self._unsubscribe_client_callbacks()

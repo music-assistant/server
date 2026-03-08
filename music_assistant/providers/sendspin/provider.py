@@ -27,8 +27,9 @@ class SendspinProvider(PlayerProvider):
 
     server_api: SendspinServer
     unregister_cbs: list[Callable[[], None]]
-    _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
+    _client_event_versions: dict[str, int]
+    _unloading: bool
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -38,19 +39,37 @@ class SendspinProvider(PlayerProvider):
         self.server_api = SendspinServer(
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
-        self._pending_unregisters = {}
         self._bridge_identifiers = {}
+        self._client_event_versions = {}
+        self._unloading = False
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
         ]
+
+    def _next_client_event_version(self, client_id: str) -> int:
+        """Increment and return the latest event version for a client id."""
+        version = self._client_event_versions.get(client_id, 0) + 1
+        self._client_event_versions[client_id] = version
+        return version
+
+    def _is_current_client_event(self, client_id: str, event_version: int) -> bool:
+        """Return True if the event version is still the latest for the client."""
+        return self._client_event_versions.get(client_id) == event_version
+
+    # _handle_client_added and _handle_client_removed are async and run concurrently as tasks.
+    # A fast reconnect can produce overlapping tasks: a remove task and an add task both in flight.
+    # Each event is assigned a monotonically increasing version; a task checks before acting whether
+    # its version is still the latest, and aborts if a newer event has superseded it.
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
         match event:
             case ClientAddedEvent(client_id):
-                self.mass.create_task(self._handle_client_added(client_id))
+                event_version = self._next_client_event_version(client_id)
+                self.mass.create_task(self._handle_client_added(client_id, event_version))
             case ClientRemovedEvent(client_id):
-                self.mass.create_task(self._handle_client_removed(client_id))
+                event_version = self._next_client_event_version(client_id)
+                self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
@@ -68,22 +87,18 @@ class SendspinProvider(PlayerProvider):
         """
         self._bridge_identifiers[client_id] = identifiers
 
-    async def _handle_client_added(self, client_id: str) -> None:
+    async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
+        if self._unloading:
+            return
         # Yield to allow any synchronous registration (like register_external_player) to complete
         # This is needed because ClientAddedEvent fires during get_or_create_client, before
         # preload_hello sets the client info
         await asyncio.sleep(0)
-        # Wait for any pending unregister to complete before registering
-        # This prevents a race condition where a slow unregister removes
-        # a newly registered player after a quick reconnect
-        if pending_event := self._pending_unregisters.get(client_id):
-            self.logger.debug("Waiting for pending unregister of %s before registering", client_id)
-            await pending_event.wait()
         # Check if client still exists (may have disconnected while waiting)
         sendspin_client = self.server_api.get_client(client_id)
         if sendspin_client is None:
-            self.logger.debug("Client %s gone after waiting for pending unregister", client_id)
+            self.logger.debug("Client %s disconnected before hello completed", client_id)
             return
         # Wait for client hello to be processed (info becomes available)
         # ClientAddedEvent fires before the hello handshake completes
@@ -94,18 +109,39 @@ class SendspinProvider(PlayerProvider):
         else:
             self.logger.warning("Client %s hello not received within timeout", client_id)
             return
-        if self.mass.players.get_player(client_id) is not None:
-            self.logger.debug(
-                "Client %s already registered, skipping duplicate add event", client_id
-            )
+        if not self._is_current_client_event(client_id, event_version):
+            self.logger.debug("Skipping stale add event for %s", client_id)
             return
         if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
             self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
             return
+        extra_ids = self._bridge_identifiers.pop(client_id, None)
+        existing_player = self.mass.players.get_player(client_id)
+        if existing_player is not None:
+            if not isinstance(existing_player, SendspinPlayer):
+                self.logger.warning(
+                    "Skipping Sendspin reconnect for %s: registered player has unexpected type %s",
+                    client_id,
+                    type(existing_player).__name__,
+                )
+                return
+            await existing_player.reattach_client(sendspin_client, extra_ids)
+            self.logger.debug("Client %s reconnected", client_id)
+            if existing_player.device_info.manufacturer == "ESPHome" and (
+                hass := self.mass.get_provider("hass")
+            ):
+                hass = cast("HomeAssistantProvider", hass)
+                if hass_device := await hass.get_device_by_connection(client_id):
+                    existing_player._attr_name = (
+                        hass_device["name_by_user"] or hass_device["name"] or existing_player.name
+                    )
+                    existing_player.update_state(force_update=True)
+            return
+
         player = SendspinPlayer(self, client_id)
         # Apply any bridge identifiers that were pre-registered by the bridge manager.
         # This enables cross-protocol matching (e.g., Sendspin ↔ Chromecast via CAST_UUID).
-        if extra_ids := self._bridge_identifiers.pop(client_id, None):
+        if extra_ids:
             for id_type, id_value in extra_ids.items():
                 player.device_info.add_identifier(id_type, id_value)
         self.logger.debug("Client %s connected", client_id)
@@ -122,19 +158,28 @@ class SendspinProvider(PlayerProvider):
             await self.mass.players.register(player)
         except AlreadyRegisteredError:
             self.logger.debug("Client %s already registered while handling add event", client_id)
-            player.unsub_event_cb()
-            player.unsub_group_event_cb()
+            player._unsubscribe_client_callbacks()
 
-    async def _handle_client_removed(self, client_id: str) -> None:
+    async def _handle_client_removed(self, client_id: str, event_version: int) -> None:
         """Handle a client disconnection asynchronously."""
+        if self._unloading:
+            return
         self.logger.debug("Client %s disconnected", client_id)
-        unregister_event = asyncio.Event()
-        self._pending_unregisters[client_id] = unregister_event
-        try:
-            await self.mass.players.unregister(client_id)
-        finally:
-            self._pending_unregisters.pop(client_id, None)
-            unregister_event.set()
+        if not self._is_current_client_event(client_id, event_version):
+            self.logger.debug("Skipping stale remove event for %s", client_id)
+            return
+        if player := self.mass.players.get_player(client_id):
+            if isinstance(player, SendspinPlayer):
+                await player.mark_unavailable(
+                    still_valid=lambda: self._is_current_client_event(client_id, event_version)
+                )
+                return
+            self.logger.warning(
+                "Skipping Sendspin disconnect handling for %s: registered player has unexpected "
+                "type %s",
+                client_id,
+                type(player).__name__,
+            )
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -162,6 +207,8 @@ class SendspinProvider(PlayerProvider):
 
         :param is_removed: True when the provider is removed from the configuration.
         """
+        self._unloading = True
+        player_ids = [player.player_id for player in self.players]
         # Disconnect all clients before stopping the server
         clients = list(self.server_api.clients)
         connected_clients = []
@@ -185,3 +232,10 @@ class SendspinProvider(PlayerProvider):
         for cb in self.unregister_cbs:
             cb()
         self.unregister_cbs = []
+        await asyncio.gather(
+            *(
+                self.mass.players.unregister(player_id, permanent=is_removed)
+                for player_id in player_ids
+            ),
+            return_exceptions=True,
+        )
