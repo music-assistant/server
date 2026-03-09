@@ -41,6 +41,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     AlreadyRegisteredError,
     InsufficientPermissions,
+    InvalidDataError,
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
@@ -74,8 +75,12 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_MAX_VOLUME,
+    CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_ZEROCONF_INTERFACES,
+    CONF_MAX_VOLUME,
+    CONF_MIN_VOLUME,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -625,13 +630,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_group_volume_up(player_id)
             return
         current_volume = player.state.volume_level or 0
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
         if current_volume < 10 or current_volume > 90:
             step_size = 1
         elif current_volume < 30 or current_volume > 70:
             step_size = 2
         else:
             step_size = 3
-        new_volume = min(100, current_volume + step_size)
+        new_volume = min(max_volume, current_volume + step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down")
@@ -647,13 +660,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_group_volume_down(player_id)
             return
         current_volume = player.state.volume_level or 0
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
         if current_volume < 10 or current_volume > 90:
             step_size = 1
         elif current_volume < 30 or current_volume > 70:
             step_size = 2
         else:
             step_size = 3
-        new_volume = max(0, current_volume - step_size)
+        new_volume = max(min_volume, current_volume - step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
@@ -1550,6 +1571,28 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if became_inactive and (player.state.active_group or player.state.synced_to):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
+        # enforce volume limits when volume changes externally
+        if "volume_level" in changed_values and player.state.volume_level is not None:
+            min_volume = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                    ),
+                )
+            )
+            max_volume = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                    ),
+                )
+            )
+            clamped = max(min_volume, min(max_volume, player.state.volume_level))
+            if clamped != player.state.volume_level:
+                self.mass.create_task(self.cmd_volume_set(player_id, clamped))
+
         # signal player update on the eventbus
         if player.state.type != PlayerType.PROTOCOL:
             self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -1706,9 +1749,29 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if child_player.state.volume_control == PLAYER_CONTROL_NONE:
                 continue
             cur_child_volume = child_player.state.volume_level or 0
+            child_min = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        child_player.player_id,
+                        CONF_MIN_VOLUME,
+                        CONF_ENTRY_MIN_VOLUME.default_value,
+                    ),
+                )
+            )
+            child_max = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        child_player.player_id,
+                        CONF_MAX_VOLUME,
+                        CONF_ENTRY_MAX_VOLUME.default_value,
+                    ),
+                )
+            )
             new_child_volume = int(cur_child_volume + volume_dif)
-            new_child_volume = max(0, new_child_volume)
-            new_child_volume = min(100, new_child_volume)
+            new_child_volume = max(child_min, new_child_volume)
+            new_child_volume = min(child_max, new_child_volume)
             # Use private method to skip permission check - already validated on group
             # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
@@ -1833,6 +1896,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        min_vol_changed = f"values/{CONF_MIN_VOLUME}" in changed_keys
+        max_vol_changed = f"values/{CONF_MAX_VOLUME}" in changed_keys
+        if min_vol_changed or max_vol_changed:
+            raw_min = config.get_value(CONF_MIN_VOLUME)
+            raw_max = config.get_value(CONF_MAX_VOLUME)
+            min_vol = int(cast("int", raw_min)) if raw_min is not None else 0
+            max_vol = int(cast("int", raw_max)) if raw_max is not None else 100
+            if min_vol > max_vol:
+                msg = "Minimum volume cannot exceed maximum volume"
+                raise InvalidDataError(msg)
         player = self.get_player(config.player_id)
         player_provider = self.mass.get_provider(config.provider)
         player_disabled = ATTR_ENABLED in changed_keys and not config.enabled
@@ -2775,6 +2848,26 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
+
+        # Enforce configured volume limits
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        volume_level = max(min_volume, min(max_volume, volume_level))
+
         if player.type == PlayerType.GROUP:
             # redirect to special group volume control
             await self.cmd_group_volume(player_id, volume_level)

@@ -113,6 +113,8 @@ CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS: Final[str] = "volume_normalization_
 CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
+CONF_MIN_VOLUME: Final[str] = "min_volume"
+CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
@@ -262,6 +264,28 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     "(if there are items in the queue).",
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
+    category="player_controls",
+)
+
+CONF_ENTRY_MIN_VOLUME = ConfigEntry(
+    key=CONF_MIN_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=0,
+    label="Minimum volume",
+    description="Minimum volume level allowed for this player. "
+    "Volume commands will not go below this level.",
+    category="player_controls",
+)
+
+CONF_ENTRY_MAX_VOLUME = ConfigEntry(
+    key=CONF_MAX_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=100,
+    label="Maximum volume",
+    description="Maximum volume level allowed for this player. "
+    "Volume commands will be capped at this level.",
     category="player_controls",
 )
 

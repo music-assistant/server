@@ -45,11 +45,15 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    CONF_ENTRY_MAX_VOLUME,
+    CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
     CONF_HIDE_IN_UI,
     CONF_LINKED_PROTOCOL_IDS,
+    CONF_MAX_VOLUME,
+    CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
@@ -701,7 +705,28 @@ class Player(ABC):
         attributes over the API, to be consumed by the UI (or another APi client, such as HA).
         This is not persisted and not used or validated by the core logic.
         """
-        return self._extra_attributes
+        attrs = dict(self._extra_attributes)
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    self.player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    self.player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        if min_volume > 0:
+            attrs["min_volume"] = min_volume
+        if max_volume < 100:
+            attrs["max_volume"] = max_volume
+        return attrs
 
     @property
     @final
