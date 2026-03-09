@@ -1373,6 +1373,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.player_id in self._players:
             self._players[player.player_id] = player
             player.update_state()
+            # Re-evaluate protocol links on protocol player updates so parent wrappers
+            # can refresh metadata (e.g. reconnect with updated device info).
+            if player.state.type == PlayerType.PROTOCOL:
+                self._evaluate_protocol_links(player)
             # Also schedule update when replacing existing player
             self._schedule_update_all_players()
             return

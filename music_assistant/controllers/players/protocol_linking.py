@@ -176,6 +176,7 @@ class ProtocolLinkingMixin:
                     for conn_type, value in protocol_player.device_info.identifiers.items():
                         parent_player.device_info.add_identifier(conn_type, value)
                     self._update_universal_device_info(parent_player, protocol_player)
+                    self._save_universal_player_data(parent_player)
                     # Check if this universal player should now be merged with another
                     # (e.g., DLNA brought a MAC via ARP that matches an AirPlay universal)
                     self._check_merge_universal_players(parent_player)
@@ -229,7 +230,7 @@ class ProtocolLinkingMixin:
                         # with empty identifiers
                         for conn_type, value in protocol_player.device_info.identifiers.items():
                             native_player.device_info.add_identifier(conn_type, value)
-                        # Update model/manufacturer if universal player has generic values
+                        # Update model/manufacturer from the active protocol player.
                         self._update_universal_device_info(native_player, protocol_player)
                         # Register newly matched protocol player with the universal player
                         if is_match:
@@ -439,7 +440,7 @@ class ProtocolLinkingMixin:
             universal_player.add_protocol_player(protocol_player.player_id)
             for conn_type, value in protocol_player.device_info.identifiers.items():
                 universal_player.device_info.add_identifier(conn_type, value)
-            # Update model/manufacturer if universal player has generic values
+            # Update model/manufacturer from the active protocol player.
             self._update_universal_device_info(universal_player, protocol_player)
 
             # Persist all player data (protocol IDs, identifiers, device info) to config
@@ -460,22 +461,18 @@ class ProtocolLinkingMixin:
         self, universal_player: UniversalPlayer, protocol_player: Player
     ) -> None:
         """
-        Update universal player's device info from protocol player if needed.
+        Update universal player's device info from protocol player.
 
-        When a universal player is restored from config, it has generic device info
-        (model="Universal Player", manufacturer="Music Assistant"). This method
-        updates those values from a protocol player that has real device info.
+        Keep universal wrappers in sync when a linked protocol player reconnects
+        and reports refreshed model/manufacturer data.
         """
-        # Check if universal player has generic device info (from restore)
         device_info = universal_player.device_info
         protocol_info = protocol_player.device_info
 
-        # Update model if universal player has generic value
-        if device_info.model in (None, "Universal Player") and protocol_info.model:
+        if protocol_info.model:
             device_info.model = protocol_info.model
 
-        # Update manufacturer if universal player has generic value
-        if device_info.manufacturer in (None, "Music Assistant") and protocol_info.manufacturer:
+        if protocol_info.manufacturer:
             device_info.manufacturer = protocol_info.manufacturer
 
     def _save_universal_player_data(self, universal_player: UniversalPlayer) -> None:
