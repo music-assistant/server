@@ -102,7 +102,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 31
+DB_SCHEMA_VERSION: Final[int] = 32
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2511,6 +2511,33 @@ class MusicController(CoreController):
                 f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
             )
 
+        if prev_version <= 31:
+            # recreate genre_media_item_mapping with nullable alias and is_derived column
+            # (new in schema 32 to support propagated genre mappings from tracks)
+            await self._database.execute(
+                f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                f"RENAME TO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
+            )
+            await self._database.execute(
+                f"""
+                CREATE TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
+                [genre_id] INTEGER NOT NULL,
+                [media_id] INTEGER NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [alias] TEXT,
+                [is_derived] BOOLEAN NOT NULL DEFAULT 0,
+                FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
+                UNIQUE(genre_id, media_id, media_type)
+                );"""
+            )
+            await self._database.execute(
+                f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                f"(genre_id, media_id, media_type, alias) "
+                f"SELECT genre_id, media_id, media_type, alias "
+                f"FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
+            )
+            await self._database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
+
         # save changes
         await self._database.commit()
 
@@ -2711,7 +2738,8 @@ class MusicController(CoreController):
             [genre_id] INTEGER NOT NULL,
             [media_id] INTEGER NOT NULL,
             [media_type] TEXT NOT NULL,
-            [alias] TEXT NOT NULL,
+            [alias] TEXT,
+            [is_derived] BOOLEAN NOT NULL DEFAULT 0,
             FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
             UNIQUE(genre_id, media_id, media_type)
             );"""
