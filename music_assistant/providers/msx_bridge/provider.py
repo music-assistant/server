@@ -261,7 +261,7 @@ class MSXBridgeProvider(PlayerProvider):
     _timeout_task: asyncio.Task[None] | None = None
     _owner_username: str | None = None
     _shared_streams: dict[str, SharedGroupStream]  # group_id -> SharedGroupStream
-    _background_tasks: set[asyncio.Task[None]]  # fire-and-forget background tasks (unregister, stream stop, etc.)
+    _background_tasks: set[asyncio.Task[None]]  # fire-and-forget tasks (unregister, stream stop)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""

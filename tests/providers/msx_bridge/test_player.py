@@ -197,7 +197,7 @@ async def test_stop_clears_all(player: MSXPlayer) -> None:
 
     assert player._attr_playback_state == PlaybackState.IDLE
     assert player._attr_current_media is None
-    assert player._attr_elapsed_time is None
+    assert player._attr_elapsed_time is None  # type: ignore[unreachable]
     assert player._attr_elapsed_time_last_updated is None
     assert player.current_stream_url is None
     player.update_state.assert_called()
