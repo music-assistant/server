@@ -1484,10 +1484,7 @@ class ProtocolLinkingMixin:
             protocol_player = parent_player.get_protocol_player(
                 parent_output_protocol.output_protocol_id
             )
-            if (
-                protocol_player
-                and PlayerFeature.SET_MEMBERS in protocol_player.state.supported_features
-            ):
+            if protocol_player and PlayerFeature.SET_MEMBERS in protocol_player.supported_features:
                 return parent_output_protocol, child_protocol
         return None, None
 
