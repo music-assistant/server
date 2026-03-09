@@ -135,7 +135,7 @@ class SendspinProvider(PlayerProvider):
                     existing_player._attr_name = (
                         hass_device["name_by_user"] or hass_device["name"] or existing_player.name
                     )
-                    existing_player.update_state(force_update=True)
+            await self.mass.players.register_or_update(existing_player)
             return
 
         player = SendspinPlayer(self, client_id)
