@@ -276,6 +276,7 @@ CONF_ENTRY_MIN_VOLUME = ConfigEntry(
     description="Minimum volume level allowed for this player. "
     "Volume commands will not go below this level.",
     category="player_controls",
+    advanced=True,
 )
 
 CONF_ENTRY_MAX_VOLUME = ConfigEntry(
@@ -287,6 +288,7 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     description="Maximum volume level allowed for this player. "
     "Volume commands will be capped at this level.",
     category="player_controls",
+    advanced=True,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
