@@ -384,6 +384,12 @@ class StreamsController(CoreController):
         """
         if media.media_type == MediaType.ANNOUNCEMENT:
             return media.uri
+        if media.media_type == MediaType.PLUGIN_SOURCE:
+            if media.custom_data and (source_id := media.custom_data.get("source_id")):
+                plugin_source = self.mass.players.get_plugin_source(source_id)
+                if plugin_source:
+                    return await self.get_plugin_source_url(plugin_source, player_id)
+            return media.uri
         protocol_player = self.mass.players.get_player(player_id)
         conf_output_codec = cast(
             "str",
