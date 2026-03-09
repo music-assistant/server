@@ -696,7 +696,12 @@ class PartyModePlugin(PluginProvider):
                 raise InvalidDataError(f"Queue item {queue_item_id} not found")
 
             if queue.state == PlaybackState.PLAYING:
-                current_index = queue.current_index if queue.current_index is not None else 0
+                # Use index_in_buffer to avoid moving already-buffered items
+                current_index = (
+                    queue.index_in_buffer
+                    if queue.index_in_buffer is not None
+                    else (queue.current_index if queue.current_index is not None else 0)
+                )
 
                 if item_index <= current_index:
                     raise InvalidDataError(
@@ -719,7 +724,6 @@ class PartyModePlugin(PluginProvider):
 
                 queue_items_copy.insert(insert_index, moved_item)
                 self.mass.player_queues.update_items(queue_id, queue_items_copy)
-                await self._refresh_player_queue(queue_id)
             else:
                 # Queue is not playing — move item to the play position and start playback
                 current_index = queue.current_index or 0
@@ -790,8 +794,14 @@ class PartyModePlugin(PluginProvider):
             queue = self.mass.player_queues.get(queue_id)
             queue_items = self.mass.player_queues.items(queue_id)
 
+            # Use index_in_buffer when playing to avoid inserting before an already-buffered
+            # track, which would cause the newly added song to be skipped
             if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                current_index = queue.current_index if queue.current_index is not None else 0
+                current_index = (
+                    queue.index_in_buffer
+                    if queue.index_in_buffer is not None
+                    else (queue.current_index if queue.current_index is not None else 0)
+                )
             else:
                 current_index = queue.current_index or 0 if queue else 0
 
@@ -805,8 +815,6 @@ class PartyModePlugin(PluginProvider):
                 keep_played=True,
                 shuffle=False,
             )
-            if queue and queue.state == PlaybackState.PLAYING:
-                await self._refresh_player_queue(queue_id)
 
     @staticmethod
     def _validate_guest_access() -> None:
@@ -817,25 +825,6 @@ class PartyModePlugin(PluginProvider):
         user = get_current_user()
         if not user or user.username != PARTY_MODE_GUEST_USER:
             raise InvalidDataError("This endpoint is only available to party mode guests")
-
-    async def _refresh_player_queue(self, queue_id: str) -> None:
-        """Refresh the player's enqueued next item after party mode modifies the queue.
-
-        For ENQUEUE players (like Sonos with cloud queue), the player maintains its own
-        queue snapshot that becomes stale when party mode inserts items. This explicitly
-        tells the player about the updated next item so it can refresh.
-
-        :param queue_id: The queue ID to refresh.
-        """
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue or queue.state != PlaybackState.PLAYING:
-            return
-        if queue.flow_mode or queue.index_in_buffer is None:
-            return
-        next_item = self.mass.player_queues.get_next_item(queue_id, queue.index_in_buffer)
-        if next_item:
-            media = await self.mass.player_queues.player_media_from_queue_item(next_item)
-            await self.mass.players.enqueue_next_media(queue_id, media)
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:
