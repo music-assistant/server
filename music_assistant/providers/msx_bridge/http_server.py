@@ -241,6 +241,8 @@ class MSXHTTPServer:
                 if not ws.closed:
                     await ws.close()
         self._ws_clients.clear()
+        for player_id in list(self._active_stream_tasks):
+            self.cancel_streams_for_player(player_id)
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -266,6 +268,7 @@ class MSXHTTPServer:
         player_info = "".join(player_rows) if player_rows else ""
 
         # Build URLs
+        safe_host: str = html_escape(request.host)  # escape for HTML display
         _raw_host: str = request.url.host or request.host.split(":")[0]  # IPv6-safe, no port
         hostname = f"[{_raw_host}]" if ":" in _raw_host else _raw_host
         sendspin_port = "8927"
@@ -300,13 +303,13 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
 <div class="info">
 <h3>MSX Setup URL</h3>
-<code>http://{request.host}/msx/start.json</code>
+<code>http://{safe_host}/msx/start.json</code>
 </div>
 
 <div class="info">
 <h3>Web Player</h3>
 <div class="link-row">
-<a href="/web">http://{request.host}/web</a>
+<a href="/web">http://{safe_host}/web</a>
 <small>Browser-based player with library navigation (HTTP streaming)</small>
 </div>
 <div class="link-row">
