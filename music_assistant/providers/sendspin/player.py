@@ -228,10 +228,12 @@ class SendspinPlayer(Player):
                 self._attr_device_info.add_identifier(id_type, id_value)
         # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
         # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
-        if _mac := mac_from_bridge_client_id(self.player_id):
-            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
-        elif is_valid_mac_address(self.player_id):
-            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.player_id)
+        # Skip if a MAC was already preserved (e.g. ARP-enriched) to avoid overwriting it.
+        if IdentifierType.MAC_ADDRESS not in self._attr_device_info.identifiers:
+            if _mac := mac_from_bridge_client_id(self.player_id):
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
+            elif is_valid_mac_address(self.player_id):
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.player_id)
         if sendspin_client.info.player_support:
             for role in sendspin_client.roles_by_family("player"):
                 volume = role.get_player_volume()
