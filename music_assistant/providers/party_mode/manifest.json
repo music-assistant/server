@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "stage": "alpha",
+  "domain": "party_mode",
+  "name": "Party Mode",
+  "description": "Enable guest access with a shareable URL for party mode, allowing guests to add songs to the queue with rate limiting.",
+  "codeowners": ["@apophisnow"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/plugins/party-mode",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "party-popper"
+}
