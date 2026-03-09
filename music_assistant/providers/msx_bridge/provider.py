@@ -261,7 +261,7 @@ class MSXBridgeProvider(PlayerProvider):
     _timeout_task: asyncio.Task[None] | None = None
     _owner_username: str | None = None
     _shared_streams: dict[str, SharedGroupStream]  # group_id -> SharedGroupStream
-    _unregister_tasks: set[asyncio.Task[None]]  # fire-and-forget unregister tasks
+    _background_tasks: set[asyncio.Task[None]]  # fire-and-forget background tasks (unregister, stream stop, etc.)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
@@ -269,7 +269,7 @@ class MSXBridgeProvider(PlayerProvider):
         self._player_last_activity = {}
         self._pending_unregisters = {}
         self._shared_streams = {}
-        self._unregister_tasks = set()
+        self._background_tasks = set()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization — start embedded HTTP server."""
@@ -305,12 +305,12 @@ class MSXBridgeProvider(PlayerProvider):
             self._timeout_task = None
 
         # Cancel and await any in-flight unregister tasks before proceeding
-        for task in list(self._unregister_tasks):
+        for task in list(self._background_tasks):
             if not task.done():
                 task.cancel()
-        if self._unregister_tasks:
-            await asyncio.gather(*self._unregister_tasks, return_exceptions=True)
-        self._unregister_tasks.clear()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
 
         # Cleanup shared streams
         await self.cleanup_shared_streams()
@@ -564,8 +564,8 @@ class MSXBridgeProvider(PlayerProvider):
                         timeout_minutes,
                     )
                     task = self.mass.create_task(self._handle_player_unregister(player.player_id))
-                    self._unregister_tasks.add(task)
-                    task.add_done_callback(self._unregister_tasks.discard)
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
 
     # --- Group Stream Management ---
 
@@ -665,8 +665,8 @@ class MSXBridgeProvider(PlayerProvider):
         if stream := self._shared_streams.pop(group_id, None):
             logger.info("[GroupStream] Removed shared stream for group %s", group_id)
             task = self.mass.create_task(stream.stop())
-            self._unregister_tasks.add(task)
-            task.add_done_callback(self._unregister_tasks.discard)
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def get_ma_stream_url(
         self,

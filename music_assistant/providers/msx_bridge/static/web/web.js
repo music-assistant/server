@@ -1090,20 +1090,30 @@ const SENDSPIN_URL_PARAM = urlParams.get('sendspin_url') || '';
             }
             numEl += '</div>';
 
-            var imgHtml = item.image
-                ? '<img src="' + esc(item.image) + '" alt="" class="queue-item-art" loading="lazy">'
-                : '<div class="queue-item-art--empty"><span class="material-symbols-rounded" style="font-size:18px">audiotrack</span></div>';
-
             var durStr = item.duration ? fmtDur(item.duration) : '';
 
             row.innerHTML =
                 numEl +
-                imgHtml +
                 '<div class="queue-item-info">' +
                     '<div class="queue-item-title">' + esc(item.title || '') + '</div>' +
                     '<div class="queue-item-sub">' + esc(item.artist || '') + '</div>' +
                 '</div>' +
                 '<div class="queue-item-dur">' + durStr + '</div>';
+
+            // Build img element via DOM to safely assign src without innerHTML injection
+            var artEl;
+            if (item.image) {
+                artEl = document.createElement('img');
+                artEl.src = item.image;
+                artEl.alt = '';
+                artEl.className = 'queue-item-art';
+                artEl.loading = 'lazy';
+            } else {
+                artEl = document.createElement('div');
+                artEl.className = 'queue-item-art--empty';
+                artEl.innerHTML = '<span class="material-symbols-rounded" style="font-size:18px">audiotrack</span>';
+            }
+            row.insertBefore(artEl, row.querySelector('.queue-item-info'));
 
             container.appendChild(row);
         });
