@@ -13,6 +13,7 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from xml.parsers.expat import ExpatError
 
 import aiofiles
 import shortuuid
@@ -1103,19 +1104,26 @@ class LocalFileSystemProvider(MusicProvider):
             # found NFO file with metadata
             # https://kodi.wiki/view/NFO_files/Artists
             nfo_file = self.get_absolute_path(nfo_file)
-            async with aiofiles.open(nfo_file) as _file:
-                data = await _file.read()
-            info = await asyncio.to_thread(xmltodict.parse, data)
-            info = info["artist"]
-            artist.name = info.get("title", info.get("name", name))
-            if sort_name := info.get("sortname"):
-                artist.sort_name = sort_name
-            if mbid := info.get("musicbrainzartistid"):
-                artist.mbid = mbid
-            if description := info.get("biography"):
-                artist.metadata.description = description
-            if genre := info.get("genre"):
-                artist.metadata.genres = set(split_items(genre))
+            try:
+                async with aiofiles.open(nfo_file) as _file:
+                    data = await _file.read()
+                info = await asyncio.to_thread(xmltodict.parse, data)
+                info = info["artist"]
+                artist.name = info.get("title", info.get("name", name))
+                if sort_name := info.get("sortname"):
+                    artist.sort_name = sort_name
+                if mbid := info.get("musicbrainzartistid"):
+                    artist.mbid = mbid
+                if description := info.get("biography"):
+                    artist.metadata.description = description
+                if genre := info.get("genre"):
+                    artist.metadata.genres = set(split_items(genre))
+            except (ExpatError, KeyError) as err:
+                self.logger.warning(
+                    "Failed to parse artist NFO file %s: %s",
+                    nfo_file,
+                    str(err),
+                )
         # find local images
         if images := await self._get_local_images(artist_path, extra_thumb_names=("artist",)):
             artist.metadata.images = UniqueList(images)
@@ -1518,26 +1526,33 @@ class LocalFileSystemProvider(MusicProvider):
                 # found NFO file with metadata
                 # https://kodi.wiki/view/NFO_files/Artists
                 nfo_file = self.get_absolute_path(nfo_file)
-                async with aiofiles.open(nfo_file) as _file:
-                    data = await _file.read()
-                info = await asyncio.to_thread(xmltodict.parse, data)
-                info = info["album"]
-                album.name = info.get("title", info.get("name", name))
-                if sort_name := info.get("sortname"):
-                    album.sort_name = sort_name
-                if releasegroup_id := info.get("musicbrainzreleasegroupid"):
-                    album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
-                if album_id := info.get("musicbrainzalbumid"):
-                    album.add_external_id(ExternalID.MB_ALBUM, album_id)
-                if mb_artist_id := info.get("musicbrainzalbumartistid"):
-                    if album.artists and not album.artists[0].mbid:
-                        album.artists[0].mbid = mb_artist_id
-                if description := info.get("review"):
-                    album.metadata.description = description
-                if year := info.get("year"):
-                    album.year = int(year)
-                if genre := info.get("genre"):
-                    album.metadata.genres = set(split_items(genre))
+                try:
+                    async with aiofiles.open(nfo_file) as _file:
+                        data = await _file.read()
+                    info = await asyncio.to_thread(xmltodict.parse, data)
+                    info = info["album"]
+                    album.name = info.get("title", info.get("name", name))
+                    if sort_name := info.get("sortname"):
+                        album.sort_name = sort_name
+                    if releasegroup_id := info.get("musicbrainzreleasegroupid"):
+                        album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
+                    if album_id := info.get("musicbrainzalbumid"):
+                        album.add_external_id(ExternalID.MB_ALBUM, album_id)
+                    if mb_artist_id := info.get("musicbrainzalbumartistid"):
+                        if album.artists and not album.artists[0].mbid:
+                            album.artists[0].mbid = mb_artist_id
+                    if description := info.get("review"):
+                        album.metadata.description = description
+                    if year := info.get("year"):
+                        album.year = int(year)
+                    if genre := info.get("genre"):
+                        album.metadata.genres = set(split_items(genre))
+                except (ExpatError, KeyError) as err:
+                    self.logger.warning(
+                        "Failed to parse album NFO file %s: %s",
+                        nfo_file,
+                        str(err),
+                    )
             # parse name/version
             album.name, album.version = parse_title_and_version(album.name)
             # find local images
