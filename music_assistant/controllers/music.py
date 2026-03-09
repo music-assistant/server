@@ -102,7 +102,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 31
+DB_SCHEMA_VERSION: Final[int] = 32
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2490,7 +2490,7 @@ class MusicController(CoreController):
                 " json DEFAULT '[\"track\"]' NOT NULL"
             )
 
-        if prev_version <= 30:
+        if prev_version <= 31:
             # create the genre_media_item_exclusion table (new in schema 31)
             await self._database.execute(
                 f"""
