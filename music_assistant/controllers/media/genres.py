@@ -552,6 +552,7 @@ class GenreController(MediaControllerBase[Genre]):
         if full_restore:
             self.logger.warning("Performing FULL restore - deleting all existing genres")
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING)
+            await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION)
             await self.mass.music.database.delete(
                 DB_TABLE_PLAYLOG, {"media_type": MediaType.GENRE.value}
             )
@@ -927,6 +928,9 @@ class GenreController(MediaControllerBase[Genre]):
         db_id = int(item_id)
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, {"genre_id": db_id}
+        )
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": db_id}
         )
         await super().remove_item_from_library(item_id, recursive)
 
