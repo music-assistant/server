@@ -99,7 +99,7 @@ CATCHUP_DAYS = 30
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_PODCASTS,
 }
 
@@ -619,9 +619,14 @@ class RadiothekProvider(MusicProvider):
     # MA API: Radios
     # ----------------------------
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Yield all radios exposed by this provider."""
+    @use_cache(3600 * 24)  # Cache for 24 hours
+    async def browse(self, path: str) -> list[Radio]:
+        """Browse this provider's radio stations.
+
+        :param path: The path to browse, (e.g. provider_id://artists).
+        """
         bundle = await self._get_bundle()
+        radios: list[Radio] = []
 
         # ORF stations (local icons)
         for st in self._iter_orf_stations(bundle):
@@ -629,7 +634,7 @@ class RadiothekProvider(MusicProvider):
             img = self._orf_local_icon_image(st.id)
             if img:
                 r.metadata.add_image(img)
-            yield r
+            radios.append(r)
 
         # privates (remote icons)
         for pst in self._iter_privates(bundle):
@@ -643,7 +648,9 @@ class RadiothekProvider(MusicProvider):
                         remotely_accessible=True,
                     )
                 )
-            yield r
+            radios.append(r)
+
+        return radios
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Yield all podcasts exposed by this provider."""

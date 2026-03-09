@@ -21,7 +21,6 @@ from .provider import RadioParadiseProvider
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
-    ProviderFeature.LIBRARY_RADIOS,
 }
 
 

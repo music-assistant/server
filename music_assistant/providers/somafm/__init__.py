@@ -17,8 +17,11 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemType,
     ProviderMapping,
     Radio,
 )
@@ -29,7 +32,7 @@ from music_assistant.helpers.playlists import PlaylistItem, fetch_playlist
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import Sequence
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
@@ -38,7 +41,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.BROWSE,
 }
 
@@ -84,13 +86,12 @@ class SomaFMProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve library/subscribed radio stations from the provider."""
-        stations = await self._get_stations()  # May be cached
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse this provider's radio stations."""
+        stations = await self._get_stations()
         if stations:
-            for channel_info in stations.values():
-                radio = self._parse_channel(channel_info)
-                yield radio
+            return [self._parse_channel(channel_info) for channel_info in stations.values()]
+        return []
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""

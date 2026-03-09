@@ -83,7 +83,7 @@ ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.LIBRARY_RADIOS,  # TODO: consider removing
     ProviderFeature.LIBRARY_PODCASTS,
 }
 
