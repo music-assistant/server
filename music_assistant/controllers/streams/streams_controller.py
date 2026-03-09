@@ -382,6 +382,8 @@ class StreamsController(CoreController):
         :param media: The PlayerMedia object for which to resolve the stream URL.
         :return: The resolved stream URL as a string.
         """
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            return media.uri
         protocol_player = self.mass.players.get_player(player_id)
         conf_output_codec = cast(
             "str",
