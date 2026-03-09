@@ -2107,9 +2107,10 @@ small {{ color: #666; display: block; margin-top: 4px; }}
     def _get_prefix(self, request: web.Request) -> str:
         """Build URL prefix for JSON content, using our known port.
 
-        Uses aiohttp's parsed URL host (IPv6-safe, no port, no brackets) and
-        substitutes self.port to prevent a spoofed Host header from redirecting
-        generated URLs to a foreign host.
+        Uses aiohttp's parsed URL host (IPv6-safe, no port) and substitutes
+        self.port. Note: host is still derived from the Host header; a crafted
+        header can influence the returned host, but the server binds to 0.0.0.0
+        so there is no single canonical IP to validate against.
         """
         host: str = request.url.host or request.host.split(":")[0]  # IPv6-safe, no port
         host_addr = f"[{host}]" if ":" in host else host  # bracket IPv6 literals for URLs
@@ -2126,6 +2127,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         remote_ip = request.remote or "unknown"
 
         if device_id:
+            device_id = device_id[:64]  # clamp before sanitizing (UUIDs are 36 chars)
             sanitized = PLAYER_ID_SANITIZE_RE.sub("_", device_id).strip("_") or "device"
             player_id = f"{MSX_PLAYER_ID_PREFIX}{sanitized}"
             param = f"device_id={quote(device_id, safe='')}"
