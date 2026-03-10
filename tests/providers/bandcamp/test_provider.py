@@ -29,7 +29,7 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import Album, BrowseFolder, Track
+from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.bandcamp import BandcampProvider, split_id
@@ -1515,6 +1515,25 @@ async def test_browse_person_content_cache_hit(provider: BandcampProvider) -> No
         assert result[1].name == "Cached Track"
 
 
+async def test_browse_person_content_cache_hit_stale_data(provider: BandcampProvider) -> None:
+    """Test _browse_person_content falls through to API on stale/corrupt cache."""
+    stale_cache = [{"garbage": True}]
+    mock_collection = Mock()
+    mock_collection.items = []
+
+    with (
+        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=stale_cache),
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+    ):
+        mock_get_collection.return_value = mock_collection
+        result = await provider._browse_person_content(42, CollectionType.COLLECTION)
+
+        mock_get_collection.assert_called_once()
+        assert result == []
+
+
 async def test_browse_person_content_empty_cached_with_short_ttl(
     provider: BandcampProvider,
 ) -> None:
@@ -1597,6 +1616,31 @@ async def test_browse_person_following_with_person_id(provider: BandcampProvider
         assert result[0] is mock_artist
 
 
+async def test_browse_person_following_cache_hit(provider: BandcampProvider) -> None:
+    """Test _browse_person_following deserializes cached dicts back to Artist objects."""
+    cached_items = [
+        Artist(
+            item_id="100",
+            provider="bandcamp",
+            name="Cached Artist",
+            provider_mappings=set(),
+        ).to_dict(),
+    ]
+
+    with (
+        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_items),
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+    ):
+        result = await provider._browse_person_following(42)
+
+        mock_get_collection.assert_not_called()
+        assert len(result) == 1
+        assert isinstance(result[0], Artist)
+        assert result[0].name == "Cached Artist"
+
+
 async def test_browse_person_following_skips_not_found(provider: BandcampProvider) -> None:
     """Test _browse_person_following logs warning and skips unfound artists."""
     mock_collection = Mock()
@@ -1661,23 +1705,23 @@ async def test_browse_person_people_api_error(provider: BandcampProvider) -> Non
 async def test_browse_person_people_cache_hit_rebuilds_slugs(
     provider: BandcampProvider,
 ) -> None:
-    """Test that cache-hit path in _browse_person_people repopulates slug map."""
+    """Test _browse_person_people deserializes cached dicts and repopulates slugs."""
     cached_folders = [
         BrowseFolder(
             item_id="person_111",
             provider="bandcamp_test",
             path="bandcamp_test://fans/coolslug",
             name="Cool User",
-        ),
+        ).to_dict(),
         BrowseFolder(
             item_id="person_222",
             provider="bandcamp_test",
             path="bandcamp_test://fans/anotherslug",
             name="Another User",
-        ),
+        ).to_dict(),
     ]
 
-    async def fake_cache_get(key: str, **kwargs: object) -> list[BrowseFolder] | None:  # noqa: ARG001
+    async def fake_cache_get(key: str, **kwargs: object) -> list[dict[str, object]] | None:  # noqa: ARG001
         if "_browse_person_people_" in key:
             return cached_folders
         return None
@@ -1691,7 +1735,10 @@ async def test_browse_person_people_cache_hit_rebuilds_slugs(
             CollectionType.FOLLOWING_FANS, "bandcamp_test://fans"
         )
 
-    assert result == cached_folders
+    assert len(result) == 2
+    assert all(isinstance(f, BrowseFolder) for f in result)
+    assert result[0].name == "Cool User"
+    assert result[1].name == "Another User"
     assert provider._slug_to_fan_id["coolslug"] == 111
     assert provider._slug_to_fan_id["anotherslug"] == 222
 
