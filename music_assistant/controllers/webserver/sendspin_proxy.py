@@ -97,20 +97,27 @@ class SendspinProxyHandler:
         # The internal Sendspin server may not be ready yet during startup
         # (it starts in the provider load phase, after the webserver).
         # Retry a few times with backoff to handle this race condition.
-        internal_ws = None
-        for attempt in range(5):
-            try:
-                internal_ws = await self.mass.http_session.ws_connect(self.internal_sendspin_url)
-                break
-            except ClientConnectorError:
-                if attempt < 4:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-                self.logger.exception("Failed to connect to internal Sendspin server")
-                await wsock.close(code=1011, message=b"Internal server error")
-                return wsock
-
-        assert internal_ws is not None  # ensured by retry loop above
+        try:
+            internal_ws = None
+            for attempt in range(5):
+                try:
+                    internal_ws = await self.mass.http_session.ws_connect(
+                        self.internal_sendspin_url
+                    )
+                    break
+                except ClientConnectorError:
+                    if attempt < 4:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    self.logger.exception("Failed to connect to internal Sendspin server")
+                    await wsock.close(code=1011, message=b"Internal server error")
+                    return wsock
+            if internal_ws is None:
+                raise RuntimeError("Retry loop exited without connecting or returning")
+        except Exception:
+            self.logger.exception("Failed to connect to internal Sendspin server")
+            await wsock.close(code=1011, message=b"Internal server error")
+            return wsock
         self.logger.debug("Sendspin proxy authenticated and connected for %s", request.remote)
 
         try:
