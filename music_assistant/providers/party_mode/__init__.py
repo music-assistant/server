@@ -672,6 +672,9 @@ class PartyModePlugin(PluginProvider):
             if item_index is None:
                 raise InvalidDataError(f"Queue item {queue_item_id} not found")
 
+            if queue_items[item_index].extra_attributes.get(ATTR_PARTY_MODE_BOOSTED):
+                raise InvalidDataError("This item is already boosted")
+
             if queue.state == PlaybackState.PLAYING:
                 # Use index_in_buffer to avoid moving already-buffered items
                 current_index = (
