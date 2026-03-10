@@ -673,11 +673,9 @@ class MusicController(CoreController):
 
         for db_row in db_rows:
             provider = db_row["provider"]
-
             # Apply user provider filter
             if user_provider_filter and provider not in user_provider_filter:
                 continue
-
             result.append(
                 ItemMapping.from_dict(
                     {
