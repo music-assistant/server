@@ -102,7 +102,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 32
+DB_SCHEMA_VERSION: Final[int] = 33
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2511,7 +2511,7 @@ class MusicController(CoreController):
                 f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
             )
 
-        if prev_version <= 31:
+        if prev_version <= 32:
             # recreate genre_media_item_mapping with nullable alias and is_derived column
             # (new in schema 32 to support propagated genre mappings from tracks)
             await self._database.execute(
