@@ -1311,6 +1311,8 @@ class PlayerQueuesController(CoreController):
 
     def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """Call when a player is removed from the registry."""
+        # cancel any pending play_index calls for this queue to prevent conflicts
+        self.mass.cancel_timer(f"queue_play_index_{player_id}")
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
             self.mass.create_task(
