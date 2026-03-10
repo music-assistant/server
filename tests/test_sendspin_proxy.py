@@ -101,7 +101,7 @@ class TestSendspinProxyRetry:
         assert result is mock_ws_response
 
     async def test_does_not_retry_on_other_exceptions(self, handler: SendspinProxyHandler) -> None:
-        """Verify non-connection errors are not retried."""
+        """Verify non-connection errors are not retried and websocket is closed cleanly."""
         mock_ws_response = AsyncMock(spec=web.WebSocketResponse)
         mock_ws_response.closed = False
 
@@ -118,7 +118,8 @@ class TestSendspinProxyRetry:
         ):
             mock_session.ws_connect = mock_ws_connect
             request = make_mocked_request("GET", "/sendspin")
-            with pytest.raises(TypeError, match="unexpected error"):
-                await handler.handle_sendspin_proxy(request)
+            result = await handler.handle_sendspin_proxy(request)
 
         assert mock_ws_connect.call_count == 1
+        mock_ws_response.close.assert_called_once_with(code=1011, message=b"Internal server error")
+        assert result is mock_ws_response
