@@ -1329,6 +1329,10 @@ class PlayerQueuesController(CoreController):
             )
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
+        # Clear transient runtime state for this queue_id so a later re-register
+        # starts from restored cache state only (without stale compare/transition data).
+        self._prev_states.pop(player_id, None)
+        self._transitioning_players.discard(player_id)
 
     async def load_next_queue_item(
         self,
