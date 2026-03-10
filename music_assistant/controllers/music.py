@@ -2513,7 +2513,7 @@ class MusicController(CoreController):
 
         if prev_version <= 32:
             # recreate genre_media_item_mapping with nullable alias and is_derived column
-            # (new in schema 32 to support propagated genre mappings from tracks)
+            # (new in schema 33 to support propagated genre mappings from tracks)
             await self._database.execute(
                 f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
                 f"RENAME TO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
