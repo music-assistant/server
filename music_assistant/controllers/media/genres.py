@@ -947,19 +947,23 @@ class GenreController(MediaControllerBase[Genre]):
                 )
                 if enabled:
                     enabled_instance_ids.append(p.instance_id)
-        if not enabled_instance_ids:
-            return
 
         db = self.mass.music.database
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-        excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
-        pm = DB_TABLE_PROVIDER_MAPPINGS
-        ids_sql = ", ".join(f"'{x}'" for x in enabled_instance_ids)
 
-        # Wipe all previously derived album/artist mappings and rebuild from current track data.
+        # Always wipe previously derived mappings first so that disabling propagation
+        # on a provider immediately removes its derived entries, not just on next run.
         await db.execute(
             f"DELETE FROM {gm} WHERE is_derived = 1 AND media_type IN ('album', 'artist')"
         )
+
+        if not enabled_instance_ids:
+            await db.commit()
+            return
+
+        excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
+        pm = DB_TABLE_PROVIDER_MAPPINGS
+        ids_sql = ", ".join(f"'{x}'" for x in enabled_instance_ids)
 
         # Derive album genres: inherit each track genre mapping onto the track's album,
         # provided the album has no own genre metadata and the pair is not excluded.

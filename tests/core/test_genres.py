@@ -10,11 +10,13 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     Genre,
     Track,
@@ -22,10 +24,12 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
 )
@@ -93,6 +97,18 @@ async def _add_test_track(mass: MusicAssistant, name: str) -> Track:
         artists=UniqueList([artist]),
     )
     return await mass.music.tracks.add_item_to_library(track)
+
+
+async def _add_test_album(mass: MusicAssistant, name: str) -> Album:
+    """Add a minimal album to the library."""
+    album = Album(
+        item_id="0",
+        provider="library",
+        name=name,
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
+    )
+    return await mass.music.albums.add_item_to_library(album)
 
 
 # ===================================================================
@@ -1502,3 +1518,265 @@ class TestGenreExclusion:
             MediaType.ALBUM, "3957198221-190478553"
         )
         assert result == []
+
+
+class TestPropagateGenreMappings:
+    """Tests for _propagate_genre_mappings_to_parents."""
+
+    async def test_propagation_derives_album_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Track genre mappings are propagated to the track's album."""
+        instance_id = "fs_local_instance_album"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropAlbumGenre"))
+        artist = await _add_test_artist(mass, "PropAlbum Artist")
+        album = await _add_test_album(mass, "PropAlbum Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="PropAlbum Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropAlbumGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album' AND is_derived = 1",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_propagation_derives_artist_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Track genre mappings are propagated to the track's artist."""
+        instance_id = "fs_local_instance_artist"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropArtistGenre"))
+        track = await _add_test_track(mass, "PropArtist Track")
+        track_id = int(track.item_id)
+        artist_id = int(track.artists[0].item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropArtistGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid "
+            "AND media_type = 'artist' AND is_derived = 1",
+            {"gid": genre_id, "mid": artist_id},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_propagation_respects_exclusion(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Excluded genre-album pairs are not derived even when propagation is enabled."""
+        instance_id = "fs_local_instance_excl"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropExclGenre"))
+        artist = await _add_test_artist(mass, "PropExcl Artist")
+        album = await _add_test_album(mass, "PropExcl Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="PropExcl Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropExclGenre")
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.ALBUM, album_id)
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album'",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows) == 0
+
+    async def test_propagation_disabled_removes_derived(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Disabling propagation on all providers removes previously derived mappings."""
+        instance_id = "fs_local_instance_disable"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropDisableGenre"))
+        artist = await _add_test_artist(mass, "PropDisable Artist")
+        album = await _add_test_album(mass, "PropDisable Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="PropDisable Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropDisableGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows_after_enable = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album' AND is_derived = 1",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows_after_enable) == 1
+
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=False)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows_after_disable = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album' AND is_derived = 1",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows_after_disable) == 0
