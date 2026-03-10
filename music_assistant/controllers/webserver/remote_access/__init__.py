@@ -267,7 +267,9 @@ class RemoteAccessManager:
             elif not self._enabled and self.is_running:
                 await self.stop()
             if changed:
-                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+                self.mass.signal_event(
+                    EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info()
+                )
             return await get_remote_access_info()
 
         self._on_unload_callbacks.append(
