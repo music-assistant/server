@@ -137,7 +137,7 @@ async def get_config_entries(
             label="API Base URL",
             description="API endpoint base URL. "
             "Only change if Yandex Music changes their API endpoint. "
-            "Default: https://api.music.yandex.net",
+            f"Default: {DEFAULT_BASE_URL}",
             default_value=DEFAULT_BASE_URL,
             required=False,
             advanced=True,
