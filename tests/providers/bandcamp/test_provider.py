@@ -1515,7 +1515,9 @@ async def test_browse_person_content_cache_hit(provider: BandcampProvider) -> No
         assert result[1].name == "Cached Track"
 
 
-async def test_browse_person_content_cache_hit_stale_data(provider: BandcampProvider) -> None:
+async def test_browse_person_content_cache_hit_stale_data(
+    provider: BandcampProvider, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test _browse_person_content falls through to API on stale/corrupt cache."""
     stale_cache = [{"garbage": True}]
     mock_collection = Mock()
@@ -1532,6 +1534,7 @@ async def test_browse_person_content_cache_hit_stale_data(provider: BandcampProv
 
         mock_get_collection.assert_called_once()
         assert result == []
+        assert "Stale cache" in caplog.text
 
 
 async def test_browse_person_content_empty_cached_with_short_ttl(
@@ -1664,6 +1667,28 @@ async def test_browse_person_following_skips_not_found(provider: BandcampProvide
         assert len(result) == 1
 
 
+async def test_browse_person_following_cache_hit_stale_data(
+    provider: BandcampProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test _browse_person_following falls through to API on stale/corrupt cache."""
+    stale_cache = [{"garbage": True}]
+    mock_collection = Mock()
+    mock_collection.items = []
+
+    with (
+        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=stale_cache),
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+    ):
+        mock_get_collection.return_value = mock_collection
+        result = await provider._browse_person_following(42)
+
+        mock_get_collection.assert_called_once()
+        assert result == []
+        assert "Stale cache" in caplog.text
+
+
 # --- _browse_person_people tests ---
 
 
@@ -1741,6 +1766,36 @@ async def test_browse_person_people_cache_hit_rebuilds_slugs(
     assert result[1].name == "Another User"
     assert provider._slug_to_fan_id["coolslug"] == 111
     assert provider._slug_to_fan_id["anotherslug"] == 222
+
+
+async def test_browse_person_people_cache_hit_stale_data(
+    provider: BandcampProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test _browse_person_people falls through to API on stale/corrupt cache."""
+    stale_cache = [{"garbage": True}]
+    mock_collection = Mock()
+    mock_collection.items = []
+
+    async def fake_cache_get(key: str, **kwargs: object) -> object:  # noqa: ARG001
+        if "_browse_person_people_" in key:
+            return stale_cache
+        return None
+
+    with (
+        patch.object(provider.mass.cache, "get", new_callable=AsyncMock) as mock_cache_get,
+        patch.object(
+            provider._client, "get_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+    ):
+        mock_cache_get.side_effect = fake_cache_get
+        mock_get_collection.return_value = mock_collection
+        result = await provider._browse_person_people(
+            CollectionType.FOLLOWING_FANS, "bandcamp_test://fans"
+        )
+
+        mock_get_collection.assert_called_once()
+        assert result == []
+        assert "Stale cache" in caplog.text
 
 
 async def test_rebuild_slug_cache_calls_browse_person_people(

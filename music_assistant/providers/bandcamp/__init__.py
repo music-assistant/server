@@ -16,6 +16,7 @@ from bandcamp_async_api import (
     SearchResultTrack,
 )
 from bandcamp_async_api.models import BCAlbum, BCTrack, CollectionType, FanItem
+from mashumaro.exceptions import UnserializableDataError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -635,7 +636,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             try:
                 return [self._deserialize_content_item(item) for item in cached]
-            except (LookupError, ValueError, TypeError):
+            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
                 self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
         items: list[Album | Track] = []
         context = f"Failed to get {collection_type.value} for person {person_id}"
@@ -666,7 +667,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             try:
                 return [Artist.from_dict(a) if isinstance(a, dict) else a for a in cached]
-            except (LookupError, ValueError, TypeError):
+            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
                 self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
         artists: list[Artist] = []
         async with self._map_api_errors(f"Failed to get following for person {person_id}"):
@@ -707,7 +708,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             try:
                 folders = [BrowseFolder.from_dict(f) if isinstance(f, dict) else f for f in cached]
-            except (LookupError, ValueError, TypeError):
+            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
                 self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
             else:
                 for folder in folders:
