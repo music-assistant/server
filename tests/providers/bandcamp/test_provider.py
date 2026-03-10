@@ -29,7 +29,7 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import BrowseFolder
+from music_assistant_models.media_items import Album, BrowseFolder, Track
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.bandcamp import BandcampProvider, split_id
@@ -1484,7 +1484,20 @@ async def test_browse_person_content_caches_results(provider: BandcampProvider) 
 
 async def test_browse_person_content_cache_hit(provider: BandcampProvider) -> None:
     """Test _browse_person_content returns cached result without hitting API."""
-    cached_items = [Mock(), Mock()]
+    cached_items = [
+        Album(
+            item_id="1-100",
+            provider="bandcamp",
+            name="Cached Album",
+            provider_mappings=set(),
+        ).to_dict(),
+        Track(
+            item_id="1-100-200",
+            provider="bandcamp",
+            name="Cached Track",
+            provider_mappings=set(),
+        ).to_dict(),
+    ]
 
     with (
         patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_items),
@@ -1495,7 +1508,11 @@ async def test_browse_person_content_cache_hit(provider: BandcampProvider) -> No
         result = await provider._browse_person_content(42, CollectionType.COLLECTION)
 
         mock_get_collection.assert_not_called()
-        assert result is cached_items
+        assert len(result) == 2
+        assert isinstance(result[0], Album)
+        assert isinstance(result[1], Track)
+        assert result[0].name == "Cached Album"
+        assert result[1].name == "Cached Track"
 
 
 async def test_browse_person_content_empty_cached_with_short_ttl(

@@ -618,11 +618,18 @@ class BandcampProvider(MusicProvider):
         :param person_id: Person to query. None = authenticated user.
         """
         cache_key = f"_browse_person_content_{person_id}_{collection_type.value}"
-        cached: list[Album | Track] | None = await self.mass.cache.get(
-            cache_key, provider=self.instance_id
-        )
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
         if cached is not None:
-            return cached
+            return [
+                (
+                    Album.from_dict(item)
+                    if isinstance(item, dict) and item.get("media_type") == MediaType.ALBUM
+                    else Track.from_dict(item)
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in cached
+            ]
         items: list[Album | Track] = []
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):
@@ -648,11 +655,9 @@ class BandcampProvider(MusicProvider):
         :param person_id: Person to query. None = authenticated user.
         """
         cache_key = f"_browse_person_following_{person_id}"
-        cached: list[Artist] | None = await self.mass.cache.get(
-            cache_key, provider=self.instance_id
-        )
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
         if cached is not None:
-            return cached
+            return [Artist.from_dict(a) if isinstance(a, dict) else a for a in cached]
         artists: list[Artist] = []
         async with self._map_api_errors(f"Failed to get following for person {person_id}"):
             collection = await self._client.get_collection_items(
@@ -688,16 +693,15 @@ class BandcampProvider(MusicProvider):
         """
         # base_path included intentionally: folder links differ per navigation path.
         cache_key = f"_browse_person_people_{person_id}_{collection_type.value}_{base_path}"
-        cached: list[BrowseFolder] | None = await self.mass.cache.get(
-            cache_key, provider=self.instance_id
-        )
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
         if cached is not None:
-            for folder in cached:
+            folders = [BrowseFolder.from_dict(f) if isinstance(f, dict) else f for f in cached]
+            for folder in folders:
                 segment = folder.path.rstrip("/").rsplit("/", 1)[-1]
                 fan_id_str = folder.item_id.removeprefix("person_")
                 with suppress(ValueError):
                     self._slug_to_fan_id[segment] = int(fan_id_str)
-            return cached
+            return folders
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):
             collection = await self._client.get_collection_items(collection_type, fan_id=person_id)
