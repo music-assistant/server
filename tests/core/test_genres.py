@@ -25,6 +25,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -1114,6 +1115,17 @@ async def _set_track_genres(mass: MusicAssistant, track_id: int, genres: list[st
     await mass.music.database.commit()
 
 
+async def _set_album_genres(mass: MusicAssistant, album_id: int, genres: list[str]) -> None:
+    """Set metadata.genres on an album row directly in the DB."""
+    await mass.music.database.execute(
+        f"UPDATE {DB_TABLE_ALBUMS} "
+        "SET metadata = json_set(metadata, '$.genres', json(:genres)) "
+        "WHERE item_id = :id",
+        {"genres": json.dumps(genres), "id": album_id},
+    )
+    await mass.music.database.commit()
+
+
 class TestCleanupStaleMappings:
     """Tests for _cleanup_stale_genre_mappings."""
 
@@ -1780,3 +1792,100 @@ class TestPropagateGenreMappings:
             limit=0,
         )
         assert len(rows_after_disable) == 0
+
+    async def test_derived_mapping_replaced_by_direct_when_album_gains_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Derived mapping is replaced by direct when album gains own genre metadata.
+
+        Verifies the mapping becomes a direct one instead of leaving the album with no mapping.
+        """
+        instance_id = "fs_local_instance_transition"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("TransitionGenre"))
+        artist = await _add_test_artist(mass, "Transition Artist")
+        album = await _add_test_album(mass, "Transition Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="Transition Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await _set_track_genres(mass, track_id, ["TransitionGenre"])
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "TransitionGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+
+        # Step 1: album has no genres yet → propagation creates a derived mapping.
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        derived_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album'",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(derived_rows) == 1
+        assert derived_rows[0]["is_derived"] == 1
+
+        # Step 2: album gains its own genre metadata.
+        await _set_album_genres(mass, album_id, ["TransitionGenre"])
+
+        # Step 3: incremental scan must replace the derived mapping with a direct one,
+        # not leave the album with no mapping at all.
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._bulk_scan_unmapped_genres()
+
+        final_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album'",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(final_rows) == 1
+        assert final_rows[0]["is_derived"] == 0
+        assert final_rows[0]["alias"] == "TransitionGenre"

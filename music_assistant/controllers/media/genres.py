@@ -901,7 +901,7 @@ class GenreController(MediaControllerBase[Genre]):
         count_before = await db.get_count(gm)
         for table, media_type in MEDIA_TABLES:
             full_query = (
-                f"{cte} INSERT OR IGNORE INTO {gm}"
+                f"{cte} INSERT OR REPLACE INTO {gm}"
                 f"(genre_id, media_id, media_type, alias) "
                 f"SELECT gl.genre_id, {table}.item_id, "
                 f"'{media_type.value}', TRIM(g.value) "
@@ -914,7 +914,8 @@ class GenreController(MediaControllerBase[Genre]):
                 f"SELECT 1 FROM {gm} ex "
                 f"WHERE ex.genre_id = gl.genre_id "
                 f"AND ex.media_id = {table}.item_id "
-                f"AND ex.media_type = '{media_type.value}') "
+                f"AND ex.media_type = '{media_type.value}' "
+                f"AND ex.is_derived = 0) "
                 f"AND NOT EXISTS ("
                 f"SELECT 1 FROM {excl} e "
                 f"WHERE e.genre_id = gl.genre_id "
@@ -1123,6 +1124,7 @@ class GenreController(MediaControllerBase[Genre]):
         )
         if row and row["is_derived"]:
             await self.exclude_genre_from_media_item(genre_id, media_type, media_id)
+            return
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
             {
