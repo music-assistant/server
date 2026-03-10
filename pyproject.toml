@@ -61,7 +61,7 @@ test = [
   "pytest==9.0.2",
   "pytest-aiohttp==1.1.0",
   "pytest-cov==7.0.0",
-  "syrupy==5.0.0",
+  "syrupy==5.1.0",
   "tomli==2.3.0",
   "ruff==0.14.13",
 ]
@@ -262,3 +262,7 @@ known-first-party = ["music_assistant"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
