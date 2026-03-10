@@ -30,6 +30,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
@@ -61,7 +65,29 @@ CACHE_CATEGORY_PODCASTS = 0
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts"
 
-SUPPORTED_FEATURES = {ProviderFeature.SEARCH, ProviderFeature.RECOMMENDATIONS}
+SUPPORTED_FEATURES = {
+    ProviderFeature.SEARCH,
+    ProviderFeature.RECOMMENDATIONS,
+    # This provider does not have a "real" library. Refer to method comment
+    # in get_library_podcasts
+    ProviderFeature.LIBRARY_PODCASTS,
+}
+
+CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_LIBRARY_SYNC_PODCASTS.to_dict(),
+        "hidden": True,
+        "default_value": True,
+    }
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS_MOD = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS.to_dict(),
+        "label": "In-library podcast sync interval",
+        "description": "The interval at which the podcast feed added to the library are refreshed. "
+        "A podcast must have been either added to the library or favorited, to make this work.",
+    }
+)
 
 
 async def setup(
@@ -91,6 +117,8 @@ async def get_config_entries(
 
     language_options = [ConfigValueOption(val, key.lower()) for key, val in country_codes.items()]
     return (
+        CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS_MOD,
         ConfigEntry(
             key=CONF_LOCALE,
             type=ConfigEntryType.STRING,
@@ -212,6 +240,54 @@ class ITunesPodcastsProvider(MusicProvider):
             podcast.metadata.images = UniqueList(image_list)
             podcast_list.append(podcast)
         return podcast_list
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+        """Get library podcasts.
+
+        We use get_library_podcasts to sync all feeds which have been added to the MA library
+        by the user via the search function. The provider itself does not offer a real library.
+
+        The item_id corresponds to the feed_url.
+        """
+        podcasts = await self.mass.music.podcasts.get_library_items_by_prov_id(
+            provider_instance=self.instance_id
+        )
+        for podcast in podcasts:
+            our_provider_mapping: ProviderMapping | None = None
+            for provider_mapping in podcast.provider_mappings:
+                if provider_mapping.provider_instance == self.instance_id:
+                    our_provider_mapping = provider_mapping
+                    break
+            if our_provider_mapping is None:
+                # We should never end up here.
+                self.logger.error("Podcast %s lacks a provider mapping.", podcast.name)
+                continue
+            feed_url = our_provider_mapping.item_id
+            parsed_podcast: dict[str, Any] | None = None
+            try:
+                parsed_podcast = await get_podcastparser_dict(
+                    session=self.mass.http_session,
+                    feed_url=feed_url,
+                    max_episodes=self.max_episodes,
+                )
+                await self._cache_set_podcast(feed_url=feed_url, parsed_podcast=parsed_podcast)
+                self.logger.debug("Synced podcast %s.", podcast.name)
+            except MediaNotFoundError:
+                # If we are not able to refresh the podcast, we must prevent the sync
+                # from deleting the podcast from the library - that is both a breaking change
+                # (pre March 2026) and certainly not desired just because of some downtime.
+                self.logger.warning("Was unable to sync podcast %s (%s).", podcast.name, feed_url)
+                podcast.item_id = feed_url
+                podcast.provider_mappings = {our_provider_mapping}
+                yield podcast
+                continue
+
+            yield parse_podcast(
+                feed_url=feed_url,
+                parsed_feed=parsed_podcast,
+                instance_id=self.instance_id,
+                domain=self.domain,
+            )
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
@@ -345,12 +421,23 @@ class ITunesPodcastsProvider(MusicProvider):
         return parsed_podcast  # type: ignore[no-any-return]
 
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
+        # We cache just a couple minutes longer then our sync interval, if it is configured.
+        # Otherwise we cache for 12 hrs
+        # Keys are in music_assistant/constants
+        library_sync_time_minutes = int(
+            str(self.config.get_value("provider_sync_interval_podcasts"))
+        )
+        library_sync_enabled = bool(self.config.get_value("library_sync_podcasts"))
+        if library_sync_time_minutes == 0 or not library_sync_enabled:
+            cache_time = 60 * 60 * 12  # 12h
+        else:
+            cache_time = library_sync_time_minutes * 60 + 600  # 10 minutes extra cache
         await self.mass.cache.set(
             key=feed_url,
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=parsed_podcast,
-            expiration=60 * 60 * 24,  # 1 day
+            expiration=cache_time,
         )
 
     async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:

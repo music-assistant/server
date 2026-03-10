@@ -303,6 +303,8 @@ async def get_stream_details(
         else:
             preferred_providers = [x.provider_instance for x in media_item.provider_mappings]
         for allow_other_provider in (False, True):
+            if streamdetails:
+                break
             # sort by quality and check item's availability
             for prov_media in sorted(
                 media_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
