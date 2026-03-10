@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
@@ -30,7 +31,9 @@ from music_assistant.constants import (
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PODCASTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
     GENRE_ICONS_DIR,
@@ -730,6 +733,7 @@ class GenreController(MediaControllerBase[Genre]):
             "Bulk genre scan completed - mapped %d unique names to genres",
             len(raw_name_to_genres),
         )
+        await self._propagate_genre_mappings_to_parents()
 
     async def _cleanup_stale_genre_mappings(self) -> None:
         """Remove genre mappings where the alias is no longer in the media item's metadata.genres.
@@ -897,7 +901,7 @@ class GenreController(MediaControllerBase[Genre]):
         count_before = await db.get_count(gm)
         for table, media_type in MEDIA_TABLES:
             full_query = (
-                f"{cte} INSERT OR IGNORE INTO {gm}"
+                f"{cte} INSERT OR REPLACE INTO {gm}"
                 f"(genre_id, media_id, media_type, alias) "
                 f"SELECT gl.genre_id, {table}.item_id, "
                 f"'{media_type.value}', TRIM(g.value) "
@@ -910,7 +914,8 @@ class GenreController(MediaControllerBase[Genre]):
                 f"SELECT 1 FROM {gm} ex "
                 f"WHERE ex.genre_id = gl.genre_id "
                 f"AND ex.media_id = {table}.item_id "
-                f"AND ex.media_type = '{media_type.value}') "
+                f"AND ex.media_type = '{media_type.value}' "
+                f"AND ex.is_derived = 0) "
                 f"AND NOT EXISTS ("
                 f"SELECT 1 FROM {excl} e "
                 f"WHERE e.genre_id = gl.genre_id "
@@ -919,9 +924,95 @@ class GenreController(MediaControllerBase[Genre]):
             )
             await db.execute(full_query)
         await db.commit()
+        await self._propagate_genre_mappings_to_parents()
         count_after = await db.get_count(gm)
 
         return count_after - count_before
+
+    async def _propagate_genre_mappings_to_parents(self) -> None:
+        """Propagate track genre mappings to albums and artists for filesystem provider instances.
+
+        Only runs when at least one filesystem_local or filesystem_smb provider instance has
+        the 'propagate_track_genres' config option enabled. Albums and artists that already
+        have their own genre metadata (e.g. from an NFO file) are skipped.
+
+        Derived mappings are stored with is_derived=1 and rebuilt from scratch on each
+        call, so stale derived mappings are never left behind.
+        The genre_media_item_exclusion table is respected — excluded pairs are never derived.
+        """
+        enabled_instance_ids: list[str] = []
+        for p in self.mass.music.providers:
+            if p.domain in {"filesystem_local", "filesystem_smb"}:
+                enabled = await self.mass.config.get_provider_config_value(
+                    p.instance_id, "propagate_track_genres", default=False
+                )
+                if enabled:
+                    enabled_instance_ids.append(p.instance_id)
+
+        db = self.mass.music.database
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+
+        # Always wipe previously derived mappings first so that disabling propagation
+        # on a provider immediately removes its derived entries, not just on next run.
+        await db.execute(
+            f"DELETE FROM {gm} WHERE is_derived = 1 AND media_type IN ('album', 'artist')"
+        )
+
+        if not enabled_instance_ids:
+            await db.commit()
+            return
+
+        excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
+        pm = DB_TABLE_PROVIDER_MAPPINGS
+        ids_sql = ", ".join(f"'{x}'" for x in enabled_instance_ids)
+
+        # Derive album genres: inherit each track genre mapping onto the track's album,
+        # provided the album has no own genre metadata and the pair is not excluded.
+        await db.execute(
+            f"INSERT OR IGNORE INTO {gm} (genre_id, media_id, media_type, alias, is_derived) "
+            f"SELECT DISTINCT m.genre_id, at.album_id, 'album', NULL, 1 "
+            f"FROM {gm} m "
+            f"JOIN {DB_TABLE_ALBUM_TRACKS} at "
+            f"  ON m.media_id = at.track_id AND m.media_type = 'track' "
+            f"JOIN {pm} p ON p.item_id = at.track_id AND p.media_type = 'track' "
+            f"  AND p.provider_instance IN ({ids_sql}) "
+            f"JOIN {DB_TABLE_ALBUMS} alb ON alb.item_id = at.album_id "
+            f"WHERE ("
+            f"  json_extract(alb.metadata, '$.genres') IS NULL "
+            f"  OR json_extract(alb.metadata, '$.genres') = '[]'"
+            f") "
+            f"AND NOT EXISTS ("
+            f"  SELECT 1 FROM {excl} e "
+            f"  WHERE e.genre_id = m.genre_id "
+            f"    AND e.media_id = at.album_id "
+            f"    AND e.media_type = 'album'"
+            f")"
+        )
+
+        # Derive artist genres: inherit each track genre mapping onto the track's artist,
+        # provided the artist has no own genre metadata and the pair is not excluded.
+        await db.execute(
+            f"INSERT OR IGNORE INTO {gm} (genre_id, media_id, media_type, alias, is_derived) "
+            f"SELECT DISTINCT m.genre_id, ta.artist_id, 'artist', NULL, 1 "
+            f"FROM {gm} m "
+            f"JOIN {DB_TABLE_TRACK_ARTISTS} ta "
+            f"  ON m.media_id = ta.track_id AND m.media_type = 'track' "
+            f"JOIN {pm} p ON p.item_id = ta.track_id AND p.media_type = 'track' "
+            f"  AND p.provider_instance IN ({ids_sql}) "
+            f"JOIN {DB_TABLE_ARTISTS} art ON art.item_id = ta.artist_id "
+            f"WHERE ("
+            f"  json_extract(art.metadata, '$.genres') IS NULL "
+            f"  OR json_extract(art.metadata, '$.genres') = '[]'"
+            f") "
+            f"AND NOT EXISTS ("
+            f"  SELECT 1 FROM {excl} e "
+            f"  WHERE e.genre_id = m.genre_id "
+            f"    AND e.media_id = ta.artist_id "
+            f"    AND e.media_type = 'artist'"
+            f")"
+        )
+
+        await db.commit()
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete genre record from the database."""
@@ -1020,10 +1111,20 @@ class GenreController(MediaControllerBase[Genre]):
     ) -> None:
         """Remove a media item mapping from a genre.
 
+        If the mapping was derived (propagated from child tracks), an exclusion is
+        automatically inserted so the next propagation scan does not re-derive it.
+
         :param genre_id: Database ID of the genre.
         :param media_type: Type of media item (track, album, artist).
         :param media_id: Database ID of the media item.
         """
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {"genre_id": int(genre_id), "media_id": int(media_id), "media_type": media_type.value},
+        )
+        if row and row["is_derived"]:
+            await self.exclude_genre_from_media_item(genre_id, media_type, media_id)
+            return
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
             {
