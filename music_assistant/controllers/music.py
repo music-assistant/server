@@ -648,11 +648,17 @@ class MusicController(CoreController):
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
         available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
+
+        # An audiobook can be part of the library, in contrast to podcast episodes.
+        # We then need to check the provider mappings table.
         query = (
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in ('audiobook', 'podcast_episode') AND fully_played = 0 "
-            f"AND provider in {available_providers_str} "
-            "AND seconds_played > 0 "
+            "SELECT p.item_id,p.media_type,p.name,p.image, "
+            "IF(p.provider = 'library',m.provider_instance,p.provider) as provider "
+            f"FROM {DB_TABLE_PLAYLOG} p "
+            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} m ON m.item_id = p.item_id "
+            "WHERE p.media_type in ('audiobook', 'podcast_episode') AND p.fully_played = 0 "
+            f"AND p.provider in {available_providers_str} "
+            "AND p.seconds_played > 0 "
         )
         if not all_users and (user := get_current_user()):
             query += f"AND userid = '{user.user_id}' "
@@ -669,18 +675,8 @@ class MusicController(CoreController):
             provider = db_row["provider"]
 
             # Apply user provider filter
-            if user_provider_filter:
-                if provider == "library" and (
-                    # podcast episodes are never part of the library, this has to be an audiobook
-                    db_row_audiobook := await self.mass.music.database.get_row(
-                        DB_TABLE_PROVIDER_MAPPINGS,
-                        match={"item_id": db_row["item_id"], "media_type": MediaType.AUDIOBOOK},
-                    )
-                ):
-                    if db_row_audiobook["provider_instance"] not in user_provider_filter:
-                        continue
-                elif provider not in user_provider_filter:
-                    continue
+            if user_provider_filter and provider not in user_provider_filter:
+                continue
 
             result.append(
                 ItemMapping.from_dict(
