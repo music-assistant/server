@@ -584,11 +584,7 @@ class PartyModePlugin(PluginProvider):
         :param boost: If True, insert at the front of the guest section (play next).
         :returns: Result dict with success status and queue position info.
         """
-        user = get_current_user()
-
-        # Verify user is a guest
-        if not user or user.username != PARTY_MODE_GUEST_USER:
-            raise InvalidDataError("This endpoint is only available to party mode guests")
+        self._validate_guest_access()
 
         # Check if guest access is enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
@@ -669,6 +665,8 @@ class PartyModePlugin(PluginProvider):
         :returns: Result dict with success status.
         """
         self._validate_guest_access()
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            raise InvalidDataError("Party mode guest access is disabled")
         if not self.config.get_value(CONF_ENABLE_BOOST):
             raise InvalidDataError("Boost feature is disabled")
 
@@ -858,11 +856,7 @@ class PartyModePlugin(PluginProvider):
 
         :returns: Result dict with success status.
         """
-        user = get_current_user()
-
-        # Verify user is a guest
-        if not user or user.username != PARTY_MODE_GUEST_USER:
-            raise InvalidDataError("This endpoint is only available to party mode guests")
+        self._validate_guest_access()
 
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
