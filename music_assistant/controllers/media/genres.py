@@ -1123,7 +1123,6 @@ class GenreController(MediaControllerBase[Genre]):
         )
         if row and row["is_derived"]:
             await self.exclude_genre_from_media_item(genre_id, media_type, media_id)
-            return
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
             {
