@@ -262,3 +262,7 @@ known-first-party = ["music_assistant"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
