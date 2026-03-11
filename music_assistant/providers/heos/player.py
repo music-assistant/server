@@ -276,9 +276,24 @@ class HeosPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on given player."""
-        queue_items = await self._device.get_queue(range_start=0, range_end=1)
-        if queue_items:
-            await self._device.clear_queue()
+        self.logger.debug(
+            "[%s] Received PLAY_MEDIA command with media_type=%s uri=%s",
+            self._device.name,
+            media.media_type,
+            media.uri,
+        )
+
+        try:
+            queue_items = await self._device.get_queue(range_start=0, range_end=1)
+        except Exception as err:
+            self.logger.warning(
+                "[%s] Failed to fetch HEOS queue before play_media, continuing: %s",
+                self._device.name,
+                err,
+            )
+        else:
+            if queue_items:
+                await self._device.clear_queue()
 
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await self._device.play_url(url)
