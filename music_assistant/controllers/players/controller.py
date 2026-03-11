@@ -76,11 +76,14 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_ZEROCONF_INTERFACES,
+    CONF_MUTE_CONTROL,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
+    CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_PROTOCOL_PARENT_ID,
     CONF_REPORTED_MAC,
+    CONF_VOLUME_CONTROL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -159,6 +162,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Async initialize of module."""
         self._cleanup_stale_protocol_parent_ids()
         self._poll_task = self.mass.create_task(self._poll_players())
+        # schedule a one-time reconciliation of stale control configs
+        # after all providers have had time to register their players
+        self.mass.call_later(
+            30,
+            self._reconcile_stale_control_configs,
+            task_id="reconcile_stale_control_configs",
+        )
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -2161,6 +2171,43 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 )
                 conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
                 self.mass.config.set(conf_key, None)
+
+    async def _reconcile_stale_control_configs(self) -> None:
+        """One-time post-startup pass to clear control configs that don't resolve.
+
+        Runs ~30 seconds after startup, by which time all providers (including
+        async ones like Sendspin) should have registered their players.
+        Any control config value that still doesn't resolve to a known constant,
+        registered player, or registered player control is cleared so that
+        auto-detection can take over.
+        """
+        known_constants = {PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE}
+        control_keys = (CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL, CONF_POWER_CONTROL)
+        cleared = 0
+        for player in list(self._players.values()):
+            player_cleared = False
+            for conf_key in control_keys:
+                raw = self.mass.config.get_raw_player_config_value(player.player_id, conf_key)
+                if raw is None:
+                    continue
+                raw_str = str(raw)
+                if raw_str in known_constants:
+                    continue
+                if self.get_player(raw_str) or self.get_player_control(raw_str):
+                    continue
+                self.logger.info(
+                    "Clearing stale %s config '%s' for player %s (not resolved after startup)",
+                    conf_key,
+                    raw_str,
+                    player.player_id,
+                )
+                self.mass.config.set_raw_player_config_value(player.player_id, conf_key, None)
+                player_cleared = True
+                cleared += 1
+            if player_cleared:
+                player.update_state()
+        if cleared:
+            self.logger.info("Reconciliation complete: cleared %d stale control config(s)", cleared)
 
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""

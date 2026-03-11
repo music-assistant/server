@@ -756,30 +756,37 @@ class Player(ABC):
         return cast("str", self._config.get_value(CONF_ENTRY_PLAYER_ICON.key))
 
     def _resolve_control_config(self, conf_key: str) -> str | None:
-        """Validate a control config value references an existing player or control.
+        """Return the explicitly configured control value, or None if not set.
 
-        Returns the config value if it's a known constant or resolves to an existing
-        player/control, or None if stale (so the caller can fall through to auto-detection).
+        If a value is explicitly configured (raw value is not None), it is always returned
+        — even if it doesn't currently resolve to a registered player or control. This
+        handles the case where protocol players register asynchronously and the configured
+        player will appear shortly after startup.
+
+        Returns None only when no value has been explicitly configured, signaling the
+        caller to fall through to auto-detection.
 
         :param conf_key: The config key to look up (e.g. CONF_VOLUME_CONTROL).
         """
-        if conf := self.mass.config.get_raw_player_config_value(self.player_id, conf_key):
-            conf_str = str(conf)
-            if conf_str in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
-                return conf_str
-            if self.mass.players.get_player(conf_str) or self.mass.players.get_player_control(
-                conf_str
-            ):
-                return conf_str
-            # configured ID doesn't resolve to any known player or control
-            self.logger.warning(
-                "Configured %s value '%s' for player %s references a nonexistent "
-                "player/control, falling back to auto-detection",
+        conf = self.mass.config.get_raw_player_config_value(self.player_id, conf_key)
+        if conf is None:
+            return None
+        conf_str = str(conf)
+        if not conf_str:
+            return None
+        if (
+            conf_str not in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE)
+            and not self.mass.players.get_player(conf_str)
+            and not self.mass.players.get_player_control(conf_str)
+        ):
+            self.logger.debug(
+                "Configured %s value '%s' for player %s does not currently resolve "
+                "to a registered player/control",
                 conf_key,
                 conf_str,
                 self.player_id,
             )
-        return None
+        return conf_str
 
     @cached_property
     @final
