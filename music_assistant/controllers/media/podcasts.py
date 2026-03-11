@@ -227,16 +227,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         if session_user := get_current_user():
             # this is the active session user that triggered the action
             user = session_user
-        else:
-            podcast = await self.get(
-                item_id=item_id,
-                provider_instance_id_or_domain=provider_instance_id_or_domain,
-            )
-            if provider_user := await self.mass.music._get_user_for_provider(
-                podcast.provider_mappings
-            ):
-                # based on configured provider filter we can try to find a user
-                user = provider_user
+        elif provider_user := await self.mass.music._get_user_for_provider(
+            provider_mappings_or_instance_id=provider_instance_id_or_domain
+        ):
+            # based on configured provider filter we can try to find a user
+            user = provider_user
 
         async def set_resume_position(episode: PodcastEpisode) -> None:
             if episode.fully_played is not None or episode.resume_position_ms:
