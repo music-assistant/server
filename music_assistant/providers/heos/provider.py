@@ -43,6 +43,9 @@ class HeosPlayerProvider(PlayerProvider):
             ip_address = cast("str", ip_address)
             await self._setup_controller(ip_address)
 
+            # Explicitly discover players now
+            await self.discover_players()
+
     async def _setup_controller(self, controller_ip: str, connect_preferred: bool = False) -> None:
         """Set up the HEOS controller."""
         self.logger.debug("Attempting HEOS controller setup on IP %s", controller_ip)
@@ -67,6 +70,9 @@ class HeosPlayerProvider(PlayerProvider):
 
             if preferred_ips and controller_ip not in preferred_ips:
                 if connect_preferred:
+                    self.logger.debug(
+                        "Attempting to connect to preferred Host %s", preferred_ips[0]
+                    )
                     await self._heos.disconnect()
                     # Set up controller with preferred host instead
                     return await self._setup_controller(preferred_ips[0], connect_preferred=False)
