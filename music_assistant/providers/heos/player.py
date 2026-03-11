@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
-from pyheos import Heos, const
+from pyheos import Heos, HeosError, const
 
 from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
@@ -285,15 +285,15 @@ class HeosPlayer(Player):
 
         try:
             queue_items = await self._device.get_queue(range_start=0, range_end=1)
-        except Exception as err:
+
+            if queue_items:
+                await self._device.clear_queue()
+        except HeosError as err:
             self.logger.warning(
                 "[%s] Failed to fetch HEOS queue before play_media, continuing: %s",
                 self._device.name,
                 err,
             )
-        else:
-            if queue_items:
-                await self._device.clear_queue()
 
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await self._device.play_url(url)
