@@ -15,6 +15,7 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.heos.constants import HEOS_PASSIVE_SOURCES
 
+from .constants import CONF_TIMEOUT
 from .player import HeosPlayer
 
 if TYPE_CHECKING:
@@ -45,7 +46,15 @@ class HeosPlayerProvider(PlayerProvider):
     async def _setup_controller(self, controller_ip: str, connect_preferred: bool = False) -> None:
         """Set up the HEOS controller."""
         self.logger.debug("Attempting HEOS controller setup on IP %s", controller_ip)
-        self._heos = Heos(HeosOptions(controller_ip, auto_reconnect=True, auto_failover=True))
+
+        self._heos = Heos(
+            HeosOptions(
+                controller_ip,
+                timeout=cast("int", self.config.get_value(CONF_TIMEOUT)),
+                auto_reconnect=True,
+                auto_failover=True,
+            )
+        )
 
         try:
             await self._heos.connect()
