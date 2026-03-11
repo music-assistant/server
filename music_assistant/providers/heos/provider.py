@@ -144,7 +144,7 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""
-        if self._player_discovery_running or not self._heos:
+        if self._controller_discovery_running or self._player_discovery_running or not self._heos:
             return  # discovery already running or not set up
 
         try:
