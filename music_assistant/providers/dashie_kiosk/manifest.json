@@ -1,0 +1,15 @@
+{
+  "type": "player",
+  "domain": "dashie_kiosk",
+  "stage": "beta",
+  "name": "Dashie Kiosk",
+  "description": "Play audio directly on Dashie Kiosk Android tablets via their REST API.",
+  "codeowners": ["@jwlerch78"],
+  "credits": [
+    "[Dashie Kiosk](https://dashieapp.com/dashie-kiosk)"
+  ],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/player-support/dashie-kiosk/",
+  "multi_instance": false,
+  "builtin": false
+}

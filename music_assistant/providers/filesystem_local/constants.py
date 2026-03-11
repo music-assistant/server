@@ -102,6 +102,20 @@ CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     depends_on_value="audiobooks",
 )
 
+CONF_ENTRY_PROPAGATE_GENRES = ConfigEntry(
+    key="propagate_track_genres",
+    type=ConfigEntryType.BOOLEAN,
+    label="Propagate track genres to albums and artists",
+    description="Derive album and artist genres from their tracks when the album/artist "
+    "has no genre metadata of its own. Useful when your files only have genres "
+    "tagged at track level.",
+    default_value=False,
+    required=False,
+    category="sync_options",
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
 CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS = ConfigEntry(
     key="ignore_album_playlists",
     type=ConfigEntryType.BOOLEAN,

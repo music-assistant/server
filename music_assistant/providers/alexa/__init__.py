@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING, Any, cast
 import aiohttp
 from aiohttp import BasicAuth, web
 from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     PlaybackState,
@@ -51,6 +54,7 @@ ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_es-ES": "pídele a music assistant que reproduzca audio",
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
+    "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
     "play_audio_default": "ask music assistant to play audio",
 }
 
@@ -206,7 +210,15 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Alexa Language",
             required=True,
-            default_value="en-US",
+            options=[
+                ConfigValueOption("English (USA)", "en-US"),
+                ConfigValueOption("German (Germany)", "de-DE"),
+                ConfigValueOption("Spanish (Spain)", "es-ES"),
+                ConfigValueOption("French (France)", "fr-FR"),
+                ConfigValueOption("Italian (Italy)", "it-IT"),
+                ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
+            ],
+            default_value="en-US",  # choose a sensible default
         ),
     )
 
