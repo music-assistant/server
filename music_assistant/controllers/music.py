@@ -2485,10 +2485,14 @@ class MusicController(CoreController):
         if prev_version <= 30:
             # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},
             # i.e. ["track"] the default, as this was the only media type supported.
-            await self._database.execute(
-                f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
-                " json DEFAULT '[\"track\"]' NOT NULL"
-            )
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
+                    " json DEFAULT '[\"track\"]' NOT NULL"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
 
         if prev_version <= 31:
             # create the genre_media_item_exclusion table (new in schema 31)
