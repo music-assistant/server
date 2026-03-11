@@ -43,6 +43,9 @@ class HeosPlayerProvider(PlayerProvider):
             ip_address = cast("str", ip_address)
             await self._setup_controller(ip_address)
 
+            # Explicitly discover players now
+            await self.discover_players()
+
     async def _setup_controller(self, controller_ip: str, connect_preferred: bool = False) -> None:
         """Set up the HEOS controller."""
         self.logger.debug("Attempting HEOS controller setup on IP %s", controller_ip)
@@ -67,6 +70,9 @@ class HeosPlayerProvider(PlayerProvider):
 
             if preferred_ips and controller_ip not in preferred_ips:
                 if connect_preferred:
+                    self.logger.debug(
+                        "Attempting to connect to preferred Host %s", preferred_ips[0]
+                    )
                     await self._heos.disconnect()
                     # Set up controller with preferred host instead
                     return await self._setup_controller(preferred_ips[0], connect_preferred=False)
@@ -82,8 +88,6 @@ class HeosPlayerProvider(PlayerProvider):
             self._heos.add_on_controller_event(self._handle_controller_event)
             await self._populate_sources()
 
-            # Explicitly discover players now, in case we are set up from discovery
-            await self.discover_players()
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
             raise SetupFailedError("Unexpected error setting up HEOS controller") from e
@@ -144,7 +148,7 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""
-        if self._player_discovery_running or not self._heos:
+        if self._controller_discovery_running or self._player_discovery_running or not self._heos:
             return  # discovery already running or not set up
 
         try:
