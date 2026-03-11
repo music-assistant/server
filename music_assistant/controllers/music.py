@@ -672,7 +672,7 @@ class MusicController(CoreController):
                 f"AND m.provider_instance IN {filter_for_str} "
                 f"AND m.provider_instance IN {available_providers_str} "
                 ") "
-                f"ELSE p.provider IN {filter_for_str} "
+                f"ELSE (p.provider IN {filter_for_str} AND p.provider IN {available_providers_str})"
                 "END "
                 ") "
                 f"AND p.userid = '{user.user_id}' "
