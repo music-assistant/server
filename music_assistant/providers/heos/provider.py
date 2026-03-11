@@ -82,8 +82,6 @@ class HeosPlayerProvider(PlayerProvider):
             self._heos.add_on_controller_event(self._handle_controller_event)
             await self._populate_sources()
 
-            # Explicitly discover players now, in case we are set up from discovery
-            await self.discover_players()
         except HeosError as e:
             self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
             raise SetupFailedError("Unexpected error setting up HEOS controller") from e
