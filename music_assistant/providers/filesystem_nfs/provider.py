@@ -5,11 +5,19 @@ from __future__ import annotations
 import platform
 from pathlib import PurePosixPath
 
-from music_assistant_models.errors import LoginFailed, ProviderUnavailableError, SetupFailedError
+from music_assistant_models.errors import (
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import check_output
-from music_assistant.providers.filesystem_local import LocalFileSystemProvider, exists, makedirs
+from music_assistant.helpers.util import get_ip_from_host
+from music_assistant.providers.filesystem_local import (
+    LocalFileSystemProvider,
+    exists,
+    makedirs,
+)
 
 from .constants import CONF_EXPORT_PATH, CONF_HOST, CONF_NFS_VERSION, CONF_SUBFOLDER
 
@@ -35,14 +43,22 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # validate configuration
+        server = str(self.config.get_value(CONF_HOST))
+        if not await get_ip_from_host(server):
+            msg = f"Unable to resolve {server}, make sure the address is resolvable."
+            raise SetupFailedError(msg)
+        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
+        if not export_path or not export_path.startswith("/"):
+            msg = "Invalid export path: must be an absolute path starting with /"
+            raise SetupFailedError(msg)
+
         if not await exists(self.base_path):
             await makedirs(self.base_path)
         try:
             # unmount first to cleanup any unexpected state
             await self.unmount(ignore_error=True)
             await self.mount()
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
-            raise
         except OSError as err:
             msg = f"NFS mount failed: {err}"
             raise ProviderUnavailableError(msg) from err
@@ -93,9 +109,9 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
     def _get_mount_options(self) -> list[str]:
         """Get platform-specific NFS mount options."""
         if platform.system() == "Darwin":
-            options = ["resvport", "noatime"]
+            options = ["resvport", "noatime", "soft", "timeo=30", "retrans=5"]
         else:
-            options = ["noatime", "nolock", "tcp"]
+            options = ["noatime", "nolock", "tcp", "soft", "timeo=30", "retrans=5"]
 
         nfs_version = str(self.config.get_value(CONF_NFS_VERSION) or "")
         if nfs_version:
