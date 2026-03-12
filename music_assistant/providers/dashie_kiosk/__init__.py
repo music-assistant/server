@@ -79,12 +79,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MANUAL_PLAYERS,
             type=ConfigEntryType.STRING,
-            multi_value=True,
             label="Manual Dashie Kiosk addresses",
             required=False,
-            description="Manually add Dashie Kiosk tablets by IP address and port "
-            "(e.g. 192.168.1.100:2323). Use this if you don't have the "
-            "Dashie HA integration installed.",
+            description="Comma-separated IP:port addresses of Dashie Kiosk tablets "
+            "(e.g. 192.168.1.100:2323, 192.168.1.101:2323). "
+            "Use this if you don't have the Dashie HA integration installed.",
             advanced=True,
         ),
     )
