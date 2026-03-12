@@ -54,6 +54,9 @@ CONF_PARTY_MODE_SKIP_SONG_REFILL_MINUTES = "skip_song_refill_minutes"
 # Badge color configuration
 CONF_REQUEST_BADGE_COLOR = "request_badge_color"
 CONF_BOOST_BADGE_COLOR = "boost_badge_color"
+# Lyrics / Karaoke
+CONF_PARTY_MODE_DISPLAY_LYRICS = "display_lyrics"
+CONF_PARTY_MODE_KARAOKE_MODE = "karaoke_mode"
 # QR code instruction text
 CONF_QR_SHOW_INSTRUCTION_TEXT = "qr_show_instruction_text"
 CONF_QR_INSTRUCTION_TEXT = "qr_instruction_text"
@@ -109,6 +112,8 @@ class PartyModeConfig(DataClassDictMixin):
     # UI settings
     album_art_background: bool
     show_player_controls: bool
+    display_lyrics: bool
+    karaoke_mode: bool
     # Badge colors (hex values)
     request_badge_color: str
     boost_badge_color: str
@@ -189,6 +194,29 @@ async def get_config_entries(
             ),
             advanced=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_MODE_DISPLAY_LYRICS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Display Lyrics in Party Mode Dashboard",
+            description=(
+                "Show synchronized lyrics (karaoke-style) in the party mode dashboard view "
+                "alongside the QR code. Lyrics are hidden on mobile devices."
+            ),
+            depends_on=CONF_ENABLE_GUEST_ACCESS,
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_MODE_KARAOKE_MODE,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Karaoke Mode (prioritize lyric display)",
+            description=(
+                "When enabled, lyrics are displayed prominently in the center of the screen "
+                "with the track list minimized to current and next song at the bottom. "
+                "Requires Display Lyrics to be enabled."
+            ),
+            depends_on=CONF_PARTY_MODE_DISPLAY_LYRICS,
         ),
         ConfigEntry(
             key=CONF_PARTY_MODE_ALBUM_ART_BACKGROUND,
@@ -539,6 +567,8 @@ class PartyModePlugin(PluginProvider):
             show_player_controls=cast(
                 "bool", self.config.get_value(CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS)
             ),
+            display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_MODE_DISPLAY_LYRICS)),
+            karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_MODE_KARAOKE_MODE)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             qr_show_instruction_text=cast(
