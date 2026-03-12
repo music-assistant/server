@@ -50,12 +50,10 @@ class DashieKioskProvider(PlayerProvider):
         player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS)) or []
         if player_ids and self.hass_prov:
             await self._setup_ha_players(player_ids)
-        # Set up manually configured players
-        manual_addresses = cast("list[str]", self.config.get_value(CONF_MANUAL_PLAYERS)) or []
-        for raw_address in manual_addresses:
-            address = raw_address.strip()
-            if not address:
-                continue
+        # Set up manually configured players (comma-separated string)
+        raw_manual = self.config.get_value(CONF_MANUAL_PLAYERS) or ""
+        manual_addresses = [a.strip() for a in str(raw_manual).split(",") if a.strip()]
+        for address in manual_addresses:
             success = await self._setup_manual_player(address)
             if not success:
                 self._pending_players[address] = None
