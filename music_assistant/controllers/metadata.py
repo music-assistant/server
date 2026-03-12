@@ -973,9 +973,7 @@ class MetaDataController(CoreController):
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
         self.logger.debug(
-            "Unable to get musicbrainz ID for artist %s\n"
-            " - using lookup-album(s): %s\n"
-            " - using lookup-track(s): %s\n",
+            "Unable to get musicbrainz ID for artist %s (albums: %s, tracks: %s)",
             artist.name,
             ref_albums_str,
             ref_tracks_str,

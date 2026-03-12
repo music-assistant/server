@@ -51,6 +51,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
@@ -101,7 +102,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 30
+DB_SCHEMA_VERSION: Final[int] = 33
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
@@ -2484,10 +2485,62 @@ class MusicController(CoreController):
         if prev_version <= 30:
             # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},
             # i.e. ["track"] the default, as this was the only media type supported.
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
+                    " json DEFAULT '[\"track\"]' NOT NULL"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
+        if prev_version <= 31:
+            # create the genre_media_item_exclusion table (new in schema 31)
             await self._database.execute(
-                f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
-                " json DEFAULT '[\"track\"]' NOT NULL"
+                f"""
+                CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(
+                [genre_id] INTEGER NOT NULL,
+                [media_id] INTEGER NOT NULL,
+                [media_type] TEXT NOT NULL,
+                FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
+                UNIQUE(genre_id, media_id, media_type)
+                );"""
             )
+            await self._database.execute(
+                f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_media_idx "
+                f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(media_id,media_type);"
+            )
+            await self._database.execute(
+                f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
+                f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
+            )
+
+        if prev_version <= 32:
+            # recreate genre_media_item_mapping with nullable alias and is_derived column
+            # (new in schema 33 to support propagated genre mappings from tracks)
+            await self._database.execute(
+                f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                f"RENAME TO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
+            )
+            await self._database.execute(
+                f"""
+                CREATE TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
+                [genre_id] INTEGER NOT NULL,
+                [media_id] INTEGER NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [alias] TEXT,
+                [is_derived] BOOLEAN NOT NULL DEFAULT 0,
+                FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
+                UNIQUE(genre_id, media_id, media_type)
+                );"""
+            )
+            await self._database.execute(
+                f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                f"(genre_id, media_id, media_type, alias) "
+                f"SELECT genre_id, media_id, media_type, alias "
+                f"FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
+            )
+            await self._database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
 
         # save changes
         await self._database.commit()
@@ -2689,7 +2742,18 @@ class MusicController(CoreController):
             [genre_id] INTEGER NOT NULL,
             [media_id] INTEGER NOT NULL,
             [media_type] TEXT NOT NULL,
-            [alias] TEXT NOT NULL,
+            [alias] TEXT,
+            [is_derived] BOOLEAN NOT NULL DEFAULT 0,
+            FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
+            UNIQUE(genre_id, media_id, media_type)
+            );"""
+        )
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(
+            [genre_id] INTEGER NOT NULL,
+            [media_id] INTEGER NOT NULL,
+            [media_type] TEXT NOT NULL,
             FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
             UNIQUE(genre_id, media_id, media_type)
             );"""
@@ -2889,6 +2953,15 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_genre_alias_idx "
             f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(genre_id,alias);"
+        )
+        # indexes on genre_media_item_exclusion table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_media_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(media_id,media_type);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
+            f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
         )
         # unique index on playlog table
         await self.database.execute(

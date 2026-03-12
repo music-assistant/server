@@ -483,6 +483,7 @@ class RadioBrowserProvider(MusicProvider):
                 item_id=item_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.try_parse(stream.codec),
+                    bit_rate=stream.bitrate or None,
                 ),
                 media_type=MediaType.RADIO,
                 stream_type=StreamType.HTTP,
