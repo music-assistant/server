@@ -265,6 +265,8 @@ class RemoteAccessManager:
                 await self._start_gateway()
             elif not self._enabled and self.is_running:
                 await self.stop()
+            # Signal state change so the frontend can update (e.g., party mode QR URL)
+            self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
             return await get_remote_access_info()
 
         self._on_unload_callbacks.append(
