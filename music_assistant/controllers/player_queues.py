@@ -490,6 +490,7 @@ class PlayerQueuesController(CoreController):
         """
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        self._transitioning_players.discard(queue_id)
         # ruff: noqa: PLR0915
         # we use a contextvar to bypass the throttler for this asyncio task/context
         # this makes sure that playback has priority over other requests that may be
@@ -811,6 +812,7 @@ class PlayerQueuesController(CoreController):
         """
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        self._transitioning_players.discard(queue_id)
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -854,6 +856,7 @@ class PlayerQueuesController(CoreController):
         """
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        self._transitioning_players.discard(queue_id)
         if not (queue := self._queues.get(queue_id)):
             return
         queue_active = queue.active
@@ -917,9 +920,11 @@ class PlayerQueuesController(CoreController):
         idx = self._queues[queue_id].current_index
         if idx is None:
             self.logger.warning("Queue %s has no current index", queue.display_name)
+            self._transitioning_players.discard(queue_id)
             return
         next_index = self._get_next_index(queue_id, idx, True)
         if next_index is None:
+            self._transitioning_players.discard(queue_id)
             return
 
         # immediately update current item so UI shows the new track right away
@@ -952,6 +957,7 @@ class PlayerQueuesController(CoreController):
         self._transitioning_players.add(queue_id)
         current_index = self._queues[queue_id].current_index
         if current_index is None:
+            self._transitioning_players.discard(queue_id)
             return
         prev_index = int(current_index)
         # restart current track if current track has played longer than 4
@@ -1073,74 +1079,76 @@ class PlayerQueuesController(CoreController):
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._transitioning_players.add(queue_id)
-        queue = self._queues[queue_id]
-        queue.resume_pos = 0
-        if isinstance(index, str):
-            temp_index = self.index_by_id(queue_id, index)
-            if temp_index is None:
-                raise InvalidDataError(f"Item {index} not found in queue")
-            index = temp_index
-        # At this point index is guaranteed to be int
-        queue.index_in_buffer = index
-        queue.flow_mode_stream_log = []
-        target_player = self.mass.players.get_player(queue_id)
-        if target_player is None:
-            raise PlayerUnavailableError(f"Player {queue_id} is not available")
-        queue.next_item_id_enqueued = None
-        # always update session id when we start a new playback session
-        queue.session_id = shortuuid.random(length=8)
-        # handle resume point of audiobook(chapter) or podcast(episode)
-        if (
-            not seek_position
-            and (queue_item := self.get_item(queue_id, index))
-            and (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0))
-        ):
-            seek_position = max(0, int((resume_position_ms - 500) / 1000))
+        try:
+            queue = self._queues[queue_id]
+            queue.resume_pos = 0
+            if isinstance(index, str):
+                temp_index = self.index_by_id(queue_id, index)
+                if temp_index is None:
+                    raise InvalidDataError(f"Item {index} not found in queue")
+                index = temp_index
+            # At this point index is guaranteed to be int
+            queue.index_in_buffer = index
+            queue.flow_mode_stream_log = []
+            target_player = self.mass.players.get_player(queue_id)
+            if target_player is None:
+                raise PlayerUnavailableError(f"Player {queue_id} is not available")
+            queue.next_item_id_enqueued = None
+            # always update session id when we start a new playback session
+            queue.session_id = shortuuid.random(length=8)
+            # handle resume point of audiobook(chapter) or podcast(episode)
+            if (
+                not seek_position
+                and (queue_item := self.get_item(queue_id, index))
+                and (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0))
+            ):
+                seek_position = max(0, int((resume_position_ms - 500) / 1000))
 
-        # try to load the item, retry with next item if it fails
-        for attempt in range(5):
-            try:
-                queue_item = self.get_item(queue_id, index)
-                if not queue_item:
-                    continue  # guard
-                await self._load_item(
-                    queue_item,
-                    self._get_next_index(queue_id, index),
-                    is_start=True,
-                    seek_position=seek_position if attempt == 0 else 0,
-                    fade_in=fade_in if attempt == 0 else False,
-                )
-                # if we reach this point, loading the item succeeded, break the loop
-                queue.current_index = index
-                queue.current_item = queue_item
-                break
-            except (MediaNotFoundError, AudioError):
-                # the requested index can not be played.
-                if queue_item:
-                    self.logger.warning(
-                        "Skipping unplayable item %s (%s)",
-                        queue_item.name,
-                        queue_item.uri,
+            # try to load the item, retry with next item if it fails
+            for attempt in range(5):
+                try:
+                    queue_item = self.get_item(queue_id, index)
+                    if not queue_item:
+                        continue  # guard
+                    await self._load_item(
+                        queue_item,
+                        self._get_next_index(queue_id, index),
+                        is_start=True,
+                        seek_position=seek_position if attempt == 0 else 0,
+                        fade_in=fade_in if attempt == 0 else False,
                     )
-                    queue_item.available = False
-                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-                if next_index is None:
-                    raise MediaNotFoundError("No next item available")
-                index = next_index
-        else:
-            # all attempts to find a playable item failed
-            raise MediaNotFoundError("No playable item found to start playback")
+                    # if we reach this point, loading the item succeeded, break the loop
+                    queue.current_index = index
+                    queue.current_item = queue_item
+                    break
+                except (MediaNotFoundError, AudioError):
+                    # the requested index can not be played.
+                    if queue_item:
+                        self.logger.warning(
+                            "Skipping unplayable item %s (%s)",
+                            queue_item.name,
+                            queue_item.uri,
+                        )
+                        queue_item.available = False
+                    next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                    if next_index is None:
+                        raise MediaNotFoundError("No next item available")
+                    index = next_index
+            else:
+                # all attempts to find a playable item failed
+                raise MediaNotFoundError("No playable item found to start playback")
 
-        # Reset flow_mode - the streams controller will set it if flow mode is used.
-        queue.flow_mode = False
-        await self.mass.players.play_media(
-            player_id=queue_id,
-            media=await self.player_media_from_queue_item(queue_item),
-        )
-        queue.current_index = index
-        queue.current_item = queue_item
-        self._transitioning_players.discard(queue_id)
-        self.signal_update(queue_id)
+            # Reset flow_mode - the streams controller will set it if flow mode is used.
+            queue.flow_mode = False
+            await self.mass.players.play_media(
+                player_id=queue_id,
+                media=await self.player_media_from_queue_item(queue_item),
+            )
+            queue.current_index = index
+            queue.current_item = queue_item
+            self.signal_update(queue_id)
+        finally:
+            self._transitioning_players.discard(queue_id)
 
     @api_command("player_queues/transfer")
     async def transfer_queue(
@@ -1313,6 +1321,7 @@ class PlayerQueuesController(CoreController):
         """Call when a player is removed from the registry."""
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{player_id}")
+        self._transitioning_players.discard(player_id)
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
             self.mass.create_task(
