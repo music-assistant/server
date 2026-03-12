@@ -55,6 +55,7 @@ CONF_PARTY_MODE_SKIP_SONG_REFILL_MINUTES = "skip_song_refill_minutes"
 CONF_REQUEST_BADGE_COLOR = "request_badge_color"
 CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 # QR code instruction text
+CONF_PARTY_MODE_DISPLAY_LYRICS = "display_lyrics"
 CONF_QR_SHOW_INSTRUCTION_TEXT = "qr_show_instruction_text"
 CONF_QR_INSTRUCTION_TEXT = "qr_instruction_text"
 
@@ -109,6 +110,7 @@ class PartyModeConfig(DataClassDictMixin):
     # UI settings
     album_art_background: bool
     show_player_controls: bool
+    display_lyrics: bool
     # Badge colors (hex values)
     request_badge_color: str
     boost_badge_color: str
@@ -187,6 +189,18 @@ async def get_config_entries(
             description=(
                 "Display playback controls (play/pause, skip, volume) in the party mode view. "
                 "When disabled, the view is frameless and only shows now playing info and search."
+            ),
+            advanced=True,
+            depends_on=CONF_ENABLE_GUEST_ACCESS,
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_MODE_DISPLAY_LYRICS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Display Lyrics in Party Mode Dashboard",
+            description=(
+                "Show synchronized lyrics (karaoke-style) in the party mode dashboard view "
+                "alongside the QR code. Lyrics are hidden on mobile devices."
             ),
             advanced=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
@@ -537,6 +551,7 @@ class PartyModePlugin(PluginProvider):
             show_player_controls=cast(
                 "bool", self.config.get_value(CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS)
             ),
+            display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_MODE_DISPLAY_LYRICS)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             qr_show_instruction_text=cast(
