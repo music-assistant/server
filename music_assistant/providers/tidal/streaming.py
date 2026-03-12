@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import uuid
 from collections.abc import Callable, Coroutine
 from sqlite3 import OperationalError
@@ -105,7 +106,22 @@ class TidalStreamingManager:
             # manifest XML from MA's in-memory stream server so that ffmpeg receives a proper
             # HTTP URL. ffmpeg then connects directly to Tidal's CDN for all audio segments
             # without MA acting as a proxy for the audio data.
-            manifest_bytes = base64.b64decode(stream_data["manifest"])
+            try:
+                manifest_bytes = base64.b64decode(stream_data["manifest"])
+            except (binascii.Error, TypeError, ValueError) as err:
+                self.provider.logger.warning(
+                    "Invalid DASH manifest for track %s, evicting cache entry: %s",
+                    track.item_id,
+                    err,
+                )
+                await self.mass.cache.delete(
+                    cache_key,
+                    provider=self.provider.instance_id,
+                    category=CACHE_CATEGORY_PLAYBACK_INFO,
+                )
+                raise MediaNotFoundError(
+                    f"Invalid DASH manifest for track {track.item_id}"
+                ) from err
             manifest_id = uuid.uuid4().hex
             route_path = f"/tidal-dash/{manifest_id}.mpd"
             unregister = self.mass.streams.register_dynamic_route(

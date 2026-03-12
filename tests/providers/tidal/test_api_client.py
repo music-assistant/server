@@ -98,7 +98,10 @@ async def test_get_429_error(api_client: TidalAPIClient, provider_mock: Mock) ->
 
     # Patch sleep in the throttle_retry module so retries don't cause real delays.
     with (
-        patch("music_assistant.helpers.throttle_retry.asyncio.sleep"),
+        patch(
+            "music_assistant.helpers.throttle_retry.asyncio.sleep",
+            new_callable=AsyncMock,
+        ),
         pytest.raises(RetriesExhausted),
     ):
         await api_client.get("test/endpoint")
