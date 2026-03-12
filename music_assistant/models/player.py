@@ -54,6 +54,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
+    EXTERNAL_SOURCES,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
 )
@@ -311,15 +312,17 @@ class Player(ABC):
         """
         return self._attr_can_group_with
 
-    @cached_property
+    @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
         # default implementation, feel free to override if your
         # provider has a more efficient way to determine this
-        if self.group_members and self.group_members[0] != self.player_id:
-            return self.group_members[0]
+        if self.type == PlayerType.GROUP:
+            return None
         for player in self.mass.players.all_players(
-            return_unavailable=False, return_protocol_players=True
+            return_unavailable=False,
+            provider_filter=self.provider.instance_id,
+            return_protocol_players=True,
         ):
             if player.type == PlayerType.GROUP:
                 continue
@@ -889,17 +892,6 @@ class Player(ABC):
         """
         return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA, self.expose_to_ha_by_default))
 
-    @property
-    @final
-    def mass_queue_active(self) -> bool:
-        """
-        Return if the/a Music Assistant Queue is currently active for this player.
-
-        This is a convenience property that returns True if the
-        player currently has a Music Assistant Queue as active source.
-        """
-        return bool(self.mass.players.get_active_queue(self))
-
     @cached_property
     @final
     def flow_mode(self) -> bool:
@@ -1064,6 +1056,9 @@ class Player(ABC):
         :param protocol_id: The protocol player_id to set as active, "native" for native playback,
             or None to clear the active protocol.
         """
+        # cancel any existing timer to set/clear the active protocol,
+        # as we're explicitly setting it now
+        self.mass.cancel_timer(f"clear_active_protocol_{self.player_id}")
         if self.__attr_active_output_protocol == protocol_id:
             return  # No change
         if protocol_id == self.player_id:
@@ -1405,7 +1400,7 @@ class Player(ABC):
             # this is done using a timer which gets reset if the player starts playing again
             # before the timer is up, using the task_id
             self.mass.call_later(
-                2, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
+                5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
         return get_changed_dataclass_values(
             prev_state,
@@ -1736,8 +1731,12 @@ class Player(ABC):
         """
         # First check the native synced_to from the property
         if native_synced_to := self.synced_to:
-            return native_synced_to
+            if sync_parent := self.mass.players.get_player(native_synced_to):
+                return sync_parent.protocol_parent_id or sync_parent.player_id
 
+            return native_synced_to
+        # check if any of the linked protocol players are synced,
+        # and if so, return the visible player they are synced to
         for linked in self.__attr_linked_protocols:
             if not (protocol_player := self.mass.players.get_player(linked.output_protocol_id)):
                 continue
@@ -1853,47 +1852,57 @@ class Player(ABC):
         """
         Calculate the final active source based on any group memberships, source plugins etc.
 
-        Note: When an output protocol is active, the source remains the parent player's
-        source since protocol players don't have their own queue/source - they only
-        handle the actual streaming/playback.
+        This is rather complicated as we need to account for various scenarios like:
+            - player is grouped/synced: use the active source of the group/parent player
+            - protocol player: prefer the active source of the parent player
+            - plugin source active: return the active plugin source
+            - linked protocol active: prefer the active source of the linked protocol player
+            - a protocol player may report an active source that is actually from an
+                active output protocol (e.g. AirPlay)
+            - a protocol player that has a 3rd party source active
         """
         # if the player is grouped/synced, use the active source of the group/parent player
         if parent_player_id := (self.__final_synced_to or self.__final_active_group):
             if parent_player := self.mass.players.get_player(parent_player_id):
                 return parent_player.state.active_source
             return None  # should not happen but just in case
-        if self.type == PlayerType.PROTOCOL:
-            if self.protocol_parent_id and (
-                parent_player := self.mass.players.get_player(self.protocol_parent_id)
-            ):
-                # if this is a protocol player, use the active source of the parent player
-                return parent_player.state.active_source
-            # fallback to None here if parent player not found,
-            # protocol players should not have an active source themselves
-            return None
+
+        # if this is a protocol player, prefer the active source of the parent player
+        # a protocol player can not have an active source on its own.
+        if (
+            self.type == PlayerType.PROTOCOL
+            and self.protocol_parent_id
+            and (parent_player := self.mass.players.get_player(self.protocol_parent_id))
+        ):
+            return parent_player.state.active_source
+
         # if a plugin source is active that belongs to this player, return that
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
-        output_protocol_domain: str | None = None
-        if self.active_output_protocol and self.active_output_protocol != "native":
-            if protocol_player := self.mass.players.get_player(self.active_output_protocol):
-                output_protocol_domain = protocol_player.provider.domain
+
+        # always prefer active MA source but add a guard to detect if player is really playing
+        # something different, such as a line-in or TV input, we use an explicit list here
+        # because many players do not accurately report the active_source
+        # this way, for the obvious cases, we can detect a source "takeover"
+        if self.__active_mass_source and (
+            not self.active_source or self.active_source.lower() not in EXTERNAL_SOURCES
+        ):
+            return self.__active_mass_source
+
         # active source as reported by the player itself
         if (
             self.active_source
-            # try to catch cases where player reports an active source
-            # that is actually from an active output protocol (e.g. AirPlay)
-            and self.active_source.lower() != output_protocol_domain
-            and not (
-                # try to handle sendspin bridge where the player itself
-                # is reporting the bridged protocol as active source
-                # we need to ignore that
-                output_protocol_domain == "sendspin"
-                and (self.active_source.lower() in ("airplay", "cast", "chromecast", "network"))
-            )
+            and self.active_source != self.player_id
+            and self.playback_state != PlaybackState.IDLE
+            # If an output protocol is active, we simply overrule the active source of the player.
+            # Trying to handle this differently is a hot mess and leads to all kinds of edge cases,
+            # because many players do not report the active source correctly, especially not when
+            # an output protocol is active.
+            and self.active_output_protocol in (None, "native")
         ):
             return self.active_source
+
         # return the (last) known MA source - fallback to player's own queue source if none
         return self.__active_mass_source or self.player_id
 

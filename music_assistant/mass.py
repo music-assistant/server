@@ -60,6 +60,7 @@ from music_assistant.helpers.util import (
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
+    warn_if_missing_x86_64_v2,
 )
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
@@ -173,6 +174,7 @@ class MusicAssistant:
             self.running_as_hass_addon,
             self.safe_mode,
         )
+        await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
         self.cache = CacheController(self)
         self.webserver = WebserverController(self)
@@ -238,15 +240,11 @@ class MusicAssistant:
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
-        # close/cleanup shared http session
-        if self._http_session:
-            self._http_session.detach()
-            if self._http_session.connector:
-                await self._http_session.connector.close()
-        if self._http_session_no_ssl:
-            self._http_session_no_ssl.detach()
-            if self._http_session_no_ssl.connector:
-                await self._http_session_no_ssl.connector.close()
+        # close/cleanup shared http sessions
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+        if self._http_session_no_ssl and not self._http_session_no_ssl.closed:
+            await self._http_session_no_ssl.close()
         self._set_state(CoreState.STOPPED)
 
     @property
@@ -800,10 +798,14 @@ class MusicAssistant:
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
                     continue
+                # Skip properties to avoid triggering lazy initialization side effects
+                # (e.g. http_session creating an aiohttp connector during registration)
+                if isinstance(getattr(type(cls), attr_name, None), property):
+                    continue
                 try:
                     obj = getattr(cls, attr_name)
                 except (AttributeError, RuntimeError):
-                    # Skip properties that fail during initialization
+                    # Skip attributes that fail during initialization
                     continue
                 if hasattr(obj, "api_cmd"):
                     # method is decorated with our api decorator

@@ -12,6 +12,7 @@ Review all code changes for:
 - Code quality and style consistency with the existing codebase
 - Potential bugs or issues
 - Performance implications
+- Always check for blocking IO in async code
 - Security concerns
 - Test coverage
 - Documentation updates if needed

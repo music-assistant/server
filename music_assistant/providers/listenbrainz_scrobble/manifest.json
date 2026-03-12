@@ -7,7 +7,7 @@
   "codeowners": ["@music-assistant"],
   "credits": ["[liblistenbrainz](https://github.com/paramsingh/liblistenbrainz)"],
   "documentation": "https://music-assistant.io/plugins/listenbrainz_scrobble/",
-  "multi_instance": false,
+  "multi_instance": true,
   "builtin": false,
   "requirements": ["liblistenbrainz==0.7.0"]
 }

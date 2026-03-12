@@ -439,7 +439,7 @@ class SendspinPlayer(Player):
         await self._apply_preferred_format()
 
     async def _apply_preferred_format(self) -> None:
-        """Read config and call set_preferred_format() if not automatic."""
+        """Read config and set/clear the players preferred format."""
         player_role = self._player_role
         if player_role is None:
             return
@@ -449,7 +449,8 @@ class SendspinPlayer(Player):
             self.config.get_value(CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC),
         )
         if config_value == SENDSPIN_FORMAT_AUTOMATIC:
-            # Automatic mode: don't set a preferred format, let client decide.
+            # Automatic mode: clear override and let client decide.
+            player_role.set_preferred_format(None, None)
             return
 
         parsed = option_value_to_format(config_value)

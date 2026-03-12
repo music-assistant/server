@@ -6,12 +6,15 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientPayloadError
+import aiohttp
+from aiohttp import ClientPayloadError, ServerDisconnectedError
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
+
+from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 
 from .constants import (
     CONF_QUALITY,
@@ -25,6 +28,19 @@ if TYPE_CHECKING:
     from yandex_music import DownloadInfo
 
     from .provider import YandexMusicProvider
+
+
+# Encrypted-stream tuning constants
+_CHUNK_SIZE = 16384  # smaller than default 65536 for faster first-byte after retry
+_STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_read=30)
+# Yandex CDN drops TCP every ~6-7 MB per connection (observed via live traffic capture).
+# By capping each Range request to 4 MB we stay well below that limit, so CDN drops
+# should never occur during normal windowed playback.
+_RANGE_WINDOW = 4 * 1024 * 1024  # 4 MB — must be a multiple of AES block size (16)
+# Flat short delays for any residual TCP drops (network glitches within a 4 MB window)
+_TCP_DROP_DELAYS = (0.5, 1.0, 2.0)
+# Exponential delays for true network stalls (read timeout)
+_STALL_DELAYS = (2.0, 4.0, 8.0)
 
 
 class YandexMusicStreamingManager:
@@ -120,6 +136,7 @@ class YandexMusicStreamingManager:
                         path=url,
                         can_seek=True,
                         allow_seek=True,
+                        expiration=50,  # get-file-info URLs expire; force MA to re-fetch
                     )
 
         # Default: use /tracks/.../download-info and select best quality
@@ -159,6 +176,7 @@ class YandexMusicStreamingManager:
             path=selected_info.direct_link,
             can_seek=True,
             allow_seek=True,
+            expiration=50,  # download-info direct links expire after ~60s
         )
 
     def _select_best_quality(
@@ -316,44 +334,211 @@ class YandexMusicStreamingManager:
             bit_depth=bit_depth,
         )
 
+    async def _refresh_encrypted_url(
+        self,
+        track_item_id: str,
+        current_url: str,
+        current_key_hex: str,
+        http_status: int,
+        bytes_yielded: int,
+        attempt: int,
+        max_retries: int,
+    ) -> tuple[str, str] | None:
+        """Re-fetch an expired encrypted stream URL.
+
+        Called when the CDN responds with 4xx (URL expired or access revoked).
+
+        :return: (new_url, new_key_hex) on success, or None if retries exhausted.
+        """
+        if attempt >= max_retries:
+            return None
+        raw_track_id = self._track_id_from_item_id(track_item_id)
+        self.logger.warning(
+            "Encrypted stream URL expired (HTTP %d) at %d bytes (attempt %d/%d) — re-fetching",
+            http_status,
+            bytes_yielded,
+            attempt + 1,
+            max_retries,
+        )
+        token = BYPASS_THROTTLER.set(True)
+        try:
+            file_info = await self.client.get_track_file_info_lossless(raw_track_id)
+        finally:
+            BYPASS_THROTTLER.reset(token)
+        if file_info and file_info.get("url"):
+            return file_info["url"], file_info.get("key", current_key_hex)
+        return None
+
+    async def _decrypt_response_stream(
+        self,
+        response: Any,
+        key_bytes: bytes,
+        block_size: int,
+        bytes_delivered: int,
+    ) -> AsyncGenerator[bytes, None]:
+        """Decrypt one HTTP response and yield plaintext chunks.
+
+        Aligns the AES-CTR counter to the correct block for resumption.
+        If the server ignores a Range header (200 instead of 206), resets the
+        counter to 0 and skips the already-delivered prefix transparently.
+
+        :param response: aiohttp ClientResponse (open context manager).
+        :param key_bytes: Raw AES key bytes.
+        :param block_size: AES block size (16 for CTR mode).
+        :param bytes_delivered: Total plaintext bytes already sent to the caller.
+        :return: Async generator yielding decrypted audio bytes.
+        """
+        block_start = (bytes_delivered // block_size) * block_size
+        block_skip = bytes_delivered - block_start
+
+        if block_start > 0 and response.status == 200:
+            self.logger.warning(
+                "Server ignored Range header at %d bytes (200 instead of 206)"
+                " — restarting decrypt from position 0, skipping %d already-sent bytes",
+                block_start,
+                bytes_delivered,
+            )
+            block_skip = bytes_delivered
+            block_num = (0).to_bytes(block_size, "big")
+        else:
+            block_num = (block_start // block_size).to_bytes(block_size, "big")
+
+        decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(block_num)).decryptor()
+        carry_skip = block_skip
+        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
+            decrypted = decryptor.update(chunk)
+            if carry_skip > 0:
+                skip = min(carry_skip, len(decrypted))
+                decrypted = decrypted[skip:]
+                carry_skip -= skip
+            if decrypted:
+                yield decrypted
+        final = decryptor.finalize()
+        if final:
+            yield final
+
+    def _handle_stream_error(
+        self,
+        err: Exception,
+        attempt: int,
+        max_retries: int,
+        bytes_yielded: int,
+        delays: tuple[float, ...],
+        label: str,
+    ) -> tuple[int, float]:
+        """Increment retry counter, log a warning, or raise if retries are exhausted.
+
+        :param err: The exception that caused the retry.
+        :param attempt: Current retry attempt count (0-based).
+        :param max_retries: Maximum number of retries allowed.
+        :param bytes_yielded: Bytes delivered so far (for log context).
+        :param delays: Backoff delay sequence to pick from.
+        :param label: Short verb describing the failure (e.g. "dropped", "stalled").
+        :return: (new_attempt, retry_delay) tuple when retrying.
+        :raises MediaNotFoundError: When attempt count exceeds max_retries.
+        """
+        delay = delays[min(attempt, len(delays) - 1)]
+        attempt += 1
+        if attempt <= max_retries:
+            self.logger.warning(
+                "Encrypted stream %s at %d bytes (attempt %d/%d) — retrying",
+                label,
+                bytes_yielded,
+                attempt,
+                max_retries,
+            )
+            return attempt, delay
+        raise MediaNotFoundError(f"Encrypted stream {label} after retries were exhausted") from err
+
+    @staticmethod
+    def _is_content_range_eof(headers: Any, window_end: int) -> bool:
+        """Return True when Content-Range indicates *window_end* reached the last file byte.
+
+        Parses ``Content-Range: bytes start-end/total`` and checks whether
+        ``window_end >= total - 1``.  Returns False on any malformed header so
+        the caller falls back to the next window safely.
+        """
+        content_range = headers.get("Content-Range", "")
+        if not content_range.startswith("bytes "):
+            return False
+        try:
+            _, range_spec = content_range.split(" ", 1)
+            _, total_str = range_spec.split("/", 1)
+            total_str = total_str.strip()
+            return total_str.isdigit() and window_end >= int(total_str) - 1
+        except ValueError:
+            return False
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item with on-the-fly decryption.
 
-        Downloads and decrypts the encrypted stream chunk-by-chunk without buffering.
-        On connection drop, reconnects using a Range header and resumes AES-CTR
-        decryption from the correct block boundary (up to 3 retries).
+        Downloads and decrypts the encrypted stream in windowed Range requests of
+        _RANGE_WINDOW bytes each. Yandex CDN drops TCP every ~6-7 MB per connection;
+        keeping each request at 4 MB prevents that limit from being reached.
+
+        On connection drop (ClientPayloadError, ServerDisconnectedError), the current
+        window is retried with a flat short backoff (0.5s/1.0s/2.0s).
+        On read stall (asyncio.TimeoutError), the current window is retried with
+        exponential backoff (2s/4s/8s).
+        On URL expiry (HTTP 4xx), re-fetches the URL and resumes from bytes_yielded.
+        Up to max_retries retries per window; the retry counter resets on each
+        successful window so long tracks get the same protection as short ones.
+
+        If the server ignores a Range header (returns 200 instead of 206), the decryptor
+        is reset to position 0 so decryption stays consistent with the restarted byte stream.
 
         :param streamdetails: Stream details containing encrypted URL and key.
         :param seek_position: Always 0 (seeking delegated to ffmpeg via allow_seek=True).
         :return: Async generator yielding decrypted audio bytes.
         """
         encrypted_url: str = streamdetails.data["encrypted_url"]
+        track_item_id: str = streamdetails.item_id
         key_hex: str = streamdetails.data["decryption_key"]
         key_bytes = bytes.fromhex(key_hex)
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
 
         block_size = 16  # AES-CTR block size in bytes
-        max_retries = 3
+        max_retries = 6
         bytes_yielded = 0  # total decrypted bytes delivered to caller
+        attempt = 0  # retry counter; resets to 0 after each successful window
+        retry_delay: float = 0.0
 
-        for attempt in range(max_retries + 1):
+        while True:
             if attempt > 0:
-                await asyncio.sleep(min(2**attempt, 8))  # 2s, 4s, 8s
+                await asyncio.sleep(retry_delay)
 
-            # Align resume position to AES-CTR block boundary
             block_start = (bytes_yielded // block_size) * block_size
-            block_skip = bytes_yielded - block_start  # overlap bytes to discard in first chunk
-
-            # AES-CTR: original nonce is 0x00..00, so counter = block number
-            nonce = (block_start // block_size).to_bytes(block_size, "big")
-            decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(nonce)).decryptor()
-            headers = {"Range": f"bytes={block_start}-"} if block_start > 0 else {}
+            window_end = block_start + _RANGE_WINDOW - 1
+            headers = {"Range": f"bytes={block_start}-{window_end}"}
 
             try:
-                async with self.mass.http_session.get(encrypted_url, headers=headers) as response:
+                async with self.mass.http_session.get(
+                    encrypted_url, headers=headers, timeout=_STREAM_TIMEOUT
+                ) as response:
+                    if response.status in (401, 403, 410):
+                        # URL expired — re-fetch via helper and retry
+                        refreshed = await self._refresh_encrypted_url(
+                            track_item_id,
+                            encrypted_url,
+                            key_hex,
+                            response.status,
+                            bytes_yielded,
+                            attempt,
+                            max_retries,
+                        )
+                        if refreshed is None:
+                            raise MediaNotFoundError(
+                                f"Encrypted stream URL expired (HTTP {response.status}) "
+                                "after retries exhausted"
+                            )
+                        encrypted_url, key_hex = refreshed
+                        key_bytes = bytes.fromhex(key_hex)
+                        retry_delay = 0.0
+                        attempt += 1  # consume one retry slot, same as TCP-drop path
+                        continue
                     try:
                         response.raise_for_status()
                     except Exception as err:
@@ -361,35 +546,33 @@ class YandexMusicStreamingManager:
                             f"Failed to fetch encrypted stream: {err}"
                         ) from err
 
-                    carry_skip = block_skip
-                    async for chunk in response.content.iter_chunked(65536):
-                        decrypted = decryptor.update(chunk)
-                        if carry_skip > 0:
-                            skip = min(carry_skip, len(decrypted))
-                            decrypted = decrypted[skip:]
-                            carry_skip -= skip
-                        if decrypted:
-                            bytes_yielded += len(decrypted)
-                            yield decrypted
+                    bytes_before = bytes_yielded
+                    async for chunk in self._decrypt_response_stream(
+                        response, key_bytes, block_size, bytes_yielded
+                    ):
+                        bytes_yielded += len(chunk)
+                        yield chunk
 
-                    final = decryptor.finalize()
-                    if final:
-                        bytes_yielded += len(final)
-                        yield final
-                    return  # stream completed normally
+                    # window complete — check if EOF
+                    window_got = bytes_yielded - bytes_before
+                    if response.status == 200 or window_got < _RANGE_WINDOW:
+                        return  # full file received or last partial window
+                    # Exact-boundary guard: if file size is an exact multiple of
+                    # _RANGE_WINDOW the size check above won't catch EOF.
+                    # Use Content-Range to confirm no bytes remain.
+                    if self._is_content_range_eof(response.headers, window_end):
+                        return
+                    # more data expected: advance to next window
+                    attempt = 0
+                    retry_delay = 0.0
 
             except asyncio.CancelledError:
                 raise  # propagate cancellation immediately, do not retry
-            except ClientPayloadError as err:
-                if attempt < max_retries:
-                    self.logger.warning(
-                        "Encrypted stream dropped at %d bytes (attempt %d/%d): %s — retrying",
-                        bytes_yielded,
-                        attempt + 1,
-                        max_retries,
-                        err,
-                    )
-                else:
-                    raise MediaNotFoundError(
-                        "Encrypted stream ended early after retries were exhausted"
-                    ) from err
+            except (ClientPayloadError, ServerDisconnectedError) as err:
+                attempt, retry_delay = self._handle_stream_error(
+                    err, attempt, max_retries, bytes_yielded, _TCP_DROP_DELAYS, "dropped"
+                )
+            except TimeoutError as err:
+                attempt, retry_delay = self._handle_stream_error(
+                    err, attempt, max_retries, bytes_yielded, _STALL_DELAYS, "stalled"
+                )

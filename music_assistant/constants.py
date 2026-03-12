@@ -118,6 +118,8 @@ CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast 
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
+CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
+CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
@@ -157,6 +159,7 @@ DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
+DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:
@@ -1055,4 +1058,55 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("sonos", True),
     ("bluesound", True),
     ("heos", True),
+}
+
+EXTERNAL_SOURCES: Final[set[str]] = {
+    # list of sources that are definitely considered "external"
+    # values are matched case-insensitive against the player's active_source
+    # streaming services / connect sources
+    "spotify",
+    "spotify_connect",
+    "spotify connect",
+    "apple_music",
+    "apple music",
+    "tidal",
+    "tidal_connect",
+    "tidal connect",
+    "qobuz",
+    "deezer",
+    "amazon_music",
+    "amazon music",
+    "pandora",
+    "iheartradio",
+    "napster",
+    "rhapsody",
+    "siriusxm",
+    "soundcloud",
+    "tunein",
+    "tune in",
+    "radioparadise",
+    "radio paradise",
+    "radiko",
+    "juke",
+    "alexa",
+    "radio",
+    "airplay",
+    "chromecast",
+    # bluetooth (bluesound, musiccast)
+    "bluetooth",
+    # physical/analog inputs (sonos, heos, musiccast, demo)
+    "line-in",
+    "linein",
+    "line in",
+    "line_in",
+    "aux",
+    "tuner",
+    # tv / hdmi (sonos, bluesound)
+    "tv",
+    "tv input",
+    "hdmi arc",
+    # local/usb playback on device (musiccast)
+    "usb",
+    # external (hass_players)
+    "external",
 }

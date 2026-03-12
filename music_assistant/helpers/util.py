@@ -7,6 +7,7 @@ import functools
 import importlib
 import logging
 import os
+import platform
 import re
 import shutil
 import socket
@@ -55,6 +56,63 @@ HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
 
 T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
+
+
+async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
+    """Log a deprecation warning if the CPU lacks x86-64-v2 support.
+
+    :param logger: Logger instance to write the warning to.
+    """
+    if platform.machine() not in ("x86_64", "AMD64"):
+        return
+
+    def _check() -> bool | None:
+        try:
+            cpuinfo = Path("/proc/cpuinfo").read_text()
+        except (FileNotFoundError, PermissionError):
+            return None
+
+        flags: set[str] = set()
+        for line in cpuinfo.splitlines():
+            if line.startswith("flags"):
+                flags.update(line.split())
+                break
+
+        if not flags:
+            return None
+
+        # x86-64-v2 requires: CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSSE3, SSE4.1, SSE4.2
+        # SSE3 may appear as "pni" (Prescott New Instructions) on older kernels
+        required = {"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"}
+        has_sse3 = bool({"sse3", "pni"} & flags)
+        return required.issubset(flags) and has_sse3
+
+    if await asyncio.to_thread(_check) is False:
+        logger.warning(
+            "\n\n"
+            "########################################################"
+            "########################\n"
+            "###               CPU DEPRECATION WARNING"
+            "                                    ###\n"
+            "########################################################"
+            "########################\n"
+            "\n"
+            "Your CPU does not support the x86-64-v2 instruction "
+            "set, which will be\n"
+            "required starting with Music Assistant 2.9.\n"
+            "\n"
+            "If you are running in a virtual machine (e.g. Proxmox),"
+            " change the CPU type\n"
+            "to 'host' or select a more modern CPU type preset "
+            "(e.g. x86-64-v2 or newer).\n"
+            "\n"
+            "If your physical CPU predates 2009, you will likely "
+            "need to upgrade\n"
+            "your hardware before updating Music Assistant to 2.9.\n"
+            "\n"
+            "########################################################"
+            "########################\n"
+        )
 
 
 def get_total_system_memory() -> float:
@@ -910,14 +968,14 @@ async def enrich_device_mac_address(
     logger: logging.Logger | None = None,
 ) -> None:
     """
-    Enrich a player's device_info with a real MAC address via ARP if needed.
+    Enrich a player's device_info with a real MAC address via ARP.
 
     Called automatically during player registration. It validates the existing MAC,
-    normalizes IPv6-mapped IPv4 addresses, and performs an ARP lookup to resolve the
-    real hardware MAC when the reported MAC is missing, invalid, or locally-administered.
-
-    The ARP result is always preferred over the reported MAC because it reflects
-    the true hardware address and reliably unifies protocols on the same device.
+    normalizes IPv6-mapped IPv4 addresses, and always performs an ARP lookup when
+    an IP is available. The ARP result replaces the reported MAC because it reflects
+    the true hardware address and reliably unifies protocols on the same device -
+    even when different protocols report different valid MACs (e.g., Yamaha devices
+    where DLNA and AirPlay MACs differ by 1 in the last octet).
 
     :param device_info: The player's DeviceInfo to enrich in-place.
     :param logger: Optional logger for debug messages.
@@ -951,17 +1009,13 @@ async def enrich_device_mac_address(
     if not ip_address:
         return
 
-    # Check if we need to do ARP lookup:
-    # - No MAC reported (or was blanked out above)
-    # - MAC is locally administered (virtual/random)
-    if reported_mac and not is_locally_administered_mac(reported_mac):
-        return
-
-    # Try to resolve real MAC via ARP
+    # Always attempt ARP lookup when we have an IP address.
+    # Some devices (e.g., Yamaha MusicCast) report different valid globally-unique
+    # MACs per protocol (DLNA vs AirPlay differ by 1 in the last octet).
+    # ARP resolves the true hardware MAC which reliably unifies all protocols.
+    # The result is cached in player config so subsequent restarts are fast.
     real_mac = await resolve_real_mac_address(reported_mac, ip_address)
     if real_mac and real_mac.upper() != (reported_mac or "").upper():
-        # Always use the ARP result - it's the hardware truth and reliably
-        # unifies different protocols on the same physical device.
         device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
         if logger:
             logger.debug(
@@ -969,6 +1023,10 @@ async def enrich_device_mac_address(
                 reported_mac or "none",
                 real_mac,
             )
+    elif not reported_mac:
+        # ARP failed and no reported MAC - nothing we can do
+        if logger:
+            logger.debug("ARP lookup failed for %s and no reported MAC", ip_address)
 
 
 class TaskManager:
@@ -1033,7 +1091,7 @@ def lock[**P, R](  # type: ignore[valid-type]
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using the throttler with retries."""
+        """Call async function using a Lock."""
         if not (func_lock := getattr(func, "lock", None)):
             func_lock = asyncio.Lock()
             func.lock = func_lock  # type: ignore[attr-defined]
