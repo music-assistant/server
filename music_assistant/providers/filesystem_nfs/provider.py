@@ -5,14 +5,10 @@ from __future__ import annotations
 import platform
 from pathlib import PurePosixPath
 
-from music_assistant_models.errors import (
-    ProviderUnavailableError,
-    SetupFailedError,
-)
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import check_output
-from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
     exists,
@@ -43,16 +39,6 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # validate configuration
-        server = str(self.config.get_value(CONF_HOST))
-        if not await get_ip_from_host(server):
-            msg = f"Unable to resolve {server}, make sure the address is resolvable."
-            raise SetupFailedError(msg)
-        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
-        if not export_path or not export_path.startswith("/"):
-            msg = "Invalid export path: must be an absolute path starting with /"
-            raise SetupFailedError(msg)
-
         if not await exists(self.base_path):
             await makedirs(self.base_path)
         try:
@@ -61,7 +47,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
             await self.mount()
         except OSError as err:
             msg = f"NFS mount failed: {err}"
-            raise ProviderUnavailableError(msg) from err
+            raise SetupFailedError(msg) from err
         await self.check_write_access()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -104,7 +90,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         returncode, output = await check_output(*mount_cmd)
         if returncode != 0:
             msg = f"NFS mount failed with error: {output.decode()}"
-            raise ProviderUnavailableError(msg)
+            raise SetupFailedError(msg)
 
     def _get_mount_options(self) -> list[str]:
         """Get platform-specific NFS mount options."""

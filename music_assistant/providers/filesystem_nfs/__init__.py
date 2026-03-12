@@ -10,7 +10,10 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
 )
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import SetupFailedError
 
+from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
@@ -20,6 +23,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
 )
 
 from .constants import CONF_EXPORT_PATH, CONF_HOST, CONF_NFS_VERSION, CONF_SUBFOLDER
@@ -37,6 +41,16 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
+    # check if valid dns name is given for the host
+    server = str(config.get_value(CONF_HOST))
+    if not await get_ip_from_host(server):
+        msg = f"Unable to resolve {server}, make sure the address is resolvable."
+        raise SetupFailedError(msg)
+    # check if export path is valid
+    export_path = str(config.get_value(CONF_EXPORT_PATH))
+    if not export_path or not export_path.startswith("/") or not is_safe_path(export_path):
+        msg = "Invalid export path: must be an absolute path starting with /"
+        raise SetupFailedError(msg)
     # base_path will be the path where we're going to mount the NFS export
     base_path = f"/tmp/{config.instance_id}"  # noqa: S108
     return NFSFileSystemProvider(mass, manifest, config, base_path)
@@ -105,6 +119,7 @@ async def get_config_entries(
         CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
         CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
         CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+        CONF_ENTRY_PROPAGATE_GENRES,
     )
 
     if instance_id is None or values is None:
