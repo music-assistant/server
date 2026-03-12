@@ -1203,11 +1203,11 @@ for more details.
         async def _update_by_session(session_helper: SessionHelper, duration: int) -> bool:
             now = time.time()
             time_listened = now - session_helper.last_sync_time
-            if time_listened > PLAYBACK_REPORT_INTERVAL_SECONDS + 3:
+            if time_listened > PLAYBACK_REPORT_INTERVAL_SECONDS * 2 + 10:
                 # See player_queues controller, we get an update every 30s, and immediately on pause
                 # or play.
-                # We reset above 33, as this indicates a trigger after a longer absence and should
-                # not count into abs' statistics
+                # We reset after two missed updates, as this indicates a trigger after a longer
+                # absence and should not count into abs' statistics
                 self.logger.debug("Resetting time_listened due to longer absence.")
                 time_listened = 0.0
             try:

@@ -6,13 +6,14 @@ import unittest.mock
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from aiohttp import ClientPayloadError
+from aiohttp import ClientPayloadError, ServerDisconnectedError
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.providers.yandex_music import streaming as _streaming_mod
 from music_assistant.providers.yandex_music.constants import (
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
@@ -352,15 +353,23 @@ def _make_encrypted_stream_details(
 class _MockContent:
     """Async iterable content for mock HTTP responses."""
 
-    def __init__(self, chunks: list[bytes], *, drop_payload_error: bool = False) -> None:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        drop_payload_error: bool = False,
+        drop_error: Exception | None = None,
+    ) -> None:
         self._chunks = chunks
-        self._drop = drop_payload_error
+        self._drop_error: Exception | None = (
+            ClientPayloadError("connection reset by peer") if drop_payload_error else drop_error
+        )
 
     async def iter_chunked(self, size: int) -> Any:
         for chunk in self._chunks:
             yield chunk
-        if self._drop:
-            raise ClientPayloadError("connection reset by peer")
+        if self._drop_error is not None:
+            raise self._drop_error
 
 
 class _MockResponse:
@@ -370,11 +379,20 @@ class _MockResponse:
         self,
         chunks: list[bytes],
         *,
+        status: int = 200,
         error: Exception | None = None,
         drop_payload_error: bool = False,
+        drop_error: Exception | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
-        self.content = _MockContent(chunks, drop_payload_error=drop_payload_error)
+        self.content = _MockContent(
+            chunks,
+            drop_payload_error=drop_payload_error,
+            drop_error=drop_error,
+        )
+        self.status = status
         self._error = error
+        self.headers: dict[str, str] = headers or {}
 
     def raise_for_status(self) -> None:
         """Raise stored error if set, simulating a non-2xx HTTP response."""
@@ -475,9 +493,9 @@ async def test_get_audio_stream_reconnects_with_range_header(
 
     drop_at = 48  # exactly 3 blocks — clean block boundary
 
-    # First request drops after 48 bytes; second serves the remainder
+    # First request drops after 48 bytes; second serves the remainder with 206 Partial Content
     first_resp = _MockResponse([ciphertext[:drop_at]], drop_payload_error=True)
-    second_resp = _MockResponse([ciphertext[drop_at:]])
+    second_resp = _MockResponse([ciphertext[drop_at:]], status=206)
     session = _MultiCallHttpSession([first_resp, second_resp])
     streaming_provider_stub.mass.http_session = session
 
@@ -490,5 +508,233 @@ async def test_get_audio_stream_reconnects_with_range_header(
 
     assert result == plaintext
     assert len(session.calls) == 2
-    assert session.calls[0].get("headers") == {}
-    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-"}
+    assert session.calls[0]["headers"] == {"Range": "bytes=0-4194303"}
+    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-{drop_at + 4194304 - 1}"}
+
+
+async def test_get_audio_stream_refreshes_url_on_410(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """On HTTP 410 (URL expired), a fresh URL is fetched and streaming resumes."""
+    key = b"\x33" * 32
+    plaintext = b"LOSSLESS" * 32
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    fresh_url = "https://cdn.yandex.net/fresh.flac"
+    expired_resp = _MockResponse([], status=410)
+    fresh_resp = _MockResponse([ciphertext])
+
+    call_count = 0
+
+    def _get(_url: str, **_kwargs: object) -> _MockResponse:
+        nonlocal call_count
+        call_count += 1
+        return expired_resp if call_count == 1 else fresh_resp
+
+    streaming_provider_stub.mass.http_session = unittest.mock.MagicMock()
+    streaming_provider_stub.mass.http_session.get = _get
+
+    # Mock get_track_file_info_lossless to return a fresh URL
+    streaming_provider_stub.client = unittest.mock.AsyncMock()
+    streaming_provider_stub.client.get_track_file_info_lossless = unittest.mock.AsyncMock(
+        return_value={"url": fresh_url, "codec": "flac-mp4", "key": key.hex()}
+    )
+    streaming_manager.client = streaming_provider_stub.client
+
+    result = b""
+    with unittest.mock.patch("asyncio.sleep"):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    assert result == plaintext
+    streaming_provider_stub.client.get_track_file_info_lossless.assert_called_once_with(
+        "test_track_123"
+    )
+
+
+async def test_get_audio_stream_raises_after_all_retries_on_410(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """MediaNotFoundError is raised after all retries exhausted on persistent 410."""
+    key = b"\x44" * 32
+    sd = _make_encrypted_stream_details(key.hex())
+    streaming_provider_stub.mass.http_session = _MockHttpSession(_MockResponse([], status=410))
+    streaming_provider_stub.client = unittest.mock.AsyncMock()
+    streaming_provider_stub.client.get_track_file_info_lossless = unittest.mock.AsyncMock(
+        return_value={"url": "https://cdn.example.com/still-expired.flac", "key": key.hex()}
+    )
+    streaming_manager.client = streaming_provider_stub.client
+
+    with (
+        pytest.raises(MediaNotFoundError, match="retries exhausted"),
+        unittest.mock.patch("asyncio.sleep"),
+    ):
+        async for _ in streaming_manager.get_audio_stream(sd):
+            pass
+
+
+async def test_get_audio_stream_retries_on_server_disconnected(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """On ServerDisconnectedError, reconnects with Range header and full plaintext is restored."""
+    key = b"\x55" * 32
+    plaintext = b"CCCCCCCCCCCCCCCC" * 3 + b"DDDDDDDDDDDDDDDD" * 3  # 96 bytes
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    drop_at = 48
+    first_resp = _MockResponse(
+        [ciphertext[:drop_at]], drop_error=ServerDisconnectedError("server closed")
+    )
+    second_resp = _MockResponse([ciphertext[drop_at:]], status=206)
+    session = _MultiCallHttpSession([first_resp, second_resp])
+    streaming_provider_stub.mass.http_session = session
+
+    result = b""
+    with unittest.mock.patch("asyncio.sleep"):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    assert result == plaintext
+    assert len(session.calls) == 2
+    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-{drop_at + 4194304 - 1}"}
+
+
+async def test_get_audio_stream_retries_on_read_timeout(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """On asyncio.TimeoutError (read stall), reconnects with Range header and stream completes."""
+    key = b"\x66" * 32
+    plaintext = b"EEEEEEEEEEEEEEEE" * 3 + b"FFFFFFFFFFFFFFFF" * 3  # 96 bytes
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    drop_at = 48
+    first_resp = _MockResponse([ciphertext[:drop_at]], drop_error=TimeoutError("read timeout"))
+    second_resp = _MockResponse([ciphertext[drop_at:]], status=206)
+    session = _MultiCallHttpSession([first_resp, second_resp])
+    streaming_provider_stub.mass.http_session = session
+
+    result = b""
+    with unittest.mock.patch("asyncio.sleep"):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    assert result == plaintext
+    assert len(session.calls) == 2
+    assert session.calls[1]["headers"] == {"Range": f"bytes={drop_at}-{drop_at + 4194304 - 1}"}
+
+
+async def test_get_audio_stream_resets_decrypt_when_range_ignored(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """If server returns 200 instead of 206 after Range request, decryptor resets to position 0."""
+    key = b"\x77" * 32
+    plaintext = b"GGGGGGGGGGGGGGGG" * 6  # 96 bytes
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    drop_at = 48
+    # First response drops after 48 bytes; second ignores Range and sends full ciphertext with 200
+    first_resp = _MockResponse([ciphertext[:drop_at]], drop_payload_error=True)
+    second_resp = _MockResponse([ciphertext], status=200)  # server ignored Range
+    session = _MultiCallHttpSession([first_resp, second_resp])
+    streaming_provider_stub.mass.http_session = session
+
+    result = b""
+    with unittest.mock.patch("asyncio.sleep"):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    # Decryptor was reset to 0 on the second request, so full plaintext is recovered
+    assert result == plaintext
+
+
+async def test_get_audio_stream_fails_immediately_when_url_refresh_returns_nothing(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """If get_track_file_info_lossless returns no URL, stream fails without wasting retries."""
+    key = b"\x88" * 32
+    sd = _make_encrypted_stream_details(key.hex())
+    streaming_provider_stub.mass.http_session = _MockHttpSession(_MockResponse([], status=410))
+    streaming_provider_stub.client = unittest.mock.AsyncMock()
+    # Simulate API returning no usable URL (None result)
+    streaming_provider_stub.client.get_track_file_info_lossless = unittest.mock.AsyncMock(
+        return_value=None
+    )
+    streaming_manager.client = streaming_provider_stub.client
+
+    with (
+        pytest.raises(MediaNotFoundError, match="retries exhausted"),
+        unittest.mock.patch("asyncio.sleep"),
+    ):
+        async for _ in streaming_manager.get_audio_stream(sd):
+            pass
+
+    # Should have given up after attempt 0 (refresh returned None → no stale URL reuse)
+    assert streaming_provider_stub.client.get_track_file_info_lossless.call_count == 1
+
+
+async def test_get_audio_stream_exact_window_boundary(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """File whose size is an exact multiple of _RANGE_WINDOW does not trigger a 416 error.
+
+    Without the Content-Range EOF guard the loop would request the next window after
+    receiving exactly _RANGE_WINDOW bytes in a 206 response, which would result in a
+    416 Range Not Satisfiable error raised as MediaNotFoundError.  With the fix the
+    loop detects EOF via the Content-Range header and returns cleanly.
+    """
+    # Use a tiny window (16 bytes = one AES block) so the test stays fast.
+    small_window = 16
+    key = b"\xab" * 32
+    plaintext = b"x" * small_window  # file size == window size (exact boundary)
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    # Content-Range: bytes 0-15/16  — signals that byte 15 is the last one
+    first_resp = _MockResponse(
+        [ciphertext],
+        status=206,
+        headers={"Content-Range": f"bytes 0-{small_window - 1}/{small_window}"},
+    )
+    # Second response must never be reached; if it is, the test will fail.
+    second_resp = _MockResponse([], status=416, error=RuntimeError("should not be requested"))
+    session = _MultiCallHttpSession([first_resp, second_resp])
+    streaming_provider_stub.mass.http_session = session
+
+    result = b""
+    with unittest.mock.patch.object(_streaming_mod, "_RANGE_WINDOW", small_window):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    assert result == plaintext
+    assert len(session.calls) == 1, "second window must not be requested when EOF is detected"
