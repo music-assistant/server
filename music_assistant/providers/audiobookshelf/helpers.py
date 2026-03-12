@@ -56,9 +56,9 @@ class ProgressGuard:
         """Init."""
         self._progresses: list[_ProgressHelper] = []
         self._max_progresses = 100
-        # 12s have to have passed before we accept an external progress update
-        # abs updates every 15 s
-        self._min_time_between_updates_ms = 12000
+        # 8s have to have passed before we accept an external progress update
+        # abs updates every 10 s
+        self._min_time_between_updates_ms = 8000
 
     def _get_progress(self, item_id: str, episode_id: str | None = None) -> _ProgressHelper | None:
         """Get a helper progress."""
@@ -101,8 +101,8 @@ class ProgressGuard:
         stored_progress = self._get_progress(item_id=item_id, episode_id=episode_id)
         if stored_progress is None:
             return True
-        return bool(
-            abs_progress.last_update - stored_progress.last_update_ms
+        return (
+            int(time.time() * 1000) - stored_progress.last_update_ms
             >= self._min_time_between_updates_ms
         )
 
