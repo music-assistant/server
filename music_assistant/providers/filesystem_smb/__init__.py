@@ -9,11 +9,10 @@ from urllib.parse import quote
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import check_output
-from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider, exists, makedirs
 from music_assistant.providers.filesystem_local.constants import (
@@ -50,12 +49,12 @@ async def setup(
     server = str(config.get_value(CONF_HOST))
     if not await get_ip_from_host(server):
         msg = f"Unable to resolve {server}, make sure the address is resolveable."
-        raise SetupFailedError(msg)
+        raise LoginFailed(msg)
     # check if share is valid
     share = str(config.get_value(CONF_SHARE))
-    if not share or "/" in share or "\\" in share or not is_safe_path(share):
+    if not share or "/" in share or "\\" in share:
         msg = "Invalid share name"
-        raise SetupFailedError(msg)
+        raise LoginFailed(msg)
     # base_path will be the path where we're going to mount the remote share
     base_path = f"/tmp/{config.instance_id}"  # noqa: S108
     return SMBFileSystemProvider(mass, manifest, config, base_path)
@@ -204,7 +203,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             await self.mount()
         except OSError as err:
             msg = f"Connection failed for the given details: {err}"
-            raise SetupFailedError(msg) from err
+            raise LoginFailed(msg) from err
         await self.check_write_access()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -244,14 +243,14 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             )
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
-            raise SetupFailedError(msg)
+            raise LoginFailed(msg)
 
         self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
         self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
-            raise SetupFailedError(msg)
+            raise LoginFailed(msg)
 
     def _build_macos_mount_cmd(
         self, server: str, username: str, password: str | None, share: str, subfolder: str
