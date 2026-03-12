@@ -9,7 +9,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models import AudioCodec, MediaCommand
-from aiosendspin.models.types import PlaybackStateType
+from aiosendspin.models.types import PlaybackStateType, PlayerCommand
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -35,6 +35,7 @@ from aiosendspin.server.roles import (
     MetadataGroupRole,
 )
 from aiosendspin.server.roles.metadata.state import Metadata
+from aiosendspin.server.roles.player.events import StaticDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
@@ -53,7 +54,12 @@ from PIL import Image
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
-from .constants import CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
+from .constants import (
+    CONF_SENDSPIN_STATIC_DELAY,
+    CONF_SENDSPIN_SYNC_DELAY,
+    DEFAULT_SENDSPIN_STATIC_DELAY,
+    DEFAULT_SENDSPIN_SYNC_DELAY,
+)
 from .helpers import mac_from_bridge_client_id
 from .playback import SendspinPlaybackSession
 
@@ -309,6 +315,8 @@ class SendspinPlayer(Player):
                 self._attr_volume_level = volume
                 self._attr_volume_muted = muted
                 self.update_state()
+            case StaticDelayChangedEvent(static_delay_ms=delay_ms):
+                self.logger.debug("Static delay changed to %d ms", delay_ms)
             case ClientGroupChangedEvent(new_group=new_group):
                 self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
@@ -443,6 +451,7 @@ class SendspinPlayer(Player):
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
         await self._apply_preferred_format()
+        await self._apply_static_delay()
 
     async def _apply_preferred_format(self) -> None:
         """Read config and set/clear the players preferred format."""
@@ -476,6 +485,18 @@ class SendspinPlayer(Player):
                 audio_format,
                 self.display_name,
             )
+
+    async def _apply_static_delay(self) -> None:
+        """Read config and send set_static_delay command if supported."""
+        player_role = self._player_role
+        if player_role is None:
+            return
+
+        config_value = cast(
+            "int",
+            self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, DEFAULT_SENDSPIN_STATIC_DELAY),
+        )
+        player_role.set_static_delay(config_value)
 
     async def set_members(
         self,
@@ -683,6 +704,28 @@ class SendspinPlayer(Player):
                         advanced=True,
                     )
                 )
+
+        # Static delay config — only for players that advertise set_static_delay
+        if (
+            player_role is not None
+            and PlayerCommand.SET_STATIC_DELAY in player_role.state_supported_commands
+        ):
+            entries.append(
+                ConfigEntry(
+                    key=CONF_SENDSPIN_STATIC_DELAY,
+                    type=ConfigEntryType.INTEGER,
+                    label="Static playback delay (ms)",
+                    description=(
+                        "Delay in milliseconds to compensate for external "
+                        "equipment latency (e.g., AV receiver). Range: 0-5000."
+                    ),
+                    required=False,
+                    default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
+                    range=(0, 5000),
+                    immediate_apply=True,
+                    advanced=True,
+                )
+            )
 
         return entries
 
