@@ -207,6 +207,7 @@ MASS_LOGO_ONLINE: Final[str] = (
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
+    "discovery",
     "streams",
     "webserver",
     "players",

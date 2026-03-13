@@ -67,7 +67,10 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
 
     with (
         patch("music_assistant.mass.AsyncZeroconf", return_value=mock_zc),
-        patch("music_assistant.mass.AsyncServiceBrowser", return_value=mock_browser),
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
+            return_value=mock_browser,
+        ),
     ):
         await mass_instance.start()
 
