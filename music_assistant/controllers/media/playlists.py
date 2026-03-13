@@ -146,6 +146,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             # PLAYLIST_CREATE is deprecated
             supported_types.add(MediaType.TRACK)
+            # an album is unwrapped to individual tracks in self.add_playlist_tracks
+            supported_types.add(MediaType.ALBUM)
         if ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS in provider.supported_features:
             supported_types.add(MediaType.AUDIOBOOK)
         if ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES in provider.supported_features:
