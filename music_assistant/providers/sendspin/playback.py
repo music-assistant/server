@@ -280,6 +280,7 @@ class SendspinPlaybackSession:
         self._member_pipelines: dict[str, _MemberPipeline] = {}
         self._push_stream: PushStream | None = None
         self._playback_running = False
+        self._producer_eof_sent = False
         self._timeline_start_us: int | None = None
         self._first_commit_monotonic_us: int | None = None
         self._produced_audio_us = 0
@@ -584,6 +585,9 @@ class SendspinPlaybackSession:
         state.drainer_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await state.drainer_task
+        if self._producer_eof_sent and pipeline.config.requires_transform:
+            with suppress(Exception):
+                await pipeline.processor.write_eof()
         if old_processor is not None and old_processor is not state.processor:
             with suppress(Exception):
                 await old_processor.close()
@@ -617,6 +621,7 @@ class SendspinPlaybackSession:
         async with self._state_lock:
             self._push_stream = push_stream
             self._playback_running = True
+            self._producer_eof_sent = False
             self._history.clear()
             self._produced_audio_us = 0
             self._timeline_start_us = None
@@ -742,6 +747,9 @@ class SendspinPlaybackSession:
             producer_stopped_cleanly = True
         finally:
             if producer_stopped_cleanly and not commit_task.done():
+                # Mark EOF so that catchup processors promoted after this
+                # point also get flushed (see _promote_join_catchup_processor).
+                self._producer_eof_sent = True
                 # Signal EOF to transform pipelines so ffmpeg flushes its
                 # internal buffers instead of blocking on the last read.
                 _, pipelines = await self._snapshot_active_pipelines()
