@@ -18,6 +18,7 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
@@ -26,7 +27,7 @@ from urllib.parse import urlparse
 import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
-from zeroconf import IPVersion
+from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -718,31 +719,74 @@ def get_primary_ip_address_from_zeroconf(
     :param prefer_ipv6: If True, prefer IPv6 addresses over IPv4.
     """
     if prefer_ipv6:
-        # Prefer IPv6, fall back to IPv4
-        for address in discovery_info.parsed_addresses(IPVersion.V6Only):
-            if address.startswith(("::1", "fe80")):
-                continue
-            return address
-        for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-            if address.startswith(("127", "169.254")):
-                continue
-            return address
+        order = [IPVersion.V6Only, IPVersion.V4Only]
     else:
-        # Prefer IPv4, fall back to IPv6
-        for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-            if address.startswith(("127", "169.254")):
+        order = [IPVersion.V4Only, IPVersion.V6Only]
+    for version in order:
+        for addr in discovery_info.ip_addresses_by_version(version):
+            if addr.is_loopback or addr.is_link_local or addr.is_unspecified:
                 continue
-            return address
-        for address in discovery_info.parsed_addresses(IPVersion.V6Only):
-            if address.startswith(("::1", "fe80")):
-                continue
-            return address
+            return str(addr)
     return None
 
 
 def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> int | None:
     """Get port from zeroconf discovery info."""
     return discovery_info.port
+
+
+def get_zeroconf_args(
+    use_all_interfaces: bool = False,
+) -> dict[str, Any]:
+    """Determine optimal zeroconf IPVersion and interfaces from system adapters.
+
+    Inspects available network adapters to determine the correct IP version
+    and interface configuration, similar to Home Assistant's approach.
+
+    :param use_all_interfaces: If True, use all interfaces (user override).
+    """
+    adapters = ifaddr.get_adapters()
+    has_ipv4 = False
+    has_ipv6 = False
+    interface_ips: list[str] = []
+    for adapter in adapters:
+        for ip_config in adapter.ips:
+            if ip_config.is_IPv6:
+                ip_tuple = cast("tuple[str, int, int]", ip_config.ip)
+                addr = ip_address(ip_tuple[0])
+                if isinstance(addr, IPv6Address) and not addr.is_loopback:
+                    has_ipv6 = True
+                    if not addr.is_global:
+                        interface_ips.append(f"{ip_tuple[0]}%{ip_tuple[2]}")
+            else:
+                ip_str = cast("str", ip_config.ip)
+                addr = ip_address(ip_str)
+                if isinstance(addr, IPv4Address) and not addr.is_loopback:
+                    has_ipv4 = True
+                    interface_ips.append(ip_str)
+
+    # Determine IP version based on available addresses
+    if has_ipv4 and has_ipv6:
+        ip_version = IPVersion.All
+    elif has_ipv6:
+        ip_version = IPVersion.V6Only
+    else:
+        ip_version = IPVersion.V4Only
+
+    if use_all_interfaces:
+        # User explicitly requested all interfaces — pass explicit IP list
+        # to avoid issues with InterfaceChoice.Default on multi-interface hosts.
+        if interface_ips:
+            return {"ip_version": ip_version, "interfaces": interface_ips}
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
+
+    # Default mode: use InterfaceChoice.Default for IPv4-only single-interface,
+    # otherwise pass explicit interface list for reliability.
+    if ip_version == IPVersion.V4Only:
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.Default}
+    if interface_ips:
+        return {"ip_version": ip_version, "interfaces": interface_ips}
+    return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
 
 
 async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
