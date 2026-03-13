@@ -376,7 +376,7 @@ class SendspinPlaybackSession:
     async def add_member(self, player_id: str) -> None:
         """Add a member to the group with DSP-aware lifecycle handling."""
         async with self._state_lock:
-            if player_id in self._members or player_id in self.pending_join_members:
+            if player_id in self._members:
                 return
             self.pending_join_members.add(player_id)
             # Preserve any channel pre-resolved during add_client so join-time
@@ -384,18 +384,19 @@ class SendspinPlaybackSession:
             self._preassigned_channels.setdefault(player_id, uuid4())
         try:
             await self._start_join_catchup(player_id)
-            async with self._state_lock:
-                if player_id not in self.pending_join_members:
-                    # Concurrent remove_member/sync_members cancelled this join.
-                    return
-                self._members.add(player_id)
-                self._mapping_dirty = True
         except Exception:
-            await self._release_player_channel(player_id)
-            raise
-        finally:
             async with self._state_lock:
                 self.pending_join_members.discard(player_id)
+            await self._release_player_channel(player_id)
+            raise
+        # Promote to full member even if already pending to avoid losing
+        # the join when a cancelled task clears our pending flag.
+        async with self._state_lock:
+            if player_id not in self.pending_join_members:
+                return
+            self._members.add(player_id)
+            self._mapping_dirty = True
+            self.pending_join_members.discard(player_id)
 
     async def remove_member(self, player_id: str) -> None:
         """Remove a member from the group and clean up per-member playback state."""
