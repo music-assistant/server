@@ -705,7 +705,6 @@ class SendspinPlayer(Player):
                     )
                 )
 
-        # Static delay config — only for players that advertise set_static_delay
         if (
             player_role is not None
             and PlayerCommand.SET_STATIC_DELAY in player_role.state_supported_commands
@@ -714,10 +713,11 @@ class SendspinPlayer(Player):
                 ConfigEntry(
                     key=CONF_SENDSPIN_STATIC_DELAY,
                     type=ConfigEntryType.INTEGER,
-                    label="Static playback delay (ms)",
+                    label="Sync delay (ms)",
                     description=(
-                        "Delay in milliseconds to compensate for external "
-                        "equipment latency (e.g., AV receiver). Range: 0-5000."
+                        "Static delay in milliseconds to adjust audio synchronization. "
+                        "Positive values delay playback, negative values advance it. "
+                        "Use this to compensate for device-specific audio latency."
                     ),
                     required=False,
                     default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
