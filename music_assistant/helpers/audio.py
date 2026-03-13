@@ -15,8 +15,9 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import aiofiles
+import aiohttp
 import shortuuid
-from aiohttp import ClientConnectorSSLError, ClientError, ClientTimeout
+from aiohttp import ClientConnectorSSLError, ClientTimeout
 from music_assistant_models.dsp import DSPConfig, DSPDetails, DSPState
 from music_assistant_models.enums import (
     ContentType,
@@ -31,7 +32,9 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderPermissionDenied,
     ProviderUnavailableError,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
@@ -57,9 +60,7 @@ from .audio_buffer import AudioBuffer
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
 from .ogg_handler import (
-    extract_metadata_from_page,
     get_chained_ogg_stream,
-    parse_ogg_page,
 )
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
@@ -359,11 +360,6 @@ async def get_stream_details(
                     _update_hls_radio_metadata, mass
                 )
                 streamdetails.stream_metadata_update_interval = 5
-            elif stream_type == StreamType.IN_BAND:
-                streamdetails.stream_metadata_update_callback = partial(
-                    _update_inband_radio_metadata, mass
-                )
-                streamdetails.stream_metadata_update_interval = 10
         # handle volume normalization details
         if result := await mass.music.get_loudness(
             streamdetails.item_id,
@@ -585,10 +581,41 @@ async def get_media_stream(
         seek_position = 0  # seeking not possible on radio streams
     elif stream_type == StreamType.IN_BAND:
         assert isinstance(streamdetails.path, str)  # for type checking
+
         # For IN_BAND (OGG/Opus) radio streams, use chained OGG handler.
         # This handles the chained OGG format by stitching logical bitstreams together
         # so FFmpeg sees a single continuous stream. Metadata is extracted in-band.
-        audio_source = get_chained_ogg_stream(mass, streamdetails.path)
+        def _on_inband_metadata(metadata: dict[str, str]) -> None:
+            """Handle metadata extracted from the OGG stream."""
+            title = metadata.get("title", "")
+            artist = metadata.get("artist", "")
+            album = metadata.get("album", "")
+            if not artist and " - " in title:
+                artist, title = title.split(" - ", 1)
+            if title or artist:
+                if artist and title:
+                    stream_title = f"{artist} - {title}"
+                elif title:
+                    stream_title = title
+                else:
+                    stream_title = artist
+                cleaned_title = clean_stream_title(stream_title)
+                if cleaned_title and cleaned_title != streamdetails.stream_title:
+                    LOGGER.log(
+                        VERBOSE_LOG_LEVEL,
+                        "In-band metadata: %s",
+                        cleaned_title,
+                    )
+                    streamdetails.stream_title = cleaned_title
+                    streamdetails.stream_metadata = StreamMetadata(
+                        title=title or cleaned_title,
+                        artist=artist or None,
+                        album=album or None,
+                    )
+
+        audio_source = get_chained_ogg_stream(
+            mass, streamdetails.path, metadata_callback=_on_inband_metadata
+        )
         seek_position = 0  # seeking not possible on radio streams
     elif stream_type == StreamType.HLS:
         assert isinstance(streamdetails.path, str)  # for type checking
@@ -962,7 +989,12 @@ async def get_reconnecting_radio_stream(
         except asyncio.CancelledError:
             LOGGER.debug("Radio stream cancelled for %s", url)
             raise
-        except ClientError as err:
+        except (
+            aiohttp.ClientConnectionError,
+            aiohttp.ClientPayloadError,
+            aiohttp.ServerDisconnectedError,
+        ) as err:
+            # Transient network errors - retry
             LOGGER.warning(
                 "Radio stream error (reconnect #%d): %s",
                 reconnect_count,
@@ -970,10 +1002,19 @@ async def get_reconnecting_radio_stream(
             )
             reconnect_count += 1
             if reconnect_count > max_reconnects:
-                raise ProviderUnavailableError(
+                raise RetriesExhausted(
                     f"Radio stream failed after {max_reconnects} reconnects: {err}"
                 ) from err
             await asyncio.sleep(0.5)
+        except aiohttp.ClientResponseError as err:
+            if err.status == 404:
+                raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+            if err.status == 403:
+                raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
+            # Other HTTP errors (5xx etc) - could be temporary
+            raise ProviderUnavailableError(
+                f"Radio stream returned HTTP {err.status}: {err}"
+            ) from err
 
     LOGGER.warning("Radio stream reached max reconnects (%d) for %s", max_reconnects, url)
 
@@ -1080,89 +1121,6 @@ async def _update_hls_radio_metadata(
             "Error fetching HLS metadata: %s",
             err,
         )
-
-
-async def _update_inband_radio_metadata(
-    mass: MusicAssistant,
-    streamdetails: StreamDetails,
-    elapsed_time: int,  # noqa: ARG001
-) -> None:
-    """Sample OGG stream to extract Vorbis comment metadata."""
-    try:
-        assert isinstance(streamdetails.path, str)  # for type checking
-        timeout = ClientTimeout(total=5, connect=5, sock_read=5)
-        station_name = (
-            streamdetails.stream_metadata.album if streamdetails.stream_metadata else None
-        )
-
-        async with _connect_radio_stream(
-            mass, streamdetails.path, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
-        ) as resp:
-            if station_name is None:
-                station_name = resp.headers.get("icy-name")
-            buffer = b""
-            bytes_read = 0
-            max_bytes = 32768  # Read up to 32KB to find metadata
-
-            async for chunk in resp.content.iter_any():
-                buffer += chunk
-                bytes_read += len(chunk)
-
-                # Parse OGG pages looking for metadata
-                while True:
-                    result = parse_ogg_page(buffer, 0)
-                    if result is None:
-                        break
-
-                    page, consumed = result
-                    buffer = buffer[consumed:]
-                    metadata = extract_metadata_from_page(page)
-
-                    if metadata:
-                        title = metadata.get("title", "")
-                        artist = metadata.get("artist", "")
-                        album = metadata.get("album", "") or station_name
-
-                        if title or artist:
-                            if artist and title:
-                                stream_title = f"{artist} - {title}"
-                            elif title:
-                                stream_title = title
-                            else:
-                                stream_title = artist
-
-                            cleaned_title = clean_stream_title(stream_title)
-
-                            if cleaned_title != streamdetails.stream_title and cleaned_title:
-                                LOGGER.log(
-                                    VERBOSE_LOG_LEVEL,
-                                    "In-band metadata changed: '%s' -> '%s'",
-                                    streamdetails.stream_title,
-                                    cleaned_title,
-                                )
-                                streamdetails.stream_metadata = StreamMetadata(
-                                    title=title or cleaned_title,
-                                    artist=artist or None,
-                                    album=album or None,
-                                )
-                                LOGGER.log(
-                                    VERBOSE_LOG_LEVEL,
-                                    "In-band radio metadata: %s (album: %s)",
-                                    cleaned_title,
-                                    album,
-                                )
-                                streamdetails.stream_title = cleaned_title
-                            # Found metadata, we're done
-                            return
-
-                # Stop if we've read enough
-                if bytes_read >= max_bytes:
-                    break
-
-    except asyncio.CancelledError:
-        raise
-    except ClientError as err:
-        LOGGER.debug("Error fetching in-band metadata: %s", err)
 
 
 async def get_hls_substream(
@@ -1732,7 +1690,7 @@ async def analyze_loudness(
     elif stream_type == StreamType.IN_BAND:
         assert isinstance(streamdetails.path, str)  # for type checking
         # Use chained OGG handler for seamless playback across logical bitstreams
-        audio_source = get_chained_ogg_stream(mass, streamdetails.path)
+        audio_source = get_chained_ogg_stream(mass, streamdetails.path, metadata_callback=None)
     elif stream_type == StreamType.HLS:
         assert isinstance(streamdetails.path, str)  # for type checking
         substream = await get_hls_substream(mass, streamdetails.path)
