@@ -79,6 +79,10 @@ class _BufferedFfmpegProcessor:
     async def push(self, pcm: bytes) -> None:
         await self._ffmpeg.write(pcm)
 
+    async def write_eof(self) -> None:
+        """Signal no more input, causing ffmpeg to flush its internal buffers."""
+        await self._ffmpeg.write_eof()
+
     @property
     def produced_output_us(self) -> int:
         """Return cumulative output duration currently drained from ffmpeg."""
@@ -94,6 +98,8 @@ class _BufferedFfmpegProcessor:
             missing = target_bytes - len(self._output_buffer)
             read_size = max(self._read_quantum_bytes, missing)
             chunk = await self._ffmpeg.readexactly(read_size)
+            if not chunk:
+                break
             self._output_buffer.extend(chunk)
 
         out = bytes(self._output_buffer[:target_bytes])
@@ -735,6 +741,13 @@ class SendspinPlaybackSession:
             producer_stopped_cleanly = True
         finally:
             if producer_stopped_cleanly and not commit_task.done():
+                # Signal EOF to transform pipelines so ffmpeg flushes its
+                # internal buffers instead of blocking on the last read.
+                _, pipelines = await self._snapshot_active_pipelines()
+                for _, pipeline in pipelines:
+                    if pipeline.processor is not None and pipeline.config.requires_transform:
+                        with suppress(Exception):
+                            await pipeline.processor.write_eof()
                 # Producer finished normally; send a None sentinel so the
                 # consumer exits cleanly.  The queue may be full, so retry
                 # with a deadline before falling back to cancellation.
