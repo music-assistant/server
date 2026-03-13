@@ -81,7 +81,7 @@ async def get_config_entries(
     """
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH and values:
-        hass_url = values[CONF_URL]
+        hass_url = str(values[CONF_URL]).strip()
         async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
             client_id = base_url(auth_helper.callback_url)
             auth_url = get_auth_url(

@@ -1,6 +1,6 @@
-"""Party Mode Plugin Provider for Music Assistant.
+"""Party Plugin Provider for Music Assistant.
 
-Provides guest access with a shareable URL for party mode, allowing guests
+Provides guest access with a shareable URL, allowing guests
 to add songs to the queue with configurable rate limiting.
 """
 
@@ -35,31 +35,33 @@ if TYPE_CHECKING:
 
 # Configuration keys
 CONF_ENABLE_GUEST_ACCESS = "enable_guest_access"
-CONF_PARTY_MODE_PLAYER = "player"
-CONF_PARTY_MODE_ALBUM_ART_BACKGROUND = "album_art_background"
-CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS = "show_player_controls"
+CONF_PARTY_PLAYER = "player"
+CONF_PARTY_ALBUM_ART_BACKGROUND = "album_art_background"
+CONF_PARTY_SHOW_PLAYER_CONTROLS = "show_player_controls"
 CONF_ENABLE_RATE_LIMITING = "enable_rate_limiting"
 # Boost song feature
 CONF_ENABLE_BOOST = "enable_boost"
-CONF_PARTY_MODE_BOOST_LIMIT = "boost_limit"
-CONF_PARTY_MODE_BOOST_REFILL_MINUTES = "boost_refill_minutes"
+CONF_PARTY_BOOST_LIMIT = "boost_limit"
+CONF_PARTY_BOOST_REFILL_MINUTES = "boost_refill_minutes"
 # Add song to Queue feature
 CONF_ENABLE_ADD_QUEUE = "enable_add_queue"
-CONF_PARTY_MODE_ADD_QUEUE_LIMIT = "add_queue_limit"
-CONF_PARTY_MODE_ADD_QUEUE_REFILL_MINUTES = "add_queue_refill_minutes"
+CONF_PARTY_ADD_QUEUE_LIMIT = "add_queue_limit"
+CONF_PARTY_ADD_QUEUE_REFILL_MINUTES = "add_queue_refill_minutes"
 # Skip Song feature
 CONF_ENABLE_SKIP_SONG = "enable_skip_song"
-CONF_PARTY_MODE_SKIP_SONG_LIMIT = "skip_song_limit"
-CONF_PARTY_MODE_SKIP_SONG_REFILL_MINUTES = "skip_song_refill_minutes"
+CONF_PARTY_SKIP_SONG_LIMIT = "skip_song_limit"
+CONF_PARTY_SKIP_SONG_REFILL_MINUTES = "skip_song_refill_minutes"
 # Badge color configuration
 CONF_REQUEST_BADGE_COLOR = "request_badge_color"
 CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 # Lyrics / Karaoke
-CONF_PARTY_MODE_DISPLAY_LYRICS = "display_lyrics"
-CONF_PARTY_MODE_KARAOKE_MODE = "karaoke_mode"
+CONF_PARTY_DISPLAY_LYRICS = "display_lyrics"
+CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
 # QR code instruction text
 CONF_QR_SHOW_INSTRUCTION_TEXT = "qr_show_instruction_text"
 CONF_QR_INSTRUCTION_TEXT = "qr_instruction_text"
+# Anti burn-in
+CONF_ANTI_BURN_IN = "anti_burn_in"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -81,19 +83,19 @@ BADGE_COLOR_OPTIONS = [
 ]
 
 # Guest user configuration
-PARTY_MODE_GUEST_USER = "party_mode_guest"
+PARTY_GUEST_USER = "party_guest"
 PARTY_GUEST_DISPLAY_NAME = "Party Guest"
 
 # Extra attribute keys for tracking guest items in the queue
-ATTR_PARTY_MODE_GUEST = "party_mode_guest"
-ATTR_PARTY_MODE_BOOSTED = "party_mode_boosted"
+ATTR_PARTY_GUEST = "party_guest"
+ATTR_PARTY_BOOSTED = "party_boosted"
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
 @dataclass
-class PartyModeConfig(DataClassDictMixin):
-    """Configuration data returned to the party mode guest frontend."""
+class PartyConfig(DataClassDictMixin):
+    """Configuration data returned to the party guest frontend."""
 
     # Feature toggles
     enable_rate_limiting: bool
@@ -120,13 +122,15 @@ class PartyModeConfig(DataClassDictMixin):
     # QR code instruction text
     qr_show_instruction_text: bool
     qr_instruction_text: str
+    # Anti burn-in
+    anti_burn_in: bool
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return PartyModePlugin(mass, manifest, config, SUPPORTED_FEATURES)
+    return PartyPlugin(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -154,10 +158,10 @@ async def get_config_entries(
             ),
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_PLAYER,
+            key=CONF_PARTY_PLAYER,
             type=ConfigEntryType.STRING,
             required=True,
-            label="Party Mode Player",
+            label="Party Player",
             description="Select which player/queue guests will add songs to.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             options=[
@@ -184,30 +188,29 @@ async def get_config_entries(
             depends_on=CONF_QR_SHOW_INSTRUCTION_TEXT,
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS,
+            key=CONF_PARTY_SHOW_PLAYER_CONTROLS,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Show Player Controls in Party Mode View",
+            label="Show Player Controls in Party Dashboard",
             description=(
-                "Display playback controls (play/pause, skip, volume) in the party mode view. "
+                "Display playback controls (play/pause, skip, volume) in the party dashboard. "
                 "When disabled, the view is frameless and only shows now playing info and search."
             ),
             advanced=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_DISPLAY_LYRICS,
+            key=CONF_PARTY_DISPLAY_LYRICS,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Display Lyrics in Party Mode Dashboard",
+            label="Display Lyrics in Party Dashboard",
             description=(
-                "Show synchronized lyrics (karaoke-style) in the party mode dashboard view "
-                "alongside the QR code. Lyrics are hidden on mobile devices."
+                "Show synchronized lyrics (karaoke-style) in the party dashboard. "
+                "Lyrics are hidden on mobile devices."
             ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_KARAOKE_MODE,
+            key=CONF_PARTY_KARAOKE_MODE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
             label="Karaoke Mode (prioritize lyric display)",
@@ -216,16 +219,28 @@ async def get_config_entries(
                 "with the track list minimized to current and next song at the bottom. "
                 "Requires Display Lyrics to be enabled."
             ),
-            depends_on=CONF_PARTY_MODE_DISPLAY_LYRICS,
+            depends_on=CONF_PARTY_DISPLAY_LYRICS,
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_ALBUM_ART_BACKGROUND,
+            key=CONF_ANTI_BURN_IN,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Use Album Art as Background in Party Mode View",
+            label="Enable Anti Burn-in",
+            description=(
+                "Periodically swap the QR code and track list sides to prevent "
+                "burn-in on OLED or plasma displays. Sides swap every 10 minutes."
+            ),
+            depends_on=CONF_ENABLE_GUEST_ACCESS,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_ALBUM_ART_BACKGROUND,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Use Album Art as Background in Party dashboard",
             description=(
                 "Display the currently playing track's album art as a blurred background "
-                "in the party mode guest interface."
+                "in the party dashboard."
             ),
             advanced=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
@@ -258,7 +273,7 @@ async def get_config_entries(
             category="Guest Features",
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_ADD_QUEUE_LIMIT,
+            key=CONF_PARTY_ADD_QUEUE_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=10,
             label="Add to Queue Token Limit",
@@ -272,7 +287,7 @@ async def get_config_entries(
             category="Guest Features",
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_ADD_QUEUE_REFILL_MINUTES,
+            key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=2,
             label="Add to Queue Refill Rate (minutes)",
@@ -300,7 +315,7 @@ async def get_config_entries(
             category="Guest Features",
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_BOOST_LIMIT,
+            key=CONF_PARTY_BOOST_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=1,
             label="Boost Token Limit",
@@ -314,7 +329,7 @@ async def get_config_entries(
             category="Guest Features",
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_BOOST_REFILL_MINUTES,
+            key=CONF_PARTY_BOOST_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=20,
             label="Boost Refill Rate (minutes)",
@@ -342,7 +357,7 @@ async def get_config_entries(
             category="Guest Features",
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_SKIP_SONG_LIMIT,
+            key=CONF_PARTY_SKIP_SONG_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=1,
             label="Skip Song Token Limit",
@@ -356,7 +371,7 @@ async def get_config_entries(
             category="Guest Features",
         ),
         ConfigEntry(
-            key=CONF_PARTY_MODE_SKIP_SONG_REFILL_MINUTES,
+            key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=60,
             label="Skip Song Refill Rate (minutes)",
@@ -393,8 +408,8 @@ async def get_config_entries(
     )
 
 
-class PartyModePlugin(PluginProvider):
-    """Party Mode plugin provider for Music Assistant."""
+class PartyPlugin(PluginProvider):
+    """Party plugin provider for Music Assistant."""
 
     def __init__(
         self,
@@ -403,7 +418,7 @@ class PartyModePlugin(PluginProvider):
         config: ProviderConfig,
         supported_features: set[ProviderFeature],
     ) -> None:
-        """Initialize the Party Mode plugin."""
+        """Initialize the Party plugin."""
         super().__init__(mass, manifest, config, supported_features)
         self._unregister_handles: list[Callable[[], None]] = []
         self._queue_lock = asyncio.Lock()
@@ -412,25 +427,23 @@ class PartyModePlugin(PluginProvider):
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
         self._unregister_handles.append(
-            self.mass.register_api_command(
-                "party_mode/url", self.get_party_mode_url, required_role="user"
-            )
+            self.mass.register_api_command("party/url", self.get_party_url, required_role="user")
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party_mode/player", self.get_party_mode_player)
+            self.mass.register_api_command("party/player", self.get_party_player)
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party_mode/config", self.get_party_mode_config)
+            self.mass.register_api_command("party/config", self.get_party_config)
         )
         # Guest action commands - these are called by the guest frontend
         self._unregister_handles.append(
-            self.mass.register_api_command("party_mode/add_to_queue", self.add_to_queue)
+            self.mass.register_api_command("party/add_to_queue", self.add_to_queue)
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party_mode/boost_queue_item", self.boost_queue_item)
+            self.mass.register_api_command("party/boost_queue_item", self.boost_queue_item)
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party_mode/skip", self.skip_current)
+            self.mass.register_api_command("party/skip", self.skip_current)
         )
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -438,7 +451,7 @@ class PartyModePlugin(PluginProvider):
 
         :param is_removed: Whether the provider is being removed (vs just reloaded).
         """
-        self.logger.debug("Party mode unload called, is_removed=%s", is_removed)
+        self.logger.debug("Party unload called, is_removed=%s", is_removed)
 
         # Unregister all API commands
         for unregister in self._unregister_handles:
@@ -462,26 +475,26 @@ class PartyModePlugin(PluginProvider):
     # ==================== Configuration API Commands ====================
 
     async def _get_or_create_party_guest_user(self) -> User:
-        """Get or create the party mode guest user.
+        """Get or create the party guest user.
 
         :returns: The party guest User.
         """
         auth = self.mass.webserver.auth
-        user = await auth.get_user_by_username(PARTY_MODE_GUEST_USER)
+        user = await auth.get_user_by_username(PARTY_GUEST_USER)
         if user:
             return user
 
         # Create the party guest user
         user = await auth.create_user(
-            username=PARTY_MODE_GUEST_USER,
+            username=PARTY_GUEST_USER,
             role=UserRole.GUEST,
             display_name=PARTY_GUEST_DISPLAY_NAME,
         )
-        self.logger.info("Created party mode guest user account")
+        self.logger.info("Created party guest user account")
         return user
 
     async def _get_join_code(self) -> str:
-        """Get an active join code for party mode, creating one if needed.
+        """Get an active join code for party, creating one if needed.
 
         Looks up an existing non-expired join code via the auth controller.
         If none exists, generates a new one.
@@ -501,12 +514,12 @@ class PartyModePlugin(PluginProvider):
             user=guest_user,
             expires_in_hours=8,
             max_uses=0,
-            device_name="Party Mode Guest",
+            device_name="Party Guest",
         )
         return code
 
-    async def get_party_mode_url(self) -> str | None:
-        """Get the guest access URL for party mode.
+    async def get_party_url(self) -> str | None:
+        """Get the guest access URL for party.
 
         When remote access is enabled, returns a URL that works from anywhere via WebRTC.
         Otherwise, returns a local URL that only works on the same network.
@@ -528,53 +541,54 @@ class PartyModePlugin(PluginProvider):
         base_url = str(base_url_value) if base_url_value else f"http://localhost:{DEFAULT_PORT}"
         return f"{base_url}/?join={code}"
 
-    async def get_party_mode_player(self) -> str | None:
-        """Get the configured party mode player/queue ID.
+    async def get_party_player(self) -> str | None:
+        """Get the configured party player/queue ID.
 
-        :returns: The queue ID for party mode, or None to use active player.
+        :returns: The queue ID for party, or None to use active player.
         """
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
 
-        player_id = self.config.get_value(CONF_PARTY_MODE_PLAYER)
+        player_id = self.config.get_value(CONF_PARTY_PLAYER)
         return str(player_id) if player_id else None
 
-    async def get_party_mode_config(self) -> PartyModeConfig:
-        """Get the party mode configuration for guest rate limiting.
+    async def get_party_config(self) -> PartyConfig:
+        """Get the party configuration for guest rate limiting.
 
-        :returns: PartyModeConfig with feature toggles, token limits, refill rates, and colors.
+        :returns: PartyConfig with feature toggles, token limits, refill rates, and colors.
         """
-        return PartyModeConfig(
+        return PartyConfig(
             enable_rate_limiting=cast("bool", self.config.get_value(CONF_ENABLE_RATE_LIMITING)),
             enable_add_queue=cast("bool", self.config.get_value(CONF_ENABLE_ADD_QUEUE)),
-            add_queue_limit=cast("int", self.config.get_value(CONF_PARTY_MODE_ADD_QUEUE_LIMIT)),
+            add_queue_limit=cast("int", self.config.get_value(CONF_PARTY_ADD_QUEUE_LIMIT)),
             add_queue_refill_minutes=cast(
-                "int", self.config.get_value(CONF_PARTY_MODE_ADD_QUEUE_REFILL_MINUTES)
+                "int", self.config.get_value(CONF_PARTY_ADD_QUEUE_REFILL_MINUTES)
             ),
             enable_boost=cast("bool", self.config.get_value(CONF_ENABLE_BOOST)),
-            boost_limit=cast("int", self.config.get_value(CONF_PARTY_MODE_BOOST_LIMIT)),
+            boost_limit=cast("int", self.config.get_value(CONF_PARTY_BOOST_LIMIT)),
             boost_refill_minutes=cast(
-                "int", self.config.get_value(CONF_PARTY_MODE_BOOST_REFILL_MINUTES)
+                "int", self.config.get_value(CONF_PARTY_BOOST_REFILL_MINUTES)
             ),
             enable_skip_song=cast("bool", self.config.get_value(CONF_ENABLE_SKIP_SONG)),
-            skip_song_limit=cast("int", self.config.get_value(CONF_PARTY_MODE_SKIP_SONG_LIMIT)),
+            skip_song_limit=cast("int", self.config.get_value(CONF_PARTY_SKIP_SONG_LIMIT)),
             skip_song_refill_minutes=cast(
-                "int", self.config.get_value(CONF_PARTY_MODE_SKIP_SONG_REFILL_MINUTES)
+                "int", self.config.get_value(CONF_PARTY_SKIP_SONG_REFILL_MINUTES)
             ),
             album_art_background=cast(
-                "bool", self.config.get_value(CONF_PARTY_MODE_ALBUM_ART_BACKGROUND)
+                "bool", self.config.get_value(CONF_PARTY_ALBUM_ART_BACKGROUND)
             ),
             show_player_controls=cast(
-                "bool", self.config.get_value(CONF_PARTY_MODE_SHOW_PLAYER_CONTROLS)
+                "bool", self.config.get_value(CONF_PARTY_SHOW_PLAYER_CONTROLS)
             ),
-            display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_MODE_DISPLAY_LYRICS)),
-            karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_MODE_KARAOKE_MODE)),
+            display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_DISPLAY_LYRICS)),
+            karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_KARAOKE_MODE)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             qr_show_instruction_text=cast(
                 "bool", self.config.get_value(CONF_QR_SHOW_INSTRUCTION_TEXT)
             ),
             qr_instruction_text=cast("str", self.config.get_value(CONF_QR_INSTRUCTION_TEXT)),
+            anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
         )
 
     # ==================== Guest Action API Commands ====================
@@ -584,7 +598,7 @@ class PartyModePlugin(PluginProvider):
         uri: str,
         boost: bool = False,
     ) -> dict[str, Any]:
-        """Add a media item to the party mode queue.
+        """Add a media item to the party queue.
 
         This is the primary API for guests to add songs. The provider handles all
         queue logic including priority positioning for guest items.
@@ -597,7 +611,7 @@ class PartyModePlugin(PluginProvider):
 
         # Check if guest access is enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            raise InvalidDataError("Party mode guest access is disabled")
+            raise InvalidDataError("Party guest access is disabled")
 
         # Check feature toggles
         if boost and not self.config.get_value(CONF_ENABLE_BOOST):
@@ -605,8 +619,8 @@ class PartyModePlugin(PluginProvider):
         if not self.config.get_value(CONF_ENABLE_ADD_QUEUE):
             raise InvalidDataError("Add to queue feature is disabled")
 
-        # Get the party mode queue
-        queue_id = await self.get_party_mode_player()
+        # Get the party queue
+        queue_id = await self.get_party_player()
         if not queue_id:
             raise InvalidDataError("Could not get player queue")
 
@@ -619,9 +633,9 @@ class PartyModePlugin(PluginProvider):
 
         if queue.state == PlaybackState.PLAYING:
             # Queue is actively playing — insert into the priority section
-            extra_attrs: dict[str, Any] = {ATTR_PARTY_MODE_GUEST: True}
+            extra_attrs: dict[str, Any] = {ATTR_PARTY_GUEST: True}
             if boost:
-                extra_attrs[ATTR_PARTY_MODE_BOOSTED] = True
+                extra_attrs[ATTR_PARTY_BOOSTED] = True
             await self._add_to_priority_section(queue_id, uri, extra_attrs)
         else:
             # Queue is not playing — resolve the item, insert, and start playback.
@@ -634,9 +648,9 @@ class PartyModePlugin(PluginProvider):
                 ):
                     raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
                 queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
-                queue_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
+                queue_item.extra_attributes[ATTR_PARTY_GUEST] = True
                 if boost:
-                    queue_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+                    queue_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
                 # Insert after current position if queue has one, otherwise at the start
                 insert_index = (queue.current_index + 1) if queue.current_index is not None else 0
                 await self.mass.player_queues.load(
@@ -675,11 +689,11 @@ class PartyModePlugin(PluginProvider):
         """
         self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            raise InvalidDataError("Party mode guest access is disabled")
+            raise InvalidDataError("Party guest access is disabled")
         if not self.config.get_value(CONF_ENABLE_BOOST):
             raise InvalidDataError("Boost feature is disabled")
 
-        queue_id = await self.get_party_mode_player()
+        queue_id = await self.get_party_player()
         if not queue_id:
             raise InvalidDataError("Could not get player queue")
 
@@ -702,7 +716,7 @@ class PartyModePlugin(PluginProvider):
             if item_index is None:
                 raise InvalidDataError(f"Queue item {queue_item_id} not found")
 
-            if queue_items[item_index].extra_attributes.get(ATTR_PARTY_MODE_BOOSTED):
+            if queue_items[item_index].extra_attributes.get(ATTR_PARTY_BOOSTED):
                 raise InvalidDataError("This item is already boosted")
 
             if queue.state == PlaybackState.PLAYING:
@@ -720,13 +734,13 @@ class PartyModePlugin(PluginProvider):
 
                 # Find the end of the boosted section and move item there
                 insert_index = self._find_section_end(
-                    queue_items, current_index, ATTR_PARTY_MODE_BOOSTED
+                    queue_items, current_index, ATTR_PARTY_BOOSTED
                 )
 
                 queue_items_copy = queue_items.copy()
                 moved_item = queue_items_copy.pop(item_index)
-                moved_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-                moved_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+                moved_item.extra_attributes[ATTR_PARTY_GUEST] = True
+                moved_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
 
                 # Adjust insert index if the item was before the insert position
                 if item_index < insert_index:
@@ -741,8 +755,8 @@ class PartyModePlugin(PluginProvider):
 
                 queue_items_copy = queue_items.copy()
                 moved_item = queue_items_copy.pop(item_index)
-                moved_item.extra_attributes[ATTR_PARTY_MODE_GUEST] = True
-                moved_item.extra_attributes[ATTR_PARTY_MODE_BOOSTED] = True
+                moved_item.extra_attributes[ATTR_PARTY_GUEST] = True
+                moved_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
 
                 # Adjust play_index if the item was before it
                 if item_index < play_index:
@@ -790,13 +804,13 @@ class PartyModePlugin(PluginProvider):
         queue_item.extra_attributes.update(extra_attributes)
 
         # Determine the attribute to scan for when finding the section boundary.
-        # Use the most specific attribute (e.g., ATTR_PARTY_MODE_BOOSTED takes
-        # priority over ATTR_PARTY_MODE_GUEST) so boosted items form their own
+        # Use the most specific attribute (e.g., ATTR_PARTY_BOOSTED takes
+        # priority over ATTR_PARTY_GUEST) so boosted items form their own
         # sub-section at the front of the guest section.
-        if ATTR_PARTY_MODE_BOOSTED in extra_attributes:
-            section_attribute = ATTR_PARTY_MODE_BOOSTED
+        if ATTR_PARTY_BOOSTED in extra_attributes:
+            section_attribute = ATTR_PARTY_BOOSTED
         else:
-            section_attribute = ATTR_PARTY_MODE_GUEST
+            section_attribute = ATTR_PARTY_GUEST
 
         # Hold the lock while reading queue state, calculating the insert index,
         # and loading the item so concurrent guest requests don't interleave.
@@ -828,13 +842,13 @@ class PartyModePlugin(PluginProvider):
 
     @staticmethod
     def _validate_guest_access() -> None:
-        """Validate the current user is an authenticated party mode guest.
+        """Validate the current user is an authenticated party guest.
 
-        :raises InvalidDataError: If the user is not a party mode guest.
+        :raises InvalidDataError: If the user is not a party guest.
         """
         user = get_current_user()
-        if not user or user.username != PARTY_MODE_GUEST_USER:
-            raise InvalidDataError("This endpoint is only available to party mode guests")
+        if not user or user.username != PARTY_GUEST_USER:
+            raise InvalidDataError("This endpoint is only available to party guests")
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:
@@ -872,12 +886,12 @@ class PartyModePlugin(PluginProvider):
 
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            raise InvalidDataError("Party mode guest access is disabled")
+            raise InvalidDataError("Party guest access is disabled")
         if not self.config.get_value(CONF_ENABLE_SKIP_SONG):
             raise InvalidDataError("Skip song feature is disabled")
 
-        # Get the party mode queue
-        queue_id = await self.get_party_mode_player()
+        # Get the party queue
+        queue_id = await self.get_party_player()
         if not queue_id:
             raise InvalidDataError("Could not get player queue")
 
@@ -901,7 +915,7 @@ class PartyModePlugin(PluginProvider):
     # ==================== Helper Methods ====================
 
     async def _revoke_guest_tokens(self) -> None:
-        """Revoke all guest access tokens and codes for party mode.
+        """Revoke all guest access tokens and codes for party.
 
         This is called when guest access is disabled or the plugin is removed.
         We disconnect WebSocket connections to force the frontend to redirect to login,
@@ -909,8 +923,8 @@ class PartyModePlugin(PluginProvider):
         """
         auth = self.mass.webserver.auth
 
-        # Find the party mode guest user
-        guest_user = await auth.get_user_by_username(PARTY_MODE_GUEST_USER)
+        # Find the party guest user
+        guest_user = await auth.get_user_by_username(PARTY_GUEST_USER)
         if not guest_user:
             self.logger.debug("No party guest user found, nothing to revoke")
             return

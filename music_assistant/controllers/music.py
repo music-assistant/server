@@ -649,28 +649,51 @@ class MusicController(CoreController):
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
         available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
+
+        # An audiobook can be part of the library, in contrast to podcast episodes.
+        # We then need to check the provider mappings table.
         query = (
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in ('audiobook', 'podcast_episode') AND fully_played = 0 "
-            f"AND provider in {available_providers_str} "
-            "AND seconds_played > 0 "
+            "SELECT p.item_id, p.media_type, p.name, p.image, p.provider "
+            f"FROM {DB_TABLE_PLAYLOG} p "
+            "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
+            "AND p.fully_played = 0 "
+            "AND p.seconds_played > 0 "
+        )
+        query += (
+            "AND ( "
+            "CASE WHEN p.provider = 'library' THEN "
+            f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
+            "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
         )
         if not all_users and (user := get_current_user()):
-            query += f"AND userid = '{user.user_id}' "
-
+            filter_for_str = available_providers_str
+            if user.provider_filter:
+                filter_for_str = "(" + ",".join(f'"{x}"' for x in user.provider_filter) + ")"
+            query += (
+                f"AND m.provider_instance IN {filter_for_str} "
+                f"AND m.provider_instance IN {available_providers_str} "
+                ") "
+                f"ELSE (p.provider IN {filter_for_str} AND p.provider IN {available_providers_str})"
+                "END "
+                ") "
+                f"AND p.userid = '{user.user_id}' "
+            )
+        else:
+            # for a library item, we still have to verify via the provider mapping table
+            # that the provider is available
+            query += (
+                f"AND m.provider_instance IN {available_providers_str} "
+                ") "
+                f"ELSE p.provider IN {available_providers_str} "
+                "END "
+                ") "
+            )
         query += "ORDER BY timestamp DESC"
+
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
-
-        # Get user provider filter if set
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
-
         for db_row in db_rows:
             provider = db_row["provider"]
-            # Apply user provider filter
-            if user_provider_filter and provider not in user_provider_filter:
-                continue
             result.append(
                 ItemMapping.from_dict(
                     {
