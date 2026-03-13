@@ -165,6 +165,7 @@ class SendspinPlayer(Player):
         self._attr_name = sendspin_client.name
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.PAUSE,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
@@ -415,6 +416,22 @@ class SendspinPlayer(Player):
         self.update_state()
         await self.playback_session.cancel("stop command")
         await self.api.group.stop()
+
+    async def play(self) -> None:
+        """Play (resume) command."""
+        self.logger.debug("Received PLAY command on player %s", self.display_name)
+        # Delegate to queue resume which handles seek position correctly
+        await self.mass.player_queues.resume(self.player_id)
+
+    async def pause(self) -> None:
+        """Pause command."""
+        self.logger.debug("Received PAUSE command on player %s", self.display_name)
+        self._attr_playback_state = PlaybackState.PAUSED
+        self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
+        await self.playback_session.cancel("pause command")
+        # Set group state to PAUSED so clients show paused UI
+        self.api.group._set_playback_state(PlaybackStateType.PAUSED)
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
