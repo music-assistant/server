@@ -96,6 +96,7 @@ class DLNAPlayer(Player):
         self.bootid: int | None = None
         self.last_seen = time.time()
         self.last_command = time.time()
+        self._stale_resume_pending = False  # guard against repeated resume attempts
 
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""
@@ -382,6 +383,30 @@ class DLNAPlayer(Player):
             TransportState.PLAYING,
             TransportState.TRANSITIONING,
         ):
+            # Detect stale PLAYING state after server restart:
+            # device still has old MA stream URL but the session no longer exists.
+            # Trigger a queue resume so playback continues seamlessly.
+            _uri = self.device.current_track_uri or ""
+            _base = self.mass.streams.base_url
+            if _uri.startswith(_base + "/flow/"):
+                try:
+                    _url_session = _uri.split("/flow/")[1].split("/")[0]
+                except (IndexError, ValueError):
+                    _url_session = ""
+                _queue = self.mass.player_queues.get(self.player_id)
+                if _queue and _queue.session_id != _url_session:
+                    if not self._stale_resume_pending:
+                        self._stale_resume_pending = True
+                        self.logger.info(
+                            "Stale flow stream detected (session %s != %s), "
+                            "triggering queue resume",
+                            _url_session,
+                            _queue.session_id,
+                        )
+                        self.mass.create_task(self._resume_stale_queue())
+                    return PlaybackState.IDLE
+            # Valid session or non-flow URL
+            self._stale_resume_pending = False
             return PlaybackState.PLAYING
         if self.device.transport_state in (
             TransportState.PAUSED_PLAYBACK,
@@ -393,6 +418,35 @@ class DLNAPlayer(Player):
             return PlaybackState.IDLE
 
         return PlaybackState.IDLE
+
+    async def _poll_rendering_control(self) -> None:
+        """Poll RenderingControl for volume/mute state.
+
+        DmrDevice.async_update() skips RC polling once event subscriptions are
+        active, assuming volume changes arrive via LastChange events. Some devices
+        (e.g. JBL Authentics) don't send reliable volume events, so we poll
+        explicitly using public async_upnp_client APIs.
+        """
+        assert self.device is not None
+        rc_service = self.device.profile_device.service(
+            "urn:schemas-upnp-org:service:RenderingControl:1"
+        )
+        for action_name in ("GetVolume", "GetMute"):
+            action = rc_service.action(action_name)
+            result = await action.async_call(InstanceID=0, Channel="Master")
+            for arg in action.arguments:
+                if arg.direction == "out" and arg.name in result:
+                    with suppress(ValueError, UpnpError):
+                        arg.related_state_variable.value = arg.value
+
+    async def _resume_stale_queue(self) -> None:
+        """Resume queue after detecting stale flow stream from a previous session."""
+        await asyncio.sleep(3)
+        try:
+            await self.mass.player_queues.resume(self.player_id)
+            self.logger.info("Queue resumed successfully after stale stream detection")
+        except Exception as err:
+            self.logger.warning("Could not resume queue after stale detection: %s", err)
 
     async def get_config_entries(
         self,
@@ -472,12 +526,18 @@ class DLNAPlayer(Player):
         """Send VOLUME_SET command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_set_volume_level(volume_level / 100)
+        with suppress(ValueError, UpnpError):
+            await self._poll_rendering_control()
+        await self._update_player()
 
     @catch_request_errors
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_mute_volume(muted)
+        with suppress(ValueError, UpnpError):
+            await self._poll_rendering_control()
+        await self._update_player()
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -498,6 +558,7 @@ class DLNAPlayer(Player):
             with suppress(ValueError):
                 await self.device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
+            await self._update_player()
         except UpnpError as err:
             self.logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()
