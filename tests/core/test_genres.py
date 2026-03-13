@@ -1038,6 +1038,22 @@ class TestGenreLookupAndScanner:
         assert isinstance(found, list)
         assert int(genre.item_id) in found
 
+    async def test_find_genres_for_alias_primary_name_takes_priority(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Primary name match returns only that genre, ignoring secondary alias matches.
+
+        Regression test: a bare "pop" tag must not fan out to Rock/Punk/etc. that
+        accumulated "pop" as a side-effect alias, when a dedicated Pop genre exists.
+        """
+        pop_genre = await genre_ctrl.add_item_to_library(_make_genre("Pop"))
+        rock_genre = await genre_ctrl.add_item_to_library(_make_genre("Rock"))
+        # Simulate "pop" being written as a secondary alias on Rock (the bug scenario)
+        await genre_ctrl.add_alias(rock_genre.item_id, "pop")
+
+        found = await genre_ctrl._find_genres_for_alias("Pop")
+        assert found == [int(pop_genre.item_id)]
+
     async def test_find_genres_for_alias_creates_new(self, genre_ctrl: GenreController) -> None:
         """Creates new genre when no match found."""
         found = await genre_ctrl._find_genres_for_alias("BrandNewGenre12345")
