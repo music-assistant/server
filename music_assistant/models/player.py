@@ -312,17 +312,17 @@ class Player(ABC):
         """
         return self._attr_can_group_with
 
-    @cached_property
+    @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
         # default implementation, feel free to override if your
         # provider has a more efficient way to determine this
         if self.type == PlayerType.GROUP:
             return None
-        if self.group_members and self.group_members[0] != self.player_id:
-            return self.group_members[0]
         for player in self.mass.players.all_players(
-            return_unavailable=False, return_protocol_players=True
+            return_unavailable=False,
+            provider_filter=self.provider.instance_id,
+            return_protocol_players=True,
         ):
             if player.type == PlayerType.GROUP:
                 continue
@@ -1056,6 +1056,9 @@ class Player(ABC):
         :param protocol_id: The protocol player_id to set as active, "native" for native playback,
             or None to clear the active protocol.
         """
+        # cancel any existing timer to set/clear the active protocol,
+        # as we're explicitly setting it now
+        self.mass.cancel_timer(f"clear_active_protocol_{self.player_id}")
         if self.__attr_active_output_protocol == protocol_id:
             return  # No change
         if protocol_id == self.player_id:
@@ -1728,8 +1731,12 @@ class Player(ABC):
         """
         # First check the native synced_to from the property
         if native_synced_to := self.synced_to:
-            return native_synced_to
+            if sync_parent := self.mass.players.get_player(native_synced_to):
+                return sync_parent.protocol_parent_id or sync_parent.player_id
 
+            return native_synced_to
+        # check if any of the linked protocol players are synced,
+        # and if so, return the visible player they are synced to
         for linked in self.__attr_linked_protocols:
             if not (protocol_player := self.mass.players.get_player(linked.output_protocol_id)):
                 continue
@@ -1861,13 +1868,14 @@ class Player(ABC):
             return None  # should not happen but just in case
 
         # if this is a protocol player, prefer the active source of the parent player
+        # a protocol player can not have an active source on its own.
         if (
             self.type == PlayerType.PROTOCOL
-            and self.active_source in (None, self.player_id, self.protocol_parent_id)
             and self.protocol_parent_id
             and (parent_player := self.mass.players.get_player(self.protocol_parent_id))
         ):
             return parent_player.state.active_source
+
         # if a plugin source is active that belongs to this player, return that
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
@@ -1883,29 +1891,17 @@ class Player(ABC):
             return self.__active_mass_source
 
         # active source as reported by the player itself
-        if self.active_source and self.active_source != self.player_id:
+        if (
+            self.active_source
+            and self.active_source != self.player_id
+            and self.playback_state != PlaybackState.IDLE
+            # If an output protocol is active, we simply overrule the active source of the player.
+            # Trying to handle this differently is a hot mess and leads to all kinds of edge cases,
+            # because many players do not report the active source correctly, especially not when
+            # an output protocol is active.
+            and self.active_output_protocol in (None, "native")
+        ):
             return self.active_source
-
-        # if a linked protocol is active, prefer that protocol player's active source
-        if not self.__active_mass_source:
-            for linked_protocol in self.__attr_linked_protocols:
-                if protocol_player := self.mass.players.get_player(
-                    linked_protocol.output_protocol_id
-                ):
-                    if not protocol_player.available:
-                        continue
-                    if protocol_player.state.playback_state == PlaybackState.IDLE:
-                        continue
-                    if protocol_player.synced_to:
-                        continue
-                    if protocol_player.active_source in (
-                        None,
-                        protocol_player.player_id,
-                        self.player_id,
-                        self.state.active_group,
-                    ):
-                        continue
-                    return protocol_player.state.active_source
 
         # return the (last) known MA source - fallback to player's own queue source if none
         return self.__active_mass_source or self.player_id

@@ -81,7 +81,7 @@ class SnapCastPlayer(Player):
         """Return if the player requires flow mode."""
         return True
 
-    @cached_property
+    @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
         grp_name = self.snap_group_name

@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     PlaybackState,
+    PlayerType,
     ProviderFeature,
     QueueOption,
     RepeatMode,
@@ -135,14 +136,14 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
         if queue is None:
             # Queue not found, just call the function and let it handle the error
             return await func(self, *args, **kwargs)
+        flag_already_present = bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS))
         try:
-            has_flag = bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS))
-            if not has_flag:
+            if not flag_already_present:
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 self.signal_update(queue_id)
             return await func(self, *args, **kwargs)
         finally:
-            if not has_flag:
+            if not flag_already_present:
                 queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 self.signal_update(queue_id)
 
@@ -1213,6 +1214,9 @@ class PlayerQueuesController(CoreController):
         ):
             try:
                 queue = PlayerQueue.from_dict(prev_state)
+                # drop the play action in progress flag if it exists
+                # this can happen if MA was killed while a play action was in progress
+                queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1282,6 +1286,9 @@ class PlayerQueuesController(CoreController):
 
         NOTE: This is called every second if the player is playing.
         """
+        if player.type == PlayerType.PROTOCOL:
+            # protocol players do not have a queue on their own
+            return
         queue_id = player.player_id
         if (queue := self._queues.get(queue_id)) is None:
             # race condition
@@ -1299,12 +1306,13 @@ class PlayerQueuesController(CoreController):
             # we're currently transitioning to a new track,
             # ignore updates from the player during this time
             return
-
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
 
     def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """Call when a player is removed from the registry."""
+        # cancel any pending play_index calls for this queue to prevent conflicts
+        self.mass.cancel_timer(f"queue_play_index_{player_id}")
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
             self.mass.create_task(
@@ -1323,6 +1331,8 @@ class PlayerQueuesController(CoreController):
             )
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
+        self._prev_states.pop(player_id, None)
+        self._transitioning_players.discard(player_id)
 
     async def load_next_queue_item(
         self,

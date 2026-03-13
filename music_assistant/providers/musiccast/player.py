@@ -36,7 +36,6 @@ from music_assistant_models.player import (
     PlayerSource,
 )
 from music_assistant_models.unique_list import UniqueList
-from propcache import under_cached_property as cached_property
 
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
@@ -475,7 +474,7 @@ class MusicCastPlayer(Player):
 
         self.update_state()
 
-    @cached_property
+    @property
     def synced_to(self) -> str | None:
         """
         Return the id of the player this player is synced to (sync leader).

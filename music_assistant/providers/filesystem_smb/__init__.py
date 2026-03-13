@@ -24,6 +24,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
 )
 
 if TYPE_CHECKING:
@@ -157,6 +158,7 @@ async def get_config_entries(
         CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
         CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
         CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+        CONF_ENTRY_PROPAGATE_GENRES,
     )
 
     if instance_id is None or values is None:
@@ -199,7 +201,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             # do unmount first to cleanup any unexpected state
             await self.unmount(ignore_error=True)
             await self.mount()
-        except Exception as err:
+        except OSError as err:
             msg = f"Connection failed for the given details: {err}"
             raise LoginFailed(msg) from err
         await self.check_write_access()
@@ -210,7 +212,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        await self.unmount()
+        await self.unmount(ignore_error=True)
 
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""

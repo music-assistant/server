@@ -88,10 +88,15 @@ class DLNAPlayerProvider(PlayerProvider):
                 await self._device_discovered(ssdp_udn, discovery_info["location"])
 
             # we iterate between using a regular and multicast search (if enabled)
-            if allow_network_scan and use_multicast:
-                await async_search(on_response, target=(str(IPv4Address("255.255.255.255")), 1900))
-            else:
-                await async_search(on_response)
+            try:
+                if allow_network_scan and use_multicast:
+                    await async_search(
+                        on_response, target=(str(IPv4Address("255.255.255.255")), 1900)
+                    )
+                else:
+                    await async_search(on_response)
+            except OSError as err:
+                self.logger.warning("DLNA SSDP discovery failed: %s", err)
 
         finally:
             self._discovery_running = False
