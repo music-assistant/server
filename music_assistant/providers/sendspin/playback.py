@@ -370,28 +370,31 @@ class SendspinPlaybackSession:
     async def add_member(self, player_id: str) -> None:
         """Add a member to the group with DSP-aware lifecycle handling."""
         async with self._state_lock:
-            if player_id in self._members:
-                self.pending_join_members.discard(player_id)
+            if player_id in self._members or player_id in self.pending_join_members:
                 return
+            self.pending_join_members.add(player_id)
             # Preserve any channel pre-resolved during add_client so join-time
             # role requirements and prepared audio stay on the same channel.
             self._preassigned_channels.setdefault(player_id, uuid4())
-        self.pending_join_members.add(player_id)
         try:
             await self._start_join_catchup(player_id)
             async with self._state_lock:
+                if player_id not in self.pending_join_members:
+                    # Concurrent remove_member/sync_members cancelled this join.
+                    return
                 self._members.add(player_id)
                 self._mapping_dirty = True
         except Exception:
             await self._release_player_channel(player_id)
             raise
         finally:
-            self.pending_join_members.discard(player_id)
+            async with self._state_lock:
+                self.pending_join_members.discard(player_id)
 
     async def remove_member(self, player_id: str) -> None:
         """Remove a member from the group and clean up per-member playback state."""
-        self.pending_join_members.discard(player_id)
         async with self._state_lock:
+            self.pending_join_members.discard(player_id)
             self._members.discard(player_id)
             self._mapping_dirty = True
             self._pipeline_config_cache.pop(player_id, None)
@@ -403,6 +406,9 @@ class SendspinPlaybackSession:
         """Reconcile session members to exactly the provided set."""
         async with self._state_lock:
             current_members = set(self._members)
+            stale_pending = self.pending_join_members - member_ids
+        for player_id in stale_pending:
+            await self.remove_member(player_id)
         for player_id in current_members - member_ids:
             await self.remove_member(player_id)
         for player_id in member_ids - current_members:
