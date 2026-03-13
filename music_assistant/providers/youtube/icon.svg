@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- U-Toob: stylized fat U-shaped tube with play icon -->
+  <!-- Background rounded square -->
+  <rect x="5" y="5" width="90" height="90" rx="18" ry="18" fill="#e8384f"/>
+  <!-- U-tube shape (solid white) -->
+  <path d="M 22 20 L 22 58 Q 22 82 50 82 Q 78 82 78 58 L 78 20"
+        fill="none" stroke="#ffffff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Hollow tube opening - left -->
+  <ellipse cx="22" cy="17" rx="7.5" ry="4.5" fill="#ffffff"/>
+  <ellipse cx="22" cy="17" rx="3.5" ry="2" fill="#a01e30"/>
+  <!-- Hollow tube opening - right -->
+  <ellipse cx="78" cy="17" rx="7.5" ry="4.5" fill="#ffffff"/>
+  <ellipse cx="78" cy="17" rx="3.5" ry="2" fill="#a01e30"/>
+  <!-- Play triangle in center of the U -->
+  <polygon points="38,38 38,66 66,52" fill="#ffffff"/>
+</svg>
