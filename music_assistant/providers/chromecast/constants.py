@@ -10,6 +10,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
+from music_assistant.providers.sendspin.constants import DEFAULT_SENDSPIN_STATIC_DELAY
 
 MASS_APP_ID = "C35B0678"
 APP_MEDIA_RECEIVER = "CC1AD845"
@@ -58,3 +59,27 @@ CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(
     safe_max_sample_rate=48000,
     safe_max_bit_depth=16,
 )
+
+# Measured defaults for known Cast device models.
+# Values are static_delay_ms (positive = compensate by playing earlier).
+# Source: https://github.com/music-assistant/server/pull/2858
+CAST_MODEL_STATIC_DELAY: dict[tuple[str, str], int] = {
+    ("Google Inc.", "Google Home Mini"): 330,
+    ("Google Inc.", "Google Nest Mini"): 427,
+    ("Google Inc.", "Chromecast Audio"): 335,
+    ("Google Inc.", "Google Nest Hub"): 188,
+}
+CAST_FALLBACK_STATIC_DELAY = 330
+
+
+def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
+    """Look up the default static delay for a Cast device model.
+
+    :param manufacturer: Device manufacturer (e.g., "Google Inc.").
+    :param model: Device model name (e.g., "Google Nest Mini").
+    """
+    if (manufacturer, model) in CAST_MODEL_STATIC_DELAY:
+        return CAST_MODEL_STATIC_DELAY[(manufacturer, model)]
+    if any(m == manufacturer for m, _ in CAST_MODEL_STATIC_DELAY):
+        return CAST_FALLBACK_STATIC_DELAY
+    return DEFAULT_SENDSPIN_STATIC_DELAY

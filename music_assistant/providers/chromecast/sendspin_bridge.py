@@ -27,6 +27,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import EventType, IdentifierType
 
 from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.providers.chromecast.constants import get_cast_model_static_delay
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -467,6 +468,10 @@ class SendspinBridgeManager:
                 sendspin_provider.register_bridge_identifiers(
                     bridge_client_id,
                     {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)},
+                )
+                static_delay_default = get_cast_model_static_delay(manufacturer, model)
+                sendspin_provider.register_bridge_static_delay_default(
+                    bridge_client_id, static_delay_default
                 )
 
             try:

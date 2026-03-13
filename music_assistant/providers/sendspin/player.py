@@ -163,6 +163,9 @@ class SendspinPlayer(Player):
             controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
 
         self.playback_session = SendspinPlaybackSession(self)
+        self._static_delay_default = provider._bridge_static_delay_defaults.pop(
+            player_id, DEFAULT_SENDSPIN_STATIC_DELAY
+        )
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
@@ -315,6 +318,9 @@ class SendspinPlayer(Player):
                 self.update_state()
             case StaticDelayChangedEvent(static_delay_ms=delay_ms):
                 self.logger.debug("Static delay changed to %d ms", delay_ms)
+                self.mass.config.set_raw_player_config_value(
+                    self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
+                )
             case ClientGroupChangedEvent(new_group=new_group):
                 self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
@@ -700,7 +706,7 @@ class SendspinPlayer(Player):
                         "device-specific audio latency (e.g., AV receiver)."
                     ),
                     required=False,
-                    default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
+                    default_value=self._static_delay_default,
                     range=(0, 5000),
                     immediate_apply=True,
                     advanced=True,
