@@ -56,9 +56,7 @@ from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
     CONF_SENDSPIN_STATIC_DELAY,
-    CONF_SENDSPIN_SYNC_DELAY,
     DEFAULT_SENDSPIN_STATIC_DELAY,
-    DEFAULT_SENDSPIN_SYNC_DELAY,
 )
 from .helpers import mac_from_bridge_client_id
 from .playback import SendspinPlaybackSession
@@ -656,23 +654,6 @@ class SendspinPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
-        # Only show the sync delay setting for Chromecast Bridge players
-        if self.device_info.model == "Chromecast Bridge":
-            entries.append(
-                ConfigEntry(
-                    key=CONF_SENDSPIN_SYNC_DELAY,
-                    type=ConfigEntryType.INTEGER,
-                    label="Sync delay (ms)",
-                    description="Static delay in milliseconds to adjust audio synchronization. "
-                    "Positive values delay playback, negative values advance it. "
-                    "Use this to compensate for device-specific audio latency.",
-                    required=False,
-                    default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
-                    range=(-1000, 1000),
-                    immediate_apply=True,
-                    advanced=True,
-                ),
-            )
 
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
@@ -715,9 +696,8 @@ class SendspinPlayer(Player):
                     type=ConfigEntryType.INTEGER,
                     label="Sync delay (ms)",
                     description=(
-                        "Static delay in milliseconds to adjust audio synchronization. "
-                        "Positive values delay playback, negative values advance it. "
-                        "Use this to compensate for device-specific audio latency."
+                        "Delay in milliseconds to compensate for "
+                        "device-specific audio latency (e.g., AV receiver)."
                     ),
                     required=False,
                     default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
