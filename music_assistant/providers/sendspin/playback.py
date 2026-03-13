@@ -416,7 +416,7 @@ class SendspinPlaybackSession:
 
     # -- Join catchup ----------------------------------------------------------
 
-    async def _start_join_catchup(self, player_id: str) -> None:
+    async def _start_join_catchup(self, player_id: str) -> None:  # noqa: PLR0915
         """Start dedicated join catchup processor fed from committed history."""
         async with self._state_lock:
             playback_active = self._playback_running and self._push_stream is not None
@@ -442,6 +442,11 @@ class SendspinPlaybackSession:
             await processor.close()
             return
         history_end_us = history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+        writer_task: asyncio.Task[None] | None = None
+        drainer_task: asyncio.Task[None] | None = None
+        snapshot_task: asyncio.Task[None] | None = None
+        state: _JoinCatchupState | None = None
+        registered = False
 
         async def _writer() -> None:
             while True:
@@ -453,30 +458,43 @@ class SendspinPlaybackSession:
         async def _drainer() -> None:
             await processor.drain_forever()
 
-        writer_task = asyncio.create_task(_writer())
-        drainer_task = asyncio.create_task(_drainer())
-        self._attach_task_exception_logger(writer_task, f"join_writer:{player_id}")
-        self._attach_task_exception_logger(drainer_task, f"join_drainer:{player_id}")
+        try:
+            async with self._state_lock:
+                writer_task = asyncio.create_task(_writer())
+                drainer_task = asyncio.create_task(_drainer())
+                self._attach_task_exception_logger(writer_task, f"join_writer_{player_id}")
+                self._attach_task_exception_logger(drainer_task, f"join_drainer_{player_id}")
 
-        state = _JoinCatchupState(
-            processor=processor,
-            input_queue=input_queue,
-            writer_task=writer_task,
-            drainer_task=drainer_task,
-            history_end_us=history_end_us,
-        )
-        async with self._state_lock:
-            self._join_catchup[player_id] = state
-
-        async with self._state_lock:
-            current = self._join_catchup.get(player_id)
-            if current is not None and current.processor is processor:
-                current.snapshot_task = asyncio.create_task(
+                state = _JoinCatchupState(
+                    processor=processor,
+                    input_queue=input_queue,
+                    writer_task=writer_task,
+                    drainer_task=drainer_task,
+                    history_end_us=history_end_us,
+                )
+                self._join_catchup[player_id] = state
+                snapshot_task = asyncio.create_task(
                     self._feed_join_history(player_id, processor, history_snapshot)
                 )
-                self._attach_task_exception_logger(
-                    current.snapshot_task, f"join_snapshot:{player_id}"
-                )
+                self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
+                state.snapshot_task = snapshot_task
+                registered = True
+        except BaseException:
+            if not registered:
+                # If registered, cleanup is handled via _stop_join_catchup/_clear_join_catchup.
+                async with self._state_lock:
+                    current = self._join_catchup.get(player_id)
+                    if current is state:
+                        self._join_catchup.pop(player_id, None)
+                for task in (snapshot_task, drainer_task, writer_task):
+                    if task is None:
+                        continue
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await task
+                with suppress(Exception):
+                    await processor.close()
+            raise
 
     async def _feed_join_history(
         self,
@@ -1129,7 +1147,9 @@ class SendspinPlaybackSession:
 
     def _stop_push_stream(self) -> None:
         """Stop the active PushStream."""
-        self.player.api.group.stop_stream()
+        ps = self._push_stream
+        if ps is not None and not ps.is_stopped:
+            ps.stop()
 
     def _resolve_channel_for_player(self, player_id: str) -> UUID:
         """Channel resolver callback for per-player routing."""
