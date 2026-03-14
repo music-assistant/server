@@ -659,7 +659,7 @@ class MusicMeProvider(MusicProvider):
         artist_id = str(artist_obj.get("id", ""))
         artist = Artist(
             item_id=artist_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=artist_obj.get("name", "Unknown"),
             provider_mappings={
                 ProviderMapping(
@@ -688,7 +688,7 @@ class MusicMeProvider(MusicProvider):
         barcode = str(album_obj.get("barcode", ""))
         album = Album(
             item_id=barcode,
-            provider=self.domain,
+            provider=self.instance_id,
             name=album_obj.get("name", album_obj.get("title", "Unknown")),
             provider_mappings={
                 ProviderMapping(
@@ -729,7 +729,7 @@ class MusicMeProvider(MusicProvider):
         barcode = str(track_obj.get("barcode", ""))
         track = Track(
             item_id=barcode,
-            provider=self.domain,
+            provider=self.instance_id,
             name=track_obj.get("title", "Unknown"),
             duration=track_obj.get("duration", 0),
             provider_mappings={
@@ -859,7 +859,7 @@ class MusicMeProvider(MusicProvider):
 
         result = SearchResults()
 
-        match = re.search(r"window\.playerInit\s*=\s*(\{.*?\});", content)
+        match = re.search(r"window\.playerInit\s*=\s*(\{.*?\});", content, re.DOTALL)
         if not match:
             return None
 
@@ -933,7 +933,7 @@ class MusicMeProvider(MusicProvider):
             msg = f"MusicMe page load failed: HTTP {err.status}"
             raise LoginFailed(msg) from err
 
-        match = re.search(r"window\.playerInit\s*=\s*(\{.*?\});", content)
+        match = re.search(r"window\.playerInit\s*=\s*(\{.*?\});", content, re.DOTALL)
         if not match:
             msg = "Login failed — could not find playerInit in MusicMe response"
             raise LoginFailed(msg)
