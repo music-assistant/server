@@ -343,20 +343,18 @@ class AudioTags:
 
     @property
     def album_artists(self) -> tuple[str, ...]:
-        """Return (all) album artists (if any)."""
-        # Check for "albumartists" key which can come from two sources:
-        # 1. ID3: TXXX:ALBUMARTISTS - a MusicBrainz/Picard extension using semicolon-delimited
-        #    values (TPE2 multi-value support is inconsistent across players).
-        #    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
-        # 2. Vorbis: Multiple ALBUMARTIST (singular) fields, stored as list by mutagen.
-        #    See: https://xiph.org/vorbis/doc/v-comment.html
+        """Return (all) album artists (if any).
+
+        Vorbis: parser returns albumartists (plural) for multiple ALBUMARTIST fields.
+        ID3/MP4/APEv2: parser returns albumartist (singular), split on delimiter here.
+        """
         if tag := self.tags.get("albumartists"):
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
                 # Multiple ALBUMARTIST fields from Vorbis - already separated, no splitting needed
                 artists = clean_tuple(tag)  # type: ignore[unreachable]
             else:
-                # Single field (ID3 TXXX:ALBUMARTISTS) - split on semicolons
+                # Single field (non-standard ALBUMARTISTS tag) - split on semicolons
                 artists = split_items(tag)
             # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
             mb_id_count = len(self.musicbrainz_albumartistids)
