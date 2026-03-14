@@ -859,11 +859,16 @@ class AppleMusicProvider(MusicProvider):
             ]
         last_error: str = ""
         for data in attempts:
-            async with self.mass.http_session.post(
-                playback_url, headers=self._get_decryption_headers(), json=data, ssl=True
-            ) as response:
-                response.raise_for_status()
-                content = await response.json(loads=json_loads)
+            try:
+                async with self.mass.http_session.post(
+                    playback_url, headers=self._get_decryption_headers(), json=data, ssl=True
+                ) as response:
+                    response.raise_for_status()
+                    content = await response.json(loads=json_loads)
+            except ClientError as err:
+                raise MediaNotFoundError(
+                    f"Failed to get stream for radio station {station_id}: {err}"
+                ) from err
             if content.get("failureType"):
                 last_error = (
                     f"type={content.get('failureType')}, message={content.get('failureMessage')}"

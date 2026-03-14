@@ -930,6 +930,8 @@ class PlayerQueuesController(CoreController):
                     self.play_index(queue_id, idx),
                     task_id=f"queue_play_index_{queue_id}",
                 )
+            else:
+                self._transitioning_players.discard(queue_id)
             return
 
         # immediately update current item so UI shows the new track right away
