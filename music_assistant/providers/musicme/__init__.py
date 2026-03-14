@@ -246,7 +246,7 @@ class MusicMeProvider(MusicProvider):
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse MusicMe content.
 
-        :param path: The path to browse (e.g. 'musicme://news' or 'musicme://news/4').
+        :param path: The path to browse (e.g. '{instance_id}://news' or '{instance_id}://news/4').
         """
         if not path or "://" not in path:
             return [
