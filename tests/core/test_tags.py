@@ -419,3 +419,158 @@ def test_parse_apev2_tags_genre_multi_value() -> None:
     result = _parse_apev2_tags(mock_tags)
 
     assert result.get("genre") == ["Rock", "Pop", "Jazz"]
+
+
+def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:
+    """Test that multiple ARTIST fields in Vorbis with semicolons are handled correctly.
+
+    Regression test for the "ave;new" edge case per the Vorbis spec:
+    - Japanese artist "ave;new" has a semicolon in their name
+    - Vorbis allows multiple ARTIST (singular) fields for multi-artist tracks
+    - The semicolon within "ave;new" must NOT cause additional splitting
+
+    Correct Vorbis tagging (per https://xiph.org/vorbis/doc/v-comment.html):
+        ARTIST=ave;new
+        ARTIST=佐倉紗織
+        MUSICBRAINZ_ARTISTID=2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+        MUSICBRAINZ_ARTISTID=822c07bd-1f8a-4fef-acdb-8acfe82fbef5
+
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    # Simulate Vorbis tags with multiple ARTIST fields (correct per Vorbis spec)
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "TITLE": ["Call My Dears"],
+            "ALBUM": ["Lovable"],
+            "ARTIST": ["ave;new", "佐倉紗織"],  # Multiple ARTIST fields
+            "ARTISTSORT": ["ave;new feat.Sakura, Saori"],
+            "MUSICBRAINZ_ARTISTID": [
+                "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+                "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+            ],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # Multiple ARTIST fields should be stored as "artists" (plural key)
+    assert result.get("artists") == ["ave;new", "佐倉紗織"]
+    # MusicBrainz Artist IDs should be preserved
+    assert result.get("musicbrainzartistid") == [
+        "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+    ]
+
+    # Now test that AudioTags.artists property correctly handles the multiple fields
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags=result,
+        has_cover_image=False,
+        filename="01 - ave;new feat.佐倉紗織 - Call My Dears.flac",
+    )
+
+    # The artists property must return exactly 2 artists
+    assert audio_tags.artists == ("ave;new", "佐倉紗織")
+    # The semicolon in "ave;new" must NOT cause it to be split
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+    # MusicBrainz Artist IDs should match the artist count
+    assert audio_tags.musicbrainz_artistids == (
+        "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+    )
+    assert len(audio_tags.artists) == len(audio_tags.musicbrainz_artistids)
+
+
+def test_id3_artist_tag_semicolon_single_mbid() -> None:
+    """Test that single ARTIST tag with semicolon is not split when 1 MB ID exists.
+
+    Regression test for formats without multi-value ARTISTS tag support (ID3, etc.):
+    - Artist name "ave;new" contains a semicolon
+    - Single MUSICBRAINZ_ARTISTID confirms this is one artist
+    - The semicolon must NOT cause the name to be split into "ave" and "new"
+
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    # Simulate ID3 tags: single ARTIST field with semicolon, single MB ID
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="mp3",
+        bit_rate=None,
+        duration=180.0,
+        tags={
+            "title": "Colorful",
+            "album": "Lovable",
+            "artist": "ave;new",
+            "musicbrainzartistid": "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        },
+        has_cover_image=False,
+        filename="01 - ave;new - Colorful.mp3",
+    )
+
+    # Single MB ID = single artist, no splitting
+    assert audio_tags.artists == ("ave;new",)
+    assert audio_tags.musicbrainz_artistids == ("2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",)
+    # Verify the semicolon did NOT cause incorrect splitting
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+
+
+def test_id3_artist_tag_semicolon_multiple_mbids() -> None:
+    """Test that ARTIST tag with semicolon IS split when multiple MB IDs exist.
+
+    When multiple MusicBrainz Artist IDs are present, the semicolon should be
+    treated as a separator between artists.
+    """
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="mp3",
+        bit_rate=None,
+        duration=180.0,
+        # musicbrainzartistid can be list[str] from mutagen (dict type is str for ffprobe compat)
+        tags={
+            "artist": "Artist A;Artist B",
+            "musicbrainzartistid": ["id-a", "id-b"],  # type: ignore[dict-item]
+        },
+        has_cover_image=False,
+        filename="test.mp3",
+    )
+
+    # Multiple MB IDs = semicolon should split
+    assert audio_tags.artists == ("Artist A", "Artist B")
+    assert audio_tags.musicbrainz_artistids == ("id-a", "id-b")
+
+
+def test_id3_albumartist_tag_semicolon_single_mbid() -> None:
+    """Test that ALBUMARTIST tag with semicolon is not split when 1 MB Album Artist ID exists."""
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="mp3",
+        bit_rate=None,
+        duration=180.0,
+        tags={
+            "albumartist": "ave;new",
+            "musicbrainzalbumartistid": "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        },
+        has_cover_image=False,
+        filename="test.mp3",
+    )
+
+    # Single MB Album Artist ID = single artist, no splitting
+    assert audio_tags.album_artists == ("ave;new",)
+    assert audio_tags.musicbrainz_albumartistids == ("2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",)

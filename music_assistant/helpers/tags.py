@@ -282,9 +282,25 @@ class AudioTags:
     @property
     def artists(self) -> tuple[str, ...]:
         """Return track artists."""
-        # prefer multi-artist tag (ARTISTS plural)
+        # Check for "artists" key which can come from two sources:
+        # 1. ID3: TXXX:ARTISTS - a MusicBrainz/Picard extension using semicolon-delimited values
+        #    in a single field (ID3 doesn't support multiple instances of the same tag).
+        #    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
+        # 2. Vorbis: Multiple ARTIST (singular) fields per the spec, stored as list by mutagen.
+        #    See: https://xiph.org/vorbis/doc/v-comment.html
         if tag := self.tags.get("artists"):
-            artists = split_items(tag)
+            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
+                # Multiple ARTISTS fields in Vorbis - non-standard tagging.
+                # Should use multiple ARTIST (singular) fields instead.
+                LOGGER.warning(  # type: ignore[unreachable]
+                    "Multiple ARTISTS fields found. Use multiple ARTIST fields instead: %s",
+                    tag,
+                )
+                artists = clean_tuple(tag)
+            else:
+                # Single field (ID3 TXXX:ARTISTS) - split on semicolons
+                artists = split_items(tag)
             # Warn if ARTISTS tag count doesn't match MB Artist ID count
             mb_id_count = len(self.musicbrainz_artistids)
             if mb_id_count and mb_id_count != len(artists):
@@ -295,15 +311,17 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # fallback to regular artist string
+        # Fallback to ARTIST (singular) tag.
+        # Use MusicBrainz Artist ID count to determine splitting behavior:
+        # - 1 ID: single artist confirmed, preserve as-is (handles artist names with semicolons)
+        # - 2+ IDs: split to match expected count
+        # - 0 IDs: apply standard splitting heuristics
         if tag := self.tags.get("artist"):
+            mb_id_count = len(self.musicbrainz_artistids)
+            if mb_id_count == 1:
+                return (tag,)
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            # Use MB artist ID count to guide splitting
-            # - 0 IDs: only split on "feat." etc., not on "&" or ","
-            # - 1 ID: don't split at all
-            # - 2+ IDs: split to match the expected count
-            mb_id_count = len(self.musicbrainz_artistids)
             return split_artists(tag, expected_count=mb_id_count if mb_id_count else None)
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
@@ -331,9 +349,25 @@ class AudioTags:
     @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
-        # prefer multi-artist tag (ALBUMARTISTS plural)
+        # Check for "albumartists" key which can come from two sources:
+        # 1. ID3: TXXX:ALBUMARTISTS - a MusicBrainz/Picard extension using semicolon-delimited
+        #    values (TPE2 multi-value support is inconsistent across players).
+        #    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
+        # 2. Vorbis: Multiple ALBUMARTIST (singular) fields, stored as list by mutagen.
+        #    See: https://xiph.org/vorbis/doc/v-comment.html
         if tag := self.tags.get("albumartists"):
-            artists = split_items(tag)
+            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
+                # Multiple ALBUMARTISTS fields in Vorbis - non-standard tagging.
+                LOGGER.warning(  # type: ignore[unreachable]
+                    "Multiple ALBUMARTISTS fields found. Use multiple ALBUMARTIST fields "
+                    "instead: %s",
+                    tag,
+                )
+                artists = clean_tuple(tag)
+            else:
+                # Single field (ID3 TXXX:ALBUMARTISTS) - split on semicolons
+                artists = split_items(tag)
             # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
             mb_id_count = len(self.musicbrainz_albumartistids)
             if mb_id_count and mb_id_count != len(artists):
@@ -345,12 +379,14 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # fallback to regular album artist string
+        # Fallback to ALBUMARTIST (singular) tag.
+        # Use MusicBrainz Album Artist ID count to determine splitting behavior.
         if tag := self.tags.get("albumartist"):
+            mb_id_count = len(self.musicbrainz_albumartistids)
+            if mb_id_count == 1:
+                return (tag,)
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            # Use MB album artist ID count to guide splitting
-            mb_id_count = len(self.musicbrainz_albumartistids)
             return split_artists(tag, expected_count=mb_id_count if mb_id_count else None)
         return ()
 
