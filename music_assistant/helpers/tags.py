@@ -291,13 +291,8 @@ class AudioTags:
         if tag := self.tags.get("artists"):
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
-                # Multiple ARTISTS fields in Vorbis - non-standard tagging.
-                # Should use multiple ARTIST (singular) fields instead.
-                LOGGER.warning(  # type: ignore[unreachable]
-                    "Multiple ARTISTS fields found. Use multiple ARTIST fields instead: %s",
-                    tag,
-                )
-                artists = clean_tuple(tag)
+                # Multiple ARTIST fields from Vorbis - already separated, no splitting needed
+                artists = clean_tuple(tag)  # type: ignore[unreachable]
             else:
                 # Single field (ID3 TXXX:ARTISTS) - split on semicolons
                 artists = split_items(tag)
@@ -358,13 +353,8 @@ class AudioTags:
         if tag := self.tags.get("albumartists"):
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
-                # Multiple ALBUMARTISTS fields in Vorbis - non-standard tagging.
-                LOGGER.warning(  # type: ignore[unreachable]
-                    "Multiple ALBUMARTISTS fields found. Use multiple ALBUMARTIST fields "
-                    "instead: %s",
-                    tag,
-                )
-                artists = clean_tuple(tag)
+                # Multiple ALBUMARTIST fields from Vorbis - already separated, no splitting needed
+                artists = clean_tuple(tag)  # type: ignore[unreachable]
             else:
                 # Single field (ID3 TXXX:ALBUMARTISTS) - split on semicolons
                 artists = split_items(tag)
@@ -1012,9 +1002,22 @@ def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> Non
         else:
             result["albumartist"] = albumartist_values[0]
 
-    # Explicit ARTISTS tag takes precedence if present
+    # ARTISTS (plural) is non-standard in Vorbis - it's a MusicBrainz/Picard ID3 convention.
+    # Vorbis spec recommends multiple ARTIST (singular) fields instead.
+    # Accept it but warn. See: https://xiph.org/vorbis/doc/v-comment.html
     if artists := _vorbis_get_multi(tags, "ARTISTS"):
+        LOGGER.warning(
+            "ARTISTS tag found in Vorbis file. Use multiple ARTIST fields instead: %s",
+            artists,
+        )
         result["artists"] = artists
+
+    if albumartists := _vorbis_get_multi(tags, "ALBUMARTISTS"):
+        LOGGER.warning(
+            "ALBUMARTISTS tag found in Vorbis file. Use multiple ALBUMARTIST fields instead: %s",
+            albumartists,
+        )
+        result["albumartists"] = albumartists
 
 
 def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:

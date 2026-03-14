@@ -17,6 +17,7 @@ RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixture
 FILE_MP3 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
 FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
+FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
 
 
@@ -486,6 +487,34 @@ def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:
         "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
     )
     assert len(audio_tags.artists) == len(audio_tags.musicbrainz_artistids)
+
+
+async def test_flac_multiple_artist_fields_semicolon_e2e() -> None:
+    """End-to-end test: FLAC with multiple ARTIST fields, one containing semicolon.
+
+    Tests real file parsing to ensure the full pipeline correctly handles
+    artist names with semicolons when using multiple ARTIST fields per Vorbis spec.
+
+    See: https://xiph.org/vorbis/doc/v-comment.html
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    audio_tags = await tags.async_parse_tags(FILE_FLAC_SEMICOLON)
+
+    # Verify the artists are correctly parsed without splitting on semicolons
+    assert audio_tags.artists == ("ave;new", "佐倉紗織")
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+
+    # Verify MB Artist IDs match
+    assert audio_tags.musicbrainz_artistids == (
+        "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+    )
+    assert len(audio_tags.artists) == len(audio_tags.musicbrainz_artistids)
+
+    # Verify other tags
+    assert audio_tags.title == "Call My Dears"
+    assert audio_tags.album == "Lovable"
 
 
 def test_id3_artist_tag_semicolon_single_mbid() -> None:
