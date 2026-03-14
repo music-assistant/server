@@ -97,6 +97,16 @@ async def test_start_run_dynamic_requires_player_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_run_rejects_unknown_station() -> None:
+    """Reject starting a run for a station that does not exist."""
+    provider = _make_provider()
+    provider._stations = {}
+
+    with pytest.raises(KeyError, match="Unknown station id: missing_station"):
+        await provider.start_run(station_id="missing_station", mode="playlist")
+
+
+@pytest.mark.asyncio
 async def test_start_run_dynamic_rejects_unavailable_player() -> None:
     """Reject dynamic run start when configured player is unavailable."""
     unavailable_player = SimpleNamespace(player_id="living_room", available=False, enabled=True)
@@ -123,6 +133,19 @@ async def test_start_run_dynamic_rejects_negative_source_playtime_cap_override()
 
 
 @pytest.mark.asyncio
+async def test_start_run_dynamic_rejects_disabled_player() -> None:
+    """Reject dynamic run start when target player is disabled."""
+    disabled_player = SimpleNamespace(player_id="living_room", available=True, enabled=False)
+    provider = _make_dynamic_provider(
+        player_obj=disabled_player,
+        default_player_id="living_room",
+    )
+
+    with pytest.raises(InvalidDataError, match="Target player is disabled"):
+        await provider.start_run(station_id="station_a", mode="dynamic")
+
+
+@pytest.mark.asyncio
 async def test_get_ui_settings_returns_default_refresh_interval() -> None:
     """Return sane default interval when setting is missing."""
     provider = _make_provider()
@@ -131,3 +154,14 @@ async def test_get_ui_settings_returns_default_refresh_interval() -> None:
     result = await provider.get_ui_settings()
 
     assert result["auto_refresh_seconds"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_ui_settings_clamps_interval_to_minimum() -> None:
+    """Clamp invalid refresh values to one second."""
+    provider = _make_provider()
+    provider.config = cast("Any", SimpleNamespace(get_value=lambda _key: 0))
+
+    result = await provider.get_ui_settings()
+
+    assert result["auto_refresh_seconds"] == 1

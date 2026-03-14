@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 from typing import Any
 
 from music_assistant.providers.ai_radio.models import SessionState
@@ -74,6 +76,28 @@ async def test_run_session_sets_failed_state(caplog: Any) -> None:
     assert session.error == "boom"
 
 
+async def test_run_session_sets_stopped_state_on_cancellation(caplog: Any) -> None:
+    """Mark session as stopped when runtime execution is cancelled."""
+
+    class CancelledRuntime(DummyRuntime):
+        async def _run_playlist_mode(
+            self,
+            session: SessionState,
+            station: dict[str, Any],
+        ) -> dict[str, Any]:
+            raise asyncio.CancelledError
+
+    runtime = CancelledRuntime()
+    session = SessionState(session_id="s3", station_id="station_c", mode="playlist")
+    runtime._sessions[session.session_id] = session
+
+    with caplog.at_level(logging.INFO), suppress(asyncio.CancelledError):
+        await runtime._run_session(session.session_id, {"id": "station_c"})
+
+    assert session.status == "stopped"
+    assert any("AI Radio run cancelled" in message for message in caplog.messages)
+
+
 async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: Any) -> None:
     """Warn when weather placeholders are used with unsupported provider."""
     runtime = DummyRuntime()
@@ -97,3 +121,28 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
 
     assert tokens == {}
     assert any("Unsupported weather provider" in message for message in caplog.messages)
+
+
+async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
+    """Skip weather preparation when location data is incomplete."""
+    runtime = DummyRuntime()
+    station = {
+        "sections": [
+            {
+                "id": "Weather_Short",
+                "type": "ai_text",
+                "prompt": "Forecast: <weather_hourly>",
+            }
+        ],
+        "section_order": [],
+        "general": {
+            "weather_provider": "open_meteo",
+            "location": {"city": "", "country": "DE"},
+        },
+    }
+
+    with caplog.at_level(logging.DEBUG):
+        tokens = await runtime._prepare_runtime_tokens(station)
+
+    assert tokens == {}
+    assert any("no location configured" in message for message in caplog.messages)
