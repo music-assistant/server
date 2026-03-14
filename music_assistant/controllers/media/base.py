@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InsufficientPermissions,
+    InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
 )
@@ -35,6 +36,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 
 if TYPE_CHECKING:
@@ -327,6 +329,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_instance_id_or_domain: str,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
+        # if item_id is a URL, resolve the actual provider and item_id via parse_uri
+        original_url: str | None = None
+        if item_id.startswith(("http://", "https://")):
+            original_url = item_id
+            with suppress(InvalidProviderURI):
+                resolved_media_type, provider_instance_id_or_domain, item_id = await parse_uri(
+                    item_id
+                )
+                if resolved_media_type not in {self.media_type, MediaType.UNKNOWN}:
+                    # URL resolves to a different media type — delegate to the correct controller
+                    ctrl = self.mass.music.get_controller(resolved_media_type)
+                    return cast("ItemCls", await ctrl.get(item_id, provider_instance_id_or_domain))
         # always prefer the full library item if we have it
         if library_item := await self.get_library_item_by_prov_id(
             item_id,
@@ -338,10 +352,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.mass.metadata.schedule_update_metadata(library_item.uri)
             return library_item
         # grab full details from the provider
-        return await self.get_provider_item(
+        item = await self.get_provider_item(
             item_id,
             provider_instance_id_or_domain,
         )
+        # If the provider returned a fallback name (name equals the item id), try to derive
+        # a human-readable name from the URL slug (second-to-last path segment).
+        if original_url and item.name == item_id:
+            parts = original_url.rstrip("/").split("/")
+            if len(parts) >= 2:
+                slug = parts[-2].split("?")[0]
+                if slug and slug != item_id and "-" in slug:
+                    item.name = slug.replace("-", " ").title()
+        return item
 
     async def search(
         self,

@@ -46,6 +46,29 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type_str = uri.split("/")[4]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[5].split("?")[0]
+        elif uri.startswith("https://music.apple.com/"):
+            # Apple Music share URL
+            # https://music.apple.com/{storefront}/{type}/{slug}/{id}
+            _apple_type_map = {
+                "station": MediaType.RADIO,
+                "playlist": MediaType.PLAYLIST,
+                "album": MediaType.ALBUM,
+                "artist": MediaType.ARTIST,
+                "song": MediaType.TRACK,
+            }
+            parts = uri.rstrip("/").split("?")[0].split("/")
+            # parts: ['https:', '', 'music.apple.com', '{sf}', '{type}', '{slug}', '{id}']
+            # or:    ['https:', '', 'music.apple.com', '{sf}', '{type}', '{id}']  (no slug)
+            if len(parts) >= 6:
+                apple_type = parts[4]
+                item_id = parts[-1]
+                if apple_type in _apple_type_map and item_id:
+                    provider_instance_id_or_domain = "apple_music"
+                    media_type = _apple_type_map[apple_type]
+                else:
+                    raise KeyError
+            else:
+                raise KeyError
         elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             # Translate a plain URL to the builtin provider
             provider_instance_id_or_domain = "builtin"
