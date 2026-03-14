@@ -54,11 +54,12 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     ProviderMapping,
+    Radio,
     SearchResults,
     Track,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 from shortuuid import uuid
@@ -304,14 +305,22 @@ class AppleMusicProvider(MusicProvider):
         # create random session id to use for decryption keys
         # to invalidate cached keys on each provider initialization
         self._session_id = str(uuid())
-        async with aiofiles.open(
-            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
-        ) as _file:
-            self._decrypt_client_id = await _file.read()
-        async with aiofiles.open(
-            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
-        ) as _file:
-            self._decrypt_private_key = await _file.read()
+        try:
+            async with aiofiles.open(
+                os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
+            ) as _file:
+                self._decrypt_client_id = await _file.read()
+            async with aiofiles.open(
+                os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
+            ) as _file:
+                self._decrypt_private_key = await _file.read()
+        except FileNotFoundError:
+            self.logger.warning(
+                "Widevine CDM files not found at %s. "
+                "Streaming of encrypted catalog tracks will not work. "
+                "Radio stations and unencrypted library tracks are still available.",
+                WIDEVINE_BASE_PATH,
+            )
 
     @use_cache()
     async def search(
@@ -459,6 +468,29 @@ class AppleMusicProvider(MusicProvider):
                 )
             elif item and item["id"]:
                 yield self._parse_playlist(item, is_favourite)
+
+    @use_cache(3600 * 24)
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full radio station details by id."""
+        endpoint = f"catalog/{self._storefront}/stations/{prov_radio_id}"
+        try:
+            response = await self._get_data(endpoint)
+            return self._parse_radio(response["data"][0])
+        except MediaNotFoundError:
+            pass
+        # Station not indexed in the user's storefront catalog but may still be streamable.
+        return Radio(
+            item_id=prov_radio_id,
+            provider=self.domain,
+            name=prov_radio_id,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_radio_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
 
     @use_cache()
     async def get_artist(self, prov_artist_id) -> Artist:
@@ -644,6 +676,67 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        if media_type == MediaType.RADIO:
+            station_hash, is_live = await self._get_station_play_params(item_id)
+            if is_live:
+                try:
+                    stream_url = await self._fetch_radio_stream_url(item_id, station_hash)
+                    return StreamDetails(
+                        item_id=item_id,
+                        provider=self.instance_id,
+                        audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                        media_type=MediaType.RADIO,
+                        stream_type=StreamType.HLS,
+                        path=stream_url,
+                        can_seek=False,
+                        allow_seek=False,
+                    )
+                except MediaNotFoundError:
+                    # webPlayback failed — station may be a curated track-based channel
+                    # (e.g. third-party stations like "Radio Bob Best of Rock") that are
+                    # served via next-tracks rather than a live HLS stream, so fall through.
+                    self.logger.debug(
+                        "Live stream unavailable for %s, trying track-based fallback", item_id
+                    )
+            # Track-based Artist Radio: fetch next track from the station and stream it
+            (
+                track_id,
+                artist_name,
+                track_title,
+                duration_secs,
+            ) = await self._fetch_next_station_track(item_id)
+            streamdetails = await self._get_track_stream_details(track_id)
+            if track_title:
+                streamdetails.stream_metadata = StreamMetadata(
+                    title=track_title,
+                    artist=artist_name,
+                )
+            if duration_secs:
+                streamdetails.duration = duration_secs
+            return streamdetails
+        return await self._get_track_stream_details(item_id)
+
+    async def _fetch_next_station_track(
+        self, station_id: str
+    ) -> tuple[str, str | None, str | None, int | None]:
+        """Fetch the next track for a track-based Apple Music radio station.
+
+        Returns a tuple of (track_id, artist_name, track_title, duration_seconds).
+        """
+        response = await self._post_data(f"me/stations/next-tracks/{station_id}")
+        tracks = response.get("data", [])
+        if not tracks:
+            raise MediaNotFoundError(f"No tracks available for station {station_id}")
+        track = tracks[0]
+        attributes = track.get("attributes", {})
+        title: str | None = attributes.get("name")
+        # artistName is always present as a plain-string attribute on catalog tracks
+        artist_name: str | None = attributes.get("artistName")
+        duration_ms: int | None = attributes.get("durationInMillis")
+        return track["id"], artist_name, title, int(duration_ms / 1000) if duration_ms else None
+
+    async def _get_track_stream_details(self, item_id: str) -> StreamDetails:
+        """Return StreamDetails for a single catalog or library track."""
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
         if self.is_library_id(item_id):
             # Library items are not encrypted and do not need decryption keys
@@ -662,7 +755,12 @@ class AppleMusicProvider(MusicProvider):
                 can_seek=True,
                 allow_seek=True,
             )
-        # Continue to obtain decryption keys for catalog items
+        # Catalog track: needs Widevine decryption keys
+        if not self._decrypt_client_id or not self._decrypt_private_key:
+            raise MediaNotFoundError(
+                "Widevine CDM files are not available. "
+                "Cannot stream encrypted catalog tracks without them."
+            )
         license_url = stream_metadata["hls-key-server-url"]
         stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
         if not stream_url or not uri:
@@ -693,6 +791,101 @@ class AppleMusicProvider(MusicProvider):
         else:
             endpoint = f"me/ratings/library-{item_type}/{prov_item_id}"
         await self._put_data(endpoint, data=data)
+
+    def _parse_radio(self, station_obj: dict[str, Any]) -> Radio:
+        """Parse a station object from the Apple Music API into a Radio model."""
+        attributes = station_obj.get("attributes", {})
+        station_id = station_obj["id"]
+        radio = Radio(
+            item_id=station_id,
+            provider=self.domain,
+            name=attributes.get("name", station_id),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=station_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=attributes.get("url"),
+                )
+            },
+        )
+        if artwork := attributes.get("artwork"):
+            url = artwork["url"]
+            if artwork.get("width") and artwork.get("height"):
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
+            radio.metadata.add_image(
+                MediaItemImage(
+                    provider=self.instance_id,
+                    type=ImageType.THUMB,
+                    path=url,
+                    remotely_accessible=True,
+                )
+            )
+        if notes := attributes.get("editorialNotes"):
+            radio.metadata.description = notes.get("standard") or notes.get("short")
+        return radio
+
+    async def _get_station_play_params(self, station_id: str) -> tuple[str | None, bool]:
+        """Fetch playParams for a radio station. Returns (stationHash, isLive)."""
+        try:
+            endpoint = f"catalog/{self._storefront}/stations/{station_id}"
+            response = await self._get_data(endpoint)
+            attributes = response["data"][0].get("attributes", {})
+            play_params = attributes.get("playParams", {})
+            return play_params.get("stationHash"), attributes.get("isLive", True)
+        except Exception as exc:
+            self.logger.debug("Could not fetch play params for %s: %s", station_id, exc)
+            return None, True
+
+    async def _fetch_radio_stream_url(
+        self, station_id: str, station_hash: str | None = None
+    ) -> str:
+        """Fetch the live HLS stream URL for an Apple Music radio station."""
+        playback_url = "https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback"
+        # Build a list of payloads to try in order.
+        # Sending stationHash can trigger a DRM-encrypted stream request (failing with 3077
+        # when Widevine is unavailable), so always try without it first.
+        numeric_id = station_id.removeprefix("ra.")
+        attempts: list[dict[str, str]] = [
+            {"stationId": station_id},
+            {"salableAdamId": numeric_id},
+        ]
+        if station_hash:
+            # Also try with stationHash in case it is required for some stations.
+            attempts += [
+                {"stationId": station_id, "stationHash": station_hash},
+                {"salableAdamId": numeric_id, "stationHash": station_hash},
+            ]
+        last_error: str = ""
+        for data in attempts:
+            async with self.mass.http_session.post(
+                playback_url, headers=self._get_decryption_headers(), json=data, ssl=True
+            ) as response:
+                response.raise_for_status()
+                content = await response.json(loads=json_loads)
+            if content.get("failureType"):
+                last_error = (
+                    f"type={content.get('failureType')}, message={content.get('failureMessage')}"
+                )
+                self.logger.debug(
+                    "Radio station %s stream failure with params %s - %s, full response: %s",
+                    station_id,
+                    data,
+                    last_error,
+                    content,
+                )
+                continue
+            station_info = content.get("songList", [{}])[0]
+            self.logger.debug("Radio stream metadata for %s: %s", station_id, station_info)
+            for key in ("hls-url", "URL", "url"):
+                if url := station_info.get(key):
+                    return url
+        raise MediaNotFoundError(
+            f"Failed to get stream for radio station {station_id}: {last_error}"
+        )
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse artist object to generic layout."""

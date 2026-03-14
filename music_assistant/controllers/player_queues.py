@@ -1160,6 +1160,16 @@ class PlayerQueuesController(CoreController):
         while True:
             next_index = self._get_next_index(queue_id, cur_index + idx)
             if next_index is None:
+                # For RADIO type items, treat them as a continuous source: clear the
+                # cached stream details and re-request the next track from the provider.
+                cur_item = self.get_item(queue_id, cur_index)
+                if cur_item is not None and cur_item.media_type == MediaType.RADIO:
+                    cur_item.streamdetails = None
+                    try:
+                        await self._load_item(cur_item, None)
+                    except (MediaNotFoundError, AudioError) as err:
+                        raise QueueEmpty("No more tracks available from radio station.") from err
+                    return cur_item
                 raise QueueEmpty("No more tracks left in the queue.")
             queue_item = self.get_item(queue_id, next_index)
             if queue_item is None:
@@ -1857,6 +1867,17 @@ class PlayerQueuesController(CoreController):
             media.album = (
                 album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
             )
+            # For track-based radio stations (e.g. Apple Music Artist Radio)
+            # stream_metadata carries the currently playing track's artist/title.
+            if (
+                queue_item.media_type == MediaType.RADIO
+                and queue_item.streamdetails
+                and (sm := queue_item.streamdetails.stream_metadata)
+            ):
+                if sm.title:
+                    media.title = sm.title
+                if sm.artist:
+                    media.artist = sm.artist
             if queue_item.image:
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
                 # we prefer the imageproxy on the streamserver here because this request is sent
