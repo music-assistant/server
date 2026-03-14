@@ -246,7 +246,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         source_playlist_id_override: str | None = None,
         source_playlist_provider_override: str | None = None,
         player_id_override: str | None = None,
-        dynamic_source_playtime_cap_override: float | None = None,
+        dynamic_source_playtime_cap_override: int | float | None = None,  # noqa: PYI041
         dynamic_batch_size_override: int | None = None,
     ) -> dict[str, Any]:
         """Start a new AI Radio run."""
@@ -280,8 +280,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         if dynamic_source_playtime_cap_override is not None:
             if float(dynamic_source_playtime_cap_override) < 0:
                 raise InvalidDataError("dynamic_source_playtime_cap_override must be >= 0")
-            if selected_mode == "playlist":
-                station["max_duration_minutes"] = float(dynamic_source_playtime_cap_override)
+            station["max_duration_minutes"] = float(dynamic_source_playtime_cap_override)
         if dynamic_batch_size_override:
             station["dynamic_batch_size"] = max(1, int(dynamic_batch_size_override))
         if selected_mode == "dynamic":
