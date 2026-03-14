@@ -164,7 +164,7 @@ class MusicMeProvider(MusicProvider):
 
     _user_id: str | None = None
     _http_session: aiohttp.ClientSession | None = None
-    throttler = ThrottlerManager(rate_limit=1, period=1)
+    throttler: ThrottlerManager
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -173,6 +173,8 @@ class MusicMeProvider(MusicProvider):
             raise LoginFailed(msg)
         # Dedicated session to avoid leaking auth cookies to other providers
         self._http_session = aiohttp.ClientSession()
+        # Instance-scoped throttler to avoid cross-instance rate limiting
+        self.throttler = ThrottlerManager(rate_limit=1, period=1)
         await self._login()
 
     async def unload(self, is_removed: bool = False) -> None:
