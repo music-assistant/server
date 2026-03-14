@@ -37,13 +37,3 @@ SUPPORTED_FEATURES: set[Any] = set()
 EMPTY_SECTION_ID = "EMPTY_SECTION"
 VALID_WEB_SEARCH_MODES = {"disabled", "allow", "force"}
 WEB_SEARCH_MODE_RANK = {"disabled": 0, "allow": 1, "force": 2}
-AI_RADIO_WEB_BASE_PATH = "/plugin/ai_radio"
-AI_RADIO_WEB_FILES = {
-    "": "index.html",
-    "/": "index.html",
-    "/index.html": "index.html",
-    "/air.png": "air.png",
-    "/app.js": "app.js",
-    "/styles.css": "styles.css",
-    "/example_station.json": "example_station.json",
-}

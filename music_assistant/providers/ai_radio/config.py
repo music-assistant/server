@@ -8,7 +8,6 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
 from .constants import (
-    AI_RADIO_WEB_BASE_PATH,
     CONF_ELEVENLABS_API_KEY,
     CONF_OPENAI_API_KEY,
     CONF_UI_AUTO_REFRESH_SECONDS,
@@ -23,7 +22,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     base_url = mass.webserver.base_url.rstrip("/")
-    web_ui_url = f"{base_url}{AI_RADIO_WEB_BASE_PATH}/"
+    web_ui_url = f"{base_url}/#/ai-radio"
     return (
         ConfigEntry(
             key="web_ui_url",

@@ -10,15 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from aiohttp import web
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
-    AI_RADIO_WEB_BASE_PATH,
-    AI_RADIO_WEB_FILES,
     CONF_ELEVENLABS_API_KEY,
     CONF_OPENAI_API_KEY,
     CONF_UI_AUTO_REFRESH_SECONDS,
@@ -77,7 +74,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
         self._sections_file = self._storage_dir / "sections.json"
-        self._web_dir = Path(__file__).parent
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -121,15 +117,8 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             self._unregister_handles.append(
                 self.mass.register_api_command(command, handler, required_role="admin")
             )
-        self._unregister_handles.append(
-            self.mass.webserver.register_dynamic_route(
-                f"{AI_RADIO_WEB_BASE_PATH}/*",
-                self._handle_web_route,
-                method="GET",
-            )
-        )
         self.logger.info(
-            "AI Radio API/web routes registered (%d handlers)",
+            "AI Radio API routes registered (%d handlers)",
             len(self._unregister_handles),
         )
 
@@ -155,19 +144,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         self.config = config
         if f"values/{CONF_LOG_LEVEL}" in changed_keys or "name" in changed_keys:
             self._set_log_level_from_config(config)
-
-    async def _handle_web_route(self, request: web.Request) -> web.Response | web.StreamResponse:
-        """Serve AI Radio web app routes."""
-        relative_path = request.path[len(AI_RADIO_WEB_BASE_PATH) :]
-        if relative_path == "":
-            raise web.HTTPFound(f"{AI_RADIO_WEB_BASE_PATH}/")
-        filename = AI_RADIO_WEB_FILES.get(relative_path)
-        if not filename:
-            return web.Response(status=404, text="Not Found")
-        file_path = self._web_dir / filename
-        if not file_path.exists():
-            return web.Response(status=404, text="File not found")
-        return web.FileResponse(path=file_path, headers={"Cache-Control": "no-cache"})
 
     async def list_stations(self) -> list[dict[str, Any]]:
         """Return all configured AI Radio stations."""
