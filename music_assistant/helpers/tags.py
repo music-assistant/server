@@ -281,7 +281,13 @@ class AudioTags:
 
     @property
     def artists(self) -> tuple[str, ...]:
-        """Return track artists."""
+        """Return track artists.
+
+        Vorbis: parser returns artists (plural) for multiple ARTIST fields.
+        ID3: parser returns artists from TXXX:ARTISTS or multi-value TPE1,
+            otherwise artist (singular) split on delimiter here.
+        MP4/APEv2: parser returns artist (singular), split on delimiter here.
+        """
         # prefer multi-artist tag (ARTISTS plural)
         if tag := self.tags.get("artists"):
             artists = split_items(tag)
@@ -330,7 +336,13 @@ class AudioTags:
 
     @property
     def album_artists(self) -> tuple[str, ...]:
-        """Return (all) album artists (if any)."""
+        """Return (all) album artists (if any).
+
+        Vorbis: parser returns albumartists (plural) for multiple ALBUMARTIST fields.
+        ID3: parser returns albumartists from multi-value TPE2,
+            otherwise albumartist (singular) split on delimiter here.
+        MP4/APEv2: parser returns albumartist (singular), split on delimiter here.
+        """
         # prefer multi-artist tag (ALBUMARTISTS plural)
         if tag := self.tags.get("albumartists"):
             artists = split_items(tag)
@@ -875,18 +887,28 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     # Basic tags (single value)
     if "TIT2" in tags:
         result["title"] = tags["TIT2"].text[0]
-    if "TPE1" in tags:
-        result["artist"] = tags["TPE1"].text[0]
-    if "TPE2" in tags:
-        result["albumartist"] = tags["TPE2"].text[0]
     if "TALB" in tags:
         result["album"] = tags["TALB"].text[0]
+
+    # Artist tags - support ID3v2.4 null-separated multi-value
+    if "TPE1" in tags:
+        artist_values = tags["TPE1"].text
+        if len(artist_values) > 1:
+            result["artists"] = list(artist_values)
+        else:
+            result["artist"] = artist_values[0]
+    if "TPE2" in tags:
+        albumartist_values = tags["TPE2"].text
+        if len(albumartist_values) > 1:
+            result["albumartists"] = list(albumartist_values)
+        else:
+            result["albumartist"] = albumartist_values[0]
 
     # Genre (multi-value)
     if "TCON" in tags:
         result["genre"] = tags["TCON"].text
 
-    # Multi-value artist tag
+    # Explicit multi-value artist tag (takes precedence)
     if "TXXX:ARTISTS" in tags:
         result["artists"] = tags["TXXX:ARTISTS"].text
 
