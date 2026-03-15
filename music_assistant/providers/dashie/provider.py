@@ -1,4 +1,4 @@
-"""Dashie Kiosk Player provider for Music Assistant."""
+"""Dashie Player provider for Music Assistant."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from urllib.parse import urlparse
 
 from music_assistant.models.player_provider import PlayerProvider
 
-from .client import DashieKioskClient
+from .client import DashieClient
 from .constants import CONF_MANUAL_PLAYERS, CONF_PLAYERS, DASHIE_HA_DOMAIN, RETRY_INTERVAL
-from .player import DashieKioskPlayer
+from .player import DashiePlayer
 
 if TYPE_CHECKING:
     from hass_client.models import Device as HassDevice
@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class DashieKioskProvider(PlayerProvider):
-    """Player provider for Dashie Kiosk Android tablets."""
+class DashieProvider(PlayerProvider):
+    """Player provider for Dashie Android tablets."""
 
     hass_prov: HomeAssistantProvider | None
     _pending_players: dict[str, HassDevice | None]
@@ -50,12 +50,10 @@ class DashieKioskProvider(PlayerProvider):
         player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS)) or []
         if player_ids and self.hass_prov:
             await self._setup_ha_players(player_ids)
-        # Set up manually configured players
-        manual_addresses = cast("list[str]", self.config.get_value(CONF_MANUAL_PLAYERS)) or []
-        for raw_address in manual_addresses:
-            address = raw_address.strip()
-            if not address:
-                continue
+        # Set up manually configured players (comma-separated string)
+        raw_manual = self.config.get_value(CONF_MANUAL_PLAYERS) or ""
+        manual_addresses = [a.strip() for a in str(raw_manual).split(",") if a.strip()]
+        for address in manual_addresses:
             success = await self._setup_manual_player(address)
             if not success:
                 self._pending_players[address] = None
@@ -70,7 +68,9 @@ class DashieKioskProvider(PlayerProvider):
 
     async def _setup_ha_players(self, player_ids: list[str]) -> None:
         """Set up players discovered via Home Assistant."""
-        assert self.hass_prov is not None
+        if self.hass_prov is None:
+            _LOGGER.warning("Home Assistant provider not available, cannot set up HA players")
+            return
         # Fetch device and entity registries from HA
         device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
         entity_registry = {
@@ -138,12 +138,12 @@ class DashieKioskProvider(PlayerProvider):
             _LOGGER.warning("Could not parse host from %s", config_url)
             return False
         # Create a direct REST API client
-        client = DashieKioskClient(self.mass.http_session_no_ssl, host, port, password="")
+        client = DashieClient(self.mass.http_session_no_ssl, host, port, password="")
         try:
             async with asyncio.timeout(15):
                 await client.get_device_info()
         except Exception as err:
-            _LOGGER.warning("Unable to connect to Dashie Kiosk at %s:%s - %s", host, port, err)
+            _LOGGER.warning("Unable to connect to Dashie at %s:%s - %s", host, port, err)
             return False
         # Collect device info from HA registry
         dev_info: dict[str, Any] = {}
@@ -155,9 +155,23 @@ class DashieKioskProvider(PlayerProvider):
             if sw_version := hass_device.get("sw_version"):
                 dev_info["software_version"] = sw_version
         # Create and register the player
-        player = DashieKioskPlayer(self, entity_id, client, f"{host}:{port}", dev_info)
+        player = DashiePlayer(self, entity_id, client, f"{host}:{port}", dev_info)
         player.set_attributes()
         await self.mass.players.register(player)
+        # Push player ID + server URL immediately so the device knows its identity
+        streams = self.mass.streams
+        ma_server_url = streams.base_url or f"http://{streams.publish_ip}:{streams.publish_port}"
+        try:
+            await client.set_player_id(entity_id, ma_server_url)
+            player._player_id_sent = True
+            _LOGGER.info(
+                "Pushed player ID to %s during setup: %s (server=%s)",
+                host,
+                entity_id,
+                ma_server_url,
+            )
+        except Exception as err:
+            _LOGGER.warning("Failed to push player ID to %s during setup: %s", host, err)
         return True
 
     async def _setup_manual_player(self, address: str) -> bool:
@@ -167,16 +181,16 @@ class DashieKioskProvider(PlayerProvider):
         else:
             host = address
             port = "2323"
-        client = DashieKioskClient(self.mass.http_session_no_ssl, host, port, password="")
+        client = DashieClient(self.mass.http_session_no_ssl, host, port, password="")
         try:
             async with asyncio.timeout(15):
                 await client.get_device_info()
         except Exception as err:
-            _LOGGER.warning("Unable to connect to Dashie Kiosk at %s:%s - %s", host, port, err)
+            _LOGGER.warning("Unable to connect to Dashie at %s:%s - %s", host, port, err)
             return False
         # Use the device ID from the device info, falling back to the address
         device_id = client.device_info.get("deviceID", address)
-        player = DashieKioskPlayer(self, device_id, client, f"{host}:{port}")
+        player = DashiePlayer(self, device_id, client, f"{host}:{port}")
         player.set_attributes()
         await self.mass.players.register(player)
         return True

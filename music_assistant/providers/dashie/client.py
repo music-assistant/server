@@ -1,4 +1,4 @@
-"""Async client for the Dashie Kiosk REST API."""
+"""Async client for the Dashie REST API."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class DashieKioskError(Exception):
-    """Raised when a Dashie Kiosk API request fails."""
+class DashieError(Exception):
+    """Raised when a Dashie API request fails."""
 
     def __init__(self, status_code: int, message: str) -> None:
         """Initialize the error."""
         self.status_code = status_code
         self.message = message
-        super().__init__(f"DashieKioskError({status_code}): {message}")
+        super().__init__(f"DashieError({status_code}): {message}")
 
 
-class DashieKioskClient:
-    """Client for communicating with the Dashie Kiosk REST API."""
+class DashieClient:
+    """Client for communicating with the Dashie REST API."""
 
     def __init__(
         self,
@@ -44,7 +44,7 @@ class DashieKioskClient:
         return self._device_info
 
     async def _send_command(self, cmd: str, **kwargs: Any) -> dict[str, Any]:
-        """Send a command to the Dashie Kiosk API."""
+        """Send a command to the Dashie API."""
         url = f"http://{self._host}:{self._port}"
         params: list[tuple[str, str]] = [
             ("cmd", cmd),
@@ -57,15 +57,18 @@ class DashieKioskClient:
 
         _LOGGER.debug("Sending command to %s: %s %s", url, cmd, kwargs)
         async with self._session.get(
-            url, params=params, headers={"Accept": "application/json"}, ssl=False
+            url, params=params, headers={"Accept": "application/json"}
         ) as response:
             if response.status != 200:
-                raise DashieKioskError(response.status, await response.text())
+                raise DashieError(response.status, await response.text())
             content_type = response.headers.get("Content-Type", "")
             data = await response.json(content_type=content_type)
-            if isinstance(data, dict) and data.get("status") == "Error":
-                raise DashieKioskError(401, data.get("statustext", "Unknown error"))
-            return dict(data)
+            if not isinstance(data, dict):
+                msg = f"Unexpected response type: {type(data).__name__}"
+                raise DashieError(response.status, msg)
+            if data.get("status") == "Error":
+                raise DashieError(response.status, data.get("statustext", "Unknown error"))
+            return data
 
     async def get_device_info(self) -> dict[str, Any]:
         """Get device information and update the cache."""
@@ -95,3 +98,29 @@ class DashieKioskClient:
     async def set_audio_volume(self, level: int, stream: int = 4) -> None:
         """Set the audio volume (0-100)."""
         await self._send_command("setAudioVolume", level=level, stream=stream)
+
+    async def set_player_id(self, player_id: str, ma_server_url: str = "") -> None:
+        """Tell the device its own MA player/entity ID and server URL."""
+        await self._send_command("setPlayerId", playerId=player_id, maServerUrl=ma_server_url)
+
+    async def set_media_info(
+        self,
+        title: str = "",
+        artist: str = "",
+        album: str = "",
+        image_url: str = "",
+        duration: int = 0,
+        entity_id: str = "",
+        ma_server_url: str = "",
+    ) -> None:
+        """Push track metadata to the device for on-screen display."""
+        await self._send_command(
+            "setMediaInfo",
+            title=title,
+            artist=artist,
+            album=album,
+            imageUrl=image_url,
+            duration=duration,
+            entityId=entity_id,
+            maServerUrl=ma_server_url,
+        )

@@ -1,4 +1,4 @@
-"""Constants for the Dashie Kiosk provider."""
+"""Constants for the Dashie provider."""
 
 CONF_PLAYERS = "players"
 CONF_MANUAL_PLAYERS = "manual_players"

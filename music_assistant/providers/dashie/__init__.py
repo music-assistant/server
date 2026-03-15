@@ -1,7 +1,7 @@
 """
-Dashie Kiosk Player provider for Music Assistant.
+Dashie Player provider for Music Assistant.
 
-Plays audio directly on Dashie Kiosk tablets via their REST API.
+Plays audio directly on Dashie tablets via their REST API.
 Supports automatic discovery via the Home Assistant Plugin and the Dashie HA
 integration, or manual configuration by IP address.
 """
@@ -17,7 +17,7 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.providers.hass import DOMAIN as HASS_DOMAIN
 
 from .constants import CONF_MANUAL_PLAYERS, CONF_PLAYERS, DASHIE_HA_DOMAIN
-from .provider import DashieKioskProvider
+from .provider import DashieProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -40,7 +40,7 @@ async def setup(
             hass_prov = cast("HomeAssistantProvider", raw_prov)
             break
         await asyncio.sleep(1)
-    return DashieKioskProvider(mass, manifest, config, hass_prov)
+    return DashieProvider(mass, manifest, config, hass_prov)
 
 
 async def get_config_entries(
@@ -70,21 +70,20 @@ async def get_config_entries(
             key=CONF_PLAYERS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Dashie Kiosk devices (via Home Assistant)",
+            label="Dashie devices (via Home Assistant)",
             required=False,
             options=player_entities,
-            description="Select Dashie Kiosk tablets discovered through the "
+            description="Select Dashie tablets discovered through the "
             "Dashie HA integration. Requires the Home Assistant Plugin.",
         ),
         ConfigEntry(
             key=CONF_MANUAL_PLAYERS,
             type=ConfigEntryType.STRING,
-            multi_value=True,
-            label="Manual Dashie Kiosk addresses",
+            label="Manual Dashie addresses",
             required=False,
-            description="Manually add Dashie Kiosk tablets by IP address and port "
-            "(e.g. 192.168.1.100:2323). Use this if you don't have the "
-            "Dashie HA integration installed.",
+            description="Comma-separated IP:port addresses of Dashie tablets "
+            "(e.g. 192.168.1.100:2323, 192.168.1.101:2323). "
+            "Use this if you don't have the Dashie HA integration installed.",
             advanced=True,
         ),
     )
