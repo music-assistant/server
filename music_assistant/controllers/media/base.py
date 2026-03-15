@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -55,6 +56,7 @@ JSON_KEYS = (
     "narrators",
     "authors",
     "genre_aliases",
+    "supported_mediatypes",
 )
 
 SORT_KEYS = {
@@ -236,6 +238,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
+        # delete genre exclusions for this media item
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
+            {"media_type": self.media_type.value, "media_id": db_id},
+        )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
@@ -1108,8 +1115,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if (album_images := track_album.get("images")) and (
                 album_thumb := next((x for x in album_images if x["type"] == "thumb"), None)
             ):
-                # copy album image to itemmapping single image
+                # copy album image to itemmapping single image (on the track)
                 db_row_dict["image"] = album_thumb
+                # also set image on the album dict for ItemMapping compatibility
+                track_album["image"] = album_thumb
                 if db_row_dict["metadata"].get("images"):
                     # merge album image with existing images
                     db_row_dict["metadata"]["images"] = [
@@ -1118,6 +1127,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     ]
                 else:
                     db_row_dict["metadata"]["images"] = [album_thumb]
+
         return db_row_dict
 
     @final

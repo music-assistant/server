@@ -492,6 +492,10 @@ class SonosPlayer(Player):
             active_group = group_parent.client.player.group
             self._attr_group_members.clear()
 
+        if not active_group:
+            # should not happen, but guard it anyways
+            return
+
         # map playback state
         self._attr_playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
         self._attr_elapsed_time = active_group.position
@@ -510,7 +514,10 @@ class SonosPlayer(Player):
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
             self._attr_active_source = SOURCE_TV
-        elif container_type == ContainerType.AIRPLAY:
+        elif container_type == ContainerType.AIRPLAY and self.active_output_protocol not in (
+            "airplay",
+            "sendspin",
+        ):
             self._attr_active_source = SOURCE_AIRPLAY
         elif (
             container_type == ContainerType.STATION
@@ -640,9 +647,9 @@ class SonosPlayer(Player):
             except Exception as err:
                 self.logger.warning("Failed to restore AirPlay group: %s", err)
 
-        # Schedule restoration after 4 seconds to let AirPlay settle
+        # Schedule restoration after 6 seconds to let AirPlay settle
         self.mass.call_later(
-            4,
+            6,
             _restore_airplay_group,
             task_id=f"restore_airplay_group_{self.player_id}",
         )
@@ -720,6 +727,8 @@ class SonosPlayer(Player):
             return
         repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
         repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
+        if not self.client.player.group:
+            return
         play_modes = self.client.player.group.play_modes
         if (
             play_modes.repeat != repeat_all_enabled
@@ -752,9 +761,7 @@ class SonosPlayer(Player):
         for idx in range(offset, current_index):
             if queue_item := self.mass.player_queues.get_item(queue_id, idx):
                 if queue_item.available:
-                    media = await self.mass.player_queues.player_media_from_queue_item(
-                        queue_item, False
-                    )
+                    media = await self.mass.player_queues.player_media_from_queue_item(queue_item)
                     media.uri = await self.provider.mass.streams.resolve_stream_url(
                         self.player_id, media
                     )
@@ -763,9 +770,7 @@ class SonosPlayer(Player):
         # Add the current item
         if current_item := self.mass.player_queues.get_item(queue_id, current_index):
             if current_item.available:
-                media = await self.mass.player_queues.player_media_from_queue_item(
-                    current_item, False
-                )
+                media = await self.mass.player_queues.player_media_from_queue_item(current_item)
                 media.uri = await self.provider.mass.streams.resolve_stream_url(
                     self.player_id, media
                 )
@@ -777,7 +782,7 @@ class SonosPlayer(Player):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
                 break
-            media = await self.mass.player_queues.player_media_from_queue_item(next_item, False)
+            media = await self.mass.player_queues.player_media_from_queue_item(next_item)
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             items.append(media)
             last_index = next_item.queue_item_id

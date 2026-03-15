@@ -810,17 +810,15 @@ class ConfigController:
         # store updated config first (to prevent issues with enabling/disabling players)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         # Get existing raw config to preserve values that don't have config entries.
-        # This can happen when config entries are dynamic (e.g., protocol settings depend on
-        # player.available and linked protocols). If save_player_config is called before
-        # the player is fully available, those entries won't exist and their stored values
-        # would be lost without this preservation.
+        # e.g. protocol links etc.
         existing_raw = self.get(conf_key) or {}
         existing_values = existing_raw.get("values", {})
         new_raw = config.to_raw()
         new_values = new_raw.get("values", {})
-        # Preserve values from storage that don't have config entries in current context
+        # Preserve values from storage that don't have config entries in current context.
+        config_entry_keys = set(config.values.keys())
         for key, value in existing_values.items():
-            if key not in new_values:
+            if key not in new_values and key not in config_entry_keys:
                 new_values[key] = value
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
@@ -1455,6 +1453,26 @@ class ConfigController:
                 LOGGER.info("Migrated AirPlay credentials for player %s", player_id)
             changed = True
 
+        # Clean up stale ARP/MAC caches from group/stereo pair player configs
+        # and protocol players that were incorrectly linked to groups.
+        # TODO: remove after 2.8 release
+        group_player_ids: set[str] = set()
+        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
+            if player_config.get("player_type") not in ("group", "stereo_pair"):
+                continue
+            group_player_ids.add(player_id)
+            if not (values := player_config.get("values")):
+                continue
+            for key in ("cached_arp_mac", "reported_mac", "linked_protocol_ids"):
+                if values.pop(key, None) is not None:
+                    changed = True
+        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
+            if not (values := player_config.get("values")):
+                continue
+            if values.get("protocol_parent_id") in group_player_ids:
+                values.pop("protocol_parent_id")
+                changed = True
+
         if changed:
             await self._async_save()
 
@@ -1850,11 +1868,6 @@ class ConfigController:
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
 
-        if not player.available:
-            # if player is not available, we cannot reliably determine the available protocols
-            # so we return no options to avoid confusion
-            return all_entries
-
         # Build options from available output protocols, sorted by priority
         options: list[ConfigValueOption] = []
         default_value: str | None = None
@@ -1916,7 +1929,7 @@ class ConfigController:
                         label="Enable",
                         description="Enable or disable this output protocol for the player.",
                         value=protocol_player_enabled,
-                        default_value=protocol_player_enabled,
+                        default_value=True,
                         category=protocol_category,
                         category_translation_key=category_translation_key,
                         category_translation_params=[protocol_name],

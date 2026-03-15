@@ -19,7 +19,6 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player
 
 from .constants import PLAYER_CONFIG_ENTRIES
@@ -145,13 +144,11 @@ class DLNAPlayer(Player):
                 if uuid_value.lower().startswith("uuid:"):
                     uuid_value = uuid_value[5:]
                 self._attr_device_info.add_identifier(IdentifierType.UUID, uuid_value)
-                # Try to extract MAC address from UUID
-                # Many UPnP devices embed MAC in the last 12 chars of UUID
-                # e.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
-                mac_address = self._extract_mac_from_uuid(uuid_value)
-                # Only add MAC address if it's valid (not 00:00:00:00:00:00)
-                if mac_address and is_valid_mac_address(mac_address):
-                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+                # MAC address is NOT extracted from UUID because the last 12 chars
+                # of UPnP UUIDs are unreliable — many devices put random/model
+                # values there, not the real hardware MAC. Instead, the player
+                # controller resolves the real MAC via ARP during registration
+                # using the IP address extracted below.
                 # Try to extract just the IP from the URL for matching
                 ip_address = self.device.device.presentation_url or self.description_url
                 with suppress(ValueError):
@@ -428,19 +425,21 @@ class DLNAPlayer(Player):
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        await self.device.async_set_transport_uri(url, title, didl_metadata)
-        # Play it
-        await self.device.async_wait_for_can_play(10)
-        # optimistically set this timestamp to help in case of a player
-        # that does not report the progress
-        self._attr_elapsed_time = 0
+        # optimistically set the state here to help in case of a player
+        # that is slow or failing to report state changes.
+        prev_state = self._attr_playback_state
+        self.set_current_media(uri=url, clear_all=True)
+        self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_elapsed_time = -1
         self._attr_elapsed_time_last_updated = time.time()
-        await self.device.async_play()
-        # force poll the device
-        for sleep in (1, 2):
-            await asyncio.sleep(sleep)
-            self.force_poll = True
-            await self.poll()
+        try:
+            await self.device.async_set_transport_uri(url, title, didl_metadata)
+            await self.device.async_wait_for_can_play(10)
+            await self.device.async_play()
+        except Exception:
+            self._attr_playback_state = prev_state
+            raise
+        self.update_state()
 
     @catch_request_errors
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
@@ -448,8 +447,9 @@ class DLNAPlayer(Player):
         assert self.device is not None  # for type checking
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         try:
-            await self.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
+            await self.device.async_set_next_transport_uri(url, title, didl_metadata)
         except UpnpError:
             self.logger.error(
                 "Enqueuing the next track failed for player %s - "
@@ -524,33 +524,4 @@ class DLNAPlayer(Player):
             self.device = None
             self.set_available(False)
             await old_device.async_unsubscribe_services()
-
-    @staticmethod
-    def _extract_mac_from_uuid(uuid_value: str) -> str | None:
-        """Try to extract MAC address from UUID.
-
-        Many UPnP devices embed the MAC address in the last 12 hex characters of the UUID.
-        E.g., uuid:4d691234-444c-164e-1234-001f33eaacf1 -> 00:1f:33:ea:ac:f1
-
-        :param uuid_value: The UUID string (without 'uuid:' prefix).
-        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
-        """
-        # Remove dashes and get last 12 hex characters
-        hex_chars = uuid_value.replace("-", "")
-        if len(hex_chars) < 12:
-            return None
-
-        mac_hex = hex_chars[-12:]
-
-        # Validate it looks like a MAC (all hex characters)
-        try:
-            int(mac_hex, 16)
-        except ValueError:
-            return None
-
-        # Check if it could be a valid MAC (not all zeros or all ones)
-        if mac_hex in ("000000000000", "ffffffffffff", "FFFFFFFFFFFF"):
-            return None
-
-        # Format as XX:XX:XX:XX:XX:XX
-        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+        self.update_state()

@@ -53,7 +53,8 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
-GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genre_mapping.json")
+GENRE_ICONS_DIR: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genres")
+GENRE_MAPPING_FILE: Final[pathlib.Path] = GENRE_ICONS_DIR.joinpath("genre_mapping.json")
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -113,12 +114,12 @@ CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
-CONF_LINKED_PROTOCOL_PLAYER_IDS: Final[str] = (
-    "linked_protocol_player_ids"  # cached for fast restart
-)
+CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
+CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
+CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
@@ -158,6 +159,7 @@ DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
+DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:
@@ -984,6 +986,12 @@ ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
+ATTR_ACTIVE_PLAYLIST: Final[str] = "active_playlist"
+ATTR_SUPPORTED_FEATURES: Final[str] = "supported_features"
+ATTR_MUTE_CONTROL: Final[str] = "mute_control"
+ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
+ATTR_POWER_CONTROL: Final[str] = "power_control"
+ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -1015,10 +1023,10 @@ NON_HTTP_PROVIDERS = ("airplay", "sendspin", "snapcast")
 
 # Protocol priority values (lower = more preferred)
 PROTOCOL_PRIORITY: Final[dict[str, int]] = {
-    "sendspin": 10,
+    "airplay": 10,
     "squeezelite": 20,
     "chromecast": 30,
-    "airplay": 40,
+    "sendspin": 40,
     "dlna": 50,
 }
 
@@ -1050,4 +1058,55 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("sonos", True),
     ("bluesound", True),
     ("heos", True),
+}
+
+EXTERNAL_SOURCES: Final[set[str]] = {
+    # list of sources that are definitely considered "external"
+    # values are matched case-insensitive against the player's active_source
+    # streaming services / connect sources
+    "spotify",
+    "spotify_connect",
+    "spotify connect",
+    "apple_music",
+    "apple music",
+    "tidal",
+    "tidal_connect",
+    "tidal connect",
+    "qobuz",
+    "deezer",
+    "amazon_music",
+    "amazon music",
+    "pandora",
+    "iheartradio",
+    "napster",
+    "rhapsody",
+    "siriusxm",
+    "soundcloud",
+    "tunein",
+    "tune in",
+    "radioparadise",
+    "radio paradise",
+    "radiko",
+    "juke",
+    "alexa",
+    "radio",
+    "airplay",
+    "chromecast",
+    # bluetooth (bluesound, musiccast)
+    "bluetooth",
+    # physical/analog inputs (sonos, heos, musiccast, demo)
+    "line-in",
+    "linein",
+    "line in",
+    "line_in",
+    "aux",
+    "tuner",
+    # tv / hdmi (sonos, bluesound)
+    "tv",
+    "tv input",
+    "hdmi arc",
+    # local/usb playback on device (musiccast)
+    "usb",
+    # external (hass_players)
+    "external",
 }

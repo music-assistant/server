@@ -1075,6 +1075,9 @@
       }),
     ]),
     'sort_name': 'テストマイリスト68461151-78597499',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'nicovideo_test://playlist/78597499',
     'version': '',
@@ -1150,6 +1153,9 @@
       }),
     ]),
     'sort_name': 'テストマイリスト68461151-78597499',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'nicovideo_test://playlist/78597499',
     'version': '',
@@ -1226,6 +1232,9 @@
         }),
       ]),
       'sort_name': 'テストマイリスト68461151-78597499',
+      'supported_mediatypes': list([
+        'track',
+      ]),
       'translation_key': None,
       'uri': 'nicovideo_test://playlist/78597499',
       'version': '',
@@ -1459,6 +1468,9 @@
       }),
     ]),
     'sort_name': 'テストマイリスト68461151-78597499',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'nicovideo_test://playlist/78597499',
     'version': '',
