@@ -1771,6 +1771,14 @@ class Player(ABC):
                 for feature in protocol_player.supported_features:
                     if feature in PROTOCOL_FEATURES:
                         base_features.add(feature)
+        # Add features based on configured player controls
+        # (e.g. when mute/volume/power is delegated to an external entity)
+        if self.mute_control != PLAYER_CONTROL_NONE:
+            base_features.add(PlayerFeature.VOLUME_MUTE)
+        if self.volume_control != PLAYER_CONTROL_NONE:
+            base_features.add(PlayerFeature.VOLUME_SET)
+        if self.power_control != PLAYER_CONTROL_NONE:
+            base_features.add(PlayerFeature.POWER)
         return base_features
 
     @cached_property
