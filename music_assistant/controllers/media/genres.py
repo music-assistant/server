@@ -627,21 +627,10 @@ class GenreController(MediaControllerBase[Genre]):
         """
         db = self.mass.music.database
 
-        # Build alias -> genre_ids lookup from all genres in the database.
-        # One alias can map to multiple genres (n:n relationship).
-        alias_to_genre: dict[str, list[int]] = {}
-        genre_rows = await db.get_rows_from_query(
-            f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
-        )
-        for row in genre_rows:
-            genre_id = int(row["item_id"])
-            aliases = json.loads(row["genre_aliases"]) if row["genre_aliases"] else []
-            for alias in aliases:
-                norm = create_safe_string(alias.strip(), True, True)
-                if norm:
-                    alias_to_genre.setdefault(norm, [])
-                    if genre_id not in alias_to_genre[norm]:
-                        alias_to_genre[norm].append(genre_id)
+        # Build alias and primary-name lookups. Primary-name match takes priority over
+        # alias match so a bare "pop" tag only maps to the Pop genre, not every genre
+        # that accumulated "pop" as a secondary alias.
+        alias_to_genre, primary_name_to_genre = await self._build_genre_lookup()
 
         # Extract all unique raw genre names from metadata across all media tables
         union_parts = [
@@ -660,13 +649,22 @@ class GenreController(MediaControllerBase[Genre]):
         )
 
         # Resolve each raw name to genre_ids via alias lookup.
-        # One raw name can map to multiple genres (n:n).
+        # One raw name can map to multiple genres (n:n), except when a genre's primary name
+        # exactly matches the normalised tag — in that case use only that single genre.
         raw_name_to_genres: dict[str, list[int]] = {}
         for raw_name in unique_raw_names:
             norm = create_safe_string(raw_name.strip(), True, True)
             if not norm:
                 continue
-            if norm in alias_to_genre:
+            if norm in primary_name_to_genre:
+                resolved = [primary_name_to_genre[norm]]
+                raw_name_to_genres[raw_name] = resolved
+                self.logger.debug(
+                    "Bulk scan - resolved %r -> genre_ids %s (primary name match)",
+                    raw_name,
+                    resolved,
+                )
+            elif norm in alias_to_genre:
                 raw_name_to_genres[raw_name] = alias_to_genre[norm]
                 self.logger.debug(
                     "Bulk scan - resolved %r -> genre_ids %s (alias match)",
@@ -817,20 +815,10 @@ class GenreController(MediaControllerBase[Genre]):
         db = self.mass.music.database
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
 
-        # Build alias -> genre_ids lookup (n:n) from all genres in the database.
-        alias_to_genre: dict[str, list[int]] = {}
-        genre_rows = await db.get_rows_from_query(
-            f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
-        )
-        for row in genre_rows:
-            genre_id = int(row["item_id"])
-            aliases = json.loads(row["genre_aliases"]) if row["genre_aliases"] else []
-            for alias in aliases:
-                norm = create_safe_string(alias.strip(), True, True)
-                if norm:
-                    alias_to_genre.setdefault(norm, [])
-                    if genre_id not in alias_to_genre[norm]:
-                        alias_to_genre[norm].append(genre_id)
+        # Build alias and primary-name lookups. Primary-name match takes priority over
+        # alias match so a bare "pop" tag only maps to the Pop genre, not every genre
+        # that accumulated "pop" as a secondary alias.
+        alias_to_genre, primary_name_to_genre = await self._build_genre_lookup()
 
         # Extract all unique raw genre names from media items.
         # We don't filter by unmapped items here because a media item may
@@ -854,13 +842,23 @@ class GenreController(MediaControllerBase[Genre]):
             len(unique_raw_names),
         )
 
-        # Resolve each raw name to genre_ids (n:n)
+        # Resolve each raw name to genre_ids. Primary-name match takes priority over
+        # alias match so a bare "pop" tag only maps to the Pop genre, not every genre
+        # that accumulated "pop" as a secondary alias.
         raw_name_to_genres: dict[str, list[int]] = {}
         for raw_name in unique_raw_names:
             norm = create_safe_string(raw_name.strip(), True, True)
             if not norm:
                 continue
-            if norm in alias_to_genre:
+            if norm in primary_name_to_genre:
+                resolved = [primary_name_to_genre[norm]]
+                raw_name_to_genres[raw_name] = resolved
+                self.logger.debug(
+                    "Scanner - resolved %r -> genre_ids %s (primary name match)",
+                    raw_name,
+                    resolved,
+                )
+            elif norm in alias_to_genre:
                 raw_name_to_genres[raw_name] = alias_to_genre[norm]
                 self.logger.debug(
                     "Scanner - resolved %r -> genre_ids %s (alias match)",
@@ -1361,6 +1359,33 @@ class GenreController(MediaControllerBase[Genre]):
                 allow_replace=True,
             )
 
+    async def _build_genre_lookup(
+        self,
+    ) -> tuple[dict[str, list[int]], dict[str, int]]:
+        """Build alias and primary-name lookup dicts from all genres in the database.
+
+        :return: Tuple of (alias_to_genre, primary_name_to_genre).
+            alias_to_genre maps normalised alias -> list of genre_ids (n:n).
+            primary_name_to_genre maps normalised primary name -> single genre_id.
+        """
+        alias_to_genre: dict[str, list[int]] = {}
+        primary_name_to_genre: dict[str, int] = {}
+        genre_rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, search_name, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+        )
+        for row in genre_rows:
+            genre_id = int(row["item_id"])
+            if row["search_name"]:
+                primary_name_to_genre[row["search_name"]] = genre_id
+            aliases = json.loads(row["genre_aliases"]) if row["genre_aliases"] else []
+            for alias in aliases:
+                norm = create_safe_string(alias.strip(), True, True)
+                if norm:
+                    alias_to_genre.setdefault(norm, [])
+                    if genre_id not in alias_to_genre[norm]:
+                        alias_to_genre[norm].append(genre_id)
+        return alias_to_genre, primary_name_to_genre
+
     async def _ensure_aliases(self, genre_id: int, aliases: list[str]) -> None:
         """Ensure a genre has all the specified aliases in its genre_aliases JSON.
 
@@ -1395,11 +1420,14 @@ class GenreController(MediaControllerBase[Genre]):
         async with self._db_add_lock:
             found_ids: list[int] = []
 
-            # Check if a genre exists with this name as its own name
+            # Check if a genre exists with this name as its own primary name.
+            # If so, return immediately — an exact primary-name match takes full priority
+            # over alias scanning. This prevents broad tags like "pop" from fanning out
+            # to every genre that accumulated "pop" as a secondary alias (Rock, Punk, etc.).
             if db_row := await self.mass.music.database.get_row(
                 DB_TABLE_GENRES, {"search_name": search_name}
             ):
-                found_ids.append(int(db_row["item_id"]))
+                return [int(db_row["item_id"])]
 
             # Search genre_aliases JSON columns (case-insensitive, can match multiple)
             rows = await self.mass.music.database.get_rows_from_query(
