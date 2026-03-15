@@ -43,7 +43,13 @@ def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
 def split_items(
     org_str: str | list[str] | tuple[str, ...] | None, allow_unsafe_splitters: bool = False
 ) -> tuple[str, ...]:
-    """Split up a tags string by common splitter."""
+    """Split a tag string into multiple values.
+
+    Splits on semicolon (;) first as the standard multi-value delimiter.
+
+    :param org_str: The string or list of strings to split.
+    :param allow_unsafe_splitters: Also split on "/" and ", " (use for genres, not artists).
+    """
     if org_str is None:
         return ()
     if isinstance(org_str, tuple | list):
@@ -281,20 +287,19 @@ class AudioTags:
 
     @property
     def artists(self) -> tuple[str, ...]:
-        """Return track artists."""
-        # Check for "artists" key which can come from two sources:
-        # 1. ID3: TXXX:ARTISTS - a MusicBrainz/Picard extension using semicolon-delimited values
-        #    in a single field (ID3 doesn't support multiple instances of the same tag).
-        #    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
-        # 2. Vorbis: Multiple ARTIST (singular) fields per the spec, stored as list by mutagen.
-        #    See: https://xiph.org/vorbis/doc/v-comment.html
+        """Return track artists.
+
+        Vorbis: parser returns artists (plural) for multiple ARTIST fields.
+        ID3: parser returns artists from TXXX:ARTISTS, or artist (singular) split on delimiter here.
+        MP4/APEv2: parser returns artist (singular), split on delimiter here.
+        """
         if tag := self.tags.get("artists"):
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
                 # Multiple ARTIST fields from Vorbis - already separated, no splitting needed
                 artists = clean_tuple(tag)  # type: ignore[unreachable]
             else:
-                # Single field (ID3 TXXX:ARTISTS) - split on semicolons
+                # Single field - split on semicolons
                 artists = split_items(tag)
             # Warn if ARTISTS tag count doesn't match MB Artist ID count
             mb_id_count = len(self.musicbrainz_artistids)
@@ -777,6 +782,8 @@ def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
 def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     """Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
 
+    See: https://mutagen.readthedocs.io/en/latest/api/mp4.html
+
     :param tags: The MP4Tags object from mutagen.
     """
     result: dict[str, Any] = {}
@@ -891,6 +898,9 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
 
 def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     """Parse ID3 tags (MP3 files) from mutagen tags dict.
+
+    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
+    See: https://picard-docs.musicbrainz.org/en/variables/tags_basic.html
 
     :param tags: Dictionary of ID3 tags from mutagen.
     """
@@ -1143,6 +1153,8 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
 
     APEv2 tags are used by WavPack, Musepack, Monkey's Audio, OptimFROG, and TAK.
     Multi-value fields use null byte (\x00) as separator.
+
+    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
 
     :param tags: APEv2 tags object from mutagen.
     """
