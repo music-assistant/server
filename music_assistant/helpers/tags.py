@@ -880,6 +880,9 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
 def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     """Parse ID3 tags (MP3 files) from mutagen tags dict.
 
+    See: https://mutagen-specs.readthedocs.io/en/latest/id3/id3v2.4.0-frames.html
+    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
+
     :param tags: Dictionary of ID3 tags from mutagen.
     """
     result: dict[str, Any] = {}
