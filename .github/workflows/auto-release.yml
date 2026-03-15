@@ -2,7 +2,7 @@ name: Auto Release
 
 # Automatically creates releases with proper version increments
 # - Nightly: runs at 02:00 UTC daily if there are 2+ commits (format: 1.2.3.dev20251025HH)
-# - Beta: manual trigger (format: 1.2.0b1, 1.2.0b2, etc.)
+# - Beta: manual trigger (format: 1.2.0b01, 1.2.0b02, etc.)
 # - Stable: manual trigger (format: 1.2.3, 1.2.4, etc.)
 
 on:
@@ -75,7 +75,7 @@ jobs:
           # Get the latest release for the channel
           if [ "$CHANNEL" = "stable" ]; then
             # For stable, get releases that don't contain dev or beta suffixes
-            LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
+            LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]+") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
           else
             # For nightly and beta, filter by pattern
             LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq ".[] | select(.tagName | contains(\"$SEARCH_PATTERN\"))" 2>/dev/null | jq -s '.[0]' || echo "")
@@ -117,7 +117,7 @@ jobs:
         if: ${{ steps.set_channel.outputs.channel == 'beta' || steps.set_channel.outputs.channel == 'nightly' }}
         run: |
           # Get the latest stable release (no dev or beta suffixes)
-          LATEST_STABLE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
+          LATEST_STABLE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]+") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
 
           if [ -z "$LATEST_STABLE" ] || [ "$LATEST_STABLE" == "null" ]; then
             echo "No previous stable releases found"
@@ -167,7 +167,7 @@ jobs:
               ;;
 
             beta)
-              # Beta: format 1.2.0b1, 1.2.0b2, etc.
+              # Beta: format 1.2.0b01, 1.2.0b02, etc.
               # Always base the version on the last STABLE release, not dev versions
               LAST_BETA_TAG="${{ steps.check_commits.outputs.last_tag }}"
               LAST_STABLE_TAG="${{ steps.last_stable.outputs.stable_tag }}"
@@ -176,33 +176,33 @@ jobs:
               if [ -n "$LAST_BETA_TAG" ]; then
                 BETA_VERSION=$(echo "$LAST_BETA_TAG" | sed 's/^v//')
 
-                # Check if it's already a beta version (e.g., 2.7.0b1)
+                # Check if it's already a beta version (e.g., 2.7.0b01)
                 if [[ "$BETA_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
                   BASE_VERSION="${BASH_REMATCH[1]}"
                   BETA_NUM="${BASH_REMATCH[2]}"
                   NEXT_BETA=$((BETA_NUM + 1))
-                  NEW_VERSION="${BASE_VERSION}b${NEXT_BETA}"
+                  NEW_VERSION="${BASE_VERSION}b$(printf "%02d" "$NEXT_BETA")"
                   echo "Incrementing existing beta: ${LAST_BETA_TAG} -> ${NEW_VERSION}"
                 else
                   # Should not happen, but fallback
-                  NEW_VERSION="0.1.0b1"
+                  NEW_VERSION="0.1.0b01"
                 fi
               elif [ -n "$LAST_STABLE_TAG" ]; then
-                # No beta exists, increment minor from last stable and start at b1
+                # No beta exists, increment minor from last stable and start at b01
                 STABLE_VERSION=$(echo "$LAST_STABLE_TAG" | sed 's/^v//')
 
                 if [[ "$STABLE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
                   MAJOR="${BASH_REMATCH[1]}"
                   MINOR="${BASH_REMATCH[2]}"
                   NEXT_MINOR=$((MINOR + 1))
-                  NEW_VERSION="${MAJOR}.${NEXT_MINOR}.0b1"
+                  NEW_VERSION="${MAJOR}.${NEXT_MINOR}.0b01"
                   echo "Creating first beta based on stable ${LAST_STABLE_TAG}: ${NEW_VERSION}"
                 else
-                  NEW_VERSION="0.1.0b1"
+                  NEW_VERSION="0.1.0b01"
                 fi
               else
                 # No stable or beta found, start fresh
-                NEW_VERSION="0.1.0b1"
+                NEW_VERSION="0.1.0b01"
               fi
               ;;
 
