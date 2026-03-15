@@ -896,6 +896,8 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
+ATTR_GROUP_VOLUME_LEVEL: Final[str] = "group_volume_level"
+ATTR_GROUP_CHILD_RATIOS: Final[str] = "group_child_ratios"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

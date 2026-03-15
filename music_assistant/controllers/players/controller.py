@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable
 from contextlib import suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
@@ -61,7 +62,9 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    ATTR_GROUP_CHILD_RATIOS,
     ATTR_GROUP_MEMBERS,
+    ATTR_GROUP_VOLUME_LEVEL,
     ATTR_LAST_POLL,
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
@@ -622,6 +625,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
         """
+        self.logger.debug(
+            "[GroupVolume] cmd_volume_set ENTRY: player_id=%s, volume_level=%d",
+            player_id,
+            volume_level,
+        )
         await self._handle_cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
@@ -685,15 +693,37 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
+        self.logger.debug(
+            "[GroupVolume] cmd_group_volume ENTRY: player=%s (%s), vol=%d, "
+            "type=%s, group_members=%s, synced_to=%s",
+            player.state.name,
+            player_id,
+            volume_level,
+            player.state.type,
+            player.state.group_members,
+            player.state.synced_to,
+        )
         if player.state.type == PlayerType.GROUP or player.state.group_members:
-            # dedicated group player or sync leader
-            await self.set_group_volume(player, volume_level)
+            data_owner = self._resolve_group_data_owner(player)
+            self.logger.debug(
+                "[GroupVolume]   resolved data owner: %s (%s)",
+                data_owner.state.name,
+                data_owner.player_id,
+            )
+            await self.set_group_volume(data_owner, volume_level)
             return
         if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
-            # redirect to sync leader
-            await self.set_group_volume(sync_leader, volume_level)
+            data_owner = self._resolve_group_data_owner(sync_leader)
+            self.logger.debug(
+                "[GroupVolume]   -> redirecting via sync leader %s to data owner %s (%s)",
+                sync_leader.player_id,
+                data_owner.state.name,
+                data_owner.player_id,
+            )
+            await self.set_group_volume(data_owner, volume_level)
             return
         # treat as normal player volume change
+        self.logger.debug("[GroupVolume]   -> treating as normal player volume change")
         await self.cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/group_volume_up")
@@ -1548,6 +1578,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if ATTR_GROUP_MEMBERS in changed_values:
             prev_group_members, new_group_members = changed_values[ATTR_GROUP_MEMBERS]
             self._handle_group_dsp_change(player, prev_group_members or [], new_group_members)
+            data_owner = self._resolve_group_data_owner(player)
+            if data_owner.player_id == player.player_id:
+                self._update_group_ratios_on_membership_change(
+                    player, prev_group_members or [], new_group_members or []
+                )
+            else:
+                self.logger.debug(
+                    "[GroupVolume] skipping ratio update for %s (canonical owner is %s)",
+                    player.player_id,
+                    data_owner.player_id,
+                )
             # Removed group members also need to be updated since they are no longer part
             # of this group and are available for playback again
             removed_members = set(prev_group_members or []) - set(new_group_members or [])
@@ -1714,26 +1755,426 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         return None
 
     async def set_group_volume(self, group_player: Player, volume_level: int) -> None:
-        """Handle adjusting the overall/group volume to a playergroup (or synced players)."""
-        cur_volume = group_player.state.group_volume
-        if cur_volume is None:
+        """Handle adjusting the overall/group volume to a playergroup (or synced players).
+
+        Uses a ratio-based algorithm: each child's volume is computed as
+        ``group_volume * child_ratio``, where ratios are preserved across
+        changes so that relative balance survives clamping at 0/100.
+        """
+        prev_group_vol = group_player.extra_data.get(ATTR_GROUP_VOLUME_LEVEL)
+        self.logger.debug(
+            "[GroupVolume] set_group_volume called for %s (%s): "
+            "requested=%d, previous_group_vol=%s",
+            group_player.state.name,
+            group_player.player_id,
+            volume_level,
+            prev_group_vol,
+        )
+
+        ratios: dict[str, float] = group_player.extra_data.get(ATTR_GROUP_CHILD_RATIOS, {})
+        if not ratios:
+            self.logger.debug(
+                "[GroupVolume] No ratios found for %s, initializing", group_player.player_id
+            )
+            self._initialize_group_ratios(group_player)
+            ratios = group_player.extra_data.get(ATTR_GROUP_CHILD_RATIOS, {})
+
+        group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = volume_level
+        group_player._cache.clear()
+
+        coros: list[Awaitable[None]] = []
+        for child_player in self.iter_group_members(
+            group_player, only_powered=True, exclude_self=False
+        ):
+            if child_player.state.volume_control == PLAYER_CONTROL_NONE:
+                self.logger.debug(
+                    "[GroupVolume]   skip child %s (%s) - no volume control",
+                    child_player.state.name,
+                    child_player.player_id,
+                )
+                continue
+            ratio = ratios.get(child_player.player_id, 1.0)
+            new_child_volume = max(0, min(100, round(volume_level * ratio)))
+            self.logger.debug(
+                "[GroupVolume]   child %s (%s): ratio=%.4f, computed=%d (raw=%.2f), current_vol=%s",
+                child_player.state.name,
+                child_player.player_id,
+                ratio,
+                new_child_volume,
+                volume_level * ratio,
+                child_player.state.volume_level,
+            )
+            coros.append(
+                self._handle_cmd_volume_set(
+                    child_player.player_id, new_child_volume, from_group_volume=True
+                )
+            )
+
+        if plugin_source := self._get_active_plugin_source(group_player):
+            if plugin_source.on_volume:
+                self.logger.debug(
+                    "[GroupVolume] Firing plugin source on_volume(%d) for %s (plugin=%s)",
+                    volume_level,
+                    group_player.player_id,
+                    plugin_source.id,
+                )
+                coros.append(plugin_source.on_volume(volume_level))
+            else:
+                self.logger.debug(
+                    "[GroupVolume] Plugin source %s has no on_volume callback",
+                    plugin_source.id,
+                )
+
+        await asyncio.gather(*coros)
+        self._persist_group_volume_data(group_player)
+        self.logger.debug(
+            "[GroupVolume] set_group_volume complete for %s: group_vol=%d, ratios=%s",
+            group_player.player_id,
+            volume_level,
+            {k: f"{v:.4f}" for k, v in ratios.items()},
+        )
+
+    def _initialize_group_ratios(self, group_player: Player) -> None:
+        """Derive initial group volume level and child ratios from current child volumes.
+
+        For static groups (PlayerType.GROUP), persisted values are restored
+        first. Falls back to deriving ratios from current child volumes, using
+        the maximum child volume as the initial group volume so that all ratios
+        start at or below 1.0.
+        """
+        self.logger.debug(
+            "[GroupVolume] _initialize_group_ratios for %s (%s), type=%s",
+            group_player.state.name,
+            group_player.player_id,
+            group_player.type,
+        )
+        if self._load_persisted_group_volume_data(group_player):
+            self.logger.debug(
+                "[GroupVolume]   restored from persisted config: group_vol=%s, ratios=%s",
+                group_player.extra_data.get(ATTR_GROUP_VOLUME_LEVEL),
+                {
+                    k: f"{v:.4f}"
+                    for k, v in group_player.extra_data.get(ATTR_GROUP_CHILD_RATIOS, {}).items()
+                },
+            )
             return
-        volume_dif = volume_level - cur_volume
-        coros = []
-        # handle group volume by only applying the volume to powered members
+
+        child_volumes: dict[str, int] = {}
         for child_player in self.iter_group_members(
             group_player, only_powered=True, exclude_self=False
         ):
             if child_player.state.volume_control == PLAYER_CONTROL_NONE:
                 continue
-            cur_child_volume = child_player.state.volume_level or 0
-            new_child_volume = int(cur_child_volume + volume_dif)
-            new_child_volume = max(0, new_child_volume)
-            new_child_volume = min(100, new_child_volume)
-            # Use private method to skip permission check - already validated on group
-            # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
-            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
-        await asyncio.gather(*coros)
+            if (vol := child_player.state.volume_level) is not None:
+                child_volumes[child_player.player_id] = vol
+
+        self.logger.debug(
+            "[GroupVolume]   child volumes for bootstrap: %s",
+            child_volumes,
+        )
+
+        if not child_volumes:
+            self.logger.debug("[GroupVolume]   no child volumes available, skipping init")
+            return
+
+        group_vol = max(child_volumes.values())
+        ratios: dict[str, float] = {}
+        for child_id, child_vol in child_volumes.items():
+            ratios[child_id] = child_vol / group_vol if group_vol > 0 else 1.0
+
+        group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = group_vol
+        group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
+        group_player._cache.clear()
+        self._persist_group_volume_data(group_player)
+        self.logger.debug(
+            "[GroupVolume]   bootstrapped: group_vol=%d, ratios=%s",
+            group_vol,
+            {k: f"{v:.4f}" for k, v in ratios.items()},
+        )
+
+    def _update_group_ratios_on_membership_change(
+        self,
+        group_player: Player,
+        prev_members: list[str],
+        new_members: list[str],
+    ) -> None:
+        """Update stored group volume ratios when group membership changes."""
+        self.logger.debug(
+            "[GroupVolume] membership change for %s (%s): prev=%s, new=%s",
+            group_player.state.name,
+            group_player.player_id,
+            prev_members,
+            new_members,
+        )
+
+        if not new_members:
+            self.logger.debug("[GroupVolume]   group dissolved, clearing ratios")
+            group_player.extra_data.pop(ATTR_GROUP_VOLUME_LEVEL, None)
+            group_player.extra_data.pop(ATTR_GROUP_CHILD_RATIOS, None)
+            group_player._cache.clear()
+            return
+
+        if not prev_members:
+            self.logger.debug("[GroupVolume]   group newly formed, initializing ratios")
+            self._initialize_group_ratios(group_player)
+            return
+
+        group_vol = group_player.extra_data.get(ATTR_GROUP_VOLUME_LEVEL)
+        ratios: dict[str, float] = group_player.extra_data.get(ATTR_GROUP_CHILD_RATIOS, {})
+
+        if group_vol is None:
+            self.logger.debug("[GroupVolume]   no group_vol stored yet, initializing from scratch")
+            self._initialize_group_ratios(group_player)
+            return
+
+        added = set(new_members) - set(prev_members)
+        removed = set(prev_members) - set(new_members)
+
+        for child_id in added:
+            child = self.get_player(child_id)
+            if child and child.state.volume_level is not None and group_vol > 0:
+                child_vol = child.state.volume_level
+                if child_vol > group_vol:
+                    # Overflow: new child's volume exceeds the group ceiling.
+                    # Raise group_vol and rescale existing ratios.
+                    old_group_vol = group_vol
+                    group_vol = child_vol
+                    group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = group_vol
+                    for cid, old_ratio in list(ratios.items()):
+                        ratios[cid] = (old_group_vol * old_ratio) / group_vol
+                    ratios[child_id] = 1.0
+                    self.logger.debug(
+                        "[GroupVolume]   added child %s: OVERFLOW vol=%d > old_group_vol=%d "
+                        "-> new_group_vol=%d, ratio=1.0, rescaled existing ratios=%s",
+                        child_id,
+                        child_vol,
+                        old_group_vol,
+                        group_vol,
+                        {k: f"{v:.4f}" for k, v in ratios.items()},
+                    )
+                else:
+                    new_ratio = child_vol / group_vol
+                    ratios[child_id] = new_ratio
+                    self.logger.debug(
+                        "[GroupVolume]   added child %s: vol=%d, group_vol=%d, ratio=%.4f",
+                        child_id,
+                        child_vol,
+                        group_vol,
+                        new_ratio,
+                    )
+            else:
+                ratios[child_id] = 1.0
+                self.logger.debug(
+                    "[GroupVolume]   added child %s: defaulting ratio=1.0 (vol=%s, group_vol=%s)",
+                    child_id,
+                    child.state.volume_level if child else "N/A",
+                    group_vol,
+                )
+
+        for child_id in removed:
+            ratios.pop(child_id, None)
+            self.logger.debug("[GroupVolume]   removed child %s from ratios", child_id)
+
+        group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
+        group_player._cache.clear()
+        self._persist_group_volume_data(group_player)
+
+    def _persist_group_volume_data(self, group_player: Player) -> None:
+        """Persist group volume data to config for static groups."""
+        if group_player.type != PlayerType.GROUP:
+            self.logger.debug(
+                "[GroupVolume] _persist skipped for %s (type=%s, not GROUP)",
+                group_player.player_id,
+                group_player.type,
+            )
+            return
+        group_vol = group_player.extra_data.get(ATTR_GROUP_VOLUME_LEVEL)
+        ratios = group_player.extra_data.get(ATTR_GROUP_CHILD_RATIOS)
+        self.logger.debug(
+            "[GroupVolume] _persist for %s: group_vol=%s, ratios=%s",
+            group_player.player_id,
+            group_vol,
+            {k: f"{v:.4f}" for k, v in ratios.items()} if ratios else None,
+        )
+        if group_vol is not None:
+            self.mass.config.set_raw_player_config_value(
+                group_player.player_id, ATTR_GROUP_VOLUME_LEVEL, group_vol
+            )
+        if ratios is not None:
+            self.mass.config.set_raw_player_config_value(
+                group_player.player_id, ATTR_GROUP_CHILD_RATIOS, ratios
+            )
+
+    def _update_child_ratio_in_group(
+        self, player: Player, group_player: Player, volume_level: int
+    ) -> int | None:
+        """Update a child player's ratio in its parent group after an individual volume change.
+
+        Handles three cases:
+        - Normal: volume_level <= group_vol, ratio = volume_level / group_vol.
+        - Overflow: volume_level > group_vol, raise group_vol, rescale other ratios.
+        - Overflow from zero: group_vol == 0, raise group_vol, zero other ratios.
+
+        :param player: The child player whose volume was changed.
+        :param group_player: The parent group player.
+        :param volume_level: The new volume level (desired hardware output).
+        :return: The new group_vol if overflow occurred, None otherwise.
+        """
+        group_vol = group_player.extra_data.get(ATTR_GROUP_VOLUME_LEVEL)
+        ratios: dict[str, float] = group_player.extra_data.get(ATTR_GROUP_CHILD_RATIOS, {})
+
+        if group_vol is not None and group_vol > 0:
+            old_ratio = ratios.get(player.player_id)
+            if volume_level > group_vol:
+                old_group_vol = group_vol
+                group_vol = volume_level
+                group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = group_vol
+                for cid, old_r in list(ratios.items()):
+                    if cid != player.player_id:
+                        ratios[cid] = (old_group_vol * old_r) / group_vol
+                ratios[player.player_id] = 1.0
+                group_player._cache.clear()
+                self.logger.debug(
+                    "[GroupVolume]   OVERFLOW rescale in group %s (%s): "
+                    "child_vol=%d > old_group_vol=%d -> new_group_vol=%d, "
+                    "child ratio=1.0 (was %.4f), rescaled ratios=%s",
+                    group_player.state.name,
+                    group_player.player_id,
+                    volume_level,
+                    old_group_vol,
+                    group_vol,
+                    old_ratio if old_ratio is not None else float("nan"),
+                    {k: f"{v:.4f}" for k, v in ratios.items()},
+                )
+                group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
+                self._persist_group_volume_data(group_player)
+                return group_vol
+            new_ratio = volume_level / group_vol
+            ratios[player.player_id] = new_ratio
+            self.logger.debug(
+                "[GroupVolume]   individual vol change -> updating ratio in "
+                "group %s (%s): child_vol=%d / group_vol=%d = %.4f (was %.4f)",
+                group_player.state.name,
+                group_player.player_id,
+                volume_level,
+                group_vol,
+                new_ratio,
+                old_ratio if old_ratio is not None else float("nan"),
+            )
+            group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
+            self._persist_group_volume_data(group_player)
+            return None
+        if group_vol is not None and group_vol == 0 and volume_level > 0:
+            group_vol = volume_level
+            group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = group_vol
+            for cid in ratios:
+                if cid != player.player_id:
+                    ratios[cid] = 0.0
+            ratios[player.player_id] = 1.0
+            group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
+            group_player._cache.clear()
+            self.logger.debug(
+                "[GroupVolume]   OVERFLOW from zero in group %s (%s): "
+                "child_vol=%d -> new_group_vol=%d, other ratios zeroed",
+                group_player.state.name,
+                group_player.player_id,
+                volume_level,
+                group_vol,
+            )
+            self._persist_group_volume_data(group_player)
+            return group_vol
+        self.logger.debug(
+            "[GroupVolume]   skipping ratio update in group %s (group_vol=%s)",
+            group_player.player_id,
+            group_vol,
+        )
+        return None
+
+    def _load_persisted_group_volume_data(self, group_player: Player) -> bool:
+        """Load persisted group volume data from config.
+
+        :return: True if persisted data was found and loaded.
+        """
+        if group_player.type != PlayerType.GROUP:
+            self.logger.debug(
+                "[GroupVolume] _load_persisted skipped for %s (type=%s, not GROUP)",
+                group_player.player_id,
+                group_player.type,
+            )
+            return False
+        group_vol = self.mass.config.get_raw_player_config_value(
+            group_player.player_id, ATTR_GROUP_VOLUME_LEVEL
+        )
+        ratios = self.mass.config.get_raw_player_config_value(
+            group_player.player_id, ATTR_GROUP_CHILD_RATIOS
+        )
+        if group_vol is not None and ratios is not None:
+            group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = int(cast("int | float", group_vol))
+            # Clamp persisted ratios to [0.0, 1.0] to correct any
+            # previously-saved invalid values from the old buggy logic.
+            ratios_dict = cast("dict[str, float]", ratios)
+            for child_id, ratio_val in ratios_dict.items():
+                if not 0.0 <= ratio_val <= 1.0:
+                    clamped = max(0.0, min(1.0, float(ratio_val)))
+                    self.logger.debug(
+                        "[GroupVolume] clamping persisted ratio for %s: %.4f -> %.4f",
+                        child_id,
+                        ratio_val,
+                        clamped,
+                    )
+                    ratios_dict[child_id] = clamped
+            group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios_dict
+            group_player._cache.clear()
+            self.logger.debug(
+                "[GroupVolume] _load_persisted SUCCESS for %s: group_vol=%s, ratios=%s",
+                group_player.player_id,
+                group_vol,
+                ratios,
+            )
+            return True
+        self.logger.debug(
+            "[GroupVolume] _load_persisted MISS for %s (group_vol=%s, ratios=%s)",
+            group_player.player_id,
+            group_vol,
+            "present" if ratios else None,
+        )
+        return False
+
+    def _resolve_group_data_owner(self, player: Player) -> Player:
+        """Resolve the canonical player for storing group volume data.
+
+        For sync leaders backed by a SyncGroupPlayer, returns the SyncGroupPlayer.
+        For GROUP players or ad-hoc sync leaders, returns the player itself.
+
+        :param player: The player to resolve.
+        """
+        if player.type == PlayerType.GROUP:
+            return player
+        if player.state.group_members:
+            for group_player in self._get_player_groups(player, powered_only=False):
+                return group_player
+        return player
+
+    def _find_adhoc_sync_leader(self, player: Player) -> Player | None:
+        """Find the sync leader for an ad-hoc sync group (no SyncGroupPlayer).
+
+        Returns the sync leader only when there is no owning GROUP player,
+        meaning the sync leader itself is the canonical group data owner.
+
+        :param player: The player to check.
+        """
+        leader: Player | None = None
+        if player.state.group_members and player.type != PlayerType.GROUP:
+            leader = player
+        elif player.state.synced_to:
+            candidate = self.get_player(player.state.synced_to)
+            if candidate and candidate.state.group_members and candidate.type != PlayerType.GROUP:
+                leader = candidate
+        if leader is None:
+            return None
+        for _ in self._get_player_groups(leader, powered_only=False):
+            return None
+        return leader
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
         """Get the (player specific) volume for a announcement."""
@@ -2849,16 +3290,31 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         ):
             await self.mass.player_queues.resume(player_id)
 
-    async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """
-        Handle Player volume set command.
+    async def _handle_cmd_volume_set(
+        self, player_id: str, volume_level: int, from_group_volume: bool = False
+    ) -> None:
+        """Handle Player volume set command.
 
         Skips the permission checks (internal use only).
+
+        :param player_id: Player ID to set volume on.
+        :param volume_level: Volume level (0..100).
+        :param from_group_volume: When True, skip plugin source callback and
+            ratio updates (caller is set_group_volume which handles these).
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
+        self.logger.debug(
+            "[GroupVolume] _handle_cmd_volume_set: player=%s (%s), vol=%d, "
+            "from_group_volume=%s, current_vol=%s",
+            player.state.name,
+            player_id,
+            volume_level,
+            from_group_volume,
+            player.state.volume_level,
+        )
         if player.type == PlayerType.GROUP:
-            # redirect to special group volume control
+            self.logger.debug("[GroupVolume]   -> redirecting to cmd_group_volume for GROUP player")
             await self.cmd_group_volume(player_id, volume_level)
             return
 
@@ -2881,10 +3337,41 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # always reset fake mute when controlling volume
         player.extra_data.pop(ATTR_FAKE_MUTE, None)
 
-        # Check if a plugin source is active with a volume callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.on_volume:
-                await plugin_source.on_volume(volume_level)
+        if not from_group_volume and player.type != PlayerType.PROTOCOL:
+            # Find parent group (if any)
+            parent_group: Player | None = None
+            for gp in self._get_player_groups(player, powered_only=True):
+                parent_group = gp
+                break
+            if parent_group is None:
+                parent_group = self._find_adhoc_sync_leader(player)
+
+            if parent_group is not None:
+                # Player is in a group: update ratio only, skip plugin callback.
+                # If overflow raised the group volume, notify plugin with the NEW group vol.
+                overflow_vol = self._update_child_ratio_in_group(player, parent_group, volume_level)
+                if overflow_vol is not None:
+                    if ps := self._get_active_plugin_source(parent_group):
+                        if ps.on_volume:
+                            self.logger.debug(
+                                "[GroupVolume]   overflow raised group_vol -> firing plugin "
+                                "on_volume(%d) for group %s (plugin=%s)",
+                                overflow_vol,
+                                parent_group.player_id,
+                                ps.id,
+                            )
+                            await ps.on_volume(overflow_vol)
+            # Standalone player: fire plugin callback
+            elif plugin_source := self._get_active_plugin_source(player):
+                if plugin_source.on_volume:
+                    self.logger.debug(
+                        "[GroupVolume]   standalone vol change -> firing plugin "
+                        "on_volume(%d) for player %s (plugin=%s)",
+                        volume_level,
+                        player_id,
+                        plugin_source.id,
+                    )
+                    await plugin_source.on_volume(volume_level)
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:
             # player supports volume command natively: forward to player
@@ -2917,10 +3404,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if protocol_player := self.get_player(player.state.volume_control):
             # redirect to protocol player volume control
             self.logger.debug(
-                "Redirecting volume command to protocol player %s",
+                "Redirecting volume command to protocol player %s (from_group_volume=%s)",
                 protocol_player.provider.manifest.name,
+                from_group_volume,
             )
-            await self._handle_cmd_volume_set(protocol_player.player_id, volume_level)
+            await self._handle_cmd_volume_set(
+                protocol_player.player_id, volume_level, from_group_volume=from_group_volume
+            )
             return
 
     async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None:

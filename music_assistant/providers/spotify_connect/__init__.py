@@ -500,9 +500,20 @@ class SpotifyConnectProvider(PluginProvider):
                 "Volume control requires a matching Spotify music provider"
             )
 
+        self.logger.debug(
+            "[GroupVolume] _on_volume OUTBOUND: requested=%d, "
+            "last_sent_to_spotify=%s, in_use_by=%s",
+            volume,
+            self._last_volume_sent_to_spotify,
+            self._source_details.in_use_by,
+        )
+
         # Prevent ping-pong: only send if volume actually changed from what we last sent
         if self._last_volume_sent_to_spotify == volume:
-            self.logger.debug("Skipping volume update to Spotify - already at %d%%", volume)
+            self.logger.debug(
+                "[GroupVolume] _on_volume SUPPRESSED (dedup): volume=%d already matches last sent",
+                volume,
+            )
             return
 
         try:
@@ -510,6 +521,7 @@ class SpotifyConnectProvider(PluginProvider):
             async with self._spotify_provider.throttler.bypass():
                 await self._spotify_provider._put_data(f"me/player/volume?volume_percent={volume}")
                 self._last_volume_sent_to_spotify = volume
+                self.logger.debug("[GroupVolume] _on_volume SENT to Spotify API: volume=%d", volume)
         except Exception as err:
             self.logger.warning("Failed to send volume command via Spotify Web API: %s", err)
             raise
@@ -833,25 +845,44 @@ class SpotifyConnectProvider(PluginProvider):
                 self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
         if event_name == "volume_changed" and (volume := json_data.get("volume")):
+            raw_volume = volume
             # Ignore volume_changed events that fire immediately after session_connect
             # We want to use the volume from MA in that case
             time_since_connect = time.time() - self._last_session_connected_time
             if time_since_connect < 3.0:
                 self.logger.debug(
-                    "Ignoring initial volume_changed event (%.2fs after session_connect)",
+                    "[GroupVolume] volume_changed INBOUND SUPPRESSED "
+                    "(%.2fs after session_connect): raw=%s",
                     time_since_connect,
+                    raw_volume,
                 )
             elif self._source_details.in_use_by:
                 # Spotify Connect volume is 0-65535
                 volume = int(int(volume) / 65535 * 100)
-                self._last_volume_sent_to_spotify = volume
-                try:
-                    await self.mass.players.cmd_volume_set(self._source_details.in_use_by, volume)
-                except UnsupportedFeaturedException:
+                self.logger.debug(
+                    "[GroupVolume] volume_changed INBOUND from Spotify: raw=%s, "
+                    "mapped=%d, last_sent=%s, in_use_by=%s",
+                    raw_volume,
+                    volume,
+                    self._last_volume_sent_to_spotify,
+                    self._source_details.in_use_by,
+                )
+                if volume == self._last_volume_sent_to_spotify:
                     self.logger.debug(
-                        "Player %s does not support volume control",
-                        self._source_details.in_use_by,
+                        "[GroupVolume] volume_changed SUPPRESSED (echo of our own send): volume=%d",
+                        volume,
                     )
+                else:
+                    self._last_volume_sent_to_spotify = volume
+                    try:
+                        await self.mass.players.cmd_volume_set(
+                            self._source_details.in_use_by, volume
+                        )
+                    except UnsupportedFeaturedException:
+                        self.logger.debug(
+                            "Player %s does not support volume control",
+                            self._source_details.in_use_by,
+                        )
 
         # signal update to connected player
         if self._source_details.in_use_by:
