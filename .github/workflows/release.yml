@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version number (e.g., 1.2.3, 1.2.3b1, or 1.2.3.dev1)"
+        description: "Version number (e.g., 1.2.3, 1.2.3b01, or 1.2.3.dev1)"
         required: true
         type: string
       channel:
@@ -21,7 +21,7 @@ on:
   workflow_call:
     inputs:
       version:
-        description: "Version number (e.g., 1.2.3, 1.2.3b1, or 1.2.3.dev1)"
+        description: "Version number (e.g., 1.2.3, 1.2.3b01, or 1.2.3.dev1)"
         required: true
         type: string
       channel:
@@ -250,7 +250,8 @@ jobs:
             if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
               BASE="${BASH_REMATCH[1]}"
               BETA_NUM="${BASH_REMATCH[2]}"
-              TITLE="$BASE BETA $BETA_NUM"
+              # Evaluate BETA_NUM as number to drop any leading zeros
+              TITLE="$BASE BETA $((BETA_NUM))"
             else
               TITLE="$VERSION BETA"
             fi
