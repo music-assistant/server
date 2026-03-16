@@ -1,0 +1,23 @@
+"""Constants for the MusicMe provider."""
+
+import json
+import re
+
+from music_assistant_models.enums import ProviderFeature
+
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
+}
+
+DATASERVICE_BASE = "https://dataservice.musicme.com/dataservice/v3"
+STREAM_BASE = "https://stream.hosting-media.net/musicme"
+WEB_BASE = "https://www.musicme.com"
+PARTNER_ID = "22876"
+CLIENT_JSON = json.dumps({"type": "desktop-web", "context": "www.musicme.com", "app": "mmplayer"})
+VALID_ID_RE = re.compile(r"^[\w.-]+$")
