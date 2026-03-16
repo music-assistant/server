@@ -38,6 +38,9 @@ RUN uv pip install \
     --no-cache \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
+# Pre-compile Python bytecode for faster startup
+RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
+
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root
 # IMPORTANT: chmod here, NOT on the final image, to avoid creating extra layers and increase size!
@@ -82,4 +85,11 @@ EXPOSE 8095
 
 WORKDIR $VIRTUAL_ENV
 
-ENTRYPOINT ["mass", "--data-dir", "/data", "--cache-dir", "/data/.cache"]
+# Entrypoint script that enables jemalloc for the main process only
+RUN printf '#!/bin/sh\n\
+for path in /usr/lib/*/libjemalloc.so.2; do\n\
+    [ -f "$path" ] && export LD_PRELOAD="$path" && break\n\
+done\n\
+exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]

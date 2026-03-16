@@ -22,7 +22,6 @@ PLAYER_FEATURES_BASE = {
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 }
 
 SOURCE_LINE_IN = "line_in"
@@ -31,8 +30,6 @@ SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
 SOURCE_TV = "tv"
 SOURCE_RADIO = "radio"
-
-CONF_AIRPLAY_MODE = "airplay_mode"
 
 PLAYER_SOURCE_MAP = {
     SOURCE_LINE_IN: PlayerSource(
@@ -76,3 +73,5 @@ PLAYER_SOURCE_MAP = {
         can_seek=True,
     ),
 }
+
+UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1",)

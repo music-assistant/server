@@ -45,9 +45,11 @@ def parse_images(
     if not filtered_images:
         return UniqueList([])
 
-    # Spotify orders images from largest to smallest (640x640, 300x300, 64x64)
-    # Select the largest (highest quality) image - the first one
-    best_image = filtered_images[0]
+    # Spotify images come in various sizes (typically 640x640, 300x300, 64x64)
+    # Find the largest image available
+    best_image = max(
+        filtered_images, key=lambda img: img.get("height", 0), default=filtered_images[0]
+    )
 
     return UniqueList(
         [
@@ -195,14 +197,21 @@ def parse_track(
 
 def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> Playlist:
     """Parse spotify playlist object to generic layout."""
+    owner_id = playlist_obj["owner"].get("id", "")
     is_editable = (
-        provider._sp_user is not None and playlist_obj["owner"]["id"] == provider._sp_user["id"]
+        provider._sp_user is not None and owner_id == provider._sp_user["id"]
     ) or playlist_obj["collaborative"]
+
+    # Spotify-owned playlists (Daily Mix, Discover Weekly, etc.) are personalized per user
+    is_spotify_owned = owner_id.lower() == "spotify"
 
     # Get owner name with fallback
     owner_name = playlist_obj["owner"].get("display_name")
     if owner_name is None and provider._sp_user is not None:
         owner_name = provider._sp_user["display_name"]
+
+    # Mark as unique if user-owned/editable OR if it's a Spotify personalized playlist
+    is_unique = is_editable or is_spotify_owned
 
     playlist = Playlist(
         item_id=playlist_obj["id"],
@@ -215,7 +224,7 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=playlist_obj["external_urls"]["spotify"],
-                is_unique=is_editable,  # user-owned playlists are unique
+                is_unique=is_unique,
             )
         },
         is_editable=is_editable,
@@ -252,9 +261,10 @@ def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Pod
     if "explicit" in podcast_obj:
         podcast.metadata.explicit = podcast_obj["explicit"]
 
-    # Convert languages list to genres for categorization
-    if "languages" in podcast_obj:
-        podcast.metadata.genres = set(podcast_obj["languages"])
+    if podcast_obj.get("languages"):
+        podcast.metadata.languages = UniqueList(podcast_obj["languages"])
+
+    podcast.metadata.genres = {"Spoken Word"}
 
     return podcast
 
@@ -392,7 +402,9 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
         audiobook.metadata.explicit = audiobook_obj["explicit"]
 
     if audiobook_obj.get("languages"):
-        audiobook.metadata.languages = audiobook_obj["languages"][0]
+        audiobook.metadata.languages = UniqueList(audiobook_obj["languages"])
+
+    audiobook.metadata.genres = {"Spoken Word"}
 
     # Set publication date if available
     if audiobook_obj.get("publication_date"):

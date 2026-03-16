@@ -170,7 +170,7 @@ def compare_track(
         if external_id_match is True:
             # we got a 'soft-match' on a secondary external id (like ISRC)
             # but we do a double check on duration
-            if abs(base_item.duration - compare_item.duration) <= 2:
+            if abs(base_item.duration - compare_item.duration) <= 8:
                 return True
 
     # compare name
@@ -319,6 +319,12 @@ def compare_audiobook(
         and not compare_strings(base_item.publisher, compare_item.publisher, strict=True)
     ):
         return False
+    # compare narrator(s) — different narrators indicate different recordings and must not be merged
+    if base_item.narrators and compare_item.narrators:
+        base_narrators = {create_safe_string(n) for n in base_item.narrators}
+        compare_narrators = {create_safe_string(n) for n in compare_item.narrators}
+        if base_narrators.isdisjoint(compare_narrators):
+            return False
     # compare author(s)
     for author in base_item.authors:
         author_safe = create_safe_string(author)
@@ -447,7 +453,7 @@ def compare_item_ids(
         assert isinstance(base_item, MediaItem)  # for type checking
         for prov_l in base_item.provider_mappings:
             if (
-                prov_l.provider_domain == compare_item.provider
+                prov_l.provider_instance == compare_item.provider
                 and prov_l.item_id == compare_item.item_id
             ):
                 return True
@@ -455,7 +461,10 @@ def compare_item_ids(
     if compare_prov_ids is not None:
         assert isinstance(compare_item, MediaItem)  # for type checking
         for prov_r in compare_item.provider_mappings:
-            if prov_r.provider_domain == base_item.provider and prov_r.item_id == base_item.item_id:
+            if (
+                prov_r.provider_instance == base_item.provider
+                and prov_r.item_id == base_item.item_id
+            ):
                 return True
 
     if base_prov_ids is not None and compare_prov_ids is not None:
@@ -464,6 +473,10 @@ def compare_item_ids(
         for prov_l in base_item.provider_mappings:
             for prov_r in compare_item.provider_mappings:
                 if prov_l.provider_domain != prov_r.provider_domain:
+                    continue
+                if (
+                    prov_l.is_unique or prov_r.is_unique
+                ) and prov_l.provider_instance != prov_r.provider_instance:
                     continue
                 if prov_l.item_id == prov_r.item_id:
                     return True
@@ -522,14 +535,16 @@ def loose_compare_strings(base: str, alt: str) -> bool:
     """Compare strings and return True even on partial match."""
     # this is used to display 'versions' of the same track/album
     # where we account for other spelling or some additional wording in the title
-    word_count = len(base.split(" "))
+    if len(base) <= 3 or len(alt) <= 3:
+        return compare_strings(base, alt, True)
+    word_count = len(base.strip().split(" "))
     if word_count == 1 and len(base) < 10:
         return compare_strings(base, alt, False)
     base_comp = create_safe_string(base)
     alt_comp = create_safe_string(alt)
     if base_comp in alt_comp:
         return True
-    return alt_comp in base_comp
+    return base_comp in alt_comp
 
 
 def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
@@ -547,12 +562,12 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     if " & " in str1_lower and " and " in str2_lower:
         str2 = str2_lower.replace(" and ", " & ")
     elif " and " in str1_lower and " & " in str2:
-        str2 = str2.replace(" & ", " and ")
+        str2 = str2_lower.replace(" & ", " and ")
     if create_safe_string(str1) == create_safe_string(str2):
         return True
     # last resort: use difflib to compare strings
     required_accuracy = 0.9 if (len(str1) + len(str2)) > 18 else 0.8
-    return SequenceMatcher(a=str1_lower, b=str2).ratio() > required_accuracy
+    return SequenceMatcher(a=str1_lower, b=str2_lower).ratio() > required_accuracy
 
 
 def compare_version(base_version: str, compare_version: str) -> bool:

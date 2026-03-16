@@ -17,8 +17,10 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/e439648e08ade14e27d5de48fa97c88e',
         'version': '',
+        'year': None,
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -111,8 +113,10 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/555b36f7d310d1b7405557a8775c6878',
         'version': '',
+        'year': None,
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_albumid',
@@ -205,8 +209,10 @@
         'translation_key': None,
         'uri': 'jellyfin://artist/[unknown]',
         'version': '',
+        'year': None,
       }),
     ]),
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -269,6 +275,7 @@
 # ---
 # name: test_parse_artists[ash]
   dict({
+    'date_added': None,
     'external_ids': list([
       list([
         'musicbrainz_artistid',
@@ -366,6 +373,7 @@
       'translation_key': None,
       'uri': 'xx-instance-id-xx://album/d42d74e134693184e7adc73106238e89',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
@@ -382,8 +390,10 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/cc940aeb8a99149f159fe9794f136071',
         'version': '',
+        'year': None,
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 272,
     'external_ids': list([
@@ -469,6 +479,7 @@
       'translation_key': None,
       'uri': 'xx-instance-id-xx://album/70b7288088b42d318f75dbcc41fd0091',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
@@ -485,8 +496,10 @@
         'translation_key': None,
         'uri': 'jellyfin://artist/[unknown]',
         'version': '',
+        'year': None,
       }),
     ]),
+    'date_added': None,
     'disc_number': 0,
     'duration': 577,
     'external_ids': list([
@@ -568,8 +581,10 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/94875b0dd58cbf5245a135982133651a',
         'version': '',
+        'year': None,
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 246,
     'external_ids': list([
@@ -608,7 +623,7 @@
       'review': None,
       'style': None,
     }),
-    'name': 'Where the Bands Are (2018 Version)',
+    'name': 'Where the Bands Are',
     'position': 1,
     'provider': 'xx-instance-id-xx',
     'provider_mappings': list([
@@ -632,11 +647,11 @@
         'url': 'http://localhost:1234/Audio/54918f75ee8f6c8b8dc5efd680644f29/universal?userId=USER_ID&deviceId=X&maxStreamingBitrate=140000000&api_key=ACCESS_TOKEN',
       }),
     ]),
-    'sort_name': 'where the bands are (2018 version)',
+    'sort_name': 'where the bands are',
     'track_number': 1,
     'translation_key': None,
     'uri': 'xx-instance-id-xx://track/54918f75ee8f6c8b8dc5efd680644f29',
-    'version': '',
+    'version': '2018 Version',
   })
 # ---
 # name: test_parse_tracks[zombie_christmas]
@@ -655,6 +670,7 @@
       'translation_key': None,
       'uri': 'xx-instance-id-xx://album/32ed6a0091733dcff57eae67010f3d4b',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
@@ -671,6 +687,7 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/a0c459294295710546c81c20a8d9abfc',
         'version': '',
+        'year': None,
       }),
       dict({
         'available': True,
@@ -686,8 +703,10 @@
         'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/1952db245ddef4e41dcd016475379190',
         'version': '',
+        'year': None,
       }),
     ]),
+    'date_added': None,
     'disc_number': 1,
     'duration': 224,
     'external_ids': list([

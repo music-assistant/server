@@ -36,7 +36,13 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import (
+    MASS_LOGO,
+    PLAYLIST_MEDIA_TYPES,
+    VARIOUS_ARTISTS_FANART,
+    PlaylistPlayableItem,
+)
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
@@ -74,6 +80,7 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
+CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -82,7 +89,12 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.LIBRARY_RADIOS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_CREATE_AUDIOBOOKS,
+    ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES,
+    ProviderFeature.PLAYLIST_CREATE_RADIOS,
+    ProviderFeature.PLAYLIST_CREATE_MIXED,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
 
@@ -134,21 +146,6 @@ class BuiltinProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
-        # migrate old image path from absolute to relative
-        # TODO: remove this after 2.5+ release
-        for old_path in (
-            "/usr/local/lib/python3.12/site-packages/music_assistant/server/helpers/resources/",
-            "/app/venv/lib/python3.12/site-packages/music_assistant/server/helpers/resources/",
-            "/Users/marcelvanderveldt/Workdir/music-assistant/core/music_assistant/server/helpers/resources/",
-        ):
-            query = (
-                "UPDATE playlists SET metadata = "
-                f"REPLACE (metadata, '{old_path}', '') "
-                f"WHERE playlists.metadata LIKE '%{old_path}%'"
-            )
-            if self.mass.music.database:
-                await self.mass.music.database.execute(query)
-                await self.mass.music.database.commit()
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -250,6 +247,12 @@ class BuiltinProvider(MusicProvider):
                 )
             },
             owner="Music Assistant",
+            supported_mediatypes={
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+                MediaType.RADIO,
+                MediaType.TRACK,
+            },
             is_editable=True,
         )
         if image_url := stored_item.get("image_url"):
@@ -343,7 +346,7 @@ class BuiltinProvider(MusicProvider):
         if media_type == MediaType.PLAYLIST and prov_item_id in BUILTIN_PLAYLISTS:
             # user wants to disable/remove one of our builtin playlists
             # to prevent it comes back, we mark it as disabled in config
-            self.update_config_value(prov_item_id, False)
+            self._update_config_value(prov_item_id, False)
             return True
         if media_type == MediaType.TRACK:
             # regular manual track URL/path
@@ -354,6 +357,11 @@ class BuiltinProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             # manually added (multi provider) playlist removal
             key = CONF_KEY_PLAYLISTS
+            # also delete the playlist file if it exists
+            playlist_file = os.path.join(self._playlists_dir, prov_item_id)
+            if await asyncio.to_thread(os.path.isfile, playlist_file):
+                async with self._playlist_lock:
+                    await asyncio.to_thread(os.remove, playlist_file)
         else:
             return False
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
@@ -361,33 +369,55 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[PlaylistPlayableItem]:
+        """Get playlist tracks.
+
+        Builtin provider supports Track, Radio, PodcastEpisode, and Audiobook items in playlists.
+        Overrides base class to return extended union type instead of list[Track].
+        """
         if page > 0:
             # paging not supported, we always return the whole list at once
             return []
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            return await self._get_builtin_playlist_tracks(prov_playlist_id)
-        # user created universal playlist
-        result: list[Track] = []
+            # System-generated playlists (favorites, random, etc.) only contain tracks
+            return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
+        # User-created playlists can contain Track, Radio, PodcastEpisode, and Audiobook items
+        result: list[PlaylistPlayableItem] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for index, uri in enumerate(playlist_items, 1):
             try:
                 media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
                 media_controller = self.mass.music.get_controller(media_type)
                 # prefer item already in the db
-                track = await media_controller.get_library_item_by_prov_id(
+                media_item: (
+                    MediaItemType | None
+                ) = await media_controller.get_library_item_by_prov_id(
                     item_id, provider_instance_id_or_domain
                 )
-                if track is None:
-                    # get the provider item and not the full track from a regular 'get' call
-                    # as we only need basic track info here
-                    track = await media_controller.get_provider_item(
-                        item_id, provider_instance_id_or_domain
+                if media_item is None:
+                    # Call provider.get_item directly with the correct media_type.
+                    # Using media_controller.get_provider_item would pass the
+                    # controller's own media_type, which is wrong for podcast
+                    # episodes (controller has PODCAST, not PODCAST_EPISODE).
+                    item_prov = self.mass.get_provider(provider_instance_id_or_domain)
+                    if not item_prov:
+                        raise ProviderUnavailableError(
+                            f"{provider_instance_id_or_domain} is not available"
+                        )
+                    item_prov = cast("MusicProvider", item_prov)
+                    media_item = await item_prov.get_item(media_type, item_id)
+                if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
+                    playlist_item = cast("PlaylistPlayableItem", media_item)
+                    playlist_item.position = index
+                    result.append(playlist_item)
+                else:
+                    self.logger.warning(
+                        "Unsupported media type in playlist %s: %s",
+                        prov_playlist_id,
+                        type(media_item),
                     )
-                assert isinstance(track, Track)
-                track.position = index
-                result.append(track)
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning(
                     "Skipping %s in playlist %s: %s", uri, prov_playlist_id, str(err)
@@ -426,7 +456,7 @@ class BuiltinProvider(MusicProvider):
             stored_item["last_updated"] = int(time.time())
             self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         item_id = shortuuid.random(8)
         stored_item = StoredItem(item_id=item_id, name=name)
@@ -544,6 +574,7 @@ class BuiltinProvider(MusicProvider):
             allow_seek=not is_radio,
         )
 
+    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
@@ -554,6 +585,7 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
+    @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(limit=500, order_by="random_play_count")
@@ -562,22 +594,23 @@ class BuiltinProvider(MusicProvider):
             result.append(item)
         return result
 
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_album(self) -> list[Track]:
-        for in_library_only in (True, False):
-            for min_tracks_required in (10, 5, 1):
-                for random_album in await self.mass.music.albums.library_items(
-                    limit=25, order_by="random"
-                ):
-                    tracks = await self.mass.music.albums.tracks(
-                        random_album.item_id, random_album.provider, in_library_only=in_library_only
-                    )
-                    if len(tracks) < min_tracks_required:
-                        continue
-                    for idx, track in enumerate(tracks, 1):
-                        track.position = idx
-                    return tracks
+        for random_album in await self.mass.music.albums.get_library_items_by_query(
+            limit=1,
+            order_by="random",
+            extra_query_parts=["album_type != :excluded_album_type"],
+            extra_query_params={"excluded_album_type": "single"},
+        ):
+            tracks = await self.mass.music.albums.tracks(
+                random_album.item_id, random_album.provider
+            )
+            for idx, track in enumerate(tracks, 1):
+                track.position = idx
+            return tracks
         return []
 
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_artist(self) -> list[Track]:
         for in_library_only in (True, False):
             for min_tracks_required in (25, 10, 5, 1):
@@ -596,6 +629,7 @@ class BuiltinProvider(MusicProvider):
                     return tracks
         return []
 
+    @use_cache(expiration=30, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_recently_played(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])
@@ -620,6 +654,7 @@ class BuiltinProvider(MusicProvider):
             result.append(track)
         return result
 
+    @use_cache(expiration=60, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_recently_added_tracks(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_added_tracks(100)

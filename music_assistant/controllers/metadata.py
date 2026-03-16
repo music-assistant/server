@@ -6,6 +6,7 @@ import asyncio
 import collections
 import logging
 import os
+import pathlib
 import random
 import urllib.parse
 from base64 import b64encode
@@ -51,7 +52,8 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.images import create_collage, get_image_thumb
+from music_assistant.helpers.images import create_collage, get_image_data, get_image_thumb
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
@@ -62,6 +64,18 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
+
+
+def _detect_image_format(path: str) -> str:
+    """Detect image format from file path extension, defaulting to jpg."""
+    match pathlib.PurePath(path).suffix.lower():
+        case ".svg":
+            return "svg"
+        case ".png":
+            return "png"
+        case _:
+            return "jpg"
+
 
 LOCALES = {
     "af_ZA": "African",
@@ -173,6 +187,10 @@ class MetaDataController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        # wait for dependencies to be ready (streams and music)
+        await self.mass.streams.initialized.wait()
+        await self.mass.music.initialized.wait()
+
         self.config = config
         if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             # silence PIL logger
@@ -354,7 +372,7 @@ class MetaDataController(CoreController):
             if media_item.image and media_item.image.type == img_type:
                 if media_item.image.remotely_accessible and resolve:
                     return self.get_image_url(media_item.image)
-                elif not media_item.image.remotely_accessible:
+                if not media_item.image.remotely_accessible:
                     return media_item.image.path
 
             # Only retrieve full item if we don't have the image we need
@@ -394,10 +412,15 @@ class MetaDataController(CoreController):
         image: MediaItemImage,
         size: int = 0,
         prefer_proxy: bool = False,
-        image_format: str = "png",
+        image_format: str | None = None,
         prefer_stream_server: bool = False,
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
+        if image_format is None:
+            image_format = _detect_image_format(image.path)
+        if image_format == "svg":
+            # SVGs don't need resizing
+            size = 0
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
@@ -417,14 +440,25 @@ class MetaDataController(CoreController):
         provider: str,
         size: int | None = None,
         base64: bool = False,
-        image_format: str = "png",
+        image_format: str | None = None,
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             raise ProviderUnavailableError
+        if image_format is None:
+            image_format = _detect_image_format(path)
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
-            path = os.path.join(self._collage_images_dir, path.split("/collage/")[-1])
+            collage_rel = path.split("/collage/")[-1]
+            if not is_safe_path(collage_rel):
+                raise FileNotFoundError("Invalid collage path")
+            path = os.path.join(self._collage_images_dir, collage_rel)
+        if image_format == "svg":
+            svg_bytes = await get_image_data(self.mass, path, provider)
+            if base64:
+                enc_image = b64encode(svg_bytes).decode()
+                return f"data:image/svg+xml;base64,{enc_image}"
+            return svg_bytes
         thumbnail_bytes = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
         )
@@ -441,23 +475,37 @@ class MetaDataController(CoreController):
             # temporary for backwards compatibility
             provider = "builtin"
         size = int(request.query.get("size", "0"))
-        image_format = request.query.get("fmt", "png")
+        image_format = request.query.get("fmt", None)
+        if image_format is None:
+            image_format = _detect_image_format(path)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote_plus(path)
-        with suppress(FileNotFoundError):
+        try:
             image_data = await self.get_thumbnail(
                 path, size=size, provider=provider, image_format=image_format
             )
             # we set the cache header to 1 year (forever)
             # assuming that images do not/rarely change
+            content_type = "image/svg+xml" if image_format == "svg" else f"image/{image_format}"
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-                content_type=f"image/{image_format}",
+                content_type=content_type,
             )
+        except Exception as err:
+            # broadly catch all exceptions here to ensure we dont crash the request handler
+            if isinstance(err, FileNotFoundError):
+                self.logger.log(VERBOSE_LOG_LEVEL, "Image not found: %s", path)
+            else:
+                self.logger.warning(
+                    "Error while fetching image %s: %s",
+                    path,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
         return web.Response(status=404)
 
     async def create_collage_image(
@@ -498,6 +546,43 @@ class MetaDataController(CoreController):
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
         return None
+
+    @api_command("metadata/get_track_lyrics")
+    async def get_track_lyrics(
+        self,
+        track: Track,
+    ) -> tuple[str | None, str | None]:
+        """
+        Get lyrics for given track from metadata providers.
+
+        Returns a tuple of (lyrics, lrc_lyrics) if found.
+        """
+        if track.metadata and track.metadata.lyrics:
+            return track.metadata.lyrics, track.metadata.lrc_lyrics
+
+        if track.provider == "library":
+            # try to update metadata first
+            await self._update_track_metadata(track, force_refresh=False)
+            return track.metadata.lyrics, track.metadata.lrc_lyrics
+
+        # prefer lyrics from the track's own provider
+        track_provider = self.mass.get_provider(track.provider, provider_type=MusicProvider)
+        if track_provider and ProviderFeature.LYRICS in track_provider.supported_features:
+            full_track = await self.mass.music.tracks.get_provider_item(
+                track.item_id, track.provider
+            )
+            if full_track.metadata and full_track.metadata.lyrics:
+                return full_track.metadata.lyrics, full_track.metadata.lrc_lyrics
+
+        # fallback to other metadata providers
+        for provider in self.providers:
+            if ProviderFeature.LYRICS not in provider.supported_features:
+                continue
+            if (metadata := await provider.get_track_metadata(track)) and (
+                metadata.lyrics or metadata.lrc_lyrics
+            ):
+                return metadata.lyrics, metadata.lrc_lyrics
+        return None, None
 
     async def _update_artist_metadata(self, artist: Artist, force_refresh: bool = False) -> None:
         """Get/update rich metadata for an artist."""
@@ -695,7 +780,12 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images.append(track.image)
             if track.metadata.genres:
                 genres = track.metadata.genres
-            elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
+            elif (
+                isinstance(track, Track)
+                and track.album
+                and isinstance(track.album, Album)
+                and track.album.metadata.genres
+            ):
                 genres = track.album.metadata.genres
             else:
                 genres = set()
@@ -883,9 +973,7 @@ class MetaDataController(CoreController):
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
         self.logger.debug(
-            "Unable to get musicbrainz ID for artist %s\n"
-            " - using lookup-album(s): %s\n"
-            " - using lookup-track(s): %s\n",
+            "Unable to get musicbrainz ID for artist %s (albums: %s, tracks: %s)",
             artist.name,
             ref_albums_str,
             ref_tracks_str,
@@ -922,8 +1010,8 @@ class MetaDataController(CoreController):
             f"AND (json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
-        for artist in await self.mass.music.artists.library_items(
-            limit=5, order_by="random", extra_query=query
+        for artist in await self.mass.music.artists.get_library_items_by_query(
+            limit=5, order_by="random", extra_query_parts=[query]
         ):
             if artist.uri:
                 self.schedule_update_metadata(artist.uri)
@@ -936,8 +1024,8 @@ class MetaDataController(CoreController):
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
         )
-        for playlist in await self.mass.music.playlists.library_items(
-            limit=5, order_by="random", extra_query=query
+        for playlist in await self.mass.music.playlists.get_library_items_by_query(
+            limit=5, order_by="random", extra_query_parts=[query]
         ):
             if playlist.uri:
                 self.schedule_update_metadata(playlist.uri)

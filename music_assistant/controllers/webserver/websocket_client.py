@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
@@ -22,13 +23,19 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidCommand,
     InvalidToken,
+    MusicAssistantError,
 )
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
-from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
-from .helpers.auth_providers import get_ha_user_role
+from .helpers.auth_middleware import (
+    is_request_from_ingress,
+    set_current_token,
+    set_current_user,
+    set_sendspin_player_id,
+)
+from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -47,7 +54,7 @@ class WebsocketClientHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.request = request
-        self.wsock = web.WebSocketResponse(heartbeat=55)
+        self.wsock = web.WebSocketResponse(heartbeat=30)
         self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task[Any] | None = None
         self._writer_task: asyncio.Task[None] | None = None
@@ -57,8 +64,11 @@ class WebsocketClientHandler:
         )
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
+        self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # Track WebRTC session ID if this is a WebRTC gateway connection
+        self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -194,9 +204,10 @@ class WebsocketClientHandler:
                 )
                 return
 
-            # Set user and token in context for API methods
+            # Set user, token, and sendspin player in context for API methods
             set_current_user(self._authenticated_user)
             set_current_token(self._current_token)
+            set_sendspin_player_id(self._sendspin_player_id)
 
             # Check role if required
             if handler.required_role == "admin":
@@ -229,9 +240,15 @@ class WebsocketClientHandler:
                         )
                         items = []
                 result = items
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             await self._send_message(SuccessResultMessage(msg.message_id, result))
+        except MusicAssistantError as err:
+            # Expected operational errors (player unavailable, queue empty, etc.)
+            # Log at warning level since these are normal error responses, not crashes.
+            self._logger.warning("%s: %s", msg.command, err)
+            err_msg = str(err) or err.__class__.__name__
+            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
@@ -372,18 +389,33 @@ class WebsocketClientHandler:
                 user = await self.webserver.auth.get_user_by_username(ingress_username)
 
                 if not user:
+                    # New user - fetch details from HA
+                    ha_username, ha_display_name, avatar_url = await get_ha_user_details(
+                        self.mass, ingress_user_id
+                    )
                     # Auto-create user for Ingress (they're already authenticated by HA)
-                    # Determine role based on HA admin status
                     role = await get_ha_user_role(self.mass, ingress_user_id)
                     user = await self.webserver.auth.create_user(
-                        username=ingress_username,
+                        username=ha_username or ingress_username,
                         role=role,
-                        display_name=ingress_display_name,
+                        display_name=ha_display_name or ingress_display_name,
+                        avatar_url=avatar_url,
                     )
 
                 # Link to Home Assistant provider (or create the link if user already existed)
                 await self.webserver.auth.link_user_to_provider(
                     user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
+                )
+
+            # Update user with HA details if available (HA is source of truth)
+            # Fall back to ingress headers if API lookup doesn't return values
+            _, ha_display_name, avatar_url = await get_ha_user_details(self.mass, ingress_user_id)
+            final_display_name = ha_display_name or ingress_display_name
+            if final_display_name or avatar_url:
+                user = await self.webserver.auth.update_user(
+                    user,
+                    display_name=final_display_name,
+                    avatar_url=avatar_url,
                 )
 
             self._authenticated_user = user
@@ -417,6 +449,7 @@ class WebsocketClientHandler:
                 )
                 and event.object_id
                 and event.object_id not in self._authenticated_user.player_filter
+                and event.object_id != self._sendspin_player_id
             ):
                 return
 

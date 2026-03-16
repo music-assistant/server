@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "filesystem_nfs",
+  "stage": "beta",
+  "name": "Filesystem (NFS share)",
+  "description": "Play music and audiobooks stored on NFS connected network drives.",
+  "codeowners": ["@ozgav"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/filesystem/",
+  "multi_instance": true,
+  "icon": "network"
+}

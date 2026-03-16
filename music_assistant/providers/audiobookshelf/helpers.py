@@ -19,11 +19,21 @@ class LibraryHelper(DataClassDictMixin):
 class LibrariesHelper(DataClassDictMixin):
     """Helper class to store ABSLibrary name, id and the uuids of its media items.
 
-    Dictionary is lib_id:AbsLibraryWithItemIDs.
+    Dictionary is lib_id:LibraryHelper or lib_id:set[playlist_ids].
     """
 
     audiobooks: dict[str, LibraryHelper] = field(default_factory=dict)
     podcasts: dict[str, LibraryHelper] = field(default_factory=dict)
+    playlists_audiobooks: dict[str, set[str]] = field(default_factory=dict)
+    playlists_podcasts: dict[str, set[str]] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
+class SessionHelper:
+    """Helper class to store some session information."""
+
+    abs_session_id: str
+    last_sync_time: float
 
 
 @dataclass(kw_only=True)

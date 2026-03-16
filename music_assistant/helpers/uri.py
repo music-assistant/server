@@ -23,8 +23,7 @@ def valid_id(provider: str, item_id: str) -> bool:
     """Validate Provider ID."""
     if provider == "spotify":
         return valid_base62_length22(item_id)
-    else:
-        return True
+    return True
 
 
 async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]:

@@ -1,5 +1,7 @@
 """Snapcast Player provider for Music Assistant."""
 
+import re
+
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -14,9 +16,7 @@ from music_assistant.helpers.process import check_output
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.providers.snapcast.constants import (
-    CONF_CATEGORY_ADVANCED,
     CONF_CATEGORY_BUILT_IN,
-    CONF_CATEGORY_GENERIC,
     CONF_HELP_LINK,
     CONF_SERVER_BUFFER_SIZE,
     CONF_SERVER_CHUNK_MS,
@@ -55,12 +55,18 @@ async def get_config_entries(
     """
     Return Config entries to setup this provider.
 
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
+    :param instance_id: id of an existing provider instance (None if new instance setup).
+    :param action: [optional] action key called from config entries UI.
+    :param values: the (intermediate) raw values for config entries sent with the action.
     """
     returncode, output = await check_output("snapserver", "-v")
-    snapserver_version = int(output.decode().split(".")[1]) if returncode == 0 else -1
+    snapserver_version = -1
+    if returncode == 0:
+        # Parse version from output, handling potential noise from library warnings
+        # Expected format: "0.27.0" or similar version string
+        output_str = output.decode()
+        if version_match := re.search(r"(\d+)\.(\d+)\.(\d+)", output_str):
+            snapserver_version = int(version_match.group(2))
     local_snapserver_present = snapserver_version >= 27 and snapserver_version != 30
     if returncode == 0 and not local_snapserver_present:
         raise SetupFailedError(
@@ -155,9 +161,7 @@ async def get_config_entries(
             default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
-            category=(
-                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
-            ),
+            advanced=local_snapserver_present,
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
@@ -166,9 +170,7 @@ async def get_config_entries(
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=(
-                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
-            ),
+            advanced=local_snapserver_present,
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -177,9 +179,7 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=(
-                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
-            ),
+            advanced=local_snapserver_present,
         ),
         ConfigEntry(
             key=CONF_STREAM_IDLE_THRESHOLD,
@@ -187,6 +187,6 @@ async def get_config_entries(
             default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
             label="Snapcast idle threshold stream parameter",
             required=True,
-            category=CONF_CATEGORY_ADVANCED,
+            advanced=local_snapserver_present,
         ),
     )

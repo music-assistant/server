@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.helpers.util import parse_title_and_version
 
 if TYPE_CHECKING:
     from libopensonic.media import AlbumID3 as SonicAlbum
@@ -108,10 +109,17 @@ def parse_track(
         for c in sonic_song.contributors:
             metadata.performers.add(c.artist.name)
 
+    if isinstance(album, Album) and album.version:
+        name = sonic_song.title
+        version = album.version
+    else:
+        name, version = parse_title_and_version(sonic_song.title)
+
     track = Track(
         item_id=sonic_song.id,
         provider=instance_id,
-        name=sonic_song.title,
+        name=name,
+        version=version,
         album=album,
         duration=sonic_song.duration or 0,
         disc_number=sonic_song.disc_number or 0,
@@ -213,6 +221,16 @@ def parse_artist(
     """Parse artist and artistInfo into a Music Assistant Artist."""
     metadata: MediaItemMetadata = MediaItemMetadata()
 
+    if sonic_artist.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_artist.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
     if sonic_artist.artist_image_url:
         metadata.add_image(
             MediaItemImage(
@@ -223,15 +241,6 @@ def parse_artist(
             )
         )
 
-    if sonic_artist.cover_art:
-        metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=sonic_artist.cover_art,
-                provider=instance_id,
-                remotely_accessible=False,
-            )
-        )
     if sonic_info:
         if sonic_info.biography:
             metadata.description = sonic_info.biography
@@ -313,11 +322,18 @@ def parse_album(
     if sonic_album.moods:
         metadata.mood = sonic_album.moods[0]
 
+    if sonic_album.version:
+        name = sonic_album.name
+        version = sonic_album.version
+    else:
+        name, version = parse_title_and_version(sonic_album.name)
+
     album = Album(
         item_id=sonic_album.id,
         provider=SUBSONIC_DOMAIN,
         metadata=metadata,
-        name=sonic_album.name,
+        name=name,
+        version=version,
         favorite=bool(sonic_album.starred),
         provider_mappings={
             ProviderMapping(

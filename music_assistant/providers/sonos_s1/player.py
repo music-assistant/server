@@ -14,27 +14,23 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import PlaybackState, PlayerState, PlayerType
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerState
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
-    CONF_ENTRY_OUTPUT_CODEC,
-    VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
-)
+from music_assistant.constants import VERBOSE_LOG_LEVEL, create_sample_rates_config_entry
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
     DURATION_SECONDS,
+    LINEIN_SOURCE_IDS,
     LINEIN_SOURCES,
     NEVER_TIME,
     PLAYER_FEATURES,
+    PLAYER_SOURCE_MAP,
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
@@ -74,14 +70,17 @@ class SonosPlayer(Player):
         self.subscriptions: list[SubscriptionBase] = []
 
         # Set player attributes
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = set(PLAYER_FEATURES)
         self._attr_name = soco.player_name
         self._attr_device_info = DeviceInfo(
             model=soco.speaker_info["model_name"],
             manufacturer="Sonos",
-            ip_address=soco.ip_address,
         )
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, soco.ip_address)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, soco.uid)
+        mac_address = self._extract_mac_from_player_id()
+        if mac_address:
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_needs_poll = True
         self._attr_poll_interval = 5
         self._attr_available = True
@@ -98,6 +97,33 @@ class SonosPlayer(Player):
         """Return a list of missing service subscriptions."""
         subscribed_services = {sub.service.service_type for sub in self._subscriptions}
         return SUBSCRIPTION_SERVICES - subscribed_services
+
+    def _extract_mac_from_player_id(self) -> str | None:
+        """Extract MAC address from Sonos player_id.
+
+        Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
+        the middle 12 hex characters represent the MAC address.
+
+        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
+        """
+        # Remove RINCON_ prefix if present
+        player_id = self.player_id
+        player_id = player_id.removeprefix("RINCON_")
+
+        # Remove the 01400 suffix (or similar) - should be last 5 chars
+        if len(player_id) >= 17:  # 12 hex chars for MAC + 5 chars suffix
+            mac_hex = player_id[:12]
+        else:
+            return None
+
+        # Validate it looks like a MAC (all hex characters)
+        try:
+            int(mac_hex, 16)
+        except ValueError:
+            return None
+
+        # Format as XX:XX:XX:XX:XX:XX
+        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -131,14 +157,10 @@ class SonosPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(action=action, values=values),
-            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
-            CONF_ENTRY_OUTPUT_CODEC,
             create_sample_rates_config_entry(
                 supported_sample_rates=[44100, 48000],
                 supported_bit_depths=[16],
-                hidden=False,
+                hidden=True,
             ),
         ]
 
@@ -150,7 +172,12 @@ class SonosPlayer(Player):
                 self.player_id,
             )
             return
-        await asyncio.to_thread(self.soco.stop)
+        if self._attr_active_source in LINEIN_SOURCE_IDS:
+            # Play an invalid URI to force stop line-in sources
+            with contextlib.suppress(SoCoException):
+                await asyncio.to_thread(self.soco.play_uri, "")
+        else:
+            await asyncio.to_thread(self.soco.stop)
         self.mass.call_later(2, self.poll)
         self.update_state()
 
@@ -208,14 +235,17 @@ class SonosPlayer(Player):
             )
             raise PlayerCommandFailed(msg)
 
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         if not media.duration:
             # Sonos really does not like FLAC streams without duration
-            media.uri = media.uri.replace(".flac", ".mp3")
+            stream_url = stream_url.replace(".flac", ".mp3")
 
         didl_metadata = create_didl_metadata(media)
+        is_announcement = media.media_type == MediaType.ANNOUNCEMENT
+        force_radio = False if is_announcement else not media.duration
 
         await asyncio.to_thread(
-            self.soco.play_uri, media.uri, meta=didl_metadata, force_radio=not media.duration
+            self.soco.play_uri, stream_url, meta=didl_metadata, force_radio=force_radio
         )
         self.mass.call_later(2, self.poll)
 
@@ -230,12 +260,13 @@ class SonosPlayer(Player):
             raise PlayerCommandFailed(msg)
 
         didl_metadata = create_didl_metadata(media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
 
         def add_to_queue() -> None:
             self.soco.avTransport.SetNextAVTransportURI(
                 [
                     ("InstanceID", 0),
-                    ("NextURI", media.uri),
+                    ("NextURI", stream_url),
                     ("NextURIMetaData", didl_metadata),
                 ]
             )
@@ -260,13 +291,13 @@ class SonosPlayer(Player):
 
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player_to_remove := cast("SonosPlayer", self.mass.players.get(player_id)):
+                if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_remove.soco.unjoin)
                     self.mass.call_later(2, player_to_remove.poll)
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
-                if player_to_add := cast("SonosPlayer", self.mass.players.get(player_id)):
+                if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_add.soco.join, self.soco)
                     self.mass.call_later(2, player_to_add.poll)
 
@@ -280,7 +311,9 @@ class SonosPlayer(Player):
             self._attr_volume_level = self.soco.volume
             self._attr_volume_muted = self.soco.mute
 
-        await asyncio.to_thread(_poll)
+        await self._check_availability()
+        if self._attr_available:
+            await asyncio.to_thread(_poll)
 
     @soco_error()
     def poll_media(self) -> None:
@@ -313,9 +346,27 @@ class SonosPlayer(Player):
         self._attr_device_info = DeviceInfo(
             model=self._attr_device_info.model,
             manufacturer=self._attr_device_info.manufacturer,
-            ip_address=ip_address,
         )
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self.soco.uid)
+        mac_address = self._extract_mac_from_player_id()
+        if mac_address:
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self.update_player()
+
+    async def _check_availability(self) -> None:
+        """Check if the player is still available."""
+        try:
+            await asyncio.to_thread(self.ping)
+            self._speaker_activity("ping")
+        except SonosUpdateError:
+            if not self._attr_available:
+                return
+            self.logger.warning(
+                "No recent activity and cannot reach %s, marking unavailable",
+                self.display_name,
+            )
+            await self.offline()
 
     @soco_error()
     def ping(self) -> None:
@@ -532,9 +583,13 @@ class SonosPlayer(Player):
         uri = track_info["uri"]
 
         audio_source = self.soco.music_source_from_uri(uri)
-        if SOURCE_MAPPING.get(audio_source) and audio_source in LINEIN_SOURCES:
+        if (source_id := SOURCE_MAPPING.get(audio_source)) and audio_source in LINEIN_SOURCES:
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
+            self._attr_active_source = source_id
+            self._attr_current_media = None
+            if source_id not in [x.id for x in self._attr_source_list]:
+                self._attr_source_list.append(PLAYER_SOURCE_MAP[source_id])
             return
 
         current_media = PlayerMedia(
@@ -545,6 +600,7 @@ class SonosPlayer(Player):
             image_url=track_info.get("album_art"),
         )
         self._attr_current_media = current_media
+        self._attr_active_source = None
         self._update_media_position(track_info, force_update=update_position)
 
     def _update_media_position(
@@ -648,7 +704,7 @@ class SonosPlayer(Player):
             group_members_ids = []
 
             for uid in group:
-                speaker = self.mass.players.get(uid)
+                speaker = self.mass.players.get_player(uid)
                 if speaker:
                     group_members_ids.append(uid)
                 else:
@@ -708,7 +764,7 @@ class SonosPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
 
-        if players := self.mass.players.all(provider_filter=_provider.instance_id):
+        if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 

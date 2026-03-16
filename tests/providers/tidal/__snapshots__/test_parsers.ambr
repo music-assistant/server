@@ -4,6 +4,7 @@
     'album_type': 'album',
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -69,6 +70,7 @@
         'version': '',
       }),
     ]),
+    'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
       list([
         'barcode',
@@ -141,6 +143,7 @@
 # ---
 # name: test_parse_artist[artist]
   dict({
+    'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
     'favorite': False,
@@ -208,6 +211,7 @@
 # ---
 # name: test_parse_playlist[mix]
   dict({
+    'date_added': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -270,6 +274,9 @@
       }),
     ]),
     'sort_name': 'my daily discovery',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'tidal_instance://playlist/mix_mix_123',
     'version': '',
@@ -277,6 +284,7 @@
 # ---
 # name: test_parse_playlist[playlist]
   dict({
+    'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
     'favorite': False,
@@ -339,6 +347,9 @@
       }),
     ]),
     'sort_name': 'test playlist',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'tidal_instance://playlist/aabbcc-1122-3344-5566',
     'version': '',
@@ -360,9 +371,11 @@
       'translation_key': None,
       'uri': 'tidal_instance://album/67890',
       'version': '',
+      'year': None,
     }),
     'artists': list([
       dict({
+        'date_added': None,
         'external_ids': list([
         ]),
         'favorite': False,
@@ -428,6 +441,7 @@
         'version': '',
       }),
     ]),
+    'date_added': '2024-06-10T12:00:00+00:00',
     'disc_number': 1,
     'duration': 180,
     'external_ids': list([

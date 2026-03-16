@@ -18,7 +18,6 @@ import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -106,11 +105,16 @@ async def get_config_entries(
     if values is None:
         values = {}
 
+    verify_ssl = True
+    if _verify_ssl := values.get(CONF_VERIFY_SSL):
+        verify_ssl = bool(_verify_ssl)
+
     if action == CONF_ACTION_AUTH_NC:
         session = mass.http_session
         response = await session.post(
             str(values[CONF_URL_NC]).rstrip("/") + "/index.php/login/v2",
             headers={"User-Agent": "Music Assistant"},
+            ssl=verify_ssl,
         )
         data = await response.json()
         poll_endpoint = data["poll"]["endpoint"]
@@ -119,7 +123,7 @@ async def get_config_entries(
         session_id = str(values["session_id"])
         mass.signal_event(EventType.AUTH_SESSION, session_id, login_url)
         while True:
-            response = await session.post(poll_endpoint, data={"token": poll_token})
+            response = await session.post(poll_endpoint, data={"token": poll_token}, ssl=verify_ssl)
             if response.status not in [200, 404]:
                 raise LoginFailed("The specified url seems not to belong to a nextcloud instance.")
             if response.status == 200:
@@ -227,7 +231,7 @@ async def get_config_entries(
             label="Verify SSL",
             required=False,
             description="Whether or not to verify the certificate of SSL/TLS connections.",
-            category="advanced",
+            advanced=True,
             default_value=True,
             value=values.get(CONF_VERIFY_SSL),
         ),
@@ -261,16 +265,19 @@ class GPodder(MusicProvider):
         _device_id = self.config.get_value(CONF_DEVICE_ID)
         nc_url = str(self.config.get_value(CONF_URL_NC))
         nc_token = self.config.get_value(CONF_TOKEN_NC)
+        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
 
         self.max_episodes = int(float(str(self.config.get_value(CONF_MAX_NUM_EPISODES))))
 
-        self._client = GPodderClient(session=self.mass.http_session, logger=self.logger)
+        self._client = GPodderClient(
+            session=self.mass.http_session, logger=self.logger, verify_ssl=verify_ssl
+        )
 
         if nc_token is not None:
             assert nc_url is not None
             self._client.init_nc(base_url=nc_url, nc_token=str(nc_token))
         else:
-            self.update_config_value(CONF_USING_GPODDER, True)
+            self._update_config_value(CONF_USING_GPODDER, True)
             if _username is None or _password is None or _device_id is None:
                 raise LoginFailed("Must provide username, password and device_id.")
             username = str(_username)
@@ -354,7 +361,7 @@ class GPodder(MusicProvider):
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
-            except ClientError:
+            except MediaNotFoundError:
                 self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
                 continue
             await self._cache_set_podcast(feed_url, parsed_podcast)
@@ -612,6 +619,7 @@ class GPodder(MusicProvider):
             default=None,
         )
         if parsed_podcast is None:
+            # raises MediaNotFoundError
             parsed_podcast = await get_podcastparser_dict(
                 session=self.mass.http_session,
                 feed_url=prov_podcast_id,

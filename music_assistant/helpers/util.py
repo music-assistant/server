@@ -7,6 +7,7 @@ import functools
 import importlib
 import logging
 import os
+import platform
 import re
 import shutil
 import socket
@@ -17,22 +18,29 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
 
 import chardet
 import ifaddr
-from music_assistant_models.enums import AlbumType
+from music_assistant_models.enums import AlbumType, IdentifierType
 from zeroconf import IPVersion
 
-from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
+    LIVE_INDICATORS,
+    SOUNDTRACK_INDICATORS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from chardet.resultdict import ResultDict
+    from music_assistant_models.player import DeviceInfo
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -48,6 +56,63 @@ HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
 
 T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
+
+
+async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
+    """Log a deprecation warning if the CPU lacks x86-64-v2 support.
+
+    :param logger: Logger instance to write the warning to.
+    """
+    if platform.machine() not in ("x86_64", "AMD64"):
+        return
+
+    def _check() -> bool | None:
+        try:
+            cpuinfo = Path("/proc/cpuinfo").read_text()
+        except (FileNotFoundError, PermissionError):
+            return None
+
+        flags: set[str] = set()
+        for line in cpuinfo.splitlines():
+            if line.startswith("flags"):
+                flags.update(line.split())
+                break
+
+        if not flags:
+            return None
+
+        # x86-64-v2 requires: CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSSE3, SSE4.1, SSE4.2
+        # SSE3 may appear as "pni" (Prescott New Instructions) on older kernels
+        required = {"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"}
+        has_sse3 = bool({"sse3", "pni"} & flags)
+        return required.issubset(flags) and has_sse3
+
+    if await asyncio.to_thread(_check) is False:
+        logger.warning(
+            "\n\n"
+            "########################################################"
+            "########################\n"
+            "###               CPU DEPRECATION WARNING"
+            "                                    ###\n"
+            "########################################################"
+            "########################\n"
+            "\n"
+            "Your CPU does not support the x86-64-v2 instruction "
+            "set, which will be\n"
+            "required starting with Music Assistant 2.9.\n"
+            "\n"
+            "If you are running in a virtual machine (e.g. Proxmox),"
+            " change the CPU type\n"
+            "to 'host' or select a more modern CPU type preset "
+            "(e.g. x86-64-v2 or newer).\n"
+            "\n"
+            "If your physical CPU predates 2009, you will likely "
+            "need to upgrade\n"
+            "your hardware before updating Music Assistant to 2.9.\n"
+            "\n"
+            "########################################################"
+            "########################\n"
+        )
 
 
 def get_total_system_memory() -> float:
@@ -96,6 +161,15 @@ IGNORE_TITLE_PARTS = (
     "ft.",
     "with ",
     "explicit",
+)
+WITH_TITLE_WORDS = (
+    # words that, when following "with", indicate this is part of the song title
+    # not a featuring credit.
+    "someone",
+    "the",
+    "u",
+    "you",
+    "no",
 )
 
 
@@ -146,23 +220,39 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
     version = track_version or ""
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
+            # Extract the content without brackets/dashes for checking
+            clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
+
+            # Check if this should be ignored (featuring/explicit parts)
+            should_ignore = False
             for ignore_str in IGNORE_TITLE_PARTS:
-                if ignore_str in title_part.lower():
+                if clean_part.startswith(ignore_str):
+                    # Special handling for "with " - check if followed by title words
+                    if ignore_str == "with ":
+                        # Extract the word after "with "
+                        after_with = (
+                            clean_part[len("with ") :].split()[0]
+                            if len(clean_part) > len("with ")
+                            else ""
+                        )
+                        if after_with in WITH_TITLE_WORDS:
+                            # This is part of the title (e.g., "with you"), don't ignore
+                            break
+                    # Remove this part from the title
                     title = title.replace(title_part, "").strip()
-                    continue
+                    should_ignore = True
+                    break
+
+            if should_ignore:
+                continue
+
+            # Check if this part is a version
             for version_str in VERSION_PARTS:
-                if version_str not in title_part.lower():
-                    continue
-                version = (
-                    title_part.replace("(", "")
-                    .replace(")", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace("-", "")
-                    .strip()
-                )
-                title = title.replace(title_part, "").strip()
-                return (title, version)
+                if version_str in clean_part:
+                    # Preserve original casing for output
+                    version = title_part.strip("()[]- ").strip()
+                    title = title.replace(title_part, "").strip()
+                    return title, version
     return title, version
 
 
@@ -273,7 +363,8 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
             for ip in adapter.ips:
                 if ip.is_IPv6 and not include_ipv6:
                     continue
-                ip_str = str(ip.ip)
+                # ifaddr returns IPv6 addresses as (address, flowinfo, scope_id) tuples
+                ip_str = ip.ip[0] if isinstance(ip.ip, tuple) else ip.ip
                 if ip_str.startswith(("127", "169.254")):
                     # filter out IPv4 loopback/APIPA address
                     continue
@@ -307,19 +398,21 @@ async def is_port_in_use(port: int) -> bool:
     """Check if port is in use."""
 
     def _is_port_in_use() -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+        # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
+        # A port is considered free if it can be bound on at least one address family.
+        for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
             try:
-                _sock.bind(("0.0.0.0", port))
+                with socket.socket(family, socket.SOCK_STREAM) as _sock:
+                    # Set SO_REUSEADDR to match asyncio.start_server behavior
+                    # This allows binding to ports in TIME_WAIT state
+                    _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    _sock.bind((addr, port))
+                    return False
             except OSError:
-                return True
-        return False
+                continue
+        return True
 
-    try:
-        if await check_output(f"lsof -i :{port}"):
-            return True
-    except Exception:
-        # lsof not available (or some other error), fallback to socket check
-        return await asyncio.to_thread(_is_port_in_use)
+    return await asyncio.to_thread(_is_port_in_use)
 
 
 async def select_free_port(range_start: int, range_end: int) -> int:
@@ -352,6 +445,13 @@ async def get_ip_pton(ip_string: str) -> bytes:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
+def format_ip_for_url(ip_address: str) -> str:
+    """Wrap IPv6 addresses in brackets for use in URLs (RFC 2732)."""
+    if ":" in ip_address:
+        return f"[{ip_address}]"
+    return ip_address
+
+
 async def get_folder_size(folderpath: str) -> float:
     """Return folder size in gb."""
 
@@ -360,7 +460,7 @@ async def get_folder_size(folderpath: str) -> float:
         for dirpath, _dirnames, filenames in os.walk(folderpath):
             for _file in filenames:
                 _fp = os.path.join(dirpath, _file)
-                total_size += os.path.getsize(_fp)
+                total_size += Path(_fp).stat().st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)
@@ -474,7 +574,12 @@ async def get_package_version(pkg_name: str) -> str | None:
 
 async def is_hass_supervisor() -> bool:
     """Return if we're running inside the HA Supervisor (e.g. HAOS)."""
+    # Fast path: check for HA supervisor token environment variable
+    # This is always set when running inside the HA supervisor
+    if not os.environ.get("SUPERVISOR_TOKEN"):
+        return False
 
+    # Token exists, verify the supervisor is actually reachable
     def _check() -> bool:
         try:
             urllib.request.urlopen("http://supervisor/core", timeout=1)
@@ -596,6 +701,12 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
             # filter out APIPA address
             continue
         return address
+    # fall back to IPv6 addresses if no usable IPv4 address found
+    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
+        if address.startswith(("::1", "fe80")):
+            # filter out loopback and link-local addresses
+            continue
+        return address
     return None
 
 
@@ -623,6 +734,23 @@ async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
     return fallback
+
+
+def parse_optional_bool(value: Any) -> bool | None:
+    """Parse an optional boolean value from various input types."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in ("true", "1", "yes", "on"):
+            return True
+        if value_lower in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
 
 
 def merge_dict(
@@ -664,6 +792,9 @@ def validate_announcement_chime_url(url: str) -> bool:
     if not url or not url.strip():
         return True  # Empty URL is valid
 
+    if url == ANNOUNCE_ALERT_FILE:
+        return True  # Built-in chime file is valid
+
     try:
         parsed = urlparse(url.strip())
 
@@ -683,10 +814,219 @@ def validate_announcement_chime_url(url: str) -> bool:
 
 
 async def get_mac_address(ip_address: str) -> str | None:
-    """Get MAC address for given IP address."""
-    from getmac import get_mac_address  # noqa: PLC0415
+    """Get MAC address for given IP address via ARP lookup."""
+    try:
+        from getmac import get_mac_address as getmac_lookup  # noqa: PLC0415
 
-    return await asyncio.to_thread(get_mac_address, ip=ip_address)
+        return await asyncio.to_thread(getmac_lookup, ip=ip_address)
+    except ImportError:
+        LOGGER.debug("getmac module not available, cannot resolve MAC from IP")
+        return None
+    except Exception as err:
+        LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
+        return None
+
+
+def is_locally_administered_mac(mac_address: str) -> bool:
+    """
+    Check if a MAC address is locally administered (virtual/randomized).
+
+    Locally administered addresses have bit 1 of the first octet set to 1.
+    These are often used by devices for virtual interfaces or protocol-specific
+    addresses (e.g., AirPlay, DLNA may use different virtual MACs than the real hardware MAC).
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: True if locally administered, False if globally unique (real hardware MAC).
+    """
+    # Normalize MAC address
+    mac_clean = mac_address.upper().replace(":", "").replace("-", "")
+    if len(mac_clean) < 2:
+        return False
+
+    # Get first octet and check bit 1 (second bit from right)
+    try:
+        first_octet = int(mac_clean[:2], 16)
+        return bool(first_octet & 0x02)
+    except ValueError:
+        return False
+
+
+def normalize_mac_for_matching(mac_address: str) -> str:
+    """
+    Normalize a MAC address for device matching by masking out the locally-administered bit.
+
+    Some protocols (like AirPlay) report a locally-administered MAC address variant where
+    bit 1 of the first octet is set. For example:
+    - Real hardware MAC: 54:78:C9:E6:0D:A0 (first byte 0x54 = 01010100)
+    - AirPlay reports:   56:78:C9:E6:0D:A0 (first byte 0x56 = 01010110)
+
+    These represent the same device but differ only in the locally-administered bit.
+    This function normalizes the MAC by clearing bit 1 of the first octet, allowing
+    both variants to match the same device.
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: Normalized MAC address in lowercase without separators, with the
+             locally-administered bit cleared.
+    """
+    # Normalize MAC address (remove separators, lowercase)
+    mac_clean = mac_address.lower().replace(":", "").replace("-", "")
+    if len(mac_clean) != 12:
+        # Invalid MAC length, return as-is
+        return mac_clean
+
+    try:
+        # Parse first octet and clear bit 1 (the locally-administered bit)
+        first_octet = int(mac_clean[:2], 16)
+        first_octet_normalized = first_octet & ~0x02  # Clear bit 1
+        # Reconstruct the MAC with the normalized first octet
+        return f"{first_octet_normalized:02x}{mac_clean[2:]}"
+    except ValueError:
+        # Invalid hex, return as-is
+        return mac_clean
+
+
+def is_valid_mac_address(mac_address: str | None) -> bool:
+    """
+    Check if a MAC address is valid and usable for device identification.
+
+    Invalid MAC addresses include:
+    - None or empty strings
+    - Null MAC: 00:00:00:00:00:00
+    - Broadcast MAC: ff:ff:ff:ff:ff:ff
+    - Any MAC that doesn't follow the expected pattern
+
+    :param mac_address: MAC address to validate.
+    :return: True if valid and usable, False otherwise.
+    """
+    if not mac_address:
+        return False
+
+    # Normalize MAC address (remove separators and convert to lowercase)
+    normalized = mac_address.lower().replace(":", "").replace("-", "")
+
+    # Check for invalid/reserved MAC addresses
+    if normalized in ("000000000000", "ffffffffffff"):
+        return False
+
+    # Check length and hex validity
+    if len(normalized) != 12:
+        return False
+
+    try:
+        int(normalized, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def normalize_ip_address(ip_address: str | None) -> str | None:
+    """
+    Normalize IP address for comparison.
+
+    Handles IPv6-mapped IPv4 addresses (e.g., ::ffff:192.168.1.64 -> 192.168.1.64).
+
+    :param ip_address: IP address to normalize.
+    :return: Normalized IP address or None if invalid.
+    """
+    if not ip_address:
+        return None
+
+    # Handle IPv6-mapped IPv4 addresses
+    if ip_address.startswith("::ffff:"):
+        # Extract the IPv4 part
+        return ip_address[7:]
+
+    return ip_address
+
+
+async def resolve_real_mac_address(reported_mac: str | None, ip_address: str | None) -> str | None:
+    """
+    Resolve the real MAC address for a device.
+
+    Some devices report different virtual MAC addresses per protocol (AirPlay, DLNA,
+    Chromecast). This function tries to resolve the actual hardware MAC via ARP
+    when the reported MAC appears to be locally administered (virtual).
+
+    :param reported_mac: The MAC address reported by the protocol.
+    :param ip_address: The IP address of the device (for ARP lookup).
+    :return: The real MAC address if found, or None if it couldn't be resolved.
+    """
+    if not ip_address:
+        return None
+
+    # If no MAC reported or it's a locally administered one, try ARP lookup
+    if not reported_mac or is_locally_administered_mac(reported_mac):
+        real_mac = await get_mac_address(ip_address)
+        if real_mac and is_valid_mac_address(real_mac):
+            return real_mac.upper()
+
+    return None
+
+
+async def enrich_device_mac_address(
+    device_info: DeviceInfo,
+    logger: logging.Logger | None = None,
+) -> None:
+    """
+    Enrich a player's device_info with a real MAC address via ARP.
+
+    Called automatically during player registration. It validates the existing MAC,
+    normalizes IPv6-mapped IPv4 addresses, and always performs an ARP lookup when
+    an IP is available. The ARP result replaces the reported MAC because it reflects
+    the true hardware address and reliably unifies protocols on the same device -
+    even when different protocols report different valid MACs (e.g., Yamaha devices
+    where DLNA and AirPlay MACs differ by 1 in the last octet).
+
+    :param device_info: The player's DeviceInfo to enrich in-place.
+    :param logger: Optional logger for debug messages.
+    """
+    identifiers = device_info.identifiers
+    reported_mac = identifiers.get(IdentifierType.MAC_ADDRESS)
+    ip_address = identifiers.get(IdentifierType.IP_ADDRESS)
+
+    # Blank out invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff, etc.)
+    # so they can't cause false matches in protocol linking.
+    if reported_mac and not is_valid_mac_address(reported_mac):
+        if logger:
+            logger.debug("Removing invalid MAC address: %s", reported_mac)
+        device_info.add_identifier(IdentifierType.MAC_ADDRESS, None)
+        reported_mac = None
+
+    # Normalize IP address (handle IPv6-mapped IPv4 like ::ffff:192.168.1.64)
+    if ip_address:
+        normalized_ip = normalize_ip_address(ip_address)
+        if normalized_ip and normalized_ip != ip_address:
+            device_info.add_identifier(IdentifierType.IP_ADDRESS, normalized_ip)
+            if logger:
+                logger.debug(
+                    "Normalized IP address: %s -> %s",
+                    ip_address,
+                    normalized_ip,
+                )
+            ip_address = normalized_ip
+
+    # Skip ARP enrichment if no IP available (can't do ARP lookup)
+    if not ip_address:
+        return
+
+    # Always attempt ARP lookup when we have an IP address.
+    # Some devices (e.g., Yamaha MusicCast) report different valid globally-unique
+    # MACs per protocol (DLNA vs AirPlay differ by 1 in the last octet).
+    # ARP resolves the true hardware MAC which reliably unifies all protocols.
+    # The result is cached in player config so subsequent restarts are fast.
+    real_mac = await resolve_real_mac_address(reported_mac, ip_address)
+    if real_mac and real_mac.upper() != (reported_mac or "").upper():
+        device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
+        if logger:
+            logger.debug(
+                "Resolved MAC via ARP: %s -> %s",
+                reported_mac or "none",
+                real_mac,
+            )
+    elif not reported_mac:
+        # ARP failed and no reported MAC - nothing we can do
+        if logger:
+            logger.debug("ARP lookup failed for %s and no reported MAC", ip_address)
 
 
 class TaskManager:
@@ -751,7 +1091,7 @@ def lock[**P, R](  # type: ignore[valid-type]
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using the throttler with retries."""
+        """Call async function using a Lock."""
         if not (func_lock := getattr(func, "lock", None)):
             func_lock = asyncio.Lock()
             func.lock = func_lock  # type: ignore[attr-defined]
@@ -813,6 +1153,7 @@ def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
             *args,
             task_id=task_id,
             abort_existing=False,
+            eager_start=True,
             **kwargs,
         )
         return await task

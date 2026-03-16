@@ -273,9 +273,9 @@ class StationConverter(BaseConverter):
         """Convert the source object to target type."""
         if isinstance(source_obj, Station):
             return self._convert_station(source_obj)
-        elif isinstance(source_obj, LiveStation):
+        if isinstance(source_obj, LiveStation):
             return self._convert_live_station(source_obj)
-        elif isinstance(source_obj, StationSearchResult):
+        if isinstance(source_obj, StationSearchResult):
             return self._convert_station_search_result(source_obj)
         self.logger.error(f"Failed to convert station {type(source_obj)}: {source_obj}")
         raise ConversionError(f"Failed to convert station {type(source_obj)}: {source_obj}")
@@ -348,7 +348,7 @@ class PodcastConverter(BaseConverter):
                 show_title=show.titles["secondary"],
                 date=_to_date(show.start),
             )
-        elif show.titles:
+        if show.titles:
             # TODO: when getting a schedule listing, we have a broadcast time
             # when we fetch the streaming details later we lose that from the new API call
             title = self.SCHEDULE_ITEM_DEFAULT_FORMAT.format(
@@ -461,11 +461,11 @@ class PodcastConverter(BaseConverter):
         """Convert podcast objects."""
         if isinstance(source_obj, (Podcast, RadioSeries)) or self.context.force_type is Podcast:
             return await self._convert_podcast(source_obj)
-        elif isinstance(source_obj, PodcastEpisode):
+        if isinstance(source_obj, PodcastEpisode):
             return await self._convert_podcast_episode(source_obj)
-        elif isinstance(source_obj, RadioShow):
+        if isinstance(source_obj, RadioShow):
             return await self._convert_radio_show(source_obj)
-        elif isinstance(source_obj, RadioClip) or self.context.force_type is Track:
+        if isinstance(source_obj, RadioClip) or self.context.force_type is Track:
             return await self._convert_radio_clip(source_obj)
         return source_obj
 
@@ -555,28 +555,27 @@ class PodcastConverter(BaseConverter):
                 ),
                 provider_mappings={self._create_provider_mapping(show.pid)},
             )
-        else:
-            # Handle as episode
-            podcast = None
-            if hasattr(show, "container") and show.container:
-                podcast = await PodcastConverter(self.context).convert(show.container)
+        # Handle as episode
+        podcast = None
+        if hasattr(show, "container") and show.container:
+            podcast = await PodcastConverter(self.context).convert(show.container)
 
-            if not podcast or not isinstance(podcast, MAPodcast):
-                raise ConversionError(f"No podcast for episode for {show}")
+        if not podcast or not isinstance(podcast, MAPodcast):
+            raise ConversionError(f"No podcast for episode for {show}")
 
-            return MAPodcastEpisode(
-                item_id=show.pid,
-                name=self._format_show_title(show),
-                provider=self.context.provider_domain,
-                duration=duration,
-                resume_position_ms=resume_position,
-                metadata=ImageProvider.create_metadata_with_image(
-                    show.image_url, self.context.provider_domain
-                ),
-                podcast=podcast,
-                provider_mappings={self._create_provider_mapping(show.pid)},
-                position=1,
-            )
+        return MAPodcastEpisode(
+            item_id=show.pid,
+            name=self._format_show_title(show),
+            provider=self.context.provider_domain,
+            duration=duration,
+            resume_position_ms=resume_position,
+            metadata=ImageProvider.create_metadata_with_image(
+                show.image_url, self.context.provider_domain
+            ),
+            podcast=podcast,
+            provider_mappings={self._create_provider_mapping(show.pid)},
+            position=1,
+        )
 
     async def _convert_radio_clip(self, clip: RadioClip) -> Track | MAPodcastEpisode:
         duration = self._get_attr(clip, "duration.value")
@@ -604,17 +603,16 @@ class PodcastConverter(BaseConverter):
                 podcast=podcast,
                 position=0,
             )
-        else:
-            return Track(
-                item_id=clip.pid,
-                name=self._get_attr(clip, "titles.entity_title", "Unknown Track"),
-                provider=self.context.provider_domain,
-                duration=duration,
-                metadata=ImageProvider.create_metadata_with_image(
-                    clip.image_url, self.context.provider_domain, description
-                ),
-                provider_mappings={self._create_provider_mapping(clip.pid)},
-            )
+        return Track(
+            item_id=clip.pid,
+            name=self._get_attr(clip, "titles.entity_title", "Unknown Track"),
+            provider=self.context.provider_domain,
+            duration=duration,
+            metadata=ImageProvider.create_metadata_with_image(
+                clip.image_url, self.context.provider_domain, description
+            ),
+            provider_mappings={self._create_provider_mapping(clip.pid)},
+        )
 
 
 class BrowseConverter(BaseConverter):
@@ -642,11 +640,11 @@ class BrowseConverter(BaseConverter):
         """Convert browsable objects."""
         if isinstance(source_obj, MenuItem) and self.context.force_type is not RecommendationFolder:
             return self._convert_menu_item(source_obj)
-        elif isinstance(source_obj, (Category, Collection)):
+        if isinstance(source_obj, (Category, Collection)):
             return self._convert_category_or_collection(source_obj)
-        elif isinstance(source_obj, Schedule):
+        if isinstance(source_obj, Schedule):
             return self._convert_schedule(source_obj)
-        elif isinstance(source_obj, RecommendedMenuItem):
+        if isinstance(source_obj, RecommendedMenuItem):
             return await self._convert_recommended_item(source_obj)
         self.logger.error(f"Failed to convert browse object {type(source_obj)}: {source_obj}")
         raise ConversionError(f"Browse conversion failed: {source_obj}")

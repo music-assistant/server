@@ -1,0 +1,14 @@
+{
+  "type": "player",
+  "domain": "universal_player",
+  "stage": "stable",
+  "name": "Universal Player",
+  "description": "Provides support for players that have no native (vendor-specific) provider in Music Assistant but support one or more generic streaming protocols such as AirPlay, Chromecast, or DLNA. Automatically created for protocol-only devices.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false,
+  "icon": "speaker"
+}
