@@ -202,9 +202,22 @@ async def test_apple_music_uri_parsing() -> None:
     )
     assert media_type == MediaType.RADIO
     assert item_id == "ra.111222333"
-    # query string stripped
+    # query string stripped (non-track query params)
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/album/some-album/1234567890?itsct=music_box"
     )
     assert media_type == MediaType.ALBUM
     assert item_id == "1234567890"
+    # track share link: album URL with ?i=<track_id>
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/album/some-album/1234567890?i=987654321"
+    )
+    assert media_type == MediaType.TRACK
+    assert provider == "apple_music"
+    assert item_id == "987654321"
+    # track share link with additional query params
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/album/some-album/1234567890?itsct=music_box&i=111222333"
+    )
+    assert media_type == MediaType.TRACK
+    assert item_id == "111222333"
