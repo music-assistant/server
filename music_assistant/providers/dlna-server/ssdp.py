@@ -38,11 +38,10 @@ class SSDPServer:
     ) -> None:
         """Initialize SSDP server.
 
-        Args:
-            location: URL to the device description XML
-            server_uuid: Unique device identifier (UUID)
-            friendly_name: Human-readable device name
-            logger: Logger instance
+        :param location: URL to the device description XML.
+        :param server_uuid: Unique device identifier (UUID).
+        :param friendly_name: Human-readable device name.
+        :param logger: Logger instance.
         """
         self.location = location
         self.server_uuid = server_uuid
@@ -241,11 +240,10 @@ class SSDPProtocol(asyncio.DatagramProtocol):
     ) -> None:
         """Initialize protocol.
 
-        Args:
-            location: URL to the device description XML
-            server_uuid: Unique device identifier (UUID)
-            friendly_name: Human-readable device name
-            logger: Logger instance
+        :param location: URL to the device description XML.
+        :param server_uuid: Unique device identifier (UUID).
+        :param friendly_name: Human-readable device name.
+        :param logger: Logger instance.
         """
         super().__init__()
         self.location = location

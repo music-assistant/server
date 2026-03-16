@@ -8,18 +8,22 @@ from __future__ import annotations
 
 import urllib.parse
 import uuid
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 from defusedxml import ElementTree as DefusedET
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ContentType, ProviderFeature
 from music_assistant_models.errors import (
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
     SetupFailedError,
-    UnsupportedFeaturedException,
 )
+from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import DEFAULT_STREAM_HEADERS, INTERNAL_PCM_FORMAT
+from music_assistant.helpers.audio import get_media_stream
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
@@ -29,8 +33,9 @@ if TYPE_CHECKING:
     from xml.etree.ElementTree import Element
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, MediaItem, MediaItemImage, Track
+    from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -39,7 +44,6 @@ SUPPORTED_FEATURES: set[ProviderFeature] = (
     set()
 )  # we don't have any special supported features (yet)
 
-SUPPORTED_PROVIDER_DOMAINS = {"filesystem_local", "filesystem_smb"}
 
 # DLNA/UPnP constants
 DEVICE_TYPE = "urn:schemas-upnp-org:device:MediaServer:1"
@@ -88,7 +92,6 @@ class DLNAServerProvider(PluginProvider):
         self._server_uuid: str = str(uuid.uuid4())
         self._friendly_name = "Music Assistant"
         self._routes_registered = False
-        self.is_streaming_provider = False
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded into Music Assistant."""
@@ -437,8 +440,8 @@ class DLNAServerProvider(PluginProvider):
                     action_elem = elem
                     break
 
-            if action_elem is None or len(action_elem) == 0:  # Fixed the deprecation warning too
-                return await self._soap_error(401, "Invalid Action")
+            if action_elem is None or len(action_elem) == 0:
+                return self._soap_error(401, "Invalid Action")
 
             # Handle the action
             if action == "Browse":
@@ -446,14 +449,14 @@ class DLNAServerProvider(PluginProvider):
             if action == "GetSystemUpdateID":
                 return await self._handle_get_system_update_id()
 
-            return await self._soap_error(401, "Invalid Action")
+            return self._soap_error(401, "Invalid Action")
 
         except DefusedET.ParseError as err:
             self.logger.warning("Invalid XML in SOAP request: %s", err)
-            return await self._soap_error(400, "Invalid XML")
+            return self._soap_error(400, "Invalid XML")
         except Exception:
             self.logger.exception("Error handling ContentDirectory control request")
-            return await self._soap_error(500, "Internal server error")
+            return self._soap_error(500, "Internal server error")
 
     async def _handle_connection_manager_control(self, request: web.Request) -> web.Response:
         """Handle ConnectionManager SOAP control requests."""
@@ -468,11 +471,14 @@ class DLNAServerProvider(PluginProvider):
                 if elem.tag.endswith("GetProtocolInfo"):
                     return await self._handle_get_protocol_info()
 
-            return await self._soap_error(401, "Invalid Action")
+            return self._soap_error(401, "Invalid Action")
 
+        except DefusedET.ParseError as err:
+            self.logger.warning("Invalid XML in SOAP request: %s", err)
+            return self._soap_error(400, "Invalid XML")
         except Exception:
             self.logger.exception("Error handling ConnectionManager control request")
-            return await self._soap_error(500, "Internal server error")
+            return self._soap_error(500, "Internal server error")
 
     async def _handle_browse_action(self, action_elem: Element) -> web.Response:
         """Handle Browse SOAP action."""
@@ -482,7 +488,7 @@ class DLNAServerProvider(PluginProvider):
         starting_index = int(self._get_soap_param(action_elem, "StartingIndex") or "0")
         requested_count = int(self._get_soap_param(action_elem, "RequestedCount") or "0")
 
-        self.logger.debug(
+        self.logger.info(
             "Browse: ObjectID=%s, BrowseFlag=%s, StartingIndex=%d, RequestedCount=%d",
             object_id,
             browse_flag,
@@ -498,9 +504,12 @@ class DLNAServerProvider(PluginProvider):
                 object_id, starting_index, requested_count
             )
 
-        # Log DIDL for album browsing
-        if object_id.startswith("album_") and browse_flag == "BrowseDirectChildren":
-            self.logger.error("=== MA ALBUM DIDL ===\n%s", didl_xml)
+        # Log response details for debugging
+        self.logger.info(
+            "Browse response: NumberReturned=%d, TotalMatches=%d",
+            number_returned,
+            total_matches,
+        )
 
         # Build SOAP response
         response_xml = f"""<?xml version="1.0"?>
@@ -519,6 +528,9 @@ class DLNAServerProvider(PluginProvider):
             text=response_xml,
             content_type="text/xml",
             charset="utf-8",
+            headers={
+                "EXT": "",  # Required empty header for DLNA
+            },
         )
 
     async def _handle_get_system_update_id(self) -> web.Response:
@@ -564,59 +576,151 @@ class DLNAServerProvider(PluginProvider):
             charset="utf-8",
         )
 
-    async def _handle_track_stream(self, request: web.Request) -> web.Response:
-        """Handle track streaming request."""
+    async def _handle_track_stream(self, request: web.Request) -> web.StreamResponse:
+        """Handle track streaming request using the streams controller."""
         # Parse path: /dlna/track/{provider}/{item_id}.{fmt}
         path_parts = request.path.split("/")
         if len(path_parts) < 5:
-            return web.Response(status=400, text="Invalid path")
+            raise web.HTTPBadRequest(reason="Invalid path")
 
-        provider_param = path_parts[3]
         filename = path_parts[4]
-        item_id, fmt = filename.rsplit(".", 1)
+        item_id, output_format_str = filename.rsplit(".", 1)
 
-        self.logger.debug(
-            "Stream request: provider=%s, item_id=%s, format=%s", provider_param, item_id, fmt
+        self.logger.info(
+            "Stream request: item_id=%s, format=%s, method=%s",
+            item_id,
+            output_format_str,
+            request.method,
         )
 
         try:
-            # Get the track
+            # Get the track from library
             track = await self.mass.music.tracks.get_library_item(item_id)
 
-            # Get provider mapping
-            provider_instance, prov_item_id = await self.mass.music.tracks.get_provider_mapping(
-                track
+            # Get stream details from the best available provider
+            # Sort by quality and find the first available provider
+            streamdetails = None
+            for prov_mapping in sorted(
+                track.provider_mappings, key=lambda x: x.quality or 0, reverse=True
+            ):
+                if not prov_mapping.available:
+                    continue
+                prov = self.mass.get_provider(prov_mapping.provider_instance)
+                if not prov or not isinstance(prov, MusicProvider):
+                    continue
+                try:
+                    streamdetails = await prov.get_stream_details(
+                        prov_mapping.item_id, track.media_type
+                    )
+                    break
+                except Exception as err:
+                    self.logger.debug(
+                        "Failed to get stream details from %s: %s",
+                        prov_mapping.provider_instance,
+                        err,
+                    )
+                    continue
+
+            if not streamdetails:
+                raise ProviderUnavailableError("No provider available for this track")
+
+            # Determine output format based on request
+            output_format = self._get_output_format(output_format_str, streamdetails)
+
+            # Prepare response headers with DLNA-compatible settings
+            headers = {
+                **DEFAULT_STREAM_HEADERS,
+                "Content-Type": f"audio/{output_format.output_format_str}",
+                "icy-name": track.name,
+                "Accept-Ranges": "none",
+            }
+
+            resp = web.StreamResponse(
+                status=200,
+                reason="OK",
+                headers=headers,
+            )
+            await resp.prepare(request)
+
+            # Return early for HEAD requests
+            if request.method != "GET":
+                return resp
+
+            # Define PCM format for internal processing
+            pcm_format = AudioFormat(
+                sample_rate=streamdetails.audio_format.sample_rate,
+                content_type=INTERNAL_PCM_FORMAT.content_type,
+                bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+                channels=streamdetails.audio_format.channels,
             )
 
-            # Get the provider
-            prov = self.mass.get_provider(provider_instance)
-            if not prov or not isinstance(prov, MusicProvider):
-                raise ProviderUnavailableError(f"Provider {provider_instance} not available")
-
-            # Get stream details
-            streamdetails = await prov.get_stream_details(prov_item_id, MediaType.TRACK)
-
-            # Get the absolute path from the FileSystemItem
-            if hasattr(streamdetails.data, "absolute_path"):
-                file_path = streamdetails.data.absolute_path
-            else:
-                # Fallback for non-filesystem providers
-                raise UnsupportedFeaturedException(
-                    "Only local files are supported for DLNA streaming"
-                )
-
-            self.logger.debug("Serving file: %s", file_path)
-
-            # Serve the file
-            return cast(
-                "web.Response", web.FileResponse(path=file_path, headers={"Accept-Ranges": "bytes"})
+            # Get raw PCM audio stream from the media
+            audio_input = get_media_stream(
+                mass=self.mass,
+                streamdetails=streamdetails,
+                pcm_format=pcm_format,
             )
+
+            # Convert to output format using ffmpeg and stream to client
+            async for chunk in get_ffmpeg_stream(
+                audio_input=audio_input,
+                input_format=pcm_format,
+                output_format=output_format,
+            ):
+                try:
+                    await resp.write(chunk)
+                except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                    self.logger.debug("DLNA client disconnected during streaming")
+                    break
+
+            return resp
 
         except MediaNotFoundError:
-            return web.Response(status=404, text="Track not found")
+            raise web.HTTPNotFound(reason="Track not found")
+        except ProviderUnavailableError as err:
+            self.logger.warning("Provider unavailable for track streaming: %s", err)
+            raise web.HTTPServiceUnavailable(reason="Provider unavailable")
+        except MusicAssistantError as err:
+            self.logger.warning("Error streaming track: %s", err)
+            raise web.HTTPInternalServerError(reason="Failed to stream track")
         except Exception:
-            self.logger.exception("Error streaming track")
-            return web.Response(status=500, text="Internal server error")
+            self.logger.exception("Unexpected error streaming track")
+            raise web.HTTPInternalServerError(reason="Failed to stream track")
+
+    def _get_output_format(
+        self, output_format_str: str, streamdetails: StreamDetails
+    ) -> AudioFormat:
+        """Determine output format for DLNA streaming.
+
+        :param output_format_str: Requested format string (e.g., 'mp3', 'flac').
+        :param streamdetails: Stream details for the track.
+        """
+        # Map format strings to content types
+        format_map = {
+            "mp3": ContentType.MP3,
+            "flac": ContentType.FLAC,
+            "wav": ContentType.WAV,
+            "m4a": ContentType.M4A,
+            "aac": ContentType.AAC,
+            "ogg": ContentType.OGG,
+        }
+
+        content_type = format_map.get(output_format_str.lower(), ContentType.FLAC)
+
+        # For lossy formats, limit quality
+        if content_type in (ContentType.MP3, ContentType.AAC, ContentType.OGG):
+            sample_rate = min(streamdetails.audio_format.sample_rate, 48000)
+            bit_depth = 16
+        else:
+            sample_rate = streamdetails.audio_format.sample_rate
+            bit_depth = streamdetails.audio_format.bit_depth or 16
+
+        return AudioFormat(
+            content_type=content_type,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            channels=streamdetails.audio_format.channels,
+        )
 
     # ==================== DIDL/XML Helpers ====================
 
@@ -649,7 +753,7 @@ class DLNAServerProvider(PluginProvider):
             track_id = object_id[6:]  # Remove "track_" prefix
             try:
                 track = await self.mass.music.tracks.get_library_item(track_id)
-                didl_xml = await self._create_track_item(track)
+                didl_xml = self._create_track_item(track)
                 return didl_xml, 1, 1
             except MediaNotFoundError:
                 return self._create_empty_didl(), 0, 0
@@ -664,167 +768,152 @@ class DLNAServerProvider(PluginProvider):
         offset = starting_index
 
         if parent_id == ROOT_ID:
-            containers = [
-                self._create_artists_root_container(),
-                self._create_albums_root_container(),
-                self._create_tracks_root_container(),
-            ]
-            didl_xml = self._wrap_didl_items(containers)
-            return didl_xml, len(containers), len(containers)
+            return self._get_root_children()
 
-        elif parent_id == ARTISTS_CONTAINER_ID:
-            artists, total = await self._get_filesystem_artists(limit, offset)
-            artist_items = [self._create_artist_container(artist) for artist in artists]
-            didl_xml = self._wrap_didl_items(artist_items)
-            return didl_xml, len(artist_items), total
+        if parent_id == ARTISTS_CONTAINER_ID:
+            return await self._get_artists_children(offset, limit)
 
-        elif parent_id == ALBUMS_CONTAINER_ID:
-            albums, total = await self._get_filesystem_albums(limit, offset)
-            album_items = [
-                self._create_album_container(album, ALBUMS_CONTAINER_ID) for album in albums
-            ]
-            didl_xml = self._wrap_didl_items(album_items)
-            return didl_xml, len(album_items), total
+        if parent_id == ALBUMS_CONTAINER_ID:
+            return await self._get_albums_children(offset, limit)
 
-        elif parent_id == TRACKS_CONTAINER_ID:
-            tracks, total = await self._get_filesystem_tracks(limit, offset)
-            track_items = [await self._create_track_item(track) for track in tracks]
-            didl_xml = self._wrap_didl_items(track_items)
-            return didl_xml, len(track_items), total
+        if parent_id == TRACKS_CONTAINER_ID:
+            return await self._get_tracks_children(offset, limit)
 
-        elif parent_id.startswith("artist_"):
-            artist_id = parent_id[7:]
-            albums = await self._get_filesystem_albums_for_artist(artist_id)
-            paginated_albums = (
-                list(albums)[offset : offset + limit] if limit > 0 else list(albums)[offset:]
-            )
-            album_items = [self._create_album_container(album) for album in paginated_albums]
-            didl_xml = self._wrap_didl_items(album_items)
-            return didl_xml, len(album_items), len(albums)
+        if parent_id.startswith("artist_"):
+            return await self._get_artist_children(parent_id[7:], offset, limit)
 
-        elif parent_id.startswith("album_"):
-            album_id = parent_id[6:]
-            tracks = await self._get_filesystem_tracks_for_album(album_id)
-            paginated_tracks = (
-                list(tracks)[offset : offset + limit] if limit > 0 else list(tracks)[offset:]
-            )
-            track_items = [await self._create_track_item(track) for track in paginated_tracks]
-            didl_xml = self._wrap_didl_items(track_items)
-            return didl_xml, len(track_items), len(tracks)
+        if parent_id.startswith("album_"):
+            return await self._get_album_children(parent_id[6:], offset, limit)
 
-        else:
-            return self._create_empty_didl(), 0, 0
+        return self._create_empty_didl(), 0, 0
 
-    # Add this helper method to the class
-    def _is_supported_item(self, item: MediaItem) -> bool:
-        """Check if a media item is from a supported filesystem provider."""
-        # Check provider mappings that are already on the item
-        for provider_mapping in item.provider_mappings:
-            if provider_mapping.provider_domain in SUPPORTED_PROVIDER_DOMAINS:
-                return True
-        return False
+    def _get_root_children(self) -> tuple[str, int, int]:
+        """Get root container children."""
+        containers = [
+            self._create_artists_root_container(),
+            self._create_albums_root_container(),
+            self._create_tracks_root_container(),
+        ]
+        didl_xml = self._wrap_didl_items(containers)
+        return didl_xml, len(containers), len(containers)
 
-    async def _get_filesystem_artists(self, limit: int, offset: int) -> tuple[list[Artist], int]:
-        """Get artists that have filesystem tracks."""
-        artists = await self.mass.music.artists.library_items(
-            limit=limit, offset=offset, order_by="sort_name"
+    async def _get_artists_children(self, offset: int, limit: int) -> tuple[str, int, int]:
+        """Get all artists with pagination."""
+        # Use iter_library_items to get all artists with consistent filtering
+        # This ensures TotalMatches equals the actual number of items available.
+        all_artists = [
+            artist
+            async for artist in self.mass.music.artists.iter_library_items(order_by="sort_name")
+        ]
+        total = len(all_artists)
+        # Debug: also check what library_count returns for comparison
+        raw_count = await self.mass.music.artists.library_count()
+        self.logger.debug(
+            "Artists: iter_library_items returned %d, library_count returned %d",
+            total,
+            raw_count,
         )
+        paginated = all_artists[offset : offset + limit] if limit > 0 else all_artists[offset:]
+        items = [self._create_artist_container(artist) for artist in paginated]
+        return self._wrap_didl_items(items), len(items), total
 
-        filtered_artists = []
-        for artist in artists:
-            albums = await self.mass.music.artists.albums(
-                artist.item_id, "library", in_library_only=True
-            )
-            # Check if any album has filesystem tracks
-            for album in albums:
-                tracks = await self.mass.music.albums.tracks(
-                    album.item_id, "library", in_library_only=True
-                )
-                if any(self._is_supported_item(track) for track in tracks):
-                    filtered_artists.append(artist)
-                    break
-
-        total = await self.mass.music.artists.library_count()
-        return filtered_artists, total
-
-    async def _get_filesystem_albums(
-        self, limit: int, offset: int, parent_container: str | None = None
-    ) -> tuple[list[Album], int]:
-        """Get albums that have filesystem tracks."""
-        albums_list = await self.mass.music.albums.library_items(
-            limit=limit, offset=offset, order_by="sort_name"
+    async def _get_albums_children(self, offset: int, limit: int) -> tuple[str, int, int]:
+        """Get all albums with pagination."""
+        all_albums = [
+            album async for album in self.mass.music.albums.iter_library_items(order_by="sort_name")
+        ]
+        total = len(all_albums)
+        # Debug: also check what library_count returns for comparison
+        raw_count = await self.mass.music.albums.library_count()
+        self.logger.debug(
+            "Albums: iter_library_items returned %d, library_count returned %d",
+            total,
+            raw_count,
         )
+        paginated = all_albums[offset : offset + limit] if limit > 0 else all_albums[offset:]
+        items = [self._create_album_container(album, ALBUMS_CONTAINER_ID) for album in paginated]
+        return self._wrap_didl_items(items), len(items), total
 
-        filtered_albums = []
-        for album in albums_list:
-            tracks = await self.mass.music.albums.tracks(
-                album.item_id, "library", in_library_only=True
-            )
-            if any(self._is_supported_item(track) for track in tracks):
-                filtered_albums.append(album)
+    async def _get_tracks_children(self, offset: int, limit: int) -> tuple[str, int, int]:
+        """Get all tracks with pagination."""
+        all_tracks = [
+            track async for track in self.mass.music.tracks.iter_library_items(order_by="sort_name")
+        ]
+        total = len(all_tracks)
+        paginated = all_tracks[offset : offset + limit] if limit > 0 else all_tracks[offset:]
+        items = [self._create_track_item(track) for track in paginated]
+        return self._wrap_didl_items(items), len(items), total
 
-        total = await self.mass.music.albums.library_count()
-        return filtered_albums, total
-
-    async def _get_filesystem_albums_for_artist(self, artist_id: str) -> list[Album]:
-        """Get albums for an artist that have filesystem tracks."""
+    async def _get_artist_children(
+        self, artist_id: str, offset: int, limit: int
+    ) -> tuple[str, int, int]:
+        """Get albums of an artist."""
+        self.logger.debug("Fetching albums for artist_id=%s", artist_id)
         albums = await self.mass.music.artists.albums(artist_id, "library", in_library_only=True)
+        albums_list = list(albums)
+        self.logger.debug("Artist %s has %d albums", artist_id, len(albums_list))
+        paginated = albums_list[offset : offset + limit] if limit > 0 else albums_list[offset:]
+        items = [self._create_album_container(album) for album in paginated]
+        return self._wrap_didl_items(items), len(items), len(albums_list)
 
-        filtered_albums = []
-        for album in albums:
-            tracks = await self.mass.music.albums.tracks(
-                album.item_id, "library", in_library_only=True
-            )
-            if any(self._is_supported_item(track) for track in tracks):
-                filtered_albums.append(album)
-
-        return filtered_albums
-
-    async def _get_filesystem_tracks(self, limit: int, offset: int) -> tuple[list[Track], int]:
-        """Get filesystem tracks."""
-        tracks = await self.mass.music.tracks.library_items(
-            limit=limit, offset=offset, order_by="sort_name"
-        )
-
-        filtered_tracks = [track for track in tracks if self._is_supported_item(track)]
-        total = await self.mass.music.tracks.library_count()
-        return filtered_tracks, total
-
-    async def _get_filesystem_tracks_for_album(self, album_id: str) -> list[Track]:
-        """Get filesystem tracks for an album."""
+    async def _get_album_children(
+        self, album_id: str, offset: int, limit: int
+    ) -> tuple[str, int, int]:
+        """Get tracks of an album."""
+        self.logger.debug("Fetching tracks for album_id=%s", album_id)
         tracks = await self.mass.music.albums.tracks(album_id, "library", in_library_only=True)
-        return [track for track in tracks if self._is_supported_item(track)]
+        tracks_list = list(tracks)
+        self.logger.debug("Album %s has %d tracks", album_id, len(tracks_list))
+        paginated = tracks_list[offset : offset + limit] if limit > 0 else tracks_list[offset:]
+        items = [self._create_track_item(track) for track in paginated]
+        return self._wrap_didl_items(items), len(items), len(tracks_list)
 
     def _create_root_container(self) -> str:
         """Create DIDL-Lite XML for root container."""
-        return """<container id="0" parentID="-1" restricted="1">
-    <dc:title>Music Assistant</dc:title>
-    <upnp:class>object.container</upnp:class>
-</container>"""
+        return (
+            '<container id="0" parentID="-1" restricted="1" '
+            'childCount="3" searchable="0">\n'
+            "    <dc:title>Music Assistant</dc:title>\n"
+            "    <upnp:class>object.container</upnp:class>\n"
+            "</container>"
+        )
 
     def _create_artists_root_container(self) -> str:
         """Create DIDL-Lite XML for Artists root container."""
-        return f"""<container id="{ARTISTS_CONTAINER_ID}" parentID="{ROOT_ID}" restricted="1">
-    <dc:title>Artists</dc:title>
-    <upnp:class>object.container</upnp:class>
-</container>"""
+        return (
+            f'<container id="{ARTISTS_CONTAINER_ID}" parentID="{ROOT_ID}" '
+            f'restricted="1" childCount="0" searchable="0">\n'
+            f"    <dc:title>Artists</dc:title>\n"
+            f"    <upnp:class>object.container</upnp:class>\n"
+            f"</container>"
+        )
 
     def _create_albums_root_container(self) -> str:
         """Create DIDL-Lite XML for Albums root container."""
-        return f"""<container id="{ALBUMS_CONTAINER_ID}" parentID="{ROOT_ID}" restricted="1">
-        <dc:title>Albums</dc:title>
-        <upnp:class>object.container</upnp:class>
-    </container>"""
+        return (
+            f'<container id="{ALBUMS_CONTAINER_ID}" parentID="{ROOT_ID}" '
+            f'restricted="1" childCount="0" searchable="0">\n'
+            f"    <dc:title>Albums</dc:title>\n"
+            f"    <upnp:class>object.container</upnp:class>\n"
+            f"</container>"
+        )
 
     def _create_tracks_root_container(self) -> str:
         """Create DIDL-Lite XML for Tracks root container."""
-        return f"""<container id="{TRACKS_CONTAINER_ID}" parentID="{ROOT_ID}" restricted="1">
-        <dc:title>Tracks</dc:title>
-        <upnp:class>object.container</upnp:class>
-    </container>"""
+        return (
+            f'<container id="{TRACKS_CONTAINER_ID}" parentID="{ROOT_ID}" '
+            f'restricted="1" childCount="0" searchable="0">\n'
+            f"    <dc:title>Tracks</dc:title>\n"
+            f"    <upnp:class>object.container</upnp:class>\n"
+            f"</container>"
+        )
 
-    def _create_artist_container(self, artist: Artist) -> str:
-        """Create DIDL-Lite XML for an artist container."""
+    def _create_artist_container(self, artist: Artist, child_count: int = 1) -> str:
+        """Create DIDL-Lite XML for an artist container.
+
+        :param artist: The artist object.
+        :param child_count: Number of child items (albums). Defaults to 1 to show expand arrow.
+        """
         artist_id = f"artist_{artist.item_id}"
         title = self._escape_xml(artist.name)
 
@@ -832,16 +921,28 @@ class DLNAServerProvider(PluginProvider):
         album_art_xml = ""
         if artist.image and artist.image.path:
             image_url = self._get_image_url(artist.image)
-            album_art_xml = f"<upnp:albumArtURI>{self._escape_xml(image_url)}</upnp:albumArtURI>"
+            album_art_xml = (
+                f"\n    <upnp:albumArtURI>{self._escape_xml(image_url)}</upnp:albumArtURI>"
+            )
 
-        return f"""<container id="{artist_id}" parentID="{ARTISTS_CONTAINER_ID}" restricted="1">
-    <dc:title>{title}</dc:title>
-    <upnp:class>object.container.person.musicArtist</upnp:class>
-    {album_art_xml}
-</container>"""
+        return (
+            f'<container id="{artist_id}" parentID="{ARTISTS_CONTAINER_ID}" '
+            f'restricted="1" childCount="{child_count}" searchable="0">\n'
+            f"    <dc:title>{title}</dc:title>\n"
+            f"    <upnp:class>object.container.person.musicArtist</upnp:class>"
+            f"{album_art_xml}\n"
+            f"</container>"
+        )
 
-    def _create_album_container(self, album: Album, parent_id: str | None = None) -> str:
-        """Create DIDL-Lite XML for an album container."""
+    def _create_album_container(
+        self, album: Album, parent_id: str | None = None, child_count: int = 1
+    ) -> str:
+        """Create DIDL-Lite XML for an album container.
+
+        :param album: The album object.
+        :param parent_id: Parent container ID. Defaults to artist parent.
+        :param child_count: Number of child items (tracks). Defaults to 1 to show expand arrow.
+        """
         album_id = f"album_{album.item_id}"
 
         # Use provided parent_id, or default to artist parent
@@ -855,22 +956,26 @@ class DLNAServerProvider(PluginProvider):
         album_art_xml = ""
         if album.image and album.image.path:
             image_url = self._get_image_url(album.image)
-            album_art_xml = f"<upnp:albumArtURI>{self._escape_xml(image_url)}</upnp:albumArtURI>"
+            album_art_xml = (
+                f"\n    <upnp:albumArtURI>{self._escape_xml(image_url)}</upnp:albumArtURI>"
+            )
 
         # Add artist
         artist_xml = ""
         if album.artists:
             artist_name = self._escape_xml(album.artists[0].name)
-            artist_xml = f"<upnp:artist>{artist_name}</upnp:artist>"
+            artist_xml = f"\n    <upnp:artist>{artist_name}</upnp:artist>"
 
-        return f"""<container id="{album_id}" parentID="{parent_id}" restricted="1">
-    <dc:title>{title}</dc:title>
-    <upnp:class>object.container.album.musicAlbum</upnp:class>
-    {artist_xml}
-    {album_art_xml}
-</container>"""
+        return (
+            f'<container id="{album_id}" parentID="{parent_id}" '
+            f'restricted="1" childCount="{child_count}" searchable="0">\n'
+            f"    <dc:title>{title}</dc:title>\n"
+            f"    <upnp:class>object.container.album.musicAlbum</upnp:class>"
+            f"{artist_xml}{album_art_xml}\n"
+            f"</container>"
+        )
 
-    async def _create_track_item(self, track: Track) -> str:
+    def _create_track_item(self, track: Track) -> str:
         """Create DIDL-Lite XML for a track item."""
         track_id = f"track_{track.item_id}"
         parent_id = f"album_{track.album.item_id}" if track.album else ROOT_ID
@@ -974,31 +1079,28 @@ class DLNAServerProvider(PluginProvider):
 
     def _create_empty_didl(self) -> str:
         """Create empty DIDL-Lite XML."""
-        return """<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
-    xmlns:dc="http://purl.org/dc/elements/1.1/"
-    xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
-</DIDL-Lite>"""
+        return (
+            '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+            "</DIDL-Lite>"
+        )
 
     def _get_image_url(self, image: MediaItemImage) -> str:
-        """Get the URL for an image."""
+        """Get the URL for an image.
+
+        :param image: The MediaItemImage to get URL for.
+        """
         if image.remotely_accessible:
             return image.path
 
-        # For local images with relative paths, construct absolute path
-        image_path = image.path
-
-        # If it's not already absolute, prepend the filesystem base path
-        if not image_path.startswith("/"):
-            # Find the filesystem provider to get the base path
-            for provider in self.mass.music.providers:
-                # Check if this provider has a base_path attribute (filesystem providers do)
-                if hasattr(provider, "base_path"):
-                    base_path = provider.base_path
-                    image_path = f"{base_path}/{image_path}"
-                    break
-
-        encoded_path = urllib.parse.quote(image_path)
-        return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_path}"
+        # Use the imageproxy endpoint for local images
+        # The path must be double-encoded to match the metadata controller's format
+        encoded_path = urllib.parse.quote_plus(urllib.parse.quote_plus(image.path))
+        return (
+            f"{self.mass.webserver.base_url}/imageproxy"
+            f"?provider={image.provider}&path={encoded_path}"
+        )
 
     def _format_duration(self, duration_seconds: int) -> str:
         """Format duration in seconds to H:MM:SS format."""
@@ -1024,11 +1126,13 @@ class DLNAServerProvider(PluginProvider):
     def _wrap_didl_items(self, items: list[str]) -> str:
         """Wrap DIDL items in DIDL-Lite container."""
         items_xml = "\n".join(items)
-        return f"""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
-        xmlns:dc="http://purl.org/dc/elements/1.1/"
-        xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
-    {items_xml}
-    </DIDL-Lite>"""
+        return (
+            '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+            f"{items_xml}"
+            "</DIDL-Lite>"
+        )
 
     def _get_soap_param(self, action_elem: Element, param_name: str) -> str | None:
         """Extract a parameter from SOAP action element."""
@@ -1037,7 +1141,7 @@ class DLNAServerProvider(PluginProvider):
                 return elem.text
         return None
 
-    async def _soap_error(self, error_code: int, error_description: str) -> web.Response:
+    def _soap_error(self, error_code: int, error_description: str) -> web.Response:
         """Create a SOAP error response."""
         error_xml = f"""<?xml version="1.0"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
