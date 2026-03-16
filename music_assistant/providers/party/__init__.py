@@ -37,7 +37,6 @@ if TYPE_CHECKING:
 CONF_ENABLE_GUEST_ACCESS = "enable_guest_access"
 CONF_PARTY_PLAYER = "player"
 CONF_PARTY_ALBUM_ART_BACKGROUND = "album_art_background"
-CONF_PARTY_SHOW_PLAYER_CONTROLS = "show_player_controls"
 CONF_ENABLE_RATE_LIMITING = "enable_rate_limiting"
 # Boost song feature
 CONF_ENABLE_BOOST = "enable_boost"
@@ -113,7 +112,6 @@ class PartyConfig(DataClassDictMixin):
     skip_song_refill_minutes: int
     # UI settings
     album_art_background: bool
-    show_player_controls: bool
     display_lyrics: bool
     karaoke_mode: bool
     # Badge colors (hex values)
@@ -186,18 +184,6 @@ async def get_config_entries(
             label="QR Code Instruction Text",
             description="Text displayed below the QR code.",
             depends_on=CONF_QR_SHOW_INSTRUCTION_TEXT,
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_SHOW_PLAYER_CONTROLS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Show Player Controls in Party Dashboard",
-            description=(
-                "Display playback controls (play/pause, skip, volume) in the party dashboard. "
-                "When disabled, the view is frameless and only shows now playing info and search."
-            ),
-            advanced=True,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
             key=CONF_PARTY_DISPLAY_LYRICS,
@@ -576,9 +562,6 @@ class PartyPlugin(PluginProvider):
             ),
             album_art_background=cast(
                 "bool", self.config.get_value(CONF_PARTY_ALBUM_ART_BACKGROUND)
-            ),
-            show_player_controls=cast(
-                "bool", self.config.get_value(CONF_PARTY_SHOW_PLAYER_CONTROLS)
             ),
             display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_DISPLAY_LYRICS)),
             karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_KARAOKE_MODE)),
