@@ -29,7 +29,6 @@ class SendspinProvider(PlayerProvider):
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
-    _bridge_static_delay_defaults: dict[str, int]
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -41,7 +40,6 @@ class SendspinProvider(PlayerProvider):
         )
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
-        self._bridge_static_delay_defaults = {}
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
         ]
@@ -69,18 +67,6 @@ class SendspinProvider(PlayerProvider):
         :param identifiers: Extra identifiers to attach to the SendspinPlayer.
         """
         self._bridge_identifiers[client_id] = identifiers
-
-    def register_bridge_static_delay_default(self, client_id: str, default: int) -> None:
-        """Pre-register a static delay default for a bridge client.
-
-        Called by bridge managers (e.g., Chromecast) before registering an
-        external player, so that the resulting SendspinPlayer uses this value
-        as the default for its static delay config entry.
-
-        :param client_id: The bridge client_id that will be used for registration.
-        :param default: The static delay default in milliseconds (0-5000).
-        """
-        self._bridge_static_delay_defaults[client_id] = default
 
     async def _handle_client_added(self, client_id: str) -> None:
         """Handle a new client connection asynchronously."""

@@ -163,9 +163,6 @@ class SendspinPlayer(Player):
             controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
 
         self.playback_session = SendspinPlaybackSession(self)
-        self._static_delay_default = provider._bridge_static_delay_defaults.pop(
-            player_id, DEFAULT_SENDSPIN_STATIC_DELAY
-        )
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
@@ -706,7 +703,7 @@ class SendspinPlayer(Player):
                         "device-specific audio latency (e.g., AV receiver)."
                     ),
                     required=False,
-                    default_value=self._static_delay_default,
+                    default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
                     range=(0, 5000),
                     immediate_apply=True,
                     advanced=True,
