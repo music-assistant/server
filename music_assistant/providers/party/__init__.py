@@ -57,6 +57,7 @@ CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 # Lyrics / Karaoke
 CONF_PARTY_DISPLAY_LYRICS = "display_lyrics"
 CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
+CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
 # QR code instruction text
 CONF_QR_SHOW_INSTRUCTION_TEXT = "qr_show_instruction_text"
 CONF_QR_INSTRUCTION_TEXT = "qr_instruction_text"
@@ -116,6 +117,7 @@ class PartyConfig(DataClassDictMixin):
     show_player_controls: bool
     display_lyrics: bool
     karaoke_mode: bool
+    highlight_ahead: bool
     # Badge colors (hex values)
     request_badge_color: str
     boost_badge_color: str
@@ -208,6 +210,7 @@ async def get_config_entries(
                 "Show synchronized lyrics (karaoke-style) in the party dashboard. "
                 "Lyrics are hidden on mobile devices."
             ),
+            category="Karaoke",
         ),
         ConfigEntry(
             key=CONF_PARTY_KARAOKE_MODE,
@@ -220,6 +223,20 @@ async def get_config_entries(
                 "Requires Display Lyrics to be enabled."
             ),
             depends_on=CONF_PARTY_DISPLAY_LYRICS,
+            category="Karaoke",
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_HIGHLIGHT_AHEAD,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Highlight Lyrics Ahead of Time",
+            description=(
+                "When enabled, the lyric line highlight transition finishes exactly "
+                "when the line's timestamp arrives, giving a smooth anticipation effect. "
+                "When disabled, the transition starts at the timestamp instead."
+            ),
+            depends_on=CONF_PARTY_DISPLAY_LYRICS,
+            category="Karaoke",
         ),
         ConfigEntry(
             key=CONF_ANTI_BURN_IN,
@@ -582,6 +599,7 @@ class PartyPlugin(PluginProvider):
             ),
             display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_DISPLAY_LYRICS)),
             karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_KARAOKE_MODE)),
+            highlight_ahead=cast("bool", self.config.get_value(CONF_PARTY_HIGHLIGHT_AHEAD)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             qr_show_instruction_text=cast(
