@@ -18,7 +18,6 @@ from music_assistant_models.errors import (
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
-    DB_TABLE_PROVIDER_MAPPINGS,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
@@ -33,7 +32,6 @@ from .helpers import build_webdav_url, webdav_propfind, webdav_test_connection
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.enums import MediaType
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -304,55 +302,25 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 raise MediaNotFoundError(f"Image not found: {path}")
             return await resp.read()
 
-    async def sync_library(self, media_type: MediaType, import_as_favorite: bool = False) -> None:
-        """Run library sync for WebDAV provider."""
-        assert self.mass.music.database
+    async def _sync_library_impl(self, file_checksums: dict[str, str]) -> set[str]:
+        """Scan and process all WebDAV files using async PROPFIND.
 
-        if self.sync_running:
-            self.logger.warning(f"Library sync already running for {self.name}")
-            return
-
-        self.logger.info(f"Started library sync for WebDAV provider {self.name}")
+        :param file_checksums: Dict mapping relative paths to their previous checksums.
+        :returns: Set of current filenames that were successfully processed.
+        """
+        cur_filenames: set[str] = set()
         self.sync_running = True
-
         try:
-            file_checksums: dict[str, str] = {}
-            query = (
-                f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                f"WHERE provider_instance = '{self.instance_id}' "
-                "AND media_type in ('track', 'playlist', 'audiobook', 'podcast_episode')"
-            )
-            for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
-                file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
-
-            cur_filenames: set[str] = set()
-            prev_filenames: set[str] = set(file_checksums.keys())
-
-            await self._scan_recursive("", cur_filenames, file_checksums, import_as_favorite)
-
-            deleted_files = prev_filenames - cur_filenames
-            await self._process_deletions(deleted_files)
-            await self._process_orphaned_albums_and_artists()
-
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError) as err:
-            self.logger.error(f"WebDAV library sync failed due to provider error: {err}")
-            raise
-        except aiohttp.ClientError as err:
-            self.logger.error(f"WebDAV library sync failed due to connection error: {err}")
-            raise ProviderUnavailableError(f"WebDAV server connection failed: {err}") from err
-        except Exception as err:
-            self.logger.error(f"WebDAV library sync failed with unexpected error: {err}")
-            raise SetupFailedError(f"WebDAV library sync failed: {err}") from err
+            await self._scan_recursive("", cur_filenames, file_checksums)
         finally:
             self.sync_running = False
-            self.logger.info(f"Completed library sync for WebDAV provider {self.name}")
+        return cur_filenames
 
     async def _scan_recursive(
         self,
         path: str,
         cur_filenames: set[str],
         file_checksums: dict[str, str],
-        import_as_favorite: bool,
     ) -> None:
         """Recursively scan WebDAV directory."""
         try:
@@ -371,9 +339,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
             # Recurse into directories
             for dir_item in dirs:
-                await self._scan_recursive(
-                    dir_item.relative_path, cur_filenames, file_checksums, import_as_favorite
-                )
+                await self._scan_recursive(dir_item.relative_path, cur_filenames, file_checksums)
 
         except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
@@ -381,35 +347,3 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             self.logger.warning(f"WebDAV client error scanning path {path}: {err}")
         except Exception as err:
             self.logger.warning(f"Failed to scan WebDAV path {path}: {err}")
-
-    async def _get_chapters_for_audiobook(
-        self, audiobook_file_item: FileSystemItem, tags: AudioTags
-    ) -> tuple[int, list[MediaItemChapter]]:
-        """Return chapters for an audiobook - WebDAV override."""
-        # Call parent to get chapters and duration
-        total_duration, chapters = await super()._get_chapters_for_audiobook(
-            audiobook_file_item, tags
-        )
-
-        # Get the chapter files that parent cached
-        chapter_files = await self.cache.get(
-            key=audiobook_file_item.relative_path,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
-        )
-
-        if chapter_files:
-            # Convert relative paths to authenticated URLs
-            authenticated_files = [
-                (self._build_authenticated_url(path), duration) for path, duration in chapter_files
-            ]
-
-            # Re-cache with authenticated URLs
-            await self.cache.set(
-                key=audiobook_file_item.relative_path,
-                data=authenticated_files,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
-            )
-
-        return total_duration, chapters

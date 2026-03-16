@@ -348,8 +348,31 @@ class LocalFileSystemProvider(MusicProvider):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # find all supported files in the base directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
-        cur_filenames = set()
         prev_filenames = set(file_checksums.keys())
+
+        # Run the sync implementation (can be overridden by subclasses)
+        cur_filenames = await self._sync_library_impl(file_checksums)
+
+        end_time = time.time()
+        self.logger.info(
+            "Library sync for %s completed in %.2f seconds",
+            self.name,
+            end_time - start_time,
+        )
+        # work out deletions
+        deleted_files = prev_filenames - cur_filenames
+        await self._process_deletions(deleted_files)
+
+        # process orphaned albums and artists
+        await self._process_orphaned_albums_and_artists()
+
+    async def _sync_library_impl(self, file_checksums: dict[str, str]) -> set[str]:
+        """Scan and process all files. Override in subclasses for different scan methods.
+
+        :param file_checksums: Dict mapping relative paths to their previous checksums.
+        :returns: Set of current filenames that were successfully processed.
+        """
+        cur_filenames: set[str] = set()
 
         # NOTE: we do the entire traversing of the directory structure, including parsing tags
         # in a single executor thread to save the overhead of having to spin up tons of tasks
@@ -367,19 +390,7 @@ class LocalFileSystemProvider(MusicProvider):
                 self.sync_running = False
 
         await asyncio.to_thread(run_sync)
-
-        end_time = time.time()
-        self.logger.info(
-            "Library sync for %s completed in %.2f seconds",
-            self.name,
-            end_time - start_time,
-        )
-        # work out deletions
-        deleted_files = prev_filenames - cur_filenames
-        await self._process_deletions(deleted_files)
-
-        # process orphaned albums and artists
-        await self._process_orphaned_albums_and_artists()
+        return cur_filenames
 
     def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item. NOT async friendly."""
@@ -1220,7 +1231,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         # parse other info
         audio_book.authors.set(tags.writers or tags.album_artists or tags.artists)
-        audio_book.metadata.genres = set(tags.genres)
+        audio_book.metadata.genres = set(tags.genres) if tags.genres else {"Spoken Word"}
         audio_book.metadata.copyright = tags.get("copyright")
         audio_book.metadata.lyrics = tags.lyrics
         audio_book.metadata.description = tags.get("comment")
@@ -1277,7 +1288,9 @@ class LocalFileSystemProvider(MusicProvider):
         """Parse full PodcastEpisode details from file tags."""
         # ruff: noqa: PLR0915
         podcast_name = tags.album or file_item.parent_name
-        podcast_path = get_relative_path(self.base_path, file_item.parent_path)
+        # Use relative_parent_path for WebDAV compatibility (parent_path uses os.path.dirname
+        # which doesn't work correctly for URLs)
+        podcast_path = file_item.relative_parent_path
         episode = PodcastEpisode(
             item_id=file_item.relative_path,
             provider=self.instance_id,
@@ -1331,7 +1344,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             )
         # parse other info
-        episode.metadata.genres = set(tags.genres)
+        episode.metadata.genres = set(tags.genres) if tags.genres else {"Spoken Word"}
         episode.metadata.copyright = tags.get("copyright")
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
@@ -1380,6 +1393,9 @@ class LocalFileSystemProvider(MusicProvider):
             episode.podcast.metadata.add_image(episode.image)
         elif not episode.image and episode.podcast.image:
             episode.metadata.add_image(episode.podcast.image)
+        # ensure podcast has a default genre if none set
+        if not episode.podcast.metadata.genres:
+            episode.podcast.metadata.genres = {"Spoken Word"}
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
@@ -1749,7 +1765,11 @@ class LocalFileSystemProvider(MusicProvider):
                 stream_type=StreamType.LOCAL_FILE,
                 duration=duration,
                 path=[
-                    MultiPartPath(path=self.get_absolute_path(path), duration=duration)
+                    MultiPartPath(
+                        # For WebDAV, paths are already full URLs; for local files, join with base
+                        path=path if path.startswith("http") else self.get_absolute_path(path),
+                        duration=duration,
+                    )
                     for path, duration in file_based_chapters
                 ],
                 allow_seek=True,
@@ -1858,7 +1878,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 all_chapter_files.append(
                     (
-                        self._build_authenticated_url(chapter_item.relative_path),
+                        chapter_item.absolute_path,
                         chapter_tags.duration,
                     )
                 )
