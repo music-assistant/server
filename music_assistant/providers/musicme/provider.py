@@ -49,6 +49,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     CLIENT_JSON,
     DATASERVICE_BASE,
+    LOGIN_URL,
     PARTNER_ID,
     STREAM_BASE,
     VALID_ID_RE,
@@ -86,8 +87,8 @@ class MusicMeProvider(MusicProvider):
     def _session(self) -> aiohttp.ClientSession:
         """Return the provider's dedicated HTTP session."""
         if self._http_session is None or self._http_session.closed:
-            msg = "HTTP session not initialized — was handle_async_init called?"
-            raise RuntimeError(msg)
+            msg = "HTTP session not initialized"
+            raise SetupFailedError(msg)
         return self._http_session
 
     # ---- search ----
@@ -155,28 +156,24 @@ class MusicMeProvider(MusicProvider):
                     provider=self.instance_id,
                     path=f"{self.instance_id}://home",
                     name="A l'affiche",
-                    label="home",
                 ),
                 BrowseFolder(
                     item_id="news",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://news",
                     name="Nouveautés",
-                    label="news",
                 ),
                 BrowseFolder(
                     item_id="tops",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://tops",
                     name="Top artistes",
-                    label="tops",
                 ),
                 BrowseFolder(
                     item_id="radios",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://radios",
                     name="Radios par thème",
-                    label="radios",
                 ),
             ]
 
@@ -232,7 +229,6 @@ class MusicMeProvider(MusicProvider):
                             provider=self.instance_id,
                             path=f"{self.instance_id}://news/{s_id}",
                             name=s_name,
-                            label="news",
                         )
                     )
 
@@ -279,7 +275,6 @@ class MusicMeProvider(MusicProvider):
                             provider=self.instance_id,
                             path=f"{self.instance_id}://radios/{t_id}",
                             name=f"{t_name} ({theme.get('radiocount', '')})",
-                            label="radios",
                         )
                     )
 
@@ -772,7 +767,7 @@ class MusicMeProvider(MusicProvider):
 
         try:
             async with self._session.post(
-                f"{WEB_BASE}/mon-musicme/connexion/",
+                LOGIN_URL,
                 data={
                     "email": email,
                     "password": password,

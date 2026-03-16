@@ -1,32 +1,32 @@
 """Helpers for the MusicMe provider (crypto, etc.)."""
 
 
-def decrypt(crypted: str) -> str:
+def decrypt(encrypted: str) -> str:
     """Decrypt a MusicMe API response or ticket string.
 
     Reverse-engineered from audioFrame-bundle.min.js (apache_crypto module).
     Algorithm: strip padding, find marker, rearrange halves, hex-decode XOR 0xAA.
     """
-    if len(crypted) < 20:
-        msg = f"Encrypted payload too short ({len(crypted)} chars)"
+    if len(encrypted) < 20:
+        msg = f"Enencrypted payload too short ({len(encrypted)} chars)"
         raise ValueError(msg)
 
     # Strip first 10 and last 8 padding characters
-    crypted = crypted[10 : len(crypted) - 8]
+    encrypted = encrypted[10 : len(encrypted) - 8]
 
     # Find position marker ('8' or 'B' at an odd index within the first 10 chars)
     pos = -1
-    for i in range(min(10, len(crypted))):
-        c = crypted[i]
+    for i in range(min(10, len(encrypted))):
+        c = encrypted[i]
         if i % 2 == 1 and c in ("8", "B"):
             pos = i + 1
             break
     if pos == -1:
         pos = 10
-    crypted = crypted[pos:]
+    encrypted = encrypted[pos:]
 
     # Rearrange: swap two halves of the hex string
-    test = list(crypted)
+    test = list(encrypted)
     first_length = len(test) // 2 - (len(test) // 2) % 2
     sec_length = len(test) - first_length
     chars: list[str] = [""] * len(test)
@@ -35,10 +35,10 @@ def decrypt(crypted: str) -> str:
     for j in range(sec_length):
         chars[j] = test[first_length + j]
 
-    decrypted_chars: list[int] = []
+    deencrypted_chars: list[int] = []
     for i in range(len(chars) // 2):
         hex_str = chars[2 * i] + chars[2 * i + 1]
         b = int(hex_str, 16)
-        decrypted_chars.append(b ^ 0xAA)
+        deencrypted_chars.append(b ^ 0xAA)
 
-    return "".join(chr(b) for b in decrypted_chars)
+    return "".join(chr(b) for b in deencrypted_chars)
