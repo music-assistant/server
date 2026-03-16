@@ -9,11 +9,21 @@ from urllib.parse import unquote, urljoin
 
 import aiohttp
 from defusedxml import ElementTree
-from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.errors import LoginFailed, ProviderUnavailableError, SetupFailedError
 
 LOGGER = logging.getLogger(__name__)
 
 DAV_NAMESPACE = {"d": "DAV:"}
+
+PROPFIND_BODY = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:">
+    <d:prop>
+        <d:resourcetype/>
+        <d:getcontentlength/>
+        <d:getlastmodified/>
+        <d:displayname/>
+    </d:prop>
+</d:propfind>"""
 
 
 @dataclass
@@ -26,16 +36,6 @@ class WebDAVItem:
     size: int | None = None
     last_modified: str | None = None
 
-    @property
-    def ext(self) -> str | None:
-        """Return file extension."""
-        if self.is_dir:
-            return None
-        try:
-            return self.name.rsplit(".", 1)[1].lower()
-        except IndexError:
-            return None
-
 
 async def webdav_propfind(
     session: aiohttp.ClientSession,
@@ -44,65 +44,45 @@ async def webdav_propfind(
     timeout: int = 30,
     auth: aiohttp.BasicAuth | None = None,
 ) -> list[WebDAVItem]:
+    """Execute a PROPFIND request on a WebDAV resource.
+
+    :param session: Active HTTP session.
+    :param url: WebDAV URL to query.
+    :param depth: Depth level (0=properties only, 1=immediate children).
+    :param timeout: Request timeout in seconds.
+    :param auth: Optional BasicAuth credentials.
+    :returns: List of WebDAVItem objects.
+    :raises LoginFailed: Authentication failed (401/403).
+    :raises SetupFailedError: Server error during setup.
+    :raises ProviderUnavailableError: Connection or timeout error.
     """
-    Execute a PROPFIND request on a WebDAV resource.
-
-    Args:
-        session: Active HTTP session with auth configured
-        url: WebDAV URL to query
-        depth: Depth level (0=properties only, 1=immediate children)
-        timeout: Request timeout in seconds
-
-    Returns:
-        List of WebDAVItem objects
-
-    Raises:
-        LoginFailed: Authentication failed
-        SetupFailedError: Connection or other setup issues
-    """
-    headers = {
-        "Depth": str(depth),
-        "Content-Type": "application/xml; charset=utf-8",
-    }
-
-    body = """<?xml version="1.0" encoding="utf-8"?>
-<d:propfind xmlns:d="DAV:">
-    <d:prop>
-        <d:resourcetype/>
-        <d:getcontentlength/>
-        <d:getlastmodified/>
-        <d:displayname/>
-    </d:prop>
-</d:propfind>"""
+    headers = {"Depth": str(depth), "Content-Type": "application/xml; charset=utf-8"}
 
     try:
         async with session.request(
             "PROPFIND",
             url,
             headers=headers,
-            data=body,
+            data=PROPFIND_BODY,
             auth=auth,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             if resp.status == 401:
-                raise LoginFailed(f"Authentication failed for WebDAV server: {url}")
+                raise LoginFailed("Authentication failed for WebDAV server")
             if resp.status == 403:
-                raise LoginFailed(f"Access forbidden for WebDAV server: {url}")
+                raise LoginFailed("Access forbidden for WebDAV server")
             if resp.status == 404:
-                LOGGER.debug("WebDAV resource not found: %s", url)
                 return []
             if resp.status >= 400:
-                raise SetupFailedError(
-                    f"WebDAV PROPFIND failed with status {resp.status} for {url}"
-                )
+                raise SetupFailedError(f"WebDAV PROPFIND failed with status {resp.status}")
 
             response_text = await resp.text()
             return _parse_propfind_response(response_text, url)
 
     except TimeoutError as err:
-        raise SetupFailedError(f"WebDAV connection timeout: {url}") from err
+        raise ProviderUnavailableError(f"WebDAV connection timeout: {url}") from err
     except aiohttp.ClientError as err:
-        raise SetupFailedError(f"WebDAV connection error: {err}") from err
+        raise ProviderUnavailableError(f"WebDAV connection error: {err}") from err
 
 
 def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVItem]:
@@ -114,6 +94,7 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
         return []
 
     items: list[WebDAVItem] = []
+    base_url_normalized = base_url.rstrip("/")
 
     for response_elem in root.findall("d:response", DAV_NAMESPACE):
         href_elem = response_elem.find("d:href", DAV_NAMESPACE)
@@ -123,10 +104,9 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
         href = unquote(href_elem.text.rstrip("/"))
 
         # Skip the base directory itself
-        if href.rstrip("/") == base_url.rstrip("/"):
+        if href.rstrip("/") == base_url_normalized:
             continue
 
-        # Extract properties
         propstat = response_elem.find("d:propstat", DAV_NAMESPACE)
         if propstat is None:
             continue
@@ -142,7 +122,7 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
             and resourcetype.find("d:collection", DAV_NAMESPACE) is not None
         )
 
-        # Get size
+        # Get size (only for files)
         size = None
         if not is_collection:
             contentlength = prop.find("d:getcontentlength", DAV_NAMESPACE)
@@ -181,40 +161,28 @@ async def webdav_test_connection(
     verify_ssl: bool,
     timeout: int = 10,
 ) -> None:
-    """Test WebDAV connection and authentication."""
+    """Test WebDAV connection and authentication.
+
+    :param base_url: WebDAV server URL.
+    :param username: Optional username.
+    :param password: Optional password.
+    :param verify_ssl: Whether to verify SSL certificates.
+    :param timeout: Connection timeout in seconds.
+    :raises LoginFailed: Authentication failed.
+    :raises SetupFailedError: Connection or configuration error.
+    """
     auth = aiohttp.BasicAuth(username, password) if username and password else None
     connector = aiohttp.TCPConnector(ssl=verify_ssl)
 
-    async with aiohttp.ClientSession(
-        auth=auth,
-        connector=connector,
-        timeout=aiohttp.ClientTimeout(total=timeout),
-    ) as session:
+    async with aiohttp.ClientSession(connector=connector) as session:
         try:
-            items = await webdav_propfind(session, base_url, depth=0)
-            if not items and base_url.rstrip("/") != base_url:
-                # Try without trailing slash
-                items = await webdav_propfind(session, base_url.rstrip("/"), depth=0)
-            # Success if we got any response
-        except aiohttp.ClientResponseError as err:
-            if err.status == 401:
-                raise LoginFailed("Invalid username or password")
-            if err.status == 404:
-                raise SetupFailedError(f"WebDAV path not found: {base_url}")
-            raise SetupFailedError(f"WebDAV connection failed: {err}")
-        except aiohttp.ClientError as err:
-            raise SetupFailedError(f"Cannot connect to WebDAV server: {err}")
-
-
-def normalize_webdav_url(url: str) -> str:
-    """Normalize WebDAV URL by ensuring it ends with a slash."""
-    if not url.endswith("/"):
-        return f"{url}/"
-    return url
+            await webdav_propfind(session, base_url, depth=0, timeout=timeout, auth=auth)
+        except ProviderUnavailableError as err:
+            # During setup, connection errors should be SetupFailedError
+            raise SetupFailedError(str(err)) from err
 
 
 def build_webdav_url(base_url: str, path: str) -> str:
     """Build a WebDAV URL by joining base URL with path."""
-    normalized_base = normalize_webdav_url(base_url)
-    path = path.removeprefix("/")
-    return urljoin(normalized_base, path)
+    normalized_base = base_url if base_url.endswith("/") else f"{base_url}/"
+    return urljoin(normalized_base, path.removeprefix("/"))

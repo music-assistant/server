@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
@@ -15,20 +15,12 @@ from music_assistant_models.errors import (
     SetupFailedError,
 )
 
-from music_assistant.constants import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
-from .constants import (
-    CONF_CONTENT_TYPE,
-    CONF_URL,
-    CONF_VERIFY_SSL,
-)
-from .helpers import build_webdav_url, webdav_propfind, webdav_test_connection
+from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
+from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_connection
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -58,13 +50,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        try:
-            parsed = urlparse(self.base_url)
-            if parsed.path and parsed.path != "/":
-                return PurePosixPath(parsed.path).name
-            return parsed.netloc
-        except (ValueError, TypeError):
-            return "Invalid URL"
+        parsed = urlparse(self.base_url)
+        if parsed.path and parsed.path != "/":
+            return PurePosixPath(parsed.path).name
+        return parsed.netloc
 
     @property
     def _auth(self) -> aiohttp.BasicAuth | None:
@@ -75,57 +64,50 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        try:
-            await webdav_test_connection(
-                self.base_url,
-                self.username,
-                self.password,
-                self.verify_ssl,
-                timeout=10,
-            )
-        except (LoginFailed, SetupFailedError):
-            raise
-        except Exception as err:
-            raise SetupFailedError(f"WebDAV connection failed: {err}") from err
-
+        await webdav_test_connection(
+            self.base_url,
+            self.username,
+            self.password,
+            self.verify_ssl,
+            timeout=10,
+        )
         self.write_access = False
 
     def _build_authenticated_url(self, file_path: str) -> str:
         """Build authenticated WebDAV URL with properly encoded credentials."""
         webdav_url = build_webdav_url(self.base_url, file_path)
+        if not (self.username and self.password):
+            return webdav_url
+
         parsed = urlparse(webdav_url)
+        encoded_username = quote(self.username, safe="")
+        encoded_password = quote(self.password, safe="")
+        netloc = f"{encoded_username}:{encoded_password}@{parsed.netloc}"
+        return urlunparse(
+            (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+        )
 
-        if self.username and self.password:
-            encoded_username = quote(self.username, safe="")
-            encoded_password = quote(self.password, safe="")
-            netloc = f"{encoded_username}:{encoded_password}@{parsed.netloc}"
-            return urlunparse(
-                (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
-            )
-
-        return webdav_url
+    def _normalize_path(self, path: str) -> str:
+        """Convert absolute URL to relative path if needed."""
+        if path.startswith("http"):
+            parsed = urlparse(path)
+            base_parsed = urlparse(self.base_url)
+            return parsed.path[len(base_parsed.path) :].strip("/")
+        return path
 
     async def _exists_impl(self, file_path: str) -> bool:
         """Check if WebDAV resource exists."""
         if not file_path:
             return False
-        # Handle case where absolute URL is passed
-        if file_path.startswith("http"):
-            parsed = urlparse(file_path)
-            base_parsed = urlparse(self.base_url)
-            file_path = parsed.path[len(base_parsed.path) :].strip("/")
+        file_path = self._normalize_path(file_path)
+        webdav_url = build_webdav_url(self.base_url, file_path)
+        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
         try:
-            webdav_url = build_webdav_url(self.base_url, file_path)
-            session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
             items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
             return len(items) > 0 or webdav_url.rstrip("/") == self.base_url.rstrip("/")
-        except (LoginFailed, SetupFailedError):
+        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
-        except aiohttp.ClientError as err:
-            self.logger.debug(f"WebDAV client error during exists check for {file_path}: {err}")
-            return False
-        except Exception as err:
-            self.logger.debug(f"WebDAV exists check failed for {file_path}: {err}")
+        except aiohttp.ClientError:
             return False
 
     async def _resolve_impl(self, file_path: str) -> FileSystemItem:
@@ -133,170 +115,104 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         webdav_url = build_webdav_url(self.base_url, file_path)
         session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
 
-        try:
-            items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
-            if not items:
-                if webdav_url.rstrip("/") == self.base_url.rstrip("/"):
-                    return FileSystemItem(
-                        filename="",
-                        relative_path="",
-                        absolute_path=self._build_authenticated_url(file_path),
-                        is_dir=True,
-                    )
-                raise MediaNotFoundError(f"WebDAV resource not found: {file_path}")
+        items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
+        if not items:
+            # Handle root directory case
+            if webdav_url.rstrip("/") == self.base_url.rstrip("/"):
+                return FileSystemItem(
+                    filename="",
+                    relative_path="",
+                    absolute_path=self._build_authenticated_url(file_path),
+                    is_dir=True,
+                )
+            raise MediaNotFoundError(f"WebDAV resource not found: {file_path}")
 
-            webdav_item = items[0]
-
-            return FileSystemItem(
-                filename=PurePosixPath(file_path).name or webdav_item.name,
-                relative_path=file_path,
-                absolute_path=self._build_authenticated_url(file_path),
-                is_dir=webdav_item.is_dir,
-                checksum=webdav_item.last_modified or "unknown",
-                file_size=webdav_item.size,
-            )
-
-        except MediaNotFoundError:
-            raise
-        except (LoginFailed, SetupFailedError):
-            raise
-        except aiohttp.ClientError as err:
-            raise MediaNotFoundError(f"Failed to resolve WebDAV path {file_path}: {err}") from err
+        webdav_item = items[0]
+        return FileSystemItem(
+            filename=PurePosixPath(file_path).name or webdav_item.name,
+            relative_path=file_path,
+            absolute_path=self._build_authenticated_url(file_path),
+            is_dir=webdav_item.is_dir,
+            checksum=webdav_item.last_modified or "unknown",
+            file_size=webdav_item.size,
+        )
 
     async def _scandir_impl(self, path: str) -> list[FileSystemItem]:
         """List WebDAV directory contents with caching."""
-        # Check cache FIRST
         cache_key = f"scandir_{path}"
         if cached := await self.cache.get(
             key=cache_key,
             provider=self.instance_id,
             category=0,
         ):
-            self.logger.debug(f"Using cached scan results for {path}")
             return cast("list[FileSystemItem]", cached)
 
-        # Handle case where absolute URL is passed (from parent's code)
-        if path.startswith("http"):
-            parsed = urlparse(path)
-            base_parsed = urlparse(self.base_url)
-            path = parsed.path[len(base_parsed.path) :].strip("/")
-            self.logger.debug(f"Converted absolute URL to relative path: {path}")
-
-        self.logger.debug(f"Scanning WebDAV path: {path}")
+        path = self._normalize_path(path)
         webdav_url = build_webdav_url(self.base_url, path)
         session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
 
-        try:
-            webdav_items = await webdav_propfind(session, webdav_url, depth=1, auth=self._auth)
-            self.logger.debug(f"WebDAV returned {len(webdav_items)} items for {path}")
+        webdav_items = await webdav_propfind(session, webdav_url, depth=1, auth=self._auth)
+        filesystem_items = self._convert_webdav_items(webdav_items, webdav_url, path)
 
-            filesystem_items = self._process_webdav_items(webdav_items, webdav_url, path)
-
-            self.logger.debug(f"Parsed {len(filesystem_items)} filesystem items for {path}")
-
-            # Cache the results for 5 minutes
-            await self.cache.set(
-                key=cache_key,
-                data=filesystem_items,
-                provider=self.instance_id,
-                category=0,
-                expiration=300,
-            )
-
-            return filesystem_items
-
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
-            raise
-        except aiohttp.ClientError as err:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                f"WebDAV client error listing directory {path}: {err}",
-            )
-            raise ProviderUnavailableError(f"WebDAV server connection failed: {err}") from err
-        except Exception as err:
-            self.logger.exception(f"Failed to list WebDAV directory {path}: {err}")
-            return []
-
-    def _process_webdav_items(
-        self,
-        webdav_items: list[Any],
-        webdav_url: str,
-        path: str,
-    ) -> list[FileSystemItem]:
-        """Process WebDAV items into FileSystemItems."""
-        filesystem_items: list[FileSystemItem] = []
-
-        # Parse base path component for comparison
-        base_parsed = urlparse(self.base_url)
-        base_path = base_parsed.path.rstrip("/")
-        current_path = urlparse(webdav_url).path.rstrip("/")
-
-        for webdav_item in webdav_items:
-            if item := self._process_single_webdav_item(webdav_item, base_path, current_path, path):
-                filesystem_items.append(item)
-
+        await self.cache.set(
+            key=cache_key,
+            data=filesystem_items,
+            provider=self.instance_id,
+            category=0,
+            expiration=300,
+        )
         return filesystem_items
 
-    def _process_single_webdav_item(
+    def _convert_webdav_items(
         self,
-        webdav_item: Any,
-        base_path: str,
-        current_path: str,
+        webdav_items: list[WebDAVItem],
+        webdav_url: str,
         scan_path: str,
-    ) -> FileSystemItem | None:
-        """Process a single WebDAV item."""
-        self.logger.debug(
-            f"Processing item: name={webdav_item.name}, "
-            f"href={webdav_item.href[:100]}, is_dir={webdav_item.is_dir}"
-        )
+    ) -> list[FileSystemItem]:
+        """Convert WebDAV items to FileSystemItems."""
+        base_path = urlparse(self.base_url).path.rstrip("/")
+        current_path = urlparse(webdav_url).path.rstrip("/")
+        result: list[FileSystemItem] = []
 
-        if "#recycle" in webdav_item.name.lower():
-            return None
+        for item in webdav_items:
+            # Skip recycle bins
+            if "#recycle" in item.name.lower():
+                continue
 
-        decoded_name = unquote(webdav_item.name)
-        decoded_href = unquote(webdav_item.href)
-
-        # If href is a full URL, extract just the path component
-        if decoded_href.startswith("http"):
-            href_parsed = urlparse(decoded_href)
-            href_path = href_parsed.path
-        else:
-            href_path = decoded_href
-
-        # Skip the directory itself
-        if href_path.rstrip("/") == current_path:
-            self.logger.debug(f"Skipping directory itself: {href_path}")
-            return None
-
-        self.logger.debug(f"After skip check, processing: {webdav_item.name}")
-
-        # Calculate relative path by stripping base path
-        if href_path.startswith((base_path + "/", base_path)):
-            relative_path = href_path[len(base_path) :].strip("/")
-        else:
-            # Fallback: construct from current path + name
-            relative_path = (
-                str(PurePosixPath(scan_path) / decoded_name) if scan_path else decoded_name
+            decoded_href = unquote(item.href)
+            href_path = (
+                urlparse(decoded_href).path if decoded_href.startswith("http") else decoded_href
             )
 
-        self.logger.debug(
-            f"Item: {decoded_name}, href: {decoded_href[:80]}, relative_path: {relative_path}"
-        )
+            # Skip the directory itself
+            if href_path.rstrip("/") == current_path:
+                continue
 
-        return FileSystemItem(
-            filename=decoded_name,
-            relative_path=relative_path,
-            absolute_path=self._build_authenticated_url(relative_path),
-            is_dir=webdav_item.is_dir,
-            checksum=webdav_item.last_modified or "unknown",
-            file_size=webdav_item.size,
-        )
+            # Calculate relative path
+            if href_path.startswith(base_path):
+                relative_path = href_path[len(base_path) :].strip("/")
+            else:
+                decoded_name = unquote(item.name)
+                relative_path = (
+                    str(PurePosixPath(scan_path) / decoded_name) if scan_path else decoded_name
+                )
+
+            result.append(
+                FileSystemItem(
+                    filename=unquote(item.name),
+                    relative_path=relative_path,
+                    absolute_path=self._build_authenticated_url(relative_path),
+                    is_dir=item.is_dir,
+                    checksum=item.last_modified or "unknown",
+                    file_size=item.size,
+                )
+            )
+        return result
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
         webdav_url = build_webdav_url(self.base_url, path)
         session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
-
         async with session.get(webdav_url, auth=self._auth) as resp:
             if resp.status != 200:
                 raise MediaNotFoundError(f"Image not found: {path}")
@@ -325,25 +241,16 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         """Recursively scan WebDAV directory."""
         try:
             items = await self._scandir_impl(path)
-
-            # Separate directories and files
-            dirs = [item for item in items if item.is_dir]
-            files = [item for item in items if not item.is_dir]
-
-            # Process files in executor (blocking operation)
-            for item in files:
-                prev_checksum = file_checksums.get(item.relative_path)
-                # Wrap _process_item in executor since it's blocking
-                if await asyncio.to_thread(self._process_item, item, prev_checksum):
-                    cur_filenames.add(item.relative_path)
-
-            # Recurse into directories
-            for dir_item in dirs:
-                await self._scan_recursive(dir_item.relative_path, cur_filenames, file_checksums)
-
         except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
         except aiohttp.ClientError as err:
-            self.logger.warning(f"WebDAV client error scanning path {path}: {err}")
-        except Exception as err:
-            self.logger.warning(f"Failed to scan WebDAV path {path}: {err}")
+            self.logger.warning("WebDAV error scanning %s: %s", path, err)
+            return
+
+        for item in items:
+            if item.is_dir:
+                await self._scan_recursive(item.relative_path, cur_filenames, file_checksums)
+            else:
+                prev_checksum = file_checksums.get(item.relative_path)
+                if await asyncio.to_thread(self._process_item, item, prev_checksum):
+                    cur_filenames.add(item.relative_path)
