@@ -237,6 +237,7 @@ async def get_config_entries(
             ),
             depends_on=CONF_PARTY_DISPLAY_LYRICS,
             category="Karaoke",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_ANTI_BURN_IN,
