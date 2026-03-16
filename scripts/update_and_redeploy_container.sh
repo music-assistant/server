@@ -23,9 +23,9 @@ IMAGE_NAME="${IMAGE_NAME:-ma-server-local}"
 MASS_VERSION="${MASS_VERSION:-0.0.0}"
 NETWORK_MODE="${NETWORK_MODE:-host}"
 
-DATA_DIR="${DATA_DIR:-/store/home-assistant/mass_data}"
-MUSIC_DIR="${MUSIC_DIR:-/mnt/crypt/ssd_1tb_nvme/store/copyparty/martin/MP3s/}"
-TIMEZONE_FILE="${TIMEZONE_FILE:-/etc/localtime}"
+DATA_DIR="${DATA_DIR:-/path/to/mass_data}"
+MUSIC_DIR="${MUSIC_DIR:-/path/to/music}"
+TIMEZONE_FILE="${TIMEZONE_FILE:-/path/to/timezone/file}"
 
 TOTAL_STEPS=5
 if [[ -n "$FRONTEND_PATH_ARG" ]]; then
