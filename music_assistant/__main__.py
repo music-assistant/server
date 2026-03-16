@@ -246,7 +246,8 @@ def main() -> None:
         loop.set_exception_handler(_global_loop_exception_handler)
         try:
             await mass.start()
-        except Exception:
+        except Exception as e:
+            logger.exception("Failed to start MusicAssistant: %s", e)
             # exit immediately if startup fails
             loop.stop()
             raise
