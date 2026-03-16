@@ -8,7 +8,7 @@ def decrypt(encrypted: str) -> str:
     Algorithm: strip padding, find marker, rearrange halves, hex-decode XOR 0xAA.
     """
     if len(encrypted) < 20:
-        msg = f"Enencrypted payload too short ({len(encrypted)} chars)"
+        msg = f"Encrypted payload too short ({len(encrypted)} chars)"
         raise ValueError(msg)
 
     # Strip first 10 and last 8 padding characters
