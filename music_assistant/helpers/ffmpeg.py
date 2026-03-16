@@ -455,12 +455,13 @@ async def check_ffmpeg_version() -> None:
     # use globals as in-memory cache
     await set_global_cache_values({CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support})
 
-    major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
-    if major_version < MINIMAL_FFMPEG_VERSION:
-        raise AudioError(
-            f"FFmpeg version {version} is not supported. "
-            f"Minimal version required is {MINIMAL_FFMPEG_VERSION}."
-        )
+    if version != "N":  # N-versions are development versions, so we assume they are recent enough
+        major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
+        if major_version < MINIMAL_FFMPEG_VERSION:
+            raise AudioError(
+                f"FFmpeg version {version} is not supported. "
+                f"Minimal version required is {MINIMAL_FFMPEG_VERSION}."
+            )
 
     LOGGER.info(
         "Detected ffmpeg version %s %s",
