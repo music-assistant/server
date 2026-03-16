@@ -45,6 +45,7 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    ATTR_GROUP_VOLUME_LEVEL,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -805,33 +806,37 @@ class Player(ABC):
         """
         Return the group volume level.
 
-        If this player is a group player or syncgroup, this will return the average volume
-        level of all (powered on) child players in the group or None if none of the players
-        within the group support volume control.
+        For group players and syncgroups, returns the stored group volume level
+        managed by the ratio-based group volume algorithm. This value is set
+        once at group formation (bootstrapped from current child volumes) and
+        thereafter changes only via explicit user action through
+        ``set_group_volume``. Returns None if the group volume has not yet been
+        initialized.
 
-        If the player is not a group player or syncgroup, this will return the volume level
-        of the player itself (if set), or None if not supported.
+        For sync leaders backed by a SyncGroupPlayer, the group volume data
+        lives on the SyncGroupPlayer, so this property falls through to it.
+
+        For non-group players, returns the player's own volume level, or None
+        if volume control is not supported.
         """
         if len(self.state.group_members) == 0:
-            # player is not a group or syncgroup
             if self.state.volume_control == PLAYER_CONTROL_NONE:
                 return None
             return self.state.volume_level
-        # calculate group volume from all (turned on) players
-        group_volume = 0
-        active_players = 0
-        for child_player in self.mass.players.iter_group_members(
-            self, only_powered=True, exclude_self=self.type != PlayerType.PLAYER
-        ):
-            if child_player.state.volume_control == PLAYER_CONTROL_NONE:
-                continue
-            if (child_volume := child_player.state.volume_level) is None:
-                continue
-            group_volume += child_volume
-            active_players += 1
-        if active_players:
-            group_volume = int(group_volume / active_players)
-        return group_volume if active_players else None
+        stored = self.extra_data.get(ATTR_GROUP_VOLUME_LEVEL)
+        if stored is not None:
+            return int(stored)
+        if self.type != PlayerType.GROUP:
+            for group_player in self.mass.players.all_players(return_unavailable=True):
+                if group_player.type != PlayerType.GROUP:
+                    continue
+                if group_player.player_id == self.player_id:
+                    continue
+                if self.player_id in group_player.state.group_members:
+                    gv = group_player.extra_data.get(ATTR_GROUP_VOLUME_LEVEL)
+                    if gv is not None:
+                        return int(gv)
+        return None
 
     @cached_property
     @final
