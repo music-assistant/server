@@ -79,6 +79,10 @@ class _BufferedFfmpegProcessor:
     async def push(self, pcm: bytes) -> None:
         await self._ffmpeg.write(pcm)
 
+    async def write_eof(self) -> None:
+        """Signal no more input, causing ffmpeg to flush its internal buffers."""
+        await self._ffmpeg.write_eof()
+
     @property
     def produced_output_us(self) -> int:
         """Return cumulative output duration currently drained from ffmpeg."""
@@ -94,6 +98,8 @@ class _BufferedFfmpegProcessor:
             missing = target_bytes - len(self._output_buffer)
             read_size = max(self._read_quantum_bytes, missing)
             chunk = await self._ffmpeg.readexactly(read_size)
+            if not chunk:
+                break
             self._output_buffer.extend(chunk)
 
         out = bytes(self._output_buffer[:target_bytes])
@@ -274,6 +280,7 @@ class SendspinPlaybackSession:
         self._member_pipelines: dict[str, _MemberPipeline] = {}
         self._push_stream: PushStream | None = None
         self._playback_running = False
+        self._producer_eof_sent = False
         self._timeline_start_us: int | None = None
         self._first_commit_monotonic_us: int | None = None
         self._produced_audio_us = 0
@@ -371,27 +378,31 @@ class SendspinPlaybackSession:
         """Add a member to the group with DSP-aware lifecycle handling."""
         async with self._state_lock:
             if player_id in self._members:
-                self.pending_join_members.discard(player_id)
                 return
+            self.pending_join_members.add(player_id)
             # Preserve any channel pre-resolved during add_client so join-time
             # role requirements and prepared audio stay on the same channel.
             self._preassigned_channels.setdefault(player_id, uuid4())
-        self.pending_join_members.add(player_id)
         try:
             await self._start_join_catchup(player_id)
-            async with self._state_lock:
-                self._members.add(player_id)
-                self._mapping_dirty = True
         except Exception:
+            async with self._state_lock:
+                self.pending_join_members.discard(player_id)
             await self._release_player_channel(player_id)
             raise
-        finally:
+        # Promote to full member even if already pending to avoid losing
+        # the join when a cancelled task clears our pending flag.
+        async with self._state_lock:
+            if player_id not in self.pending_join_members:
+                return
+            self._members.add(player_id)
+            self._mapping_dirty = True
             self.pending_join_members.discard(player_id)
 
     async def remove_member(self, player_id: str) -> None:
         """Remove a member from the group and clean up per-member playback state."""
-        self.pending_join_members.discard(player_id)
         async with self._state_lock:
+            self.pending_join_members.discard(player_id)
             self._members.discard(player_id)
             self._mapping_dirty = True
             self._pipeline_config_cache.pop(player_id, None)
@@ -403,6 +414,9 @@ class SendspinPlaybackSession:
         """Reconcile session members to exactly the provided set."""
         async with self._state_lock:
             current_members = set(self._members)
+            stale_pending = self.pending_join_members - member_ids
+        for player_id in stale_pending:
+            await self.remove_member(player_id)
         for player_id in current_members - member_ids:
             await self.remove_member(player_id)
         for player_id in member_ids - current_members:
@@ -410,7 +424,7 @@ class SendspinPlaybackSession:
 
     # -- Join catchup ----------------------------------------------------------
 
-    async def _start_join_catchup(self, player_id: str) -> None:
+    async def _start_join_catchup(self, player_id: str) -> None:  # noqa: PLR0915
         """Start dedicated join catchup processor fed from committed history."""
         async with self._state_lock:
             playback_active = self._playback_running and self._push_stream is not None
@@ -436,6 +450,11 @@ class SendspinPlaybackSession:
             await processor.close()
             return
         history_end_us = history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+        writer_task: asyncio.Task[None] | None = None
+        drainer_task: asyncio.Task[None] | None = None
+        snapshot_task: asyncio.Task[None] | None = None
+        state: _JoinCatchupState | None = None
+        registered = False
 
         async def _writer() -> None:
             while True:
@@ -447,30 +466,43 @@ class SendspinPlaybackSession:
         async def _drainer() -> None:
             await processor.drain_forever()
 
-        writer_task = asyncio.create_task(_writer())
-        drainer_task = asyncio.create_task(_drainer())
-        self._attach_task_exception_logger(writer_task, f"join_writer:{player_id}")
-        self._attach_task_exception_logger(drainer_task, f"join_drainer:{player_id}")
+        try:
+            async with self._state_lock:
+                writer_task = asyncio.create_task(_writer())
+                drainer_task = asyncio.create_task(_drainer())
+                self._attach_task_exception_logger(writer_task, f"join_writer_{player_id}")
+                self._attach_task_exception_logger(drainer_task, f"join_drainer_{player_id}")
 
-        state = _JoinCatchupState(
-            processor=processor,
-            input_queue=input_queue,
-            writer_task=writer_task,
-            drainer_task=drainer_task,
-            history_end_us=history_end_us,
-        )
-        async with self._state_lock:
-            self._join_catchup[player_id] = state
-
-        async with self._state_lock:
-            current = self._join_catchup.get(player_id)
-            if current is not None and current.processor is processor:
-                current.snapshot_task = asyncio.create_task(
+                state = _JoinCatchupState(
+                    processor=processor,
+                    input_queue=input_queue,
+                    writer_task=writer_task,
+                    drainer_task=drainer_task,
+                    history_end_us=history_end_us,
+                )
+                self._join_catchup[player_id] = state
+                snapshot_task = asyncio.create_task(
                     self._feed_join_history(player_id, processor, history_snapshot)
                 )
-                self._attach_task_exception_logger(
-                    current.snapshot_task, f"join_snapshot:{player_id}"
-                )
+                self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
+                state.snapshot_task = snapshot_task
+                registered = True
+        except BaseException:
+            if not registered:
+                # If registered, cleanup is handled via _stop_join_catchup/_clear_join_catchup.
+                async with self._state_lock:
+                    current = self._join_catchup.get(player_id)
+                    if current is state:
+                        self._join_catchup.pop(player_id, None)
+                for task in (snapshot_task, drainer_task, writer_task):
+                    if task is None:
+                        continue
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await task
+                with suppress(Exception):
+                    await processor.close()
+            raise
 
     async def _feed_join_history(
         self,
@@ -553,6 +585,9 @@ class SendspinPlaybackSession:
         state.drainer_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await state.drainer_task
+        if self._producer_eof_sent and pipeline.config.requires_transform:
+            with suppress(Exception):
+                await pipeline.processor.write_eof()
         if old_processor is not None and old_processor is not state.processor:
             with suppress(Exception):
                 await old_processor.close()
@@ -586,6 +621,7 @@ class SendspinPlaybackSession:
         async with self._state_lock:
             self._push_stream = push_stream
             self._playback_running = True
+            self._producer_eof_sent = False
             self._history.clear()
             self._produced_audio_us = 0
             self._timeline_start_us = None
@@ -711,6 +747,16 @@ class SendspinPlaybackSession:
             producer_stopped_cleanly = True
         finally:
             if producer_stopped_cleanly and not commit_task.done():
+                # Mark EOF so that catchup processors promoted after this
+                # point also get flushed (see _promote_join_catchup_processor).
+                self._producer_eof_sent = True
+                # Signal EOF to transform pipelines so ffmpeg flushes its
+                # internal buffers instead of blocking on the last read.
+                _, pipelines = await self._snapshot_active_pipelines()
+                for _, pipeline in pipelines:
+                    if pipeline.processor is not None and pipeline.config.requires_transform:
+                        with suppress(Exception):
+                            await pipeline.processor.write_eof()
                 # Producer finished normally; send a None sentinel so the
                 # consumer exits cleanly.  The queue may be full, so retry
                 # with a deadline before falling back to cancellation.
@@ -1123,7 +1169,9 @@ class SendspinPlaybackSession:
 
     def _stop_push_stream(self) -> None:
         """Stop the active PushStream."""
-        self.player.api.group.stop_stream()
+        ps = self._push_stream
+        if ps is not None and not ps.is_stopped:
+            ps.stop()
 
     def _resolve_channel_for_player(self, player_id: str) -> UUID:
         """Channel resolver callback for per-player routing."""
