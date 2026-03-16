@@ -145,6 +145,7 @@ RUN set -x \
         # cifs utils and libnfs are needed for smb and nfs support (file provider)
         cifs-utils \
         libnfs13 \
+        nfs-common \
         # airplay libraries
         openssl \
         libssl-dev \
