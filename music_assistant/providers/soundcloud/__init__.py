@@ -44,6 +44,7 @@ from music_assistant.models.music_provider import MusicProvider
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
 CONF_AAC_SUPPORT = "aac_support"
+CONF_HLS_PREFERENCE = "hls_preference"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -111,6 +112,18 @@ async def get_config_entries(
             description=(
                 "Experimental support to pick 256k AAC streams for Go+ subscriptions,"
                 "currently slow to start streaming (e.g. 10 seconds)"
+            ),
+            advanced=True,
+            required=True,
+            default_value=False,
+        ),
+        ConfigEntry(
+            key=CONF_HLS_PREFERENCE,
+            type=ConfigEntryType.BOOLEAN,
+            label="(Experimental) HLS Preference",
+            description=(
+                "Prefer HLS streams over progressive streams (if available), "
+                "shorter startup time but seeking may be less reliable."
             ),
             advanced=True,
             required=True,
@@ -465,8 +478,16 @@ class SoundcloudMusicProvider(MusicProvider):
             else ("mp3", "opus")
         )
 
-        # Two passes: prefer progressive aac/mp3, fall back to any aac/mp3 (which may be HLS)
-        for preferred_protocol in ("hls", "progressive", None):
+        valid_protocols = (
+            ("hls", "progressive", None)
+            if self.config.get_value(CONF_HLS_PREFERENCE)
+            else ("progressive", "hls", None)
+        )
+
+        # Iterate over all combinations of valid protocols and formats
+        # to yield the best available options first
+        # TODO: make more efficient by sorting by a priority score
+        for preferred_protocol in valid_protocols:
             for preferred_format in valid_formats:
                 for transcoding in transcodings:
                     preset = transcoding.get("preset", "")
@@ -539,6 +560,15 @@ class SoundcloudMusicProvider(MusicProvider):
                             expiration = max(30, int(expire_ts) - int(time.time()) - 10)
                             break
 
+                self.logger.debug(
+                    "Selected SoundCloud stream for track %s: protocol=%s, codec=%s, "
+                    "bitrate=%skbps, expires in %s seconds",
+                    item_id,
+                    stream_type.name,
+                    audio_format.codec_type.name,
+                    audio_format.bit_rate,
+                    expiration,
+                )
                 return StreamDetails(
                     provider=self.instance_id,
                     item_id=item_id,
