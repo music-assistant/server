@@ -366,19 +366,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 self.mass.metadata.schedule_update_metadata(library_item)
             return library_item
         # grab full details from the provider
-        item = await self.get_provider_item(
+        return await self.get_provider_item(
             item_id,
             provider_instance_id_or_domain,
         )
-        # If the provider returned a fallback name (name equals the item id), try to derive
-        # a human-readable name from the URL slug (second-to-last path segment).
-        if original_url and item.name == item_id:
-            parts = original_url.rstrip("/").split("/")
-            if len(parts) >= 2:
-                slug = parts[-2].split("?")[0]
-                if slug and slug != item_id and "-" in slug:
-                    item.name = slug.replace("-", " ").title()
-        return item
 
     async def search(
         self,
