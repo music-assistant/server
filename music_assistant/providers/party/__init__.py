@@ -37,7 +37,6 @@ if TYPE_CHECKING:
 CONF_ENABLE_GUEST_ACCESS = "enable_guest_access"
 CONF_PARTY_PLAYER = "player"
 CONF_PARTY_ALBUM_ART_BACKGROUND = "album_art_background"
-CONF_PARTY_SHOW_PLAYER_CONTROLS = "show_player_controls"
 CONF_ENABLE_RATE_LIMITING = "enable_rate_limiting"
 # Boost song feature
 CONF_ENABLE_BOOST = "enable_boost"
@@ -57,6 +56,7 @@ CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 # Lyrics / Karaoke
 CONF_PARTY_DISPLAY_LYRICS = "display_lyrics"
 CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
+CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
 # QR code instruction text
 CONF_QR_SHOW_INSTRUCTION_TEXT = "qr_show_instruction_text"
 CONF_QR_INSTRUCTION_TEXT = "qr_instruction_text"
@@ -113,9 +113,9 @@ class PartyConfig(DataClassDictMixin):
     skip_song_refill_minutes: int
     # UI settings
     album_art_background: bool
-    show_player_controls: bool
     display_lyrics: bool
     karaoke_mode: bool
+    highlight_ahead: bool
     # Badge colors (hex values)
     request_badge_color: str
     boost_badge_color: str
@@ -188,18 +188,6 @@ async def get_config_entries(
             depends_on=CONF_QR_SHOW_INSTRUCTION_TEXT,
         ),
         ConfigEntry(
-            key=CONF_PARTY_SHOW_PLAYER_CONTROLS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Show Player Controls in Party Dashboard",
-            description=(
-                "Display playback controls (play/pause, skip, volume) in the party dashboard. "
-                "When disabled, the view is frameless and only shows now playing info and search."
-            ),
-            advanced=True,
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-        ),
-        ConfigEntry(
             key=CONF_PARTY_DISPLAY_LYRICS,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
@@ -208,6 +196,7 @@ async def get_config_entries(
                 "Show synchronized lyrics (karaoke-style) in the party dashboard. "
                 "Lyrics are hidden on mobile devices."
             ),
+            category="Karaoke",
         ),
         ConfigEntry(
             key=CONF_PARTY_KARAOKE_MODE,
@@ -220,6 +209,21 @@ async def get_config_entries(
                 "Requires Display Lyrics to be enabled."
             ),
             depends_on=CONF_PARTY_DISPLAY_LYRICS,
+            category="Karaoke",
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_HIGHLIGHT_AHEAD,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Highlight Lyrics Ahead of Time",
+            description=(
+                "When enabled, the lyric line highlight transition finishes exactly "
+                "when the line's timestamp arrives, giving a smooth anticipation effect. "
+                "When disabled, the transition starts at the timestamp instead."
+            ),
+            depends_on=CONF_PARTY_DISPLAY_LYRICS,
+            category="Karaoke",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_ANTI_BURN_IN,
@@ -577,11 +581,9 @@ class PartyPlugin(PluginProvider):
             album_art_background=cast(
                 "bool", self.config.get_value(CONF_PARTY_ALBUM_ART_BACKGROUND)
             ),
-            show_player_controls=cast(
-                "bool", self.config.get_value(CONF_PARTY_SHOW_PLAYER_CONTROLS)
-            ),
             display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_DISPLAY_LYRICS)),
             karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_KARAOKE_MODE)),
+            highlight_ahead=cast("bool", self.config.get_value(CONF_PARTY_HIGHLIGHT_AHEAD)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             qr_show_instruction_text=cast(

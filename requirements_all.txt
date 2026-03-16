@@ -11,7 +11,7 @@ aiojellyfin==0.14.1
 aiomusiccast==0.15.0
 aiortc>=1.6.0
 aiorun==2025.1.1
-aiosendspin==4.3.3
+aiosendspin==4.3.4
 aioslimproto==3.1.7
 aiosonos==0.1.9
 aiosqlite==0.22.1
@@ -46,7 +46,7 @@ music-assistant-models==1.1.107
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post1
 numpy==2.3.5
-orjson==3.11.5
+orjson==3.11.6
 pillow==12.1.1
 pkce==1.0.3
 plexapi==4.17.2

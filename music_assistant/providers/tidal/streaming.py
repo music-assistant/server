@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
+import uuid
+from collections.abc import Callable, Coroutine
 from sqlite3 import OperationalError
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from .constants import CACHE_CATEGORY_ISRC_MAP, CONF_QUALITY
+from .constants import (
+    CACHE_CATEGORY_ISRC_MAP,
+    CACHE_CATEGORY_PLAYBACK_INFO,
+    CACHE_TTL_PLAYBACK_INFO,
+    CONF_QUALITY,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
@@ -40,29 +51,102 @@ class TidalStreamingManager:
                 raise MediaNotFoundError(f"Track {item_id} not found")
 
         quality = self.provider.config.get_value(CONF_QUALITY)
+        cache_key = f"{track.item_id}:{quality}"
 
-        # 3. Get playback info
-        async with self.api.throttler.bypass():
-            api_result = await self.api.get(
-                f"tracks/{track.item_id}/playbackinfopostpaywall",
-                params={
-                    "playbackmode": "STREAM",
-                    "assetpresentation": "FULL",
-                    "audioquality": quality,
-                },
+        # 3. Get playback info (cached to avoid repeated API calls and reduce CDN token churn)
+        stream_data: dict[str, Any] | None = await self.mass.cache.get(
+            cache_key,
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PLAYBACK_INFO,
+        )
+        if stream_data is None:
+            self.provider.logger.debug(
+                "Playback info cache miss for track %s (quality=%s) - fetching from API",
+                track.item_id,
+                quality,
             )
-
-        stream_data = api_result[0] if isinstance(api_result, tuple) else api_result
+            async with self.api.throttler.bypass():
+                api_result = await self.api.get(
+                    f"tracks/{track.item_id}/playbackinfopostpaywall",
+                    params={
+                        "playbackmode": "STREAM",
+                        "assetpresentation": "FULL",
+                        "audioquality": quality,
+                    },
+                )
+            stream_data = api_result[0] if isinstance(api_result, tuple) else api_result
+            await self.mass.cache.set(
+                cache_key,
+                stream_data,
+                provider=self.provider.instance_id,
+                category=CACHE_CATEGORY_PLAYBACK_INFO,
+                expiration=CACHE_TTL_PLAYBACK_INFO,
+            )
+        else:
+            self.provider.logger.debug(
+                "Playback info cache hit for track %s (quality=%s)",
+                track.item_id,
+                quality,
+            )
 
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
+        self.provider.logger.debug(
+            "Tidal playback info for track %s: manifestMimeType=%s audioQuality=%s codec=%s",
+            track.item_id,
+            manifest_type,
+            stream_data.get("audioQuality"),
+            stream_data.get("codec"),
+        )
         if "dash+xml" in manifest_type and "manifest" in stream_data:
-            url = f"data:application/dash+xml;base64,{stream_data['manifest']}"
+            # Tidal returns the DASH manifest as inline base64 content. Passing a data: URI
+            # directly to ffmpeg is unreliable — its DASH demuxer stops processing after
+            # buffering an initial batch of segments and never fetches the rest, resulting in
+            # only a fraction of the track being played. We therefore serve the decoded
+            # manifest XML from MA's in-memory stream server so that ffmpeg receives a proper
+            # HTTP URL. ffmpeg then connects directly to Tidal's CDN for all audio segments
+            # without MA acting as a proxy for the audio data.
+            try:
+                manifest_bytes = base64.b64decode(stream_data["manifest"])
+            except (binascii.Error, TypeError, ValueError) as err:
+                self.provider.logger.warning(
+                    "Invalid DASH manifest for track %s, evicting cache entry: %s",
+                    track.item_id,
+                    err,
+                )
+                await self.mass.cache.delete(
+                    cache_key,
+                    provider=self.provider.instance_id,
+                    category=CACHE_CATEGORY_PLAYBACK_INFO,
+                )
+                raise MediaNotFoundError(
+                    f"Invalid DASH manifest for track {track.item_id}"
+                ) from err
+            manifest_id = uuid.uuid4().hex
+            route_path = f"/tidal-dash/{manifest_id}.mpd"
+            unregister = self.mass.streams.register_dynamic_route(
+                route_path,
+                self._make_manifest_handler(manifest_bytes, self.provider.logger, track.item_id),
+                method="GET",
+            )
+            url = f"{self.mass.streams.base_url}{route_path}"
+            self.provider.logger.debug(
+                "Using DASH manifest (stream server route %s) for track %s",
+                route_path,
+                track.item_id,
+            )
+            # Unregister the route once the track duration has elapsed.
+            self.mass.create_task(
+                self._async_unregister_manifest_route(
+                    unregister, route_path, (track.duration or 600) + 60
+                )
+            )
         else:
             urls = stream_data.get("urls", [])
             if not urls:
                 raise MediaNotFoundError("No stream URL found")
             url = urls[0]
+            self.provider.logger.debug("Using direct URL for track %s", track.item_id)
 
         # 5. Determine format
         audio_quality = stream_data.get("audioQuality")
@@ -98,6 +182,31 @@ class TidalStreamingManager:
             can_seek=True,
             allow_seek=True,
         )
+
+    @staticmethod
+    def _make_manifest_handler(
+        manifest_bytes: bytes,
+        logger: Any,
+        track_id: str,
+    ) -> Callable[[web.Request], Coroutine[Any, Any, web.Response]]:
+        """Return an aiohttp request handler that serves the given manifest bytes."""
+
+        async def _handler(_request: web.Request) -> web.Response:
+            logger.debug("Serving DASH manifest to ffmpeg for track %s", track_id)
+            return web.Response(
+                body=manifest_bytes,
+                content_type="application/dash+xml",
+            )
+
+        return _handler
+
+    async def _async_unregister_manifest_route(
+        self, unregister: Callable[[], None], route_path: str, delay: float
+    ) -> None:
+        """Call unregister after delay seconds to clean up the temporary manifest route."""
+        await asyncio.sleep(delay)
+        unregister()
+        self.provider.logger.debug("Unregistered DASH manifest route %s", route_path)
 
     async def _async_update_provider_mapping_audio_format(
         self,

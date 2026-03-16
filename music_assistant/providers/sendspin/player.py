@@ -294,6 +294,14 @@ class SendspinPlayer(Player):
         )
         await self.playback_session.sync_members(set(desired_session_members))
 
+    def _schedule_membership_sync(self, group: SendspinGroup) -> None:
+        """Schedule a coalesced membership reconciliation task for this player."""
+        self.mass.create_task(
+            self._sync_membership_from_group(group),
+            task_id=f"sendspin_membership_sync_{self.player_id}",
+            abort_existing=True,
+        )
+
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
         match event:
@@ -321,7 +329,7 @@ class SendspinPlayer(Player):
                 # Update in case this is a newly created group
                 # GroupMemberAddedEvent or GroupMemberRemovedEvent will be fired before this
                 # so group members are already up to date at this point
-                self.mass.create_task(self._sync_membership_from_group(new_group))
+                self._schedule_membership_sync(new_group)
                 self.update_state()
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
@@ -357,12 +365,10 @@ class SendspinPlayer(Player):
                 if client_id not in self._attr_group_members:
                     self._attr_group_members.append(client_id)
                     self.update_state()
-                self.mass.create_task(self.playback_session.add_member(client_id))
-                self.mass.create_task(self._sync_membership_from_group(group))
+                self._schedule_membership_sync(group)
             case GroupMemberRemovedEvent(client_id=client_id):
-                self.mass.create_task(self.playback_session.remove_member(client_id))
                 self.mass.create_task(self._handle_group_member_removed(group, client_id))
-                self.mass.create_task(self._sync_membership_from_group(group))
+                self._schedule_membership_sync(group)
             case GroupDeletedEvent():
                 pass
             case ControllerEvent() as controller_event:
