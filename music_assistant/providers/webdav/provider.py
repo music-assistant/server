@@ -16,7 +16,9 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.providers.filesystem_local.constants import SUPPORTED_EXTENSIONS
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
@@ -211,6 +213,16 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
+        # Check if this is an audio file with embedded image
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        if ext in SUPPORTED_EXTENSIONS:
+            # Use authenticated URL for ffmpeg to extract embedded image
+            auth_url = self._build_authenticated_url(path)
+            if img_data := await get_embedded_image(auth_url):
+                return img_data
+            raise MediaNotFoundError(f"No embedded image found: {path}")
+
+        # For actual image files, fetch the raw bytes
         webdav_url = build_webdav_url(self.base_url, path)
         session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
         async with session.get(webdav_url, auth=self._auth) as resp:
