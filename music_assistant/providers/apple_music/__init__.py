@@ -867,7 +867,7 @@ class AppleMusicProvider(MusicProvider):
                 ) as response:
                     response.raise_for_status()
                     content = await response.json(loads=json_loads)
-            except ClientError as err:
+            except (ClientError, ValueError) as err:
                 raise MediaNotFoundError(
                     f"Failed to get stream for radio station {station_id}: {err}"
                 ) from err

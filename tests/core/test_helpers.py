@@ -206,7 +206,7 @@ async def test_apple_music_uri_parsing() -> None:
     )
     assert media_type == MediaType.PLAYLIST
     assert item_id == "ra.111222333"
-    # query string stripped
+    # query string stripped (non-track query params)
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/album/some-album/1234567890?itsct=music_box"
     )
