@@ -86,7 +86,8 @@ class MusicMeProvider(MusicProvider):
     def _session(self) -> aiohttp.ClientSession:
         """Return the provider's dedicated HTTP session."""
         if self._http_session is None or self._http_session.closed:
-            self._http_session = aiohttp.ClientSession()
+            msg = "HTTP session not initialized — was handle_async_init called?"
+            raise RuntimeError(msg)
         return self._http_session
 
     # ---- search ----
