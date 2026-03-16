@@ -96,15 +96,7 @@ class ProgressGuard:
         mass external updates. Here, we compare this property against a potential
         stored one.
         """
-        item_id = abs_progress.library_item_id
-        episode_id = abs_progress.episode_id
-        stored_progress = self._get_progress(item_id=item_id, episode_id=episode_id)
-        if stored_progress is None:
-            return True
-        return (
-            int(time.time() * 1000) - stored_progress.last_update_ms
-            >= self._min_time_between_updates_ms
-        )
+        return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
 
     def guard_ok_mass(self, item_id: str, episode_id: str | None = None) -> bool:
         """Check, if we may update against a mass internal item.
