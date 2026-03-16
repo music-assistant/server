@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
+    SetupFailedError,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -69,8 +70,8 @@ class MusicMeProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
-            msg = "Invalid login credentials"
-            raise LoginFailed(msg)
+            msg = "Missing MusicMe email or password"
+            raise SetupFailedError(msg)
         self._http_session = aiohttp.ClientSession()
         self.throttler = ThrottlerManager(rate_limit=1, period=1)
         await self._login()
@@ -90,7 +91,7 @@ class MusicMeProvider(MusicProvider):
 
     # ---- search ----
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 3)
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
@@ -150,28 +151,28 @@ class MusicMeProvider(MusicProvider):
             return [
                 BrowseFolder(
                     item_id="home",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     path=f"{self.instance_id}://home",
                     name="A l'affiche",
                     label="home",
                 ),
                 BrowseFolder(
                     item_id="news",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     path=f"{self.instance_id}://news",
                     name="Nouveautés",
                     label="news",
                 ),
                 BrowseFolder(
                     item_id="tops",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     path=f"{self.instance_id}://tops",
                     name="Top artistes",
                     label="tops",
                 ),
                 BrowseFolder(
                     item_id="radios",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     path=f"{self.instance_id}://radios",
                     name="Radios par thème",
                     label="radios",
@@ -193,6 +194,7 @@ class MusicMeProvider(MusicProvider):
             return await self._browse_radio_themes(sub_id)
         return []
 
+    @use_cache(3600)
     async def _browse_home(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse the MusicMe homepage."""
         data = await self._api_get("/home")
@@ -204,6 +206,7 @@ class MusicMeProvider(MusicProvider):
                 items.append(self._parse_radio(entry))
         return items
 
+    @use_cache(3600)
     async def _browse_news(
         self, style_id: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -225,7 +228,7 @@ class MusicMeProvider(MusicProvider):
                     results.append(
                         BrowseFolder(
                             item_id=f"news_{s_id}",
-                            provider=self.domain,
+                            provider=self.instance_id,
                             path=f"{self.instance_id}://news/{s_id}",
                             name=s_name,
                             label="news",
@@ -237,6 +240,7 @@ class MusicMeProvider(MusicProvider):
                 results.append(self._parse_album(album_obj))
         return results
 
+    @use_cache(3600)
     async def _browse_tops(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse top artists."""
         data = await self._api_get(
@@ -250,6 +254,7 @@ class MusicMeProvider(MusicProvider):
                 results.append(self._parse_artist(artist_obj))
         return results
 
+    @use_cache(3600)
     async def _browse_radio_themes(
         self, theme_id: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -270,7 +275,7 @@ class MusicMeProvider(MusicProvider):
                     results.append(
                         BrowseFolder(
                             item_id=f"radios_{t_id}",
-                            provider=self.domain,
+                            provider=self.instance_id,
                             path=f"{self.instance_id}://radios/{t_id}",
                             name=f"{t_name} ({theme.get('radiocount', '')})",
                             label="radios",
@@ -354,28 +359,6 @@ class MusicMeProvider(MusicProvider):
         return result
 
     # ---- library ----
-
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve MusicMe thematic radios as radio stations."""
-        data = await self._api_get(
-            "/radios?filters={theme:0}&resources=themes,theme-airplays{maxResults:100},home"
-        )
-        if not data:
-            return
-        for item in data.get("results", {}).get("theme-airplays", []):
-            if item.get("id"):
-                yield self._parse_radio(item)
-
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get a single radio by id."""
-        data = await self._api_get(f"/airplay/{prov_radio_id}?resources=tracks")
-        if data and "item" in data:
-            return self._parse_radio(data["item"])
-        async for radio in self.get_library_radios():
-            if radio.item_id == prov_radio_id:
-                return radio
-        msg = f"Radio {prov_radio_id} not found"
-        raise MediaNotFoundError(msg)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from MusicMe."""
@@ -643,8 +626,12 @@ class MusicMeProvider(MusicProvider):
             if art_obj.get("id"):
                 track.artists.append(self._parse_artist(art_obj))
         if track_obj.get("album"):
-            track.album = self._parse_album(
-                {"barcode": barcode.split("-", maxsplit=1)[0], "name": track_obj["album"]}
+            album_barcode = barcode.split("-", maxsplit=1)[0]
+            track.album = ItemMapping(
+                item_id=album_barcode,
+                provider=self.instance_id,
+                name=track_obj["album"],
+                media_type=MediaType.ALBUM,
             )
         if cover := track_obj.get("cover_url"):
             track.metadata.add_image(
@@ -841,19 +828,24 @@ class MusicMeProvider(MusicProvider):
         url = f"{url}{sep}{self._build_base_params()}"
 
         self.logger.debug("GET %s", endpoint.split("?", maxsplit=1)[0])
-        async with self._session.get(url) as response:
-            if response.status == 429:
-                try:
-                    backoff = min(int(response.headers.get("Retry-After", 10)), 300)
-                except (ValueError, TypeError):
-                    backoff = 10
-                raise ResourceTemporarilyUnavailable("Rate limited", backoff_time=backoff)
-            if response.status in (502, 503):
-                raise ResourceTemporarilyUnavailable(backoff_time=30)
-            if response.status == 404:
-                return None
-            response.raise_for_status()
-            raw = await response.text()
+        try:
+            async with self._session.get(url) as response:
+                if response.status == 429:
+                    try:
+                        backoff = min(int(response.headers.get("Retry-After", 10)), 300)
+                    except (ValueError, TypeError):
+                        backoff = 10
+                    raise ResourceTemporarilyUnavailable("Rate limited", backoff_time=backoff)
+                if response.status in (502, 503):
+                    raise ResourceTemporarilyUnavailable(backoff_time=30)
+                if response.status == 404:
+                    return None
+                response.raise_for_status()
+                raw = await response.text()
+        except aiohttp.ClientError as err:
+            path = endpoint.split("?", maxsplit=1)[0]
+            self.logger.warning("Connection error for %s: %s", path, err)
+            return None
 
         try:
             result: dict[str, Any] = json_loads(decrypt(raw.strip()))

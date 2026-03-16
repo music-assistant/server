@@ -7,7 +7,6 @@ from music_assistant_models.enums import ProviderFeature
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
