@@ -133,7 +133,10 @@ class MusicMeProvider(MusicProvider):
 
         :param path: The path to browse.
         """
-        if not path or "://" not in path:
+        sub_path = ""
+        if path and "://" in path:
+            sub_path = path.split("://", 1)[1]
+        if not path or not sub_path:
             return [
                 BrowseFolder(
                     item_id="home",
@@ -161,7 +164,6 @@ class MusicMeProvider(MusicProvider):
                 ),
             ]
 
-        sub_path = path.split("://", 1)[1]
         parts = [p for p in sub_path.split("/") if p]
         section = parts[0] if parts else ""
         sub_id = parts[1] if len(parts) > 1 else None
