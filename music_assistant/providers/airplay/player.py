@@ -462,19 +462,19 @@ class AirPlayPlayer(Player):
                     category="protocol_generic",
                 )
             )
-        if protocol is StreamingProtocol.AIRPLAY2:
-            entries.append(
-                ConfigEntry(
-                    key=CONF_AP2PASSWORD,
-                    type=ConfigEntryType.SECURE_STRING,
-                    label=CONF_AP2PASSWORD,
-                    default_value=None,
-                    value=values.get(CONF_PAIRING_PASSWORD) if values else None,
-                    required=False,
-                    hidden=True,
-                    category="protocol_generic",
+            if protocol is StreamingProtocol.AIRPLAY2:
+                entries.append(
+                    ConfigEntry(
+                        key=CONF_AP2PASSWORD,
+                        type=ConfigEntryType.SECURE_STRING,
+                        label=CONF_AP2PASSWORD,
+                        default_value=None,
+                        value=values.get(CONF_PAIRING_PASSWORD) if values else None,
+                        required=False,
+                        hidden=True,
+                        category="protocol_generic",
+                    )
                 )
-            )
         return entries
 
     async def _handle_pairing_action(
@@ -553,22 +553,24 @@ class AirPlayPlayer(Player):
         self.logger.debug(f"_finish_pairing for protocol: {protocol_name} with values: {values}")
         if not values:
             return
-
-        if self._requires_password_pairing():
-            pin = values.get(CONF_PAIRING_PASSWORD)
-            if not pin:
-                self.logger.warning("No password configured for pairing")
-                return
-        else:
+        pin = None
+        if self._requires_pin_pairing():
             pin = values.get(CONF_PAIRING_PIN)
             if not pin:
                 self.logger.warning("No PIN provided for pairing")
+                return
+        elif self._requires_password_pairing():
+            pin = values.get(CONF_PAIRING_PASSWORD)
+            if not pin:
+                self.logger.warning("No password configured for pairing")
                 return
 
         if not self._active_pairing:
             self.logger.warning(f"No active pairing session for {self.display_name}")
             return
-
+        if not pin:
+            self.logger.warning("No authentication method provided (PIN or password)")
+            return
         credentials = await self._active_pairing.finish_pairing(pin=str(pin))
         self._active_pairing = None
 
