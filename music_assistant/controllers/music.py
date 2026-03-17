@@ -2087,6 +2087,9 @@ class MusicController(CoreController):
         # create indexes and triggers if needed
         await self.__create_database_indexes()
         await self.__create_database_triggers()
+        if prev_version == 0:
+            # fresh install - populate default genres
+            await self.genres.restore_default_genres()
         # compact db
         self.logger.debug("Compacting database...")
         try:
