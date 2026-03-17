@@ -301,14 +301,16 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
-        hide_empty: bool = True,
+        hide_empty: bool | None = None,
         **kwargs: Any,
     ) -> list[Genre]:
         """Get genres in the library.
 
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
-        :param hide_empty: If True (default), only return genres that have media mappings.
-            Set to False to return all genres including unmapped ones.
+        :param hide_empty: Controls which genres are returned.
+            True: only return genres that have media mappings.
+            False: return all genres including unmapped ones.
+            None (default): only return default genres (those with a translation_key).
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -321,7 +323,9 @@ class GenreController(MediaControllerBase[Genre]):
         extra_parts: list[str] | None = None
         if search:
             extra_params = {"search_raw": f"%{search.strip().lower()}%"}
-        if hide_empty:
+        if hide_empty is None:
+            extra_parts = [f"{self.db_table}.translation_key IS NOT NULL"]
+        elif hide_empty:
             gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
             extra_parts = [
                 f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"

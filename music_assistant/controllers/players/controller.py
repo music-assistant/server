@@ -1510,8 +1510,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # ignore small changes in elapsed time
             prev_value = changed_values[ATTR_ELAPSED_TIME][0] or 0
             new_value = changed_values[ATTR_ELAPSED_TIME][1] or 0
-            if abs(prev_value - new_value) < 5:
-                return
+            if abs(prev_value - new_value) > 1.0:
+                self.mass.player_queues.on_player_elapsed_time_corrected(player)
+            return
 
         # signal update to the playerqueue
         if player.state.type != PlayerType.PROTOCOL:

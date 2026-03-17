@@ -13,6 +13,7 @@ from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_AP2PASSWORD,
 )
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
@@ -71,8 +72,11 @@ class AirPlay2Stream(AirPlayProtocol):
 
         # Get AirPlay credentials if available (for Apple devices that require pairing)
         airplay_credentials: str | None = None
+        airplay_password: str | None = None
         if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
             airplay_credentials = str(creds)
+            if ap2_password := self.player.config.get_value(CONF_AP2PASSWORD):
+                airplay_password = str(ap2_password)
 
         # Get the provider's DACP ID for remote control callbacks
         prov = cast("AirPlayProvider", self.prov)
@@ -110,6 +114,8 @@ class AirPlay2Stream(AirPlayProtocol):
         if airplay_credentials:
             if len(airplay_credentials) == 192:
                 cli_args += ["--auth", airplay_credentials]
+                if airplay_password:
+                    cli_args += ["--password", airplay_password]
             else:
                 self.player.logger.warning(
                     "Invalid credentials length: %d (expected 192)",
