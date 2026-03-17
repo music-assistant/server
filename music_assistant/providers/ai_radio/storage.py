@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from copy import deepcopy
 from pathlib import Path
@@ -53,7 +54,8 @@ class AIRadioStorageMixin:
 
     async def _load_sections(self) -> None:
         """Load shared section definitions from disk."""
-        if not self._sections_file.exists():
+        sections_file_exists = await asyncio.to_thread(self._sections_file.exists)
+        if not sections_file_exists:
             defaults = self._default_sections_template()
             self._sections = {item["id"]: item for item in defaults}
             await self._write_sections()
@@ -91,7 +93,8 @@ class AIRadioStorageMixin:
 
     async def _load_stations(self) -> None:
         """Load station profiles from disk."""
-        if not self._stations_file.exists():
+        stations_file_exists = await asyncio.to_thread(self._stations_file.exists)
+        if not stations_file_exists:
             default_station = self._default_station_template()
             self._stations = {default_station["id"]: default_station}
             await self._write_stations()

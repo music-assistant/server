@@ -9,7 +9,6 @@ import random
 from collections import defaultdict
 from contextlib import suppress
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
@@ -19,6 +18,7 @@ import aiofiles
 from aiohttp import ClientTimeout
 from music_assistant_models.enums import MediaType, QueueOption
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.uri import create_uri
 
@@ -204,10 +204,11 @@ class AIRadioRuntimeMixin:
 
         station_name = str(station.get("name") or "AI Radio").strip()
         timezone_name = str(station.get("general", {}).get("timezone") or "UTC")
+        now_utc = utc()
         try:
-            now_local = datetime.now(ZoneInfo(timezone_name))
+            now_local = now_utc.astimezone(ZoneInfo(timezone_name))
         except Exception:
-            now_local = datetime.now()
+            now_local = now_utc
         date_suffix = f"{now_local.strftime('%a')}. {now_local.strftime('%d.%m.')}"
         target_playlist_name = f"AI Radio: {station_name} ({date_suffix}) [{run_id}]"
 
@@ -1207,10 +1208,11 @@ class AIRadioRuntimeMixin:
         """Resolve placeholders for one slot."""
         general = cast("dict[str, Any]", station.get("general", {}))
         timezone_name = str(general.get("timezone", "UTC"))
+        now_utc = utc()
         try:
-            now = datetime.now(ZoneInfo(timezone_name))
+            now = now_utc.astimezone(ZoneInfo(timezone_name))
         except Exception:
-            now = datetime.now(UTC)
+            now = now_utc
 
         values: dict[str, str] = {str(key): str(value) for key, value in runtime_tokens.items()}
         prev_track = tracks[slot.prev_index] if slot.prev_index is not None else None
