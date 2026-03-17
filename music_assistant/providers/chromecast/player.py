@@ -283,7 +283,7 @@ class ChromecastPlayer(Player):
             # Non-blocking disconnect: close socket, don't wait for thread.
             # Socket threads are daemon threads and die on process exit.
             # Blocking disconnect can stall shutdown if threads are slow to exit.
-            self.cc.disconnect(0.001)
+            self.cc.disconnect(0)
         else:
             await asyncio.to_thread(self.cc.disconnect, 10)
 

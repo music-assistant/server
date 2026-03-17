@@ -6,12 +6,13 @@ import asyncio
 import contextlib
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
+from pychromecast.models import CastInfo
 
 from music_assistant.constants import (
     CONF_ENABLED,
@@ -56,9 +57,9 @@ class ChromecastProvider(PlayerProvider):
         manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
         self.browser = CastBrowser(
             SimpleCastListener(
-                add_callback=cast("Any", self._on_chromecast_discovered),
-                remove_callback=cast("Any", self._on_chromecast_removed),
-                update_callback=cast("Any", self._on_chromecast_discovered),
+                add_callback=self._on_chromecast_discovered,
+                remove_callback=self._on_chromecast_removed,
+                update_callback=self._on_chromecast_discovered,
             ),
             self.mass.aiozc.zeroconf,
             known_hosts=manual_ip_config,
@@ -107,7 +108,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Discovery callbacks
 
-    def _on_chromecast_discovered(self, uuid: UUID, _: object) -> None:
+    def _on_chromecast_discovered(self, uuid: UUID, _: str) -> None:
         """
         Handle Chromecast discovered callback.
 
@@ -197,9 +198,9 @@ class ChromecastProvider(PlayerProvider):
         self,
         uuid: UUID,
         service: str,
-        cast_info: Any,
+        cast_info: CastInfo,
     ) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
         player_id = str(uuid)
-        self.logger.debug("Chromecast removed: %s", player_id)
+        self.logger.debug("Chromecast removed: %s - %s", cast_info.friendly_name, player_id)
         # we ignore this event completely as the Chromecast socket client handles this itself

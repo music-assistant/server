@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from pychromecast.controllers.receiver import CastStatusListener as ReceiverStatusListener
     from pychromecast.models import CastInfo, HostServiceInfo, MDNSServiceInfo
     from pychromecast.socket_client import ConnectionStatus, ConnectionStatusListener
-    from zeroconf import ServiceInfo, Zeroconf
+    from zeroconf import Zeroconf
 
     from .player import ChromecastPlayer
 
@@ -33,7 +33,7 @@ class ChromecastInfo:
     This also has the same attributes as the mDNS fields by zeroconf.
     """
 
-    services: set[ServiceInfo]
+    services: set[HostServiceInfo | MDNSServiceInfo]
     uuid: UUID
     model_name: str
     friendly_name: str
@@ -80,7 +80,7 @@ class ChromecastInfo:
             self.manufacturer = cast_info.manufacturer
 
         # Fill out missing group information via HTTP API.
-        dynamic_groups, multichannel_groups = get_multizone_info(list(self.services), zconf)
+        dynamic_groups, multichannel_groups = get_multizone_info(self.services, zconf)
         self.is_dynamic_group = self.uuid in dynamic_groups
         if self.uuid in multichannel_groups:
             self.is_multichannel_group = True
@@ -95,11 +95,11 @@ class ChromecastInfo:
 
         # Get MAC address for device matching (not available for groups)
         if self.mac_address is None and self.cast_type != "group":
-            self.mac_address = get_mac_address(list(self.services), zconf)
+            self.mac_address = get_mac_address(self.services, zconf)
 
 
 def get_multizone_info(
-    services: list[ServiceInfo],
+    services: set[HostServiceInfo | MDNSServiceInfo],
     zconf: Zeroconf,
     timeout: int = 30,
 ) -> tuple[set[UUID], set[UUID]]:
@@ -107,9 +107,8 @@ def get_multizone_info(
     dynamic_groups: set[UUID] = set()
     multichannel_groups: set[UUID] = set()
     try:
-        services_set = cast("set[HostServiceInfo | MDNSServiceInfo]", set(services))
         _, status = dial._get_status(
-            services_set,
+            services,
             zconf,
             "/setup/eureka_info?params=multizone",
             True,
@@ -134,18 +133,19 @@ def get_multizone_info(
     return (dynamic_groups, multichannel_groups)
 
 
-def get_mac_address(services: list[ServiceInfo], zconf: Zeroconf, timeout: int = 10) -> str | None:
+def get_mac_address(
+    services: set[HostServiceInfo | MDNSServiceInfo], zconf: Zeroconf, timeout: int = 10
+) -> str | None:
     """Get MAC address from Chromecast eureka_info API.
 
-    :param services: List of zeroconf service info.
+    :param services: Set of zeroconf service info.
     :param zconf: Zeroconf instance.
     :param timeout: Request timeout in seconds.
     :return: MAC address string or None if not available.
     """
     try:
-        services_set = cast("set[HostServiceInfo | MDNSServiceInfo]", set(services))
         _, status = dial._get_status(
-            services_set,
+            services,
             zconf,
             "/setup/eureka_info?options=detail",
             True,
