@@ -571,7 +571,7 @@ class GenreController(MediaControllerBase[Genre]):
             )
             existing = {row["search_name"] for row in rows}
 
-        created_search_names: list[str] = []
+        created_ids: list[int] = []
         for entry in DEFAULT_GENRE_MAPPING:
             name = entry.get("genre")
             if not name:
@@ -594,7 +594,7 @@ class GenreController(MediaControllerBase[Genre]):
             # Stage new genre insert without committing yet (batch all in one transaction)
             translation_key = entry.get("translation_key")
             icon_metadata = self._get_genre_icon_metadata(translation_key)
-            await self.mass.music.database.execute(
+            cursor = await self.mass.music.database.execute(
                 f"INSERT INTO {DB_TABLE_GENRES}"
                 "(name, sort_name, translation_key, description, favorite, metadata, "
                 "external_ids, genre_aliases, play_count, last_played, "
@@ -617,24 +617,18 @@ class GenreController(MediaControllerBase[Genre]):
                     "search_sort_name": search_sort_name,
                 },
             )
-            created_search_names.append(search_name)
+            created_ids.append(cursor.lastrowid)
             existing.add(search_name)
 
-        if created_search_names:
+        if created_ids:
             await self.mass.music.database.commit()
 
         if full_restore:
             await self._bulk_scan_media_genres()
 
-        if not created_search_names:
+        if not created_ids:
             return []
-        created_genres = []
-        for sname in created_search_names:
-            if db_row := await self.mass.music.database.get_row(
-                DB_TABLE_GENRES, {"search_name": sname}
-            ):
-                created_genres.append(await self.get_library_item(int(db_row["item_id"])))
-        return created_genres
+        return [await self.get_library_item(item_id) for item_id in created_ids]
 
     async def _bulk_scan_media_genres(self) -> None:
         """Bulk-scan all media items and rebuild genre mappings using CTE.
