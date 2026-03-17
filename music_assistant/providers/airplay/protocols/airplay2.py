@@ -56,7 +56,6 @@ class AirPlay2Stream(AirPlayProtocol):
 
     async def start(self, start_ntp: int) -> None:
         """Start cliap2 process."""
-        self.logger.debug(f"Starting AirPlay2 stream with config: {self.player.config}")
         assert self.player.airplay_discovery_info is not None
         cli_binary = await get_cli_binary(self.player.protocol)
         player_id = self.player.player_id
