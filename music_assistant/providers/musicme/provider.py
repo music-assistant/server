@@ -10,7 +10,7 @@ import urllib.parse
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-import aiohttp
+from aiohttp import ClientError, ClientResponseError
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -65,7 +65,6 @@ class MusicMeProvider(MusicProvider):
     """Provider for the MusicMe streaming service."""
 
     _user_id: str | None = None
-    _http_session: aiohttp.ClientSession | None = None
     throttler: ThrottlerManager
 
     async def handle_async_init(self) -> None:
@@ -73,23 +72,8 @@ class MusicMeProvider(MusicProvider):
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
             msg = "Missing MusicMe email or password"
             raise SetupFailedError(msg)
-        self._http_session = aiohttp.ClientSession()
         self.throttler = ThrottlerManager(rate_limit=1, period=1)
         await self._login()
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        if self._http_session and not self._http_session.closed:
-            await self._http_session.close()
-            self._http_session = None
-
-    @property
-    def _session(self) -> aiohttp.ClientSession:
-        """Return the provider's dedicated HTTP session."""
-        if self._http_session is None or self._http_session.closed:
-            msg = "HTTP session not initialized"
-            raise SetupFailedError(msg)
-        return self._http_session
 
     # ---- search ----
 
@@ -715,7 +699,7 @@ class MusicMeProvider(MusicProvider):
         encoded = urllib.parse.quote_plus(search_query)
         url = f"{WEB_BASE}/search.php?ambsearch={encoded}&mmz=all"
 
-        async with self._session.get(url, allow_redirects=True) as resp:
+        async with self.mass.http_session.get(url, allow_redirects=True) as resp:
             if resp.status != 200:
                 return None
             raw_bytes = await resp.read()
@@ -766,7 +750,7 @@ class MusicMeProvider(MusicProvider):
         password = self.config.get_value(CONF_PASSWORD)
 
         try:
-            async with self._session.post(
+            async with self.mass.http_session.post(
                 LOGIN_URL,
                 data={
                     "email": email,
@@ -777,16 +761,16 @@ class MusicMeProvider(MusicProvider):
                 allow_redirects=True,
             ) as resp:
                 resp.raise_for_status()
-        except aiohttp.ClientResponseError as err:
+        except ClientResponseError as err:
             msg = f"MusicMe login request failed: HTTP {err.status}"
             raise LoginFailed(msg) from err
 
         try:
-            async with self._session.get(f"{WEB_BASE}/?f=1") as resp:
+            async with self.mass.http_session.get(f"{WEB_BASE}/?f=1") as resp:
                 resp.raise_for_status()
                 raw_bytes = await resp.read()
                 content = raw_bytes.decode("latin-1", errors="replace")
-        except aiohttp.ClientResponseError as err:
+        except ClientResponseError as err:
             msg = f"MusicMe page load failed: HTTP {err.status}"
             raise LoginFailed(msg) from err
 
@@ -825,7 +809,7 @@ class MusicMeProvider(MusicProvider):
 
         self.logger.debug("GET %s", endpoint.split("?", maxsplit=1)[0])
         try:
-            async with self._session.get(url) as response:
+            async with self.mass.http_session.get(url) as response:
                 if response.status == 429:
                     try:
                         backoff = min(int(response.headers.get("Retry-After", 10)), 300)
@@ -838,7 +822,7 @@ class MusicMeProvider(MusicProvider):
                     return None
                 response.raise_for_status()
                 raw = await response.text()
-        except aiohttp.ClientError as err:
+        except ClientError as err:
             path = endpoint.split("?", maxsplit=1)[0]
             self.logger.warning("Connection error for %s: %s", path, err)
             return None
