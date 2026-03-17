@@ -132,6 +132,7 @@ class MusicCastPlayer(Player):
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
         await self.set_static_attributes()
+        await self.set_dynamic_attributes()
 
     async def set_static_attributes(self) -> None:
         """Set static properties."""
