@@ -94,10 +94,10 @@ def _create_client_context(
     # Create context with default certificates.
     sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
 
-    cafile = environ.get("REQUESTS_CA_BUNDLE", certifi.where())
+    cafile = environ.get("REQUESTS_CA_BUNDLE") or certifi.where()
 
     sslcontext.load_verify_locations(cafile=cafile)
-    
+
     if ssl_cipher_list != SSLCipherList.PYTHON_DEFAULT:
         sslcontext.set_ciphers(SSL_CIPHER_LISTS[ssl_cipher_list])
 
