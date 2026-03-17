@@ -28,8 +28,11 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_CONTAINER,
     ITEM_KEY_ID,
     ITEM_KEY_IMAGE_TAGS,
+    ITEM_KEY_INDEX_NUMBER,
     ITEM_KEY_MEDIA_STREAMS,
     ITEM_KEY_NAME,
+    ITEM_KEY_PARENT_INDEX_NUMBER,
+    ITEM_KEY_PRODUCTION_YEAR,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_TYPE,
 )
@@ -88,12 +91,16 @@ def parse_track(
     duration = int(item.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000)  # Convert ticks to seconds
     media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
     audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
+    track_number = int(item.get(ITEM_KEY_INDEX_NUMBER, 0))
+    disc_number = int(item.get(ITEM_KEY_PARENT_INDEX_NUMBER, 0))
 
     track = Track(
         item_id=track_id,
         name=name,
         album=album,
         artists=artists,
+        track_number=track_number,
+        disc_number=disc_number,
         duration=duration,
         provider=instance_id,
         provider_mappings={
@@ -176,6 +183,7 @@ def parse_album(
     """Parse an Emby MusicAlbum item into an Album."""
     album_id = str(item.get(ITEM_KEY_ID))
     name = str(item.get(ITEM_KEY_NAME))
+    year = item.get(ITEM_KEY_PRODUCTION_YEAR)
 
     # Extract artist info
     artists = UniqueList[Artist | ItemMapping]()
@@ -203,6 +211,7 @@ def parse_album(
         item_id=album_id,
         name=name,
         artists=artists,
+        year=year,
         provider=instance_id,
         provider_mappings={
             ProviderMapping(
