@@ -281,14 +281,10 @@ class AudioTags:
 
     @property
     def artists(self) -> tuple[str, ...]:
-        """Return track artists.
-
-        Vorbis: parser returns artists (plural) for multiple ARTIST fields.
-        ID3: parser returns artists from TXXX:ARTISTS or multi-value TPE1,
-            otherwise artist (singular) split on delimiter here.
-        MP4/APEv2: parser returns artist (singular), split on delimiter here.
-        """
-        # prefer multi-artist tag (ARTISTS plural)
+        """Return track artists."""
+        # Preferred path when unambiguously separated artist names are available
+        # Vorbis: multiple ARTIST fields, ID3: TXXX:ARTISTS or multi-value TPE1
+        # APEv2: null-separated ARTISTS tag (if present), MP4: not supported
         if tag := self.tags.get("artists"):
             artists = split_items(tag)
             # Warn if ARTISTS tag count doesn't match MB Artist ID count
@@ -301,7 +297,9 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # fallback to regular artist string
+        # Fallback to single artist string, splitting if necessary
+        # All formats: parser returns artist (singular)
+        # APEv2: also falls through here if no ARTISTS tag present
         if tag := self.tags.get("artist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
@@ -336,14 +334,9 @@ class AudioTags:
 
     @property
     def album_artists(self) -> tuple[str, ...]:
-        """Return (all) album artists (if any).
-
-        Vorbis: parser returns albumartists (plural) for multiple ALBUMARTIST fields.
-        ID3: parser returns albumartists from multi-value TPE2,
-            otherwise albumartist (singular) split on delimiter here.
-        MP4/APEv2: parser returns albumartist (singular), split on delimiter here.
-        """
-        # prefer multi-artist tag (ALBUMARTISTS plural)
+        """Return (all) album artists (if any)."""
+        # Preferred path when unambiguously separated album artist names are available
+        # Vorbis: multiple ALBUMARTIST fields, ID3: multi-value TPE2
         if tag := self.tags.get("albumartists"):
             artists = split_items(tag)
             # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
@@ -357,7 +350,8 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # fallback to regular album artist string
+        # Fallback to single album artist string, splitting if necessary
+        # All formats: parser returns albumartist (singular)
         if tag := self.tags.get("albumartist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
