@@ -571,7 +571,6 @@ class GenreController(MediaControllerBase[Genre]):
             )
             existing = {row["search_name"] for row in rows}
 
-        db = self.mass.music.database
         created_ids: list[int] = []
         for entry in DEFAULT_GENRE_MAPPING:
             name = entry.get("genre")
@@ -585,22 +584,18 @@ class GenreController(MediaControllerBase[Genre]):
 
             # Partial restore: Ensure aliases are up to date
             if search_name in existing:
-                if db_row := await db.get_row(DB_TABLE_GENRES, {"search_name": search_name}):
+                if db_row := await self.mass.music.database.get_row(
+                    DB_TABLE_GENRES, {"search_name": search_name}
+                ):
                     genre_id = int(db_row["item_id"])
                     await self._ensure_aliases(genre_id, all_aliases)
                 continue
 
-            # Stage new genre insert - batch all in one transaction
+            # Create new genre
             translation_key = entry.get("translation_key")
             icon_metadata = self._get_genre_icon_metadata(translation_key)
-            cursor = await db.execute(
-                f"INSERT INTO {DB_TABLE_GENRES}"
-                "(name, sort_name, translation_key, description, favorite, metadata, "
-                "external_ids, genre_aliases, play_count, last_played, "
-                "search_name, search_sort_name) "
-                "VALUES (:name, :sort_name, :translation_key, :description, :favorite, "
-                ":metadata, :external_ids, :genre_aliases, :play_count, :last_played, "
-                ":search_name, :search_sort_name)",
+            genre_id = await self.mass.music.database.insert(
+                DB_TABLE_GENRES,
                 {
                     "name": name_value,
                     "sort_name": sort_name,
@@ -614,13 +609,11 @@ class GenreController(MediaControllerBase[Genre]):
                     "last_played": 0,
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
+                    "timestamp_added": UNSET,
                 },
             )
-            created_ids.append(cursor.lastrowid)
+            created_ids.append(genre_id)
             existing.add(search_name)
-
-        if created_ids:
-            await db.commit()
 
         if full_restore:
             await self._bulk_scan_media_genres()
