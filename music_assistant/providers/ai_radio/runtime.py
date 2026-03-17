@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from collections import defaultdict
 from contextlib import suppress
@@ -20,6 +21,7 @@ from music_assistant_models.enums import MediaType, QueueOption
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
@@ -1501,13 +1503,23 @@ class AIRadioRuntimeMixin:
             return data
 
     async def _get_section_store_base_path(self, station: dict[str, Any]) -> Path:
-        """Resolve the section output base path."""
+        """Resolve the section output base path within MA storage."""
         general = cast("dict[str, Any]", station.get("general", {}))
         configured = str(general.get("section_store_path") or "").strip()
         if not configured:
             configured = DEFAULT_SECTION_STORE_PATH
+
+        storage_root = await asyncio.to_thread(Path(self.mass.storage_path).resolve)
         candidate = Path(configured)
+
         if not candidate.is_absolute():
-            candidate = Path(self.mass.storage_path) / candidate
-        await asyncio.to_thread(candidate.mkdir, parents=True, exist_ok=True)
-        return candidate
+            if not is_safe_path(configured):
+                raise AIRadioError("section_store_path contains invalid path components")
+            candidate = storage_root / candidate
+
+        resolved = await asyncio.to_thread(candidate.resolve)
+        if resolved != storage_root and not str(resolved).startswith(str(storage_root) + os.sep):
+            raise AIRadioError("section_store_path must be within the MA storage directory")
+
+        await asyncio.to_thread(resolved.mkdir, parents=True, exist_ok=True)
+        return resolved
