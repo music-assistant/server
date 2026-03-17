@@ -19,7 +19,6 @@ from .constants import (
     DEFAULT_ELEVENLABS_MODEL,
     DEFAULT_LLM_MODEL,
     DEFAULT_MAX_TOKENS,
-    DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
     DEFAULT_SECTION_STORE_PATH,
@@ -225,7 +224,6 @@ class AIRadioStorageMixin:
             "temperature": _number("temperature", float),
             "max_tokens": _number("max_tokens", int),
             "instructions": str(source_general.get("instructions", defaults["instructions"])),
-            "openai_base_url": _text("openai_base_url"),
             "section_store_path": _text("section_store_path"),
             "weather_provider": _text("weather_provider"),
             "weather_timeout_seconds": _number("weather_timeout_seconds", int),
@@ -511,7 +509,6 @@ class AIRadioStorageMixin:
                     "details when available, and maintain a believable radio flow "
                     "between sections."
                 ),
-                "openai_base_url": DEFAULT_OPENAI_BASE_URL,
                 "section_store_path": DEFAULT_SECTION_STORE_PATH,
                 "weather_provider": DEFAULT_WEATHER_PROVIDER,
                 "weather_timeout_seconds": DEFAULT_WEATHER_TIMEOUT_SECONDS,

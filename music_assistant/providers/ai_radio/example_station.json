@@ -22,7 +22,6 @@
     "temperature": 0.7,
     "max_tokens": 900,
     "instructions": "Host personality: warm, sharp, music-literate, and slightly premium without sounding formal. Program instructions: write for spoken delivery, keep segments concise, avoid bullet-point phrasing, avoid clichés, mention concrete details when available, and maintain a believable radio flow between sections.",
-    "openai_base_url": "https://api.openai.com/v1",
     "section_store_path": "ai_radio_sections",
     "tts_provider": "openai",
     "openai_tts_model": "gpt-4o-mini-tts",

@@ -1263,7 +1263,7 @@ class AIRadioRuntimeMixin:
             general.get("max_tokens"),
             DEFAULT_MAX_TOKENS,
         )
-        openai_base_url = str(general.get("openai_base_url") or DEFAULT_OPENAI_BASE_URL)
+        openai_base_url = DEFAULT_OPENAI_BASE_URL
         self.logger.debug(
             "LLM request prepared: model=%s web_mode=%s prompt_chars=%d "
             "temperature=%.2f max_tokens=%d",
@@ -1373,7 +1373,7 @@ class AIRadioRuntimeMixin:
             if not api_key:
                 self.logger.error("AI Radio TTS failed: OpenAI API key is missing in plugin config")
                 raise AIRadioError("OpenAI API key is missing in plugin config")
-            openai_base_url = str(general.get("openai_base_url") or DEFAULT_OPENAI_BASE_URL)
+            openai_base_url = DEFAULT_OPENAI_BASE_URL
             model = str(general.get("openai_tts_model") or DEFAULT_OPENAI_TTS_MODEL)
             voice = str(general.get("openai_tts_voice") or DEFAULT_OPENAI_TTS_VOICE)
             instructions = str(
