@@ -571,7 +571,7 @@ class GenreController(MediaControllerBase[Genre]):
             )
             existing = {row["search_name"] for row in rows}
 
-        created_ids: list[int] = []
+        created_search_names: list[str] = []
         for entry in DEFAULT_GENRE_MAPPING:
             name = entry.get("genre")
             if not name:
@@ -591,11 +591,17 @@ class GenreController(MediaControllerBase[Genre]):
                     await self._ensure_aliases(genre_id, all_aliases)
                 continue
 
-            # Create new genre
+            # Stage new genre insert without committing yet (batch all in one transaction)
             translation_key = entry.get("translation_key")
             icon_metadata = self._get_genre_icon_metadata(translation_key)
-            genre_id = await self.mass.music.database.insert(
-                DB_TABLE_GENRES,
+            await self.mass.music.database.execute(
+                f"INSERT INTO {DB_TABLE_GENRES}"
+                "(name, sort_name, translation_key, description, favorite, metadata, "
+                "external_ids, genre_aliases, play_count, last_played, "
+                "search_name, search_sort_name) "
+                "VALUES (:name, :sort_name, :translation_key, :description, :favorite, "
+                ":metadata, :external_ids, :genre_aliases, :play_count, :last_played, "
+                ":search_name, :search_sort_name)",
                 {
                     "name": name_value,
                     "sort_name": sort_name,
@@ -609,18 +615,26 @@ class GenreController(MediaControllerBase[Genre]):
                     "last_played": 0,
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
-                    "timestamp_added": UNSET,
                 },
             )
-            created_ids.append(genre_id)
+            created_search_names.append(search_name)
             existing.add(search_name)
+
+        if created_search_names:
+            await self.mass.music.database.commit()
 
         if full_restore:
             await self._bulk_scan_media_genres()
 
-        if not created_ids:
+        if not created_search_names:
             return []
-        return [await self.get_library_item(item_id) for item_id in created_ids]
+        created_genres = []
+        for sname in created_search_names:
+            if db_row := await self.mass.music.database.get_row(
+                DB_TABLE_GENRES, {"search_name": sname}
+            ):
+                created_genres.append(await self.get_library_item(int(db_row["item_id"])))
+        return created_genres
 
     async def _bulk_scan_media_genres(self) -> None:
         """Bulk-scan all media items and rebuild genre mappings using CTE.
