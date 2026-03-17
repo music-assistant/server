@@ -731,7 +731,10 @@ class MusicAssistant:
                 await provider.unload(is_removed)
             except Exception as err:
                 LOGGER.warning(
-                    "Error while unloading provider %s: %s", provider.name, str(err), exc_info=err
+                    "Error while unloading provider %s: %s",
+                    provider.name,
+                    str(err),
+                    exc_info=err,
                 )
             finally:
                 self._providers.pop(instance_id, None)
