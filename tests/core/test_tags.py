@@ -15,6 +15,7 @@ from music_assistant.helpers.tags import (
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
 
 FILE_MP3 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
+FILE_MP3_ID3V24_MULTIVALUE = str(RESOURCES_DIR.joinpath("MultiArtist-ID3v24-NullSeparated.mp3"))
 FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
@@ -52,6 +53,18 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.year == 2022
     _tags.tags["date"] = ""
     assert _tags.year is None
+
+
+async def test_parse_id3v24_null_separated_artists() -> None:
+    """Test parsing ID3v2.4 tags with null-separated multi-value TPE1/TPE2."""
+    _tags = await tags.async_parse_tags(FILE_MP3_ID3V24_MULTIVALUE)
+    # Null-separated artists in TPE1 should be parsed as multiple artists
+    assert _tags.artists == ("Artist One", "Artist Two", "Artist Three")
+    # Null-separated album artists in TPE2 should be parsed as multiple album artists
+    assert _tags.album_artists == ("Album Artist A", "Album Artist B")
+    # MB IDs should match
+    assert _tags.musicbrainz_artistids == ("mb-artist-1", "mb-artist-2", "mb-artist-3")
+    assert _tags.musicbrainz_albumartistids == ("mb-albumartist-1", "mb-albumartist-2")
 
 
 async def test_parse_metadata_from_mp4tags() -> None:
