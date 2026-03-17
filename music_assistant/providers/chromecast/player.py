@@ -79,7 +79,6 @@ class ChromecastPlayer(Player):
         self.mz_controller: MultizoneController | None = None
         self.last_poll = 0.0
         self.flow_meta_checksum: str | None = None
-        self._attr_synced_to: str | None = None
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
