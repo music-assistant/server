@@ -315,9 +315,13 @@ class SendspinPlayer(Player):
                 self.update_state()
             case StaticDelayChangedEvent(static_delay_ms=delay_ms):
                 self.logger.debug("Static delay changed to %d ms", delay_ms)
-                self.mass.config.set_raw_player_config_value(
-                    self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
+                current = self.config.get_value(
+                    CONF_SENDSPIN_STATIC_DELAY, DEFAULT_SENDSPIN_STATIC_DELAY
                 )
+                if current != delay_ms:
+                    self.mass.config.set_raw_player_config_value(
+                        self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
+                    )
             case ClientGroupChangedEvent(new_group=new_group):
                 self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
