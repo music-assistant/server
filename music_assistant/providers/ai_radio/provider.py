@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -12,7 +11,6 @@ from uuid import uuid4
 
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
@@ -43,19 +41,6 @@ async def setup(
 
 class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
     """Implementation of the AI Radio plugin provider."""
-
-    def _set_log_level_from_config(self, config: ProviderConfig) -> None:
-        """Set log level and keep a stable logger namespace for this plugin."""
-        mass_logger = logging.getLogger(MASS_LOGGER_NAME)
-        self.logger = mass_logger.getChild(self.domain)
-        log_level = str(config.get_value(CONF_LOG_LEVEL))
-        if log_level == "GLOBAL":
-            self.logger.setLevel(mass_logger.level)
-        else:
-            self.logger.setLevel(log_level)
-        if logging.getLogger().level > self.logger.level:
-            logging.getLogger().setLevel(self.logger.level)
-        self.logger.debug("Log level configured to %s", log_level)
 
     def __init__(
         self,
@@ -142,8 +127,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Apply config updates without forcing a provider reload."""
         self.config = config
-        if f"values/{CONF_LOG_LEVEL}" in changed_keys or "name" in changed_keys:
-            self._set_log_level_from_config(config)
 
     async def list_stations(self) -> list[dict[str, Any]]:
         """Return all configured AI Radio stations."""
