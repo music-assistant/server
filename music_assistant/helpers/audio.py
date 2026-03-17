@@ -350,8 +350,8 @@ async def get_stream_details(
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
-            # Set up metadata monitoring callback for HLS radio streams
-            if stream_type == StreamType.HLS:
+            # Set up metadata monitoring callback for HLS radio streams, if not already set
+            if stream_type == StreamType.HLS and not streamdetails.stream_metadata_update_callback:
                 streamdetails.stream_metadata_update_callback = partial(
                     _update_hls_radio_metadata, mass
                 )

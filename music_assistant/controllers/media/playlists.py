@@ -130,6 +130,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # Default is track for backwards compatibility.
         media_types_set = {MediaType.TRACK} if not media_types else set(media_types)
+        if MediaType.ALBUM in media_types_set:
+            # an album is unwrapped, so we remove that and use tracks instead
+            media_types_set.remove(MediaType.ALBUM)
+            media_types_set.add(MediaType.TRACK)
         if not provider_instance_or_domain and not media_types_set:
             # builtin can handle all media_types
             media_types_set.update(
