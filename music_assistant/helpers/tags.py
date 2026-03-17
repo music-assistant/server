@@ -287,12 +287,10 @@ class AudioTags:
 
     @property
     def artists(self) -> tuple[str, ...]:
-        """Return track artists.
-
-        Vorbis: parser returns artists (plural) for multiple ARTIST fields.
-        ID3: parser returns artists from TXXX:ARTISTS, or artist (singular) split on delimiter here.
-        MP4/APEv2: parser returns artist (singular), split on delimiter here.
-        """
+        """Return track artists."""
+        # Preferred path when unambiguously separated artist names are available
+        # Vorbis: multiple ARTIST fields, ID3: TXXX:ARTISTS or multi-value TPE1
+        # APEv2: null-separated ARTISTS tag (if present), MP4: not supported
         if tag := self.tags.get("artists"):
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
@@ -311,11 +309,9 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # Fallback to ARTIST (singular) tag.
-        # Use MusicBrainz Artist ID count to determine splitting behavior:
-        # - 1 ID: single artist confirmed, preserve as-is (handles artist names with semicolons)
-        # - 2+ IDs: split to match expected count
-        # - 0 IDs: apply standard splitting heuristics
+        # Fallback to single artist string, splitting if necessary
+        # All formats: parser returns artist (singular)
+        # APEv2: also falls through here if no ARTISTS tag present
         if tag := self.tags.get("artist"):
             mb_id_count = len(self.musicbrainz_artistids)
             if mb_id_count == 1:
@@ -348,11 +344,9 @@ class AudioTags:
 
     @property
     def album_artists(self) -> tuple[str, ...]:
-        """Return (all) album artists (if any).
-
-        Vorbis: parser returns albumartists (plural) for multiple ALBUMARTIST fields.
-        ID3/MP4/APEv2: parser returns albumartist (singular), split on delimiter here.
-        """
+        """Return (all) album artists (if any)."""
+        # Preferred path when unambiguously separated album artist names are available
+        # Vorbis: multiple ALBUMARTIST fields, ID3: multi-value TPE2
         if tag := self.tags.get("albumartists"):
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
@@ -372,8 +366,8 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # Fallback to ALBUMARTIST (singular) tag.
-        # Use MusicBrainz Album Artist ID count to determine splitting behavior.
+        # Fallback to single album artist string, splitting if necessary
+        # All formats: parser returns albumartist (singular)
         if tag := self.tags.get("albumartist"):
             mb_id_count = len(self.musicbrainz_albumartistids)
             if mb_id_count == 1:
@@ -899,8 +893,8 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
 def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     """Parse ID3 tags (MP3 files) from mutagen tags dict.
 
+    See: https://mutagen-specs.readthedocs.io/en/latest/id3/id3v2.4.0-frames.html
     See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
-    See: https://picard-docs.musicbrainz.org/en/variables/tags_basic.html
 
     :param tags: Dictionary of ID3 tags from mutagen.
     """
@@ -909,18 +903,28 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     # Basic tags (single value)
     if "TIT2" in tags:
         result["title"] = tags["TIT2"].text[0]
-    if "TPE1" in tags:
-        result["artist"] = tags["TPE1"].text[0]
-    if "TPE2" in tags:
-        result["albumartist"] = tags["TPE2"].text[0]
     if "TALB" in tags:
         result["album"] = tags["TALB"].text[0]
+
+    # Artist tags - support ID3v2.4 null-separated multi-value
+    if "TPE1" in tags:
+        artist_values = tags["TPE1"].text
+        if len(artist_values) > 1:
+            result["artists"] = list(artist_values)
+        else:
+            result["artist"] = artist_values[0]
+    if "TPE2" in tags:
+        albumartist_values = tags["TPE2"].text
+        if len(albumartist_values) > 1:
+            result["albumartists"] = list(albumartist_values)
+        else:
+            result["albumartist"] = albumartist_values[0]
 
     # Genre (multi-value)
     if "TCON" in tags:
         result["genre"] = tags["TCON"].text
 
-    # Multi-value artist tag
+    # Explicit multi-value artist tag (takes precedence)
     if "TXXX:ARTISTS" in tags:
         result["artists"] = tags["TXXX:ARTISTS"].text
 
