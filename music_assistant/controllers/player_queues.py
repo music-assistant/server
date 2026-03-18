@@ -2690,11 +2690,48 @@ class PlayerQueuesController(CoreController):
             path_parts = protocol_player.current_media.uri[len(base_url) :].strip("/").split("/")
             # path_parts: [mode, session_id, queue_id, queue_item_id, player_id.fmt]
             if len(path_parts) >= 5:
+                url_session_id = path_parts[1]
+                queue = self._queues.get(queue_id)
+                if queue and queue.session_id and url_session_id != queue.session_id:
+                    # player is still playing a stream from a previous MA session
+                    self.logger.info(
+                        "Stale stream detected on %s (session %s != %s), triggering resume",
+                        queue.display_name,
+                        url_session_id,
+                        queue.session_id,
+                    )
+                    self.mass.create_task(
+                        self._resume_stale_queue(queue_id),
+                        task_id=f"resume_stale_{queue_id}",
+                    )
+                    return None
                 current_item_id = path_parts[3]
                 if self.get_item(queue_id, current_item_id):
                     return current_item_id
 
         return None
+
+    async def _resume_stale_queue(self, queue_id: str) -> None:
+        """Resume a queue that is still playing a stream from a previous MA session.
+
+        After MA restarts, players may still be streaming audio from the old session.
+        This method waits briefly for the player state to settle, then triggers a resume
+        so the queue picks up from where it left off with a fresh stream.
+
+        :param queue_id: The queue to resume.
+        """
+        queue = self._queues.get(queue_id)
+        if not queue or not queue.active:
+            return
+        # wait briefly for the player to settle after detection
+        await asyncio.sleep(3)
+        if not queue.active:  # type: ignore[unreachable]
+            return
+        self.logger.info(
+            "Resuming stale queue for %s",
+            queue.display_name,
+        )
+        await self.resume(queue_id)
 
     def _handle_end_of_queue(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
