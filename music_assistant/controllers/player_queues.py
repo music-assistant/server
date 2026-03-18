@@ -2725,8 +2725,6 @@ class PlayerQueuesController(CoreController):
             return
         # wait briefly for the player to settle after detection
         await asyncio.sleep(3)
-        if not queue.active:  # type: ignore[unreachable]
-            return
         self.logger.info(
             "Resuming stale queue for %s",
             queue.display_name,
