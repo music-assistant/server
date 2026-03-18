@@ -326,7 +326,9 @@ class ZvukMusicClient:
         result: ZvukDirectStream | None = await client.get_direct_stream_url(
             track_id, StreamQuality(quality)
         )
-        return result.stream or None if result else None
+        if not result:
+            return None
+        return result.stream or None
 
     # Collection (Library)
 
