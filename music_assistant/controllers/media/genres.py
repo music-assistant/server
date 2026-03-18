@@ -308,12 +308,13 @@ class GenreController(MediaControllerBase[Genre]):
         """Get genres in the library.
 
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
-        :param hide_empty: Controls which genres are returned.
+        :param hide_empty: Controls which genres are returned when media_type is not set.
             True: only return genres that have media mappings.
             False: return all genres including unmapped ones.
             None (default): only return default genres (those with a translation_key).
-        :param media_type: When set, only return genres that have at least one
-            media mapping for this specific media type.
+        :param media_type: When set, return ALL genres (including non-defaults) that have
+            at least one media item of this type mapped. Overrides hide_empty completely —
+            this is intended for library views that need type-scoped genre filters.
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -658,12 +659,16 @@ class GenreController(MediaControllerBase[Genre]):
         alias_to_genre, primary_name_to_genre = await self._build_genre_lookup()
 
         # Extract all unique raw genre names from metadata across all media tables
+        # CASE WHEN json_valid(...) guards the json_extract inside json_each so that
+        # rows with malformed metadata produce no rows rather than raising an error.
+        # A WHERE-only json_valid guard is insufficient because SQLite evaluates the
+        # FROM clause before the WHERE filter.
         union_parts = [
             f"SELECT DISTINCT TRIM(g.value) AS raw_name "
-            f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
-            f"WHERE json_valid({table}.metadata) = 1 "
-            f"AND json_extract({table}.metadata, '$.genres') IS NOT NULL "
-            f"AND json_extract({table}.metadata, '$.genres') != '[]'"
+            f"FROM {table}, "
+            f"json_each(CASE WHEN json_valid({table}.metadata) "
+            f"THEN json_extract({table}.metadata, '$.genres') END) AS g "
+            f"WHERE TRIM(g.value) != ''"
             for table, _ in MEDIA_TABLES
         ]
         unique_names_sql = " UNION ".join(union_parts)
@@ -740,11 +745,10 @@ class GenreController(MediaControllerBase[Genre]):
                     f"SELECT gl.genre_id, {table}.item_id, "
                     f"'{media_type.value}', TRIM(g.value) "
                     f"FROM {table}, "
-                    f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
+                    f"json_each(CASE WHEN json_valid({table}.metadata) "
+                    f"THEN json_extract({table}.metadata, '$.genres') END) AS g "
                     f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
-                    f"WHERE json_valid({table}.metadata) = 1 "
-                    f"AND json_extract({table}.metadata, '$.genres') IS NOT NULL "
-                    f"AND json_extract({table}.metadata, '$.genres') != '[]' "
+                    f"WHERE TRIM(g.value) != '' "
                     f"AND NOT EXISTS ("
                     f"SELECT 1 FROM {excl} e "
                     f"WHERE e.genre_id = gl.genre_id "
