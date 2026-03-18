@@ -1331,10 +1331,14 @@ class PlayerQueuesController(CoreController):
             return
         now = time.time()
         # Significant drift detected — correct the queue's timing base
-        elapsed_time = player_elapsed
-        if not queue.flow_mode and queue.current_item and queue.current_item.streamdetails:
-            if seek_pos := queue.current_item.streamdetails.seek_position:
-                elapsed_time += seek_pos
+        if queue.flow_mode:
+            # in flow mode the player reports cumulative stream elapsed time,
+            _, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+        else:
+            elapsed_time = player_elapsed
+            if queue.current_item and queue.current_item.streamdetails:
+                if seek_pos := queue.current_item.streamdetails.seek_position:
+                    elapsed_time += seek_pos
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         self.mass.signal_event(
