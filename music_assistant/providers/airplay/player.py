@@ -851,7 +851,7 @@ class AirPlayPlayer(Player):
         if self.stream:
             # stop the stream session if it is running
             if self.stream.running and self.stream.session:
-                self.mass.create_task(self.stream.session.stop())
+                self.mass.create_task(self.stream.session.remove_client(self))
             self.stream = None
         if self._active_pairing:
             await self._active_pairing.close()
