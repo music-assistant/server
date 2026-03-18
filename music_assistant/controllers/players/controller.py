@@ -1512,12 +1512,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         }
         if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
             now = time.time()
-            elapsed = changed_values[ATTR_ELAPSED_TIME]
-            updated = changed_values.get("elapsed_time_last_updated", (now, now))
-            prev_corrected, new_corrected = (
-                (elapsed[0] or 0) + (now - (updated[0] or now)),
-                (elapsed[1] or 0) + (now - (updated[1] or now)),
-            )
+            prev_elapsed, new_elapsed = changed_values[ATTR_ELAPSED_TIME]
+            prev_updated, new_updated = changed_values.get("elapsed_time_last_updated", (now, now))
+            prev_corrected = (prev_elapsed or 0) + (now - (prev_updated or now))
+            new_corrected = (new_elapsed or 0) + (now - (new_updated or now))
             if abs(prev_corrected - new_corrected) > 1.0:
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
                 if player.protocol_parent_id:
