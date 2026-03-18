@@ -288,6 +288,32 @@ class TestGenreCRUD:
         with pytest.raises(ValueError, match="genre parameter is not supported"):
             await genre_ctrl.library_items(genre=1)
 
+    async def test_library_items_media_type_filter(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """media_type filter returns only genres with a mapping for that specific type."""
+        track_genre = await genre_ctrl.add_item_to_library(_make_genre("MediaTypeTrackGenre"))
+        album_genre = await genre_ctrl.add_item_to_library(_make_genre("MediaTypeAlbumGenre"))
+
+        track = await _add_test_track(mass, "MT Track")
+        album = await _add_test_album(mass, "MT Album")
+        await genre_ctrl.add_media_mapping(
+            int(track_genre.item_id), MediaType.TRACK, track.item_id, "MediaTypeTrackGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(album_genre.item_id), MediaType.ALBUM, album.item_id, "MediaTypeAlbumGenre"
+        )
+
+        track_results = await genre_ctrl.library_items(hide_empty=True, media_type=MediaType.TRACK)
+        track_names = {g.name for g in track_results}
+        assert "MediaTypeTrackGenre" in track_names
+        assert "MediaTypeAlbumGenre" not in track_names
+
+        album_results = await genre_ctrl.library_items(hide_empty=True, media_type=MediaType.ALBUM)
+        album_names = {g.name for g in album_results}
+        assert "MediaTypeAlbumGenre" in album_names
+        assert "MediaTypeTrackGenre" not in album_names
+
     async def test_library_count(self, genre_ctrl: GenreController) -> None:
         """Returns correct count; favorite_only=True filters."""
         await genre_ctrl.add_item_to_library(_make_genre("CountA"))

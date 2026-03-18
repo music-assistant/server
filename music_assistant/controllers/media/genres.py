@@ -302,6 +302,7 @@ class GenreController(MediaControllerBase[Genre]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         hide_empty: bool | None = None,
+        media_type: MediaType | None = None,
         **kwargs: Any,
     ) -> list[Genre]:
         """Get genres in the library.
@@ -311,6 +312,8 @@ class GenreController(MediaControllerBase[Genre]):
             True: only return genres that have media mappings.
             False: return all genres including unmapped ones.
             None (default): only return default genres (those with a translation_key).
+        :param media_type: When set, only return genres that have at least one
+            media mapping for this specific media type.
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -319,17 +322,25 @@ class GenreController(MediaControllerBase[Genre]):
         # the provider filter (the frontend always sends provider="library").
         # Pass raw lowered search for alias matching (search_raw),
         # since the normalized :search param strips spaces/special chars.
-        extra_params: dict[str, Any] | None = None
-        extra_parts: list[str] | None = None
+        extra_params: dict[str, Any] = {}
+        extra_parts: list[str] = []
         if search:
-            extra_params = {"search_raw": f"%{search.strip().lower()}%"}
+            extra_params["search_raw"] = f"%{search.strip().lower()}%"
         if hide_empty is None:
-            extra_parts = [f"{self.db_table}.translation_key IS NOT NULL"]
+            extra_parts.append(f"{self.db_table}.translation_key IS NOT NULL")
         elif hide_empty:
             gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-            extra_parts = [
+            extra_parts.append(
                 f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
-            ]
+            )
+        if media_type is not None:
+            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+            extra_parts.append(
+                f"EXISTS(SELECT 1 FROM {gm} gm_mt "
+                f"WHERE gm_mt.genre_id = {self.db_table}.item_id "
+                "AND gm_mt.media_type = :filter_media_type)"
+            )
+            extra_params["filter_media_type"] = media_type.value
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
