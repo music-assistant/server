@@ -648,10 +648,11 @@ class ZvukMusicProvider(MusicProvider):
 
     # Playlist management
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist.
 
         :param name: Playlist name.
+        :param media_types: Ignored — Zvuk playlists are always track-based.
         :return: The created Playlist object.
         """
         playlist_id = await self.client.create_playlist(name)
