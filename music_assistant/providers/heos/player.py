@@ -8,7 +8,7 @@ from copy import copy
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
 
@@ -307,10 +307,10 @@ class HeosPlayer(Player):
         self._ma_controls_playback = True
         try:
             await self._device.play_url(url)
-        except Exception:
+        except HeosError as err:
             self._ma_controls_playback = False
             self._queue_cleanup_pending = False
-            raise
+            raise PlayerCommandFailed("Failed to start playback.") from err
 
         self._attr_current_media = media
         self._attr_active_source = self.player_id
