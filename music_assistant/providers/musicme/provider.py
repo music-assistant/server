@@ -115,7 +115,7 @@ class MusicMeProvider(MusicProvider):
                     result.tracks = [
                         self._parse_track(t)
                         for t in tracks
-                        if t.get("barcode") and t.get("streamable")
+                        if t.get("barcode") and t.get("streamable") == 2
                     ]
 
         if not result.artists and not result.albums and not result.tracks:
@@ -741,7 +741,7 @@ class MusicMeProvider(MusicProvider):
                     result.tracks = [
                         self._parse_track(t)
                         for t in tracks
-                        if t.get("barcode") and t.get("streamable")
+                        if t.get("barcode") and t.get("streamable") == 2
                     ]
 
         return result if (result.artists or result.albums or result.tracks) else None
