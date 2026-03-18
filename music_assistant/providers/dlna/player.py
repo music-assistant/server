@@ -96,7 +96,6 @@ class DLNAPlayer(Player):
         self.bootid: int | None = None
         self.last_seen = time.time()
         self.last_command = time.time()
-        self._stale_resume_pending = False  # guard against repeated resume attempts
 
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""
@@ -383,30 +382,6 @@ class DLNAPlayer(Player):
             TransportState.PLAYING,
             TransportState.TRANSITIONING,
         ):
-            # Detect stale PLAYING state after server restart:
-            # device still has old MA stream URL but the session no longer exists.
-            # Trigger a queue resume so playback continues seamlessly.
-            _uri = self.device.current_track_uri or ""
-            _base = self.mass.streams.base_url
-            if _uri.startswith(_base + "/flow/"):
-                try:
-                    _url_session = _uri.split("/flow/")[1].split("/")[0]
-                except (IndexError, ValueError):
-                    _url_session = ""
-                _queue = self.mass.player_queues.get(self.player_id)
-                if _queue and _queue.session_id != _url_session:
-                    if not self._stale_resume_pending:
-                        self._stale_resume_pending = True
-                        self.logger.info(
-                            "Stale flow stream detected (session %s != %s), "
-                            "triggering queue resume",
-                            _url_session,
-                            _queue.session_id,
-                        )
-                        self.mass.create_task(self._resume_stale_queue())
-                    return PlaybackState.IDLE
-            # Valid session or non-flow URL
-            self._stale_resume_pending = False
             return PlaybackState.PLAYING
         if self.device.transport_state in (
             TransportState.PAUSED_PLAYBACK,
@@ -438,15 +413,6 @@ class DLNAPlayer(Player):
                 if arg.direction == "out" and arg.name in result:
                     with suppress(ValueError, UpnpError):
                         arg.related_state_variable.value = arg.value
-
-    async def _resume_stale_queue(self) -> None:
-        """Resume queue after detecting stale flow stream from a previous session."""
-        await asyncio.sleep(3)
-        try:
-            await self.mass.player_queues.resume(self.player_id)
-            self.logger.info("Queue resumed successfully after stale stream detection")
-        except Exception as err:
-            self.logger.warning("Could not resume queue after stale detection: %s", err)
 
     async def get_config_entries(
         self,
