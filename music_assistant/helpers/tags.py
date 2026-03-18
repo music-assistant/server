@@ -1167,18 +1167,26 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
     # Basic text tags
     if title := _apev2_get_single(tags, "Title"):
         result["title"] = title
-    if artist := _apev2_get_single(tags, "Artist"):
-        result["artist"] = artist
-    if albumartist := _apev2_get_single(tags, "Album Artist"):
-        result["albumartist"] = albumartist
     if album := _apev2_get_single(tags, "Album"):
         result["album"] = album
+
+    # Artist tags - support null-separated multi-value
+    if artist_values := _apev2_get_multi(tags, "Artist"):
+        if len(artist_values) > 1:
+            result["artists"] = artist_values
+        else:
+            result["artist"] = artist_values[0]
+    if albumartist_values := _apev2_get_multi(tags, "Album Artist"):
+        if len(albumartist_values) > 1:
+            result["albumartists"] = albumartist_values
+        else:
+            result["albumartist"] = albumartist_values[0]
 
     # Genre (can be multi-value)
     if genre := _apev2_get_multi(tags, "Genre"):
         result["genre"] = genre
 
-    # Multi-artist support (ARTISTS tag)
+    # Explicit multi-artist support (ARTISTS tag takes precedence)
     if artists := _apev2_get_multi(tags, "Artists"):
         result["artists"] = artists
 

@@ -435,6 +435,44 @@ def test_parse_apev2_tags_genre_multi_value() -> None:
     assert result.get("genre") == ["Rock", "Pop", "Jazz"]
 
 
+def test_parse_apev2_tags_null_separated_artists() -> None:
+    """Test that APEv2 null-separated Artist field is parsed as multiple artists."""
+    mock_tags = _create_mock_apev2_tags(
+        {
+            "Artist": "ave;new\x00佐倉紗織",
+            "Album Artist": "Album Artist A\x00Album Artist B",
+        }
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    # Multiple null-separated values should be stored as "artists" (plural)
+    assert result.get("artists") == ["ave;new", "佐倉紗織"]
+    assert result.get("albumartists") == ["Album Artist A", "Album Artist B"]
+    # Singular keys should not be set
+    assert "artist" not in result
+    assert "albumartist" not in result
+
+
+def test_parse_apev2_tags_single_artist() -> None:
+    """Test that APEv2 single Artist field is parsed as singular."""
+    mock_tags = _create_mock_apev2_tags(
+        {
+            "Artist": "Single Artist",
+            "Album Artist": "Single Album Artist",
+        }
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    # Single value should be stored as "artist" (singular)
+    assert result.get("artist") == "Single Artist"
+    assert result.get("albumartist") == "Single Album Artist"
+    # Plural keys should not be set
+    assert "artists" not in result
+    assert "albumartists" not in result
+
+
 def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:
     """Test that multiple ARTIST fields in Vorbis with semicolons are handled correctly.
 
