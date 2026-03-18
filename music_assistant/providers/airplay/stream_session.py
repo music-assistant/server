@@ -255,18 +255,21 @@ class AirPlayStreamSession:
         silence_inserted = 0.0
 
         await asyncio.sleep(grace_period)
-        while not self._first_chunk_received.is_set() and silence_inserted < max_silence_padding:
-            silence_duration = 0.1
-            silence_bytes = int(pcm_sample_size * silence_duration)
-            silence_chunk = bytes(silence_bytes)
-            has_running_clients = await self._write_chunk_to_all_players(silence_chunk)
-            if not has_running_clients:
-                break
-            self.seconds_streamed += silence_duration
-            silence_inserted += silence_duration
-            await asyncio.sleep(0.05)
-
-        self.silence_padding = silence_inserted
+        try:
+            while (
+                not self._first_chunk_received.is_set() and silence_inserted < max_silence_padding
+            ):
+                silence_duration = 0.1
+                silence_bytes = int(pcm_sample_size * silence_duration)
+                silence_chunk = bytes(silence_bytes)
+                has_running_clients = await self._write_chunk_to_all_players(silence_chunk)
+                if not has_running_clients:
+                    break
+                self.seconds_streamed += silence_duration
+                silence_inserted += silence_duration
+                await asyncio.sleep(0.05)
+        finally:
+            self.silence_padding = silence_inserted
         if silence_inserted > 0:
             self.prov.logger.warning(
                 "Inserted %.1fs silence padding while waiting for audio source",

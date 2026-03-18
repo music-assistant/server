@@ -1504,7 +1504,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # to prevent spamming the eventbus on small changes (e.g. elapsed time),
-        # we check if there are only changes in the elapsed time
+        # we check if there are only changes in the elapsed time and send
+        # a lightweight event.
         clean_changed_keys = set(changed_values.keys()) - {
             "current_media.elapsed_time",
             "elapsed_time_last_updated",
@@ -1517,17 +1518,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 (elapsed[0] or 0) + (now - (updated[0] or now)),
                 (elapsed[1] or 0) + (now - (updated[1] or now)),
             )
-            if (drift := abs(prev_corrected - new_corrected)) > 1.0:
-                self.logger.warning(
-                    "Player: %s. Corrected elapsed drift: %.1f -> %.1f (%.1fs)",
-                    player_id,
-                    prev_corrected,
-                    new_corrected,
-                    drift,
-                )
+            if abs(prev_corrected - new_corrected) > 1.0:
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
-            if player.protocol_parent_id:
-                self.trigger_player_update(player.protocol_parent_id)
+                if player.protocol_parent_id:
+                    self.trigger_player_update(player.protocol_parent_id)
             return
 
         # signal update to the playerqueue
