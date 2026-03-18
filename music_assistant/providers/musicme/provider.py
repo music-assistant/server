@@ -826,8 +826,9 @@ class MusicMeProvider(MusicProvider):
                 raw = await response.text()
         except ClientConnectionError as err:
             path = endpoint.split("?", maxsplit=1)[0]
-            self.logger.warning("Connection error for %s: %s", path, err)
-            return None
+            raise ResourceTemporarilyUnavailable(
+                f"Connection error for {path}", backoff_time=10
+            ) from err
 
         try:
             result: dict[str, Any] = json_loads(decrypt(raw.strip()))
