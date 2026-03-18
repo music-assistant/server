@@ -10,7 +10,7 @@ import urllib.parse
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientError, ClientResponseError
+from aiohttp import ClientConnectionError, ClientResponseError
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -824,7 +824,7 @@ class MusicMeProvider(MusicProvider):
                     return None
                 response.raise_for_status()
                 raw = await response.text()
-        except ClientError as err:
+        except ClientConnectionError as err:
             path = endpoint.split("?", maxsplit=1)[0]
             self.logger.warning("Connection error for %s: %s", path, err)
             return None
