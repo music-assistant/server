@@ -5,6 +5,7 @@ import uuid
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from math import ceil
 from typing import Any, Literal, cast
 
@@ -318,17 +319,26 @@ class DeezerProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Deezer."""
         async for artist in await self.client.get_user_artists():
-            yield self.parse_artist(artist=artist)
+            item = self.parse_artist(artist=artist)
+            if time_add := getattr(artist, "time_add", None):
+                item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
+            yield item
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
         async for album in await self.client.get_user_albums():
-            yield self.parse_album(album=album)
+            item = self.parse_album(album=album)
+            if time_add := getattr(album, "time_add", None):
+                item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
+            yield item
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Deezer."""
         async for playlist in await self.user.get_playlists():
-            yield self.parse_playlist(playlist=playlist)
+            item = self.parse_playlist(playlist=playlist)
+            if time_add := getattr(playlist, "time_add", None):
+                item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
+            yield item
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
@@ -1029,6 +1039,8 @@ class DeezerProvider(MusicProvider):
         )
         if isrc := getattr(track, "isrc", None):
             item.external_ids.add((ExternalID.ISRC, isrc))
+        if time_add := getattr(track, "time_add", None):
+            item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
         return item
 
     def get_short_title(self, track: deezer.Track) -> str:

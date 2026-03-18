@@ -554,7 +554,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
         :return: External URL if available, otherwise None.
         """
-        ha_url = cast("str", self.config.get("ha_url")) if self.config.get("ha_url") else None
+        ha_url = (
+            cast("str", self.config.get("ha_url")).strip() if self.config.get("ha_url") else None
+        )
         if not ha_url:
             return None
 
@@ -591,7 +593,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 internal_url = network_urls.get("internal")
 
                 # Use external URL first, then cloud, then internal
-                final_url = cast("str", external_url or cloud_url or internal_url)
+                final_url = cast("str", external_url or cloud_url or internal_url).strip()
                 if final_url:
                     self.logger.debug(
                         "Using HA URL for OAuth: %s (from network/url, configured: %s)",
