@@ -739,9 +739,9 @@ class SendspinPlaybackSession:
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
-                if self._first_commit_monotonic_us is not None:
+                if self._timeline_start_us is not None:
                     elapsed_real_s = max(
-                        0.0, (commit_now_us - self._first_commit_monotonic_us) / 1_000_000
+                        0.0, (commit_now_us - self._timeline_start_us) / 1_000_000
                     )
                     if elapsed_real_s - last_elapsed_update_s >= 1.0:
                         last_elapsed_update_s = elapsed_real_s
