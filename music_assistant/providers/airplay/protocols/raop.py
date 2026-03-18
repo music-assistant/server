@@ -123,6 +123,7 @@ class RaopStream(AirPlayProtocol):
                     # we need to ignore updates until we have passed the initial silence padding,
                     # otherwise the player will not correct drift
                     continue
+                # note that this represents the total elapsed time of the streaming session
                 elapsed_time = adjusted_millis / 1000
                 player.set_state_from_stream(elapsed_time=elapsed_time)
             elif "Password required, but none supplied." in line:
