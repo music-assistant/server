@@ -430,8 +430,8 @@ class SendspinPlayer(Player):
 
         # Update player state optimistically
         self._attr_current_media = media
-        self._attr_elapsed_time = 0
-        self._attr_elapsed_time_last_updated = time.time()
+        self._attr_elapsed_time = None
+        self._attr_elapsed_time_last_updated = None
         # playback_state will be set by the group state change event
 
         # Stop previous stream in case we were already playing something.
