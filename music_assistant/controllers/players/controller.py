@@ -1511,20 +1511,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         }
         if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
             now = time.time()
-            prev_elapsed = changed_values[ATTR_ELAPSED_TIME][0] or 0
-            new_elapsed = changed_values[ATTR_ELAPSED_TIME][1] or 0
-            last_updated = changed_values.get("elapsed_time_last_updated", (now, now))
-            prev_corrected = prev_elapsed + (now - (last_updated[0] or now))
-            new_corrected = new_elapsed + (now - (last_updated[1] or now))
-            self.logger.warning(
-                "Player: %s. Corrected elapsed: %s -> %s, drift: %s",
-                player_id,
-                prev_corrected,
-                new_corrected,
-                abs(prev_corrected - new_corrected),
+            elapsed = changed_values[ATTR_ELAPSED_TIME]
+            updated = changed_values.get("elapsed_time_last_updated", (now, now))
+            prev_corrected, new_corrected = (
+                (elapsed[0] or 0) + (now - (updated[0] or now)),
+                (elapsed[1] or 0) + (now - (updated[1] or now)),
             )
-            if abs(prev_corrected - new_corrected) > 1.0:
+            if (drift := abs(prev_corrected - new_corrected)) > 1.0:
+                self.logger.warning(
+                    "Player: %s. Corrected elapsed drift: %.1f -> %.1f (%.1fs)",
+                    player_id,
+                    prev_corrected,
+                    new_corrected,
+                    drift,
+                )
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
+            if player.protocol_parent_id:
+                self.trigger_player_update(player.protocol_parent_id)
             return
 
         # signal update to the playerqueue
