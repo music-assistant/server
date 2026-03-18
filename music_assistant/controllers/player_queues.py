@@ -1317,6 +1317,32 @@ class PlayerQueuesController(CoreController):
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
 
+    def on_player_elapsed_time_corrected(self, player: Player) -> None:
+        """Correct the queue's timing base if the player's real elapsed_time diverged."""
+        if player.type == PlayerType.PROTOCOL:
+            return
+        queue_id = player.player_id
+        if (queue := self._queues.get(queue_id)) is None:
+            return
+        if not queue.active:
+            return
+        player_elapsed = player.state.corrected_elapsed_time
+        if player_elapsed is None:
+            return
+        now = time.time()
+        # Significant drift detected — correct the queue's timing base
+        elapsed_time = player_elapsed
+        if not queue.flow_mode and queue.current_item and queue.current_item.streamdetails:
+            if seek_pos := queue.current_item.streamdetails.seek_position:
+                elapsed_time += seek_pos
+        queue.elapsed_time = elapsed_time
+        queue.elapsed_time_last_updated = now
+        self.mass.signal_event(
+            EventType.QUEUE_TIME_UPDATED,
+            object_id=queue_id,
+            data=queue.elapsed_time,
+        )
+
     def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """Call when a player is removed from the registry."""
         # cancel any pending play_index calls for this queue to prevent conflicts
@@ -2378,7 +2404,7 @@ class PlayerQueuesController(CoreController):
                 current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
-                elapsed_time = int(player.state.corrected_elapsed_time or 0)
+                elapsed_time = player.state.corrected_elapsed_time or 0
                 current_index = self.index_by_id(queue_id, item_id)
             else:
                 # this may happen if the player is still transitioning between tracks
@@ -2586,11 +2612,11 @@ class PlayerQueuesController(CoreController):
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
-    ) -> tuple[int | None, int]:
+    ) -> tuple[int | None, float]:
         """Calculate current queue index and current track elapsed time when flow mode is active."""
         elapsed_time_queue_total = player.state.corrected_elapsed_time or 0
         if queue.current_index is None and not queue.flow_mode_stream_log:
-            return queue.current_index, int(queue.elapsed_time)
+            return queue.current_index, queue.elapsed_time
 
         # For each track that has been streamed/buffered to the player,
         # a playlog entry will be created with the queue item id
@@ -2626,8 +2652,8 @@ class PlayerQueuesController(CoreController):
         if player.state.playback_state != PlaybackState.PLAYING:
             # if the player is not playing, we can't be sure that the elapsed time is correct
             # so we just return the queue index and the elapsed time
-            return queue.current_index, int(queue.elapsed_time)
-        return queue_index, int(track_time)
+            return queue.current_index, queue.elapsed_time
+        return queue_index, track_time
 
     def _parse_player_current_item_id(self, queue_id: str, player: Player) -> str | None:
         """Parse QueueItem ID from Player's current url."""
