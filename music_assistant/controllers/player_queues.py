@@ -1339,6 +1339,12 @@ class PlayerQueuesController(CoreController):
             if queue.current_item and queue.current_item.streamdetails:
                 if seek_pos := queue.current_item.streamdetails.seek_position:
                     elapsed_time += seek_pos
+        self.logger.warning(
+            "Correcting elapsed_time for player %s from %.1f to %.1f seconds",
+            queue_id,
+            queue.elapsed_time,
+            elapsed_time,
+        )
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         self.mass.signal_event(

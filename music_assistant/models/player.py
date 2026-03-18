@@ -1178,7 +1178,6 @@ class Player(ABC):
                 1, self._on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
             )
         # ignore some values that are not relevant for the state
-        changed_values.pop("elapsed_time_last_updated", None)
         changed_values.pop("extra_attributes.seq_no", None)
         changed_values.pop("extra_attributes.last_poll", None)
         changed_values.pop("current_media.elapsed_time_last_updated", None)
