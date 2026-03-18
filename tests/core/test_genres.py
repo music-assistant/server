@@ -293,31 +293,80 @@ class TestGenreCRUD:
     ) -> None:
         """media_type filter returns all non-empty genres for that type, including non-defaults.
 
-        Default hide_empty=None (translation_key IS NOT NULL) is bypassed when media_type
-        is set, so non-default genres with mappings are included.
+        Verifies:
+        - Non-default genres (no translation_key) with mappings ARE returned — the default
+          translation_key IS NOT NULL filter is bypassed when media_type is set.
+        - Genres mapped only to another type are excluded.
+        - Default genres (with translation_key) that have no mapping for the type are excluded.
+        - A genre mapped to multiple types appears in results for each of those types.
+        - search composing with media_type works correctly.
+        - No mappings for the requested type returns an empty list.
         """
-        track_genre = await genre_ctrl.add_item_to_library(_make_genre("MediaTypeTrackGenre"))
-        album_genre = await genre_ctrl.add_item_to_library(_make_genre("MediaTypeAlbumGenre"))
+        track_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterTrackOnlyGenre"))
+        album_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterAlbumOnlyGenre"))
+        shared_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterSharedGenre"))
 
-        track = await _add_test_track(mass, "MT Track")
-        album = await _add_test_album(mass, "MT Album")
+        track = await _add_test_track(mass, "MT Filter Track")
+        album = await _add_test_album(mass, "MT Filter Album")
         await genre_ctrl.add_media_mapping(
-            int(track_genre.item_id), MediaType.TRACK, track.item_id, "MediaTypeTrackGenre"
+            int(track_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterTrackOnlyGenre"
         )
         await genre_ctrl.add_media_mapping(
-            int(album_genre.item_id), MediaType.ALBUM, album.item_id, "MediaTypeAlbumGenre"
+            int(album_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterAlbumOnlyGenre"
+        )
+        # shared_genre is mapped to both tracks and albums
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterSharedGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterSharedGenre"
         )
 
-        # Use default hide_empty (None) to confirm non-default genres are still returned
+        # Add a default genre (has translation_key) that has NO mappings for any type —
+        # it must not appear in media_type results even though hide_empty=None would normally
+        # include all defaults.
+        await genre_ctrl.restore_default_genres()
+
         track_results = await genre_ctrl.library_items(media_type=MediaType.TRACK)
         track_names = {g.name for g in track_results}
-        assert "MediaTypeTrackGenre" in track_names
-        assert "MediaTypeAlbumGenre" not in track_names
+        assert "MT_FilterTrackOnlyGenre" in track_names, (
+            "track-mapped genre missing from TRACK results"
+        )
+        assert "MT_FilterSharedGenre" in track_names, "shared genre missing from TRACK results"
+        assert "MT_FilterAlbumOnlyGenre" not in track_names, (
+            "album-only genre appeared in TRACK results"
+        )
+        # Unmapped default genres must not bleed through —
+        # media_type overrides the translation_key filter
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        assert default_genre_name not in track_names, (
+            "unmapped default genre appeared in TRACK results"
+        )
 
         album_results = await genre_ctrl.library_items(media_type=MediaType.ALBUM)
         album_names = {g.name for g in album_results}
-        assert "MediaTypeAlbumGenre" in album_names
-        assert "MediaTypeTrackGenre" not in album_names
+        assert "MT_FilterAlbumOnlyGenre" in album_names, (
+            "album-mapped genre missing from ALBUM results"
+        )
+        assert "MT_FilterSharedGenre" in album_names, "shared genre missing from ALBUM results"
+        assert "MT_FilterTrackOnlyGenre" not in album_names, (
+            "track-only genre appeared in ALBUM results"
+        )
+
+        # search composes correctly with media_type
+        search_results = await genre_ctrl.library_items(
+            media_type=MediaType.TRACK, search="MT_FilterShared"
+        )
+        search_names = {g.name for g in search_results}
+        assert "MT_FilterSharedGenre" in search_names
+        assert "MT_FilterTrackOnlyGenre" not in search_names
+
+        # No mappings for the requested type returns an empty list
+        playlist_results = await genre_ctrl.library_items(media_type=MediaType.PLAYLIST)
+        playlist_names = {g.name for g in playlist_results}
+        assert "MT_FilterTrackOnlyGenre" not in playlist_names
+        assert "MT_FilterAlbumOnlyGenre" not in playlist_names
+        assert "MT_FilterSharedGenre" not in playlist_names
 
     async def test_library_count(self, genre_ctrl: GenreController) -> None:
         """Returns correct count; favorite_only=True filters."""
