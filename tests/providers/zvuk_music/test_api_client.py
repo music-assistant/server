@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +10,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
+from zvuk_music import StreamQuality
 from zvuk_music.exceptions import (
     BadRequestError,
     BotDetectedError,
@@ -30,8 +30,8 @@ from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient, han
 
 
 def _make_client(token: str = "test-token") -> ZvukMusicClient:  # noqa: S107
-    """Create a ZvukMusicClient with a fake token and mocked http session."""
-    return ZvukMusicClient(token=token, http_session=MagicMock())
+    """Create a ZvukMusicClient with a fake token."""
+    return ZvukMusicClient(token=token)
 
 
 def _make_connected_client() -> tuple[ZvukMusicClient, MagicMock]:
@@ -352,90 +352,26 @@ class TestGetCollection:
 class TestGetEditorialPlaylistIds:
     """Tests for ZvukMusicClient.get_editorial_playlist_ids()."""
 
-    def _patch_request(
-        self, client: ZvukMusicClient, inner: MagicMock, response: dict[str, Any] | None
-    ) -> None:
-        """Wire inner._request.get to return the given response."""
-        inner._request.get = AsyncMock(return_value=response)
-        cast("Any", client)._ensure_connected = MagicMock(return_value=inner)
-
     @pytest.mark.asyncio
-    async def test_returns_string_ids_not_ints(self) -> None:
-        """get_editorial_playlist_ids() returns str IDs, not ints."""
+    async def test_returns_ids_from_library(self) -> None:
+        """get_editorial_playlist_ids() returns the list from the library client."""
         client, inner = _make_connected_client()
-        self._patch_request(
-            client,
-            inner,
-            {
-                "page": {
-                    "data": [
-                        {"type": "playlist", "id": 123},
-                        {"type": "playlist", "id": 456},
-                    ]
-                }
-            },
-        )
+        inner.get_editorial_playlist_ids = AsyncMock(return_value=["111", "222", "333"])
 
         result = await client.get_editorial_playlist_ids()
 
-        assert result == ["123", "456"]
-        assert all(isinstance(i, str) for i in result)
+        assert result == ["111", "222", "333"]
+        inner.get_editorial_playlist_ids.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_skips_non_playlist_items(self) -> None:
-        """get_editorial_playlist_ids() skips items that are not type 'playlist'."""
+    async def test_returns_empty_list_when_library_returns_empty(self) -> None:
+        """get_editorial_playlist_ids() returns [] when library returns []."""
         client, inner = _make_connected_client()
-        self._patch_request(
-            client,
-            inner,
-            {
-                "page": {
-                    "data": [
-                        {"type": "playlist", "id": 10},
-                        {"type": "track", "id": 99},
-                        {"type": "playlist", "id": 20},
-                    ]
-                }
-            },
-        )
-
-        result = await client.get_editorial_playlist_ids()
-
-        assert result == ["10", "20"]
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_list_when_api_returns_none(self) -> None:
-        """get_editorial_playlist_ids() returns [] when the API returns None."""
-        client, inner = _make_connected_client()
-        self._patch_request(client, inner, None)
+        inner.get_editorial_playlist_ids = AsyncMock(return_value=[])
 
         result = await client.get_editorial_playlist_ids()
 
         assert result == []
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_list_when_data_missing(self) -> None:
-        """get_editorial_playlist_ids() returns [] when nested 'data' key is absent."""
-        client, inner = _make_connected_client()
-        self._patch_request(client, inner, {"page": {}})
-
-        result = await client.get_editorial_playlist_ids()
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_skips_items_with_null_id(self) -> None:
-        """get_editorial_playlist_ids() skips items with id=None."""
-        client, inner = _make_connected_client()
-        self._patch_request(
-            client,
-            inner,
-            {"page": {"data": [{"type": "playlist", "id": None}, {"type": "playlist", "id": 7}]}},
-        )
-
-        result = await client.get_editorial_playlist_ids()
-
-        assert result == ["7"]
 
 
 # ---------------------------------------------------------------------------
@@ -446,54 +382,49 @@ class TestGetEditorialPlaylistIds:
 class TestGetDirectStreamUrl:
     """Tests for ZvukMusicClient.get_direct_stream_url()."""
 
-    def _patch_request(self, client: ZvukMusicClient, response: dict[str, Any] | None) -> AsyncMock:
-        """Wire inner._request.get to return the given response."""
-        inner = MagicMock()
-        inner._request.get = AsyncMock(return_value=response)
-        cast("Any", client)._ensure_connected = MagicMock(return_value=inner)
-        return cast("AsyncMock", inner._request.get)
-
     @pytest.mark.asyncio
     async def test_returns_stream_url_from_result(self) -> None:
-        """get_direct_stream_url() returns the stream URL from the API response."""
-        client = _make_client()
-        self._patch_request(client, {"stream": "https://cdn.zvuk.com/track.flac"})
+        """get_direct_stream_url() returns the stream URL from the library result."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(
+            return_value=MagicMock(stream="https://cdn.zvuk.com/track.flac")
+        )
 
         result = await client.get_direct_stream_url("12345", "flac")
 
         assert result == "https://cdn.zvuk.com/track.flac"
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_stream_key_missing(self) -> None:
-        """get_direct_stream_url() returns None when 'stream' key is absent."""
-        client = _make_client()
-        self._patch_request(client, {"expire": 0})
+    async def test_returns_none_when_stream_is_empty(self) -> None:
+        """get_direct_stream_url() returns None when stream field is empty."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(return_value=MagicMock(stream=""))
 
         result = await client.get_direct_stream_url("12345", "flac")
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_api_returns_none(self) -> None:
-        """get_direct_stream_url() returns None when API response is None."""
-        client = _make_client()
-        self._patch_request(client, None)
+    async def test_returns_none_when_library_returns_none(self) -> None:
+        """get_direct_stream_url() returns None when library returns None."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(return_value=None)
 
         result = await client.get_direct_stream_url("12345", "high")
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_passes_quality_and_id_params(self) -> None:
-        """get_direct_stream_url() passes quality and id as query params."""
-        client = _make_client()
-        mock_get = self._patch_request(client, {"stream": "https://cdn.zvuk.com/t.mp3"})
+    async def test_passes_quality_as_stream_quality_enum(self) -> None:
+        """get_direct_stream_url() passes StreamQuality enum to the library."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(
+            return_value=MagicMock(stream="https://cdn.zvuk.com/t.mp3")
+        )
 
         await client.get_direct_stream_url("99999", "mid")
 
-        _args, kwargs = mock_get.call_args.args, mock_get.call_args.kwargs
-        assert kwargs["params"]["quality"] == "mid"
-        assert kwargs["params"]["id"] == "99999"
+        inner.get_direct_stream_url.assert_awaited_once_with("99999", StreamQuality.MID)
 
 
 # ---------------------------------------------------------------------------
@@ -504,66 +435,41 @@ class TestGetDirectStreamUrl:
 class TestGetLyrics:
     """Tests for ZvukMusicClient.get_lyrics()."""
 
-    def _patch_request(self, client: ZvukMusicClient, response: dict[str, Any] | None) -> None:
-        """Wire inner._request.get to return the given response."""
-        inner = MagicMock()
-        inner._request.get = AsyncMock(return_value=response)
-        cast("Any", client)._ensure_connected = MagicMock(return_value=inner)
-
     @pytest.mark.asyncio
-    async def test_returns_none_when_result_is_none(self) -> None:
-        """get_lyrics() returns None when API returns None."""
-        client = _make_client()
-        self._patch_request(client, None)
+    async def test_returns_none_when_library_returns_none(self) -> None:
+        """get_lyrics() returns None when library returns None."""
+        client, inner = _make_connected_client()
+        inner.get_lyrics = AsyncMock(return_value=None)
 
         result = await client.get_lyrics("12345")
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_lyrics_key_missing(self) -> None:
-        """get_lyrics() returns None when result has no 'lyrics' key."""
-        client = _make_client()
-        self._patch_request(client, {"type": "subtitle"})
+    async def test_returns_lyrics_object_when_present(self) -> None:
+        """get_lyrics() returns the Lyrics object from the library."""
+        client, inner = _make_connected_client()
+        mock_lyrics = MagicMock(lyrics="Some lyrics text", is_synced=False)
+        inner.get_lyrics = AsyncMock(return_value=mock_lyrics)
 
         result = await client.get_lyrics("12345")
 
-        assert result is None
+        assert result is mock_lyrics
+        inner.get_lyrics.assert_awaited_once_with("12345")
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_lyrics_value_is_falsy(self) -> None:
-        """get_lyrics() returns None when lyrics value is None/empty."""
-        client = _make_client()
-        self._patch_request(client, {"lyrics": None, "type": "subtitle"})
-
-        result = await client.get_lyrics("12345")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_dict_when_lyrics_present(self) -> None:
-        """get_lyrics() returns the full result dict when lyrics are present."""
-        client = _make_client()
-        payload = {"lyrics": "Some lyrics text", "type": "lyrics", "translation": None}
-        self._patch_request(client, payload)
-
-        result = await client.get_lyrics("12345")
-
-        assert result == payload
-
-    @pytest.mark.asyncio
-    async def test_returns_lrc_dict_for_subtitle_type(self) -> None:
-        """get_lyrics() returns the dict for synced (LRC) lyrics."""
-        client = _make_client()
+    async def test_returns_synced_lyrics_object(self) -> None:
+        """get_lyrics() returns the Lyrics object for synced (LRC) lyrics."""
+        client, inner = _make_connected_client()
         lrc = "[00:00.68]First line\n[00:04.71]Second line\n"
-        payload = {"lyrics": lrc, "type": "subtitle", "translation": None}
-        self._patch_request(client, payload)
+        mock_lyrics = MagicMock(lyrics=lrc, is_synced=True)
+        inner.get_lyrics = AsyncMock(return_value=mock_lyrics)
 
         result = await client.get_lyrics("12345")
 
         assert result is not None
-        assert result["lyrics"] == lrc
-        assert result["type"] == "subtitle"
+        assert result.lyrics == lrc
+        assert result.is_synced is True
 
 
 # ---------------------------------------------------------------------------
@@ -579,40 +485,6 @@ class TestThrottler:
         client = _make_client()
         assert hasattr(client, "_throttler")
         assert isinstance(client._throttler, Throttler)
-
-
-class TestIsRateLimitError:
-    """Tests for ZvukMusicClient._is_rate_limit_error()."""
-
-    def test_returns_false_for_non_network_error(self) -> None:
-        """Non-NetworkError always returns False."""
-        client = _make_client()
-        assert client._is_rate_limit_error(ValueError("429")) is False
-
-    def test_returns_false_for_generic_network_error(self) -> None:
-        """Generic NetworkError (no 429/rate-limit marker) returns False."""
-        client = _make_client()
-        assert client._is_rate_limit_error(NetworkError("connection reset")) is False
-
-    def test_returns_true_for_429_in_message(self) -> None:
-        """NetworkError whose message contains '429' returns True."""
-        client = _make_client()
-        assert client._is_rate_limit_error(NetworkError("HTTP 429")) is True
-
-    def test_returns_true_for_too_many_requests(self) -> None:
-        """NetworkError whose message contains 'Too Many Requests' returns True."""
-        client = _make_client()
-        assert client._is_rate_limit_error(NetworkError("Too Many Requests")) is True
-
-    def test_returns_true_for_rate_limit_in_message(self) -> None:
-        """NetworkError whose message contains 'rate limit' returns True."""
-        client = _make_client()
-        assert client._is_rate_limit_error(NetworkError("rate limit exceeded")) is True
-
-    def test_returns_false_for_too_many_values_false_positive(self) -> None:
-        """'too many values to unpack' must not be a false positive."""
-        client = _make_client()
-        assert client._is_rate_limit_error(NetworkError("too many values to unpack")) is False
 
 
 class TestGetClient:

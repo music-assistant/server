@@ -10,7 +10,7 @@ import pytest
 from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
 
 
-def _make_provider(lyrics_result: dict[str, str | None] | None) -> ZvukMusicProvider:
+def _make_provider(lyrics_result: MagicMock | None) -> ZvukMusicProvider:
     """Create a ZvukMusicProvider mock with a preset lyrics result."""
     provider = Mock(spec=ZvukMusicProvider)
     provider.client = Mock()
@@ -33,9 +33,9 @@ class TestGetTrackMetadata:
 
     @pytest.mark.asyncio
     async def test_synced_lyrics_returned_as_lrc(self) -> None:
-        """LRC synced lyrics (type='subtitle') go into metadata.lrc_lyrics."""
+        """LRC synced lyrics (is_synced=True) go into metadata.lrc_lyrics."""
         lrc_text = "[00:00.68]Честное слово мы с тобой лишние\n[00:04.71]В мире весёлых сетей\n"  # noqa: RUF001
-        provider = _make_provider({"lyrics": lrc_text, "type": "subtitle", "translation": None})
+        provider = _make_provider(MagicMock(lyrics=lrc_text, is_synced=True))
 
         result = await provider.get_track_metadata(_make_track("173663389"))
 
@@ -45,9 +45,9 @@ class TestGetTrackMetadata:
 
     @pytest.mark.asyncio
     async def test_plain_lyrics_returned_as_lyrics(self) -> None:
-        """Plain lyrics (type='lyrics') go into metadata.lyrics."""
+        """Plain lyrics (is_synced=False) go into metadata.lyrics."""
         plain_text = "Some plain lyrics text\nSecond line\n"
-        provider = _make_provider({"lyrics": plain_text, "type": "lyrics", "translation": None})
+        provider = _make_provider(MagicMock(lyrics=plain_text, is_synced=False))
 
         result = await provider.get_track_metadata(_make_track("99999"))
 
@@ -66,8 +66,8 @@ class TestGetTrackMetadata:
 
     @pytest.mark.asyncio
     async def test_empty_lyrics_text_returns_none(self) -> None:
-        """When API returns result with empty/null lyrics text, return None."""
-        provider = _make_provider({"lyrics": None, "type": "subtitle", "translation": None})
+        """When lyrics object has empty/falsy lyrics text, return None."""
+        provider = _make_provider(MagicMock(lyrics="", is_synced=False))
 
         result = await provider.get_track_metadata(_make_track("999"))
 

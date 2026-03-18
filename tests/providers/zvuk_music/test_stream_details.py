@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import MediaNotFoundError
+from zvuk_music import StreamQuality
 
 from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient
 from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
@@ -48,63 +49,44 @@ def _make_provider(quality_pref: str) -> ZvukMusicProvider:
 class TestGetDirectStreamUrl:
     """Tests for ZvukMusicClient.get_direct_stream_url."""
 
-    def _mock_request(
-        self, zvuk_client: ZvukMusicClient, response: dict[str, object] | None
-    ) -> AsyncMock:
-        """Patch _ensure_connected to return a mock with _request.get returning response.
-
-        The library's Request.get() already unwraps {"result": {...}}, so response
-        is the inner dict (what the real API returns after unwrapping).
-        """
+    def _mock_inner(self, zvuk_client: ZvukMusicClient, stream_url: str | None) -> AsyncMock:
+        """Patch _ensure_connected; inner mock's get_direct_stream_url returns stream_url."""
         mock_inner_client = MagicMock()
-        mock_inner_client._request.get = AsyncMock(return_value=response)
+        mock_inner_client.get_direct_stream_url = AsyncMock(
+            return_value=MagicMock(stream=stream_url) if stream_url else None
+        )
         cast("Any", zvuk_client)._ensure_connected = MagicMock(return_value=mock_inner_client)
-        return cast("AsyncMock", mock_inner_client._request.get)
+        return cast("AsyncMock", mock_inner_client.get_direct_stream_url)
 
     @pytest.mark.asyncio
     async def test_returns_stream_url_for_flac(self) -> None:
         """get_direct_stream_url returns the stream URL from the library response."""
-        client = ZvukMusicClient(token="test", http_session=MagicMock())
-        mock_get = self._mock_request(
-            client, {"expire": 0, "stream": "https://cdn.zvuk.com/track.flac?token=abc"}
-        )
+        client = ZvukMusicClient(token="test")
+        self._mock_inner(client, "https://cdn.zvuk.com/track.flac?token=abc")
 
         url = await client.get_direct_stream_url("12345", "flac")
 
         assert url == "https://cdn.zvuk.com/track.flac?token=abc"
-        mock_get.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_stream_missing(self) -> None:
-        """get_direct_stream_url returns None when result has no stream key."""
-        client = ZvukMusicClient(token="test", http_session=MagicMock())
-        self._mock_request(client, {})
+    async def test_returns_none_when_library_returns_none(self) -> None:
+        """get_direct_stream_url returns None when library returns None."""
+        client = ZvukMusicClient(token="test")
+        self._mock_inner(client, None)
 
         url = await client.get_direct_stream_url("12345", "flac")
 
         assert url is None
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_api_returns_none(self) -> None:
-        """get_direct_stream_url returns None when API returns None."""
-        client = ZvukMusicClient(token="test", http_session=MagicMock())
-        self._mock_request(client, None)
-
-        url = await client.get_direct_stream_url("12345", "high")
-
-        assert url is None
-
-    @pytest.mark.asyncio
-    async def test_passes_quality_param(self) -> None:
-        """get_direct_stream_url passes the quality parameter to the API."""
-        client = ZvukMusicClient(token="test", http_session=MagicMock())
-        mock_get = self._mock_request(client, {"stream": "https://cdn.zvuk.com/track.mp3"})
+    async def test_passes_quality_as_stream_quality_enum(self) -> None:
+        """get_direct_stream_url passes StreamQuality enum to the library."""
+        client = ZvukMusicClient(token="test")
+        mock_lib = self._mock_inner(client, "https://cdn.zvuk.com/track.mp3")
 
         await client.get_direct_stream_url("99999", "high")
 
-        _url, kwargs = mock_get.call_args.args[0], mock_get.call_args.kwargs
-        assert kwargs["params"]["quality"] == "high"
-        assert kwargs["params"]["id"] == "99999"
+        mock_lib.assert_awaited_once_with("99999", StreamQuality.HIGH)
 
 
 class TestGetStreamDetailsFlac:
