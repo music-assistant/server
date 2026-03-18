@@ -2692,10 +2692,11 @@ class PlayerQueuesController(CoreController):
             if len(path_parts) >= 5:
                 url_session_id = path_parts[1]
                 queue = self._queues.get(queue_id)
-                if queue and queue.session_id and url_session_id != queue.session_id:
+                if queue and (not queue.session_id or url_session_id != queue.session_id):
                     # player is still playing a stream from a previous MA session
+                    # (session_id is None after restore, or mismatches the current session)
                     self.logger.info(
-                        "Stale stream detected on %s (session %s != %s), triggering resume",
+                        "Stale stream detected on %s (url session %s, queue session %s)",
                         queue.display_name,
                         url_session_id,
                         queue.session_id,
@@ -2725,11 +2726,22 @@ class PlayerQueuesController(CoreController):
             return
         # wait briefly for the player to settle after detection
         await asyncio.sleep(3)
+        # re-fetch queue state after the delay
+        queue = self._queues.get(queue_id)
+        if not queue or not queue.active:
+            return
         self.logger.info(
             "Resuming stale queue for %s",
             queue.display_name,
         )
-        await self.resume(queue_id)
+        try:
+            await self.resume(queue_id)
+        except Exception as err:
+            self.logger.warning(
+                "Failed to resume stale queue for %s: %s",
+                queue.display_name,
+                err,
+            )
 
     def _handle_end_of_queue(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
