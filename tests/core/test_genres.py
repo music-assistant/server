@@ -291,7 +291,11 @@ class TestGenreCRUD:
     async def test_library_items_media_type_filter(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """media_type filter returns only genres with a mapping for that specific type."""
+        """media_type filter returns all non-empty genres for that type, including non-defaults.
+
+        Default hide_empty=None (translation_key IS NOT NULL) is bypassed when media_type
+        is set, so non-default genres with mappings are included.
+        """
         track_genre = await genre_ctrl.add_item_to_library(_make_genre("MediaTypeTrackGenre"))
         album_genre = await genre_ctrl.add_item_to_library(_make_genre("MediaTypeAlbumGenre"))
 
@@ -304,12 +308,13 @@ class TestGenreCRUD:
             int(album_genre.item_id), MediaType.ALBUM, album.item_id, "MediaTypeAlbumGenre"
         )
 
-        track_results = await genre_ctrl.library_items(hide_empty=True, media_type=MediaType.TRACK)
+        # Use default hide_empty (None) to confirm non-default genres are still returned
+        track_results = await genre_ctrl.library_items(media_type=MediaType.TRACK)
         track_names = {g.name for g in track_results}
         assert "MediaTypeTrackGenre" in track_names
         assert "MediaTypeAlbumGenre" not in track_names
 
-        album_results = await genre_ctrl.library_items(hide_empty=True, media_type=MediaType.ALBUM)
+        album_results = await genre_ctrl.library_items(media_type=MediaType.ALBUM)
         album_names = {g.name for g in album_results}
         assert "MediaTypeAlbumGenre" in album_names
         assert "MediaTypeTrackGenre" not in album_names

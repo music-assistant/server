@@ -326,14 +326,9 @@ class GenreController(MediaControllerBase[Genre]):
         extra_parts: list[str] = []
         if search:
             extra_params["search_raw"] = f"%{search.strip().lower()}%"
-        if hide_empty is None:
-            extra_parts.append(f"{self.db_table}.translation_key IS NOT NULL")
-        elif hide_empty:
-            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-            extra_parts.append(
-                f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
-            )
         if media_type is not None:
+            # media_type implies non-empty: return all genres (including non-default) that
+            # have at least one mapping for the requested type.
             gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
             extra_parts.append(
                 f"EXISTS(SELECT 1 FROM {gm} gm_mt "
@@ -341,6 +336,13 @@ class GenreController(MediaControllerBase[Genre]):
                 "AND gm_mt.media_type = :filter_media_type)"
             )
             extra_params["filter_media_type"] = media_type.value
+        elif hide_empty is None:
+            extra_parts.append(f"{self.db_table}.translation_key IS NOT NULL")
+        elif hide_empty:
+            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+            extra_parts.append(
+                f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
+            )
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
