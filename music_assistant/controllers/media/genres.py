@@ -42,6 +42,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
+from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import serialize_to_json
 
 from .base import MediaControllerBase
@@ -1523,11 +1524,13 @@ class GenreController(MediaControllerBase[Genre]):
 
     def register_scheduled_scan_task(self) -> BackgroundTask:
         """Register the recurring genre mapping scan task."""
+        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         return self.mass.tasks.register_scheduled_task(
             task_id=GENRE_SCAN_TASK_ID,
             name="Scan genre mappings",
             handler=self._scan_genre_mappings,
-            schedule=TaskSchedule.daily(hour=2, minute=0),
+            schedule=desired_schedule,
             translation_key="background_task.scan_genre_mappings",
             metadata={
                 "task_domain": "genre_mapping_scan",

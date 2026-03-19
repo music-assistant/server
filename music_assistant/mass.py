@@ -205,6 +205,17 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.players))
             tg.create_task(setup_controller(self.player_queues))
 
+        for controller_name in (
+            "cache",
+            "tasks",
+            "streams",
+            "music",
+            "metadata",
+            "players",
+            "player_queues",
+        ):
+            await cast("CoreController", getattr(self, controller_name)).post_setup()
+
         # load webserver/api now that the core controllers are setup and ready to be used
         self._register_api_commands()
         await self.webserver.setup(await self.config.get_core_config("webserver"))

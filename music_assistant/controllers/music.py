@@ -73,7 +73,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import UNSET, DatabaseConnection
-from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
@@ -182,10 +182,6 @@ class MusicController(CoreController):
         self.config = config
         # setup library database
         await self._setup_database()
-        if tasks_controller := getattr(self.mass, "tasks", None):
-            await tasks_controller.initialized.wait()
-            self._register_database_cleanup_task()
-            self.genres.register_scheduled_scan_task()
         # make sure to finish any removal jobs
         for removed_provider in self.mass.config.get_raw_core_config_value(
             self.domain, CONF_DELETED_PROVIDERS, []
@@ -198,6 +194,11 @@ class MusicController(CoreController):
         )
         if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
             self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
+
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
+        self._register_database_cleanup_task()
+        self.genres.register_scheduled_scan_task()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -234,7 +235,8 @@ class MusicController(CoreController):
         media_types: list[MediaType] | None = None,
         providers: list[str] | None = None,
     ) -> list[BackgroundTask]:
-        """Start running the sync of (all or selected) musicproviders.
+        """
+        Start running the sync of (all or selected) musicproviders.
 
         media_types: only sync these media types. None for all.
         providers: only sync these provider instances. None for all.
@@ -1957,11 +1959,13 @@ class MusicController(CoreController):
 
     def _register_database_cleanup_task(self) -> BackgroundTask:
         """Register the recurring database cleanup background task."""
+        utc_hour, utc_minute = local_clock_time_to_utc(5, 0)
+        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         return self.mass.tasks.register_scheduled_task(
             task_id=DATABASE_CLEANUP_TASK_ID,
             name="Database cleanup",
             handler=self._cleanup_database,
-            schedule=TaskSchedule.daily(hour=3, minute=0),
+            schedule=desired_schedule,
             translation_key="background_task.database_cleanup",
             metadata={
                 "task_domain": "music_database_cleanup",

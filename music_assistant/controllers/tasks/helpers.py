@@ -23,6 +23,10 @@ from .models import ManagedTask
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
+TASK_LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+TASK_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+TASK_LOG_FORMATTER = logging.Formatter(TASK_LOG_FORMAT, datefmt=TASK_LOG_DATE_FORMAT)
+
 
 def utcnow() -> datetime:
     """Return current UTC datetime."""
@@ -347,6 +351,22 @@ def parse_utc_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def format_task_log_line(
+    message: str,
+    *,
+    level: int,
+    logger_name: str,
+    created_at: datetime | None = None,
+) -> str:
+    """Format a synthetic task lifecycle log line like regular captured logs."""
+    record = logging.LogRecord(logger_name, level, "", 0, message, (), None)
+    if created_at is not None:
+        created_ts = created_at.timestamp()
+        record.created = created_ts
+        record.msecs = (created_ts - int(created_ts)) * 1000
+    return TASK_LOG_FORMATTER.format(record)
+
+
 class TaskLogHandler(logging.Handler):
     """Logging handler that mirrors log lines into the active managed task."""
 
@@ -359,12 +379,7 @@ class TaskLogHandler(logging.Handler):
         super().__init__(logging.DEBUG)
         self._mass = mass
         self._append_log = append_log
-        self.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)s [%(name)s] %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-        )
+        self.setFormatter(TASK_LOG_FORMATTER)
 
     def emit(self, record: logging.LogRecord) -> None:
         """Forward the formatted log line to the active task buffer."""

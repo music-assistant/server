@@ -58,6 +58,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.images import create_collage, get_image_data, get_image_thumb
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.throttle_retry import Throttler
@@ -194,12 +195,6 @@ class MetaDataController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
-        # wait for dependencies to be ready (streams and music)
-        await self.mass.streams.initialized.wait()
-        await self.mass.music.initialized.wait()
-        if tasks_controller := getattr(self.mass, "tasks", None):
-            await tasks_controller.initialized.wait()
-
         self.config = config
         if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             # silence PIL logger
@@ -208,6 +203,9 @@ class MetaDataController(CoreController):
         self._collage_images_dir = os.path.join(self.mass.cache_path, "collage_images")
         if not await asyncio.to_thread(os.path.exists, self._collage_images_dir):
             await asyncio.to_thread(os.mkdir, self._collage_images_dir)
+
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
         self._register_maintenance_tasks()
         # migrate theaudiodb images to new url
@@ -218,9 +216,8 @@ class MetaDataController(CoreController):
             "REPLACE (metadata, 'https://www.theaudiodb.com', 'https://r2.theaudiodb.com') "
             "WHERE artists.metadata LIKE '%https://www.theaudiodb.com%'"
         )
-        if self.mass.music.database:
-            await self.mass.music.database.execute(query)
-            await self.mass.music.database.commit()
+        await self.mass.music.database.execute(query)
+        await self.mass.music.database.commit()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -343,10 +340,7 @@ class MetaDataController(CoreController):
             update_current_task_progress_text(f"Refreshing metadata for {item_name}")
             await self.update_metadata(cast("MediaItemType", item))
 
-        if not (tasks_controller := getattr(self.mass, "tasks", None)):
-            self.mass.create_task(handle_lookup())
-            return
-        tasks_controller.create_task(
+        self.mass.tasks.create_task(
             task_id=task_id,
             name="Update metadata",
             handler=handle_lookup,
@@ -1000,23 +994,22 @@ class MetaDataController(CoreController):
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
-        tasks_controller = getattr(self.mass, "tasks", None)
-        if tasks_controller is None:
-            return
-        tasks_controller.register_scheduled_task(
+        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
+        self.mass.tasks.register_scheduled_task(
             task_id=MISSING_ARTIST_ARTWORK_SCAN_TASK_ID,
             name="Scan missing artist artwork",
             handler=self._scan_missing_artist_artwork,
-            schedule=TaskSchedule.daily(hour=2, minute=0),
+            schedule=desired_schedule,
             translation_key="background_task.scan_missing_artist_artwork",
             metadata={"task_domain": "metadata_missing_artist_artwork_scan"},
             allow_retry=True,
         )
-        tasks_controller.register_scheduled_task(
+        self.mass.tasks.register_scheduled_task(
             task_id=PLAYLIST_METADATA_SCAN_TASK_ID,
             name="Refresh playlist metadata",
             handler=self._refresh_playlist_metadata_batch,
-            schedule=TaskSchedule.daily(hour=2, minute=0),
+            schedule=desired_schedule,
             translation_key="background_task.refresh_playlist_metadata",
             metadata={"task_domain": "metadata_playlist_metadata_scan"},
             allow_retry=True,

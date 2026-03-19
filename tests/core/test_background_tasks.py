@@ -37,6 +37,7 @@ from music_assistant.controllers.tasks import (
     update_current_task_progress_text,
 )
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
+from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -335,9 +336,13 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     tasks_controller: TasksController,
 ) -> None:
     """Core maintenance controllers should register their recurring background tasks."""
+    maintenance_hour, maintenance_minute = local_clock_time_to_utc(4, 0)
+    cleanup_hour, cleanup_minute = local_clock_time_to_utc(5, 0)
+    maintenance_schedule = TaskSchedule.daily(hour=maintenance_hour, minute=maintenance_minute)
+    cleanup_schedule = TaskSchedule.daily(hour=cleanup_hour, minute=cleanup_minute)
     cache = CacheController(mass_minimal)
     mass_minimal.cache = cache
-    await cache._register_cleanup_task()
+    cache._register_cleanup_task()
 
     music = MusicController(mass_minimal)
     mass_minimal.music = music
@@ -353,18 +358,18 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     playlist_scan_task = tasks_controller.get_task("metadata_playlist_metadata_scan")
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
-    assert cache_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert cache_task.schedule == maintenance_schedule
     assert cache_task.metadata == {"task_domain": "cache_database_cleanup"}
 
-    assert db_cleanup_task.schedule == TaskSchedule.daily(hour=3, minute=0)
-    assert genre_scan_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert db_cleanup_task.schedule == cleanup_schedule
+    assert genre_scan_task.schedule == maintenance_schedule
 
     assert artist_scan_task.translation_key == "background_task.scan_missing_artist_artwork"
-    assert artist_scan_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert artist_scan_task.schedule == maintenance_schedule
     assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_artwork_scan"}
 
     assert playlist_scan_task.translation_key == "background_task.refresh_playlist_metadata"
-    assert playlist_scan_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert playlist_scan_task.schedule == maintenance_schedule
     assert playlist_scan_task.metadata == {"task_domain": "metadata_playlist_metadata_scan"}
 
 
@@ -374,6 +379,8 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A completed sync task should queue database cleanup as a managed task."""
+    cleanup_hour, cleanup_minute = local_clock_time_to_utc(5, 0)
+    cleanup_schedule = TaskSchedule.daily(hour=cleanup_hour, minute=cleanup_minute)
     music = MusicController(mass_minimal)
     mass_minimal.music = music
     cleanup_started = asyncio.Event()
@@ -416,7 +423,7 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
 
     task = tasks_controller.get_task("music_database_cleanup")
     assert task.translation_key == "background_task.database_cleanup"
-    assert task.schedule == TaskSchedule.daily(hour=3, minute=0)
+    assert task.schedule == cleanup_schedule
     assert task.metadata == {
         "task_domain": "music_database_cleanup",
     }
@@ -428,6 +435,8 @@ async def test_genre_scan_queues_managed_background_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Manual genre scans should run as managed background tasks."""
+    maintenance_hour, maintenance_minute = local_clock_time_to_utc(4, 0)
+    maintenance_schedule = TaskSchedule.daily(hour=maintenance_hour, minute=maintenance_minute)
     genre_controller = GenreController(mass_minimal)
     mass_minimal.music = SimpleNamespace(active_sync_tasks=[])
     monkeypatch.setattr(genre_controller, "_bulk_scan_unmapped_genres", AsyncMock(return_value=3))
@@ -439,7 +448,7 @@ async def test_genre_scan_queues_managed_background_task(
 
     task = tasks_controller.get_task("genre_mapping_scan")
     assert task.translation_key == "background_task.scan_genre_mappings"
-    assert task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert task.schedule == maintenance_schedule
     assert task.metadata == {
         "task_domain": "genre_mapping_scan",
     }

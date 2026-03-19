@@ -25,6 +25,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import async_json_loads, json_dumps
 from music_assistant.models.core_controller import CoreController
 
@@ -88,7 +89,10 @@ class CacheController(CoreController):
         """Async initialize of cache module."""
         self.logger.info("Initializing cache controller...")
         await self._setup_database()
-        await self._register_cleanup_task()
+
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
+        self._register_cleanup_task()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -421,17 +425,15 @@ class CacheController(CoreController):
             await self.database.delete(DB_TABLE_CACHE, query="WHERE provider LIKE '%spotify%'")
         await self.database.commit()
 
-    async def _register_cleanup_task(self) -> None:
+    def _register_cleanup_task(self) -> None:
         """Register the recurring cache database cleanup task."""
-        tasks_controller = getattr(self.mass, "tasks", None)
-        if tasks_controller is None:
-            return
-        await tasks_controller.initialized.wait()
-        tasks_controller.register_scheduled_task(
+        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
+        self.mass.tasks.register_scheduled_task(
             task_id=CACHE_DATABASE_CLEANUP_TASK_ID,
             name="Cache database cleanup",
             handler=self.auto_cleanup,
-            schedule=TaskSchedule.daily(hour=2, minute=0),
+            schedule=desired_schedule,
             translation_key="background_task.cache_database_cleanup",
             metadata={"task_domain": "cache_database_cleanup"},
             allow_retry=True,

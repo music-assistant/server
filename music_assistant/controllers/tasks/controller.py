@@ -7,6 +7,7 @@ import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import datetime
 from functools import partial
 from threading import get_ident
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,7 @@ from .constants import (
 from .context import ACTIVE_TASK_CONTEXT, TaskExecutionContext
 from .helpers import (
     TaskLogHandler,
+    format_task_log_line,
     get_task_schedule_delay,
     get_task_timer_id,
     get_visible_tasks,
@@ -421,6 +423,60 @@ class TasksController(CoreController):
         managed.task_info.updated_at = utcnow()
         self._schedule_task_update()
 
+    def _append_task_lifecycle_log(
+        self,
+        task_id: str,
+        *,
+        level: int,
+        message: str,
+        created_at: datetime | None = None,
+    ) -> None:
+        """Append a synthetic lifecycle log line using the default task log format."""
+        self._append_task_log(
+            task_id,
+            format_task_log_line(
+                message,
+                level=level,
+                logger_name=self.logger.name,
+                created_at=created_at,
+            ),
+        )
+
+    def _mark_task_running(self, managed: ManagedTask) -> None:
+        """Update task state for the start of a managed run."""
+        task_info = managed.task_info
+        task_info.status = TaskStatus.RUNNING
+        task_info.started_at = utcnow()
+        task_info.last_run = task_info.started_at
+        task_info.updated_at = task_info.started_at
+        self._persist_scheduled_task_state(managed)
+        self._append_task_lifecycle_log(
+            task_info.id,
+            level=logging.INFO,
+            message="Task started",
+            created_at=task_info.started_at,
+        )
+        self._schedule_task_update(force=True)
+
+    def _finalize_task_run(self, managed: ManagedTask) -> None:
+        """Finalize task bookkeeping after a managed run."""
+        task_info = managed.task_info
+        task_info.finished_at = utcnow()
+        task_info.updated_at = task_info.finished_at
+        managed.current_task = None
+        if managed.removed:
+            self._tasks.pop(task_info.id, None)
+            if managed.clear_persisted_state_on_remove:
+                self._clear_scheduled_task_state(task_info.id)
+        elif managed.is_scheduled:
+            self._schedule_managed_task(managed)
+            self._persist_scheduled_task_state(managed)
+        elif managed.remove_on_finish:
+            self._tasks.pop(task_info.id, None)
+        trim_finished_history(self._tasks, MAX_FINISHED_TASK_HISTORY)
+        self._schedule_task_update(force=True)
+        self._start_pending_tasks()
+
     def _queue_task(
         self,
         managed: ManagedTask,
@@ -472,15 +528,7 @@ class TasksController(CoreController):
     async def _run_task(self, managed: ManagedTask) -> None:
         """Run a managed task."""
         task_info = managed.task_info
-        task_info.status = TaskStatus.RUNNING
-        task_info.started_at = utcnow()
-        task_info.last_run = task_info.started_at
-        task_info.updated_at = task_info.started_at
-        self._persist_scheduled_task_state(managed)
-        self._append_task_log(
-            task_info.id, f"{task_info.started_at.isoformat()} INFO [tasks] Task started"
-        )
-        self._schedule_task_update(force=True)
+        self._mark_task_running(managed)
         task_context = TaskExecutionContext(
             task_id=task_info.id,
             get_task=self.get_task,
@@ -495,8 +543,9 @@ class TasksController(CoreController):
         except asyncio.CancelledError:
             task_info.status = TaskStatus.CANCELLED
             task_info.last_error = None
-            self._append_task_log(
-                task_info.id, f"{utcnow().isoformat()} WARNING [tasks] Task cancelled"
+            now = utcnow()
+            self._append_task_lifecycle_log(
+                task_info.id, level=logging.WARNING, message="Task cancelled", created_at=now
             )
         except Exception as err:
             task_info.status = TaskStatus.FAILED
@@ -507,42 +556,36 @@ class TasksController(CoreController):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
-            self._append_task_log(
+            now = utcnow()
+            self._append_task_lifecycle_log(
                 task_info.id,
-                f"{utcnow().isoformat()} ERROR [tasks] Task failed: {err}",
+                level=logging.ERROR,
+                message=f"Task failed: {err}",
+                created_at=now,
             )
         else:
             if task_info.failure_count:
+                now = utcnow()
                 task_info.status = TaskStatus.PARTIAL_SUCCESS
-                self._append_task_log(
+                self._append_task_lifecycle_log(
                     task_info.id,
-                    f"{utcnow().isoformat()} WARNING [tasks] "
-                    f"Task completed with {task_info.failure_count} issue(s)",
+                    level=logging.WARNING,
+                    message=f"Task completed with {task_info.failure_count} issue(s)",
+                    created_at=now,
                 )
             else:
                 task_info.status = TaskStatus.SUCCESS
-                self._append_task_log(
+                now = utcnow()
+                self._append_task_lifecycle_log(
                     task_info.id,
-                    f"{utcnow().isoformat()} INFO [tasks] Task completed successfully",
+                    level=logging.INFO,
+                    message="Task completed successfully",
+                    created_at=now,
                 )
         finally:
             ACTIVE_TASK_CONTEXT.reset(context_token)
             ACTIVE_TASK_ID.reset(token)
-            task_info.finished_at = utcnow()
-            task_info.updated_at = task_info.finished_at
-            managed.current_task = None
-            if managed.removed:
-                self._tasks.pop(task_info.id, None)
-                if managed.clear_persisted_state_on_remove:
-                    self._clear_scheduled_task_state(task_info.id)
-            elif managed.is_scheduled:
-                self._schedule_managed_task(managed)
-                self._persist_scheduled_task_state(managed)
-            elif managed.remove_on_finish:
-                self._tasks.pop(task_info.id, None)
-            trim_finished_history(self._tasks, MAX_FINISHED_TASK_HISTORY)
-            self._schedule_task_update(force=True)
-            self._start_pending_tasks()
+            self._finalize_task_run(managed)
 
     def _cancel_managed_task(self, managed: ManagedTask) -> None:
         """Cancel a pending or running task."""
