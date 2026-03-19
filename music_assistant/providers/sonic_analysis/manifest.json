@@ -1,0 +1,10 @@
+{
+  "type": "plugin",
+  "domain": "sonic_analysis",
+  "name": "Sonic Analysis",
+  "description": "Extracts sonic signatures from tracks and enables similarity-based track discovery.",
+  "codeowners": [],
+  "requirements": ["voyager==2.1.0"],
+  "documentation": "https://music-assistant.io/plugin-support/sonic-analysis/",
+  "multi_instance": false
+}
