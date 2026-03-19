@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     TaskScheduleType,
     TaskStatus,
 )
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.provider import ProviderManifest
 
 import music_assistant.controllers.media.playlists as playlists_module
@@ -172,7 +173,7 @@ async def test_user_scoped_task_visibility(tasks_controller: TasksController) ->
         visible_tasks = tasks_controller.list_tasks()
         assert [task.id for task in visible_tasks] == [user_task.id]
         assert tasks_controller.get_task(user_task.id).id == user_task.id
-        with pytest.raises(KeyError):
+        with pytest.raises(InvalidDataError):
             tasks_controller.get_task(system_task.id)
     finally:
         set_current_user(None)

@@ -453,6 +453,8 @@ class WebsocketClientHandler:
                 return
 
             if event.event == EventType.TASKS_UPDATED:
+                if self._authenticated_user is None:
+                    return
                 task_data = self.mass.tasks.list_tasks_for_user(self._authenticated_user)
                 self._send_message_sync(
                     MassEvent(

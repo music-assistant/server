@@ -411,7 +411,7 @@ class TasksController(CoreController):
     def _get_managed_task(self, task_id: str) -> ManagedTask:
         """Return runtime state for a managed task."""
         if not (managed := self._tasks.get(task_id)):
-            raise KeyError(f"Task {task_id} not found")
+            raise InvalidDataError(f"Task {task_id} not found")
         return managed
 
     def _get_visible_managed_task(self, task_id: str, user: User | None) -> ManagedTask:
@@ -422,7 +422,7 @@ class TasksController(CoreController):
             and user.role != UserRole.ADMIN
             and managed.task_info.user_id != user.user_id
         ):
-            raise KeyError(f"Task {task_id} not found")
+            raise InvalidDataError(f"Task {task_id} not found")
         return managed
 
     def _append_task_log(self, task_id: str, line: str) -> None:
