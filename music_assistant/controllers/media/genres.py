@@ -305,15 +305,18 @@ class GenreController(MediaControllerBase[Genre]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         hide_empty: bool | None = None,
+        media_type: MediaType | None = None,
         **kwargs: Any,
     ) -> list[Genre]:
         """Get genres in the library.
 
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
-        :param hide_empty: Controls which genres are returned.
-            True: only return genres that have media mappings.
+        :param hide_empty: Only applies when media_type is not set.
+            True: only return genres that have at least one media mapping.
             False: return all genres including unmapped ones.
             None (default): only return default genres (those with a translation_key).
+        :param media_type: When set, return all genres (including non-defaults) that have
+            at least one mapping for this media type. Takes precedence over hide_empty.
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -322,17 +325,27 @@ class GenreController(MediaControllerBase[Genre]):
         # the provider filter (the frontend always sends provider="library").
         # Pass raw lowered search for alias matching (search_raw),
         # since the normalized :search param strips spaces/special chars.
-        extra_params: dict[str, Any] | None = None
-        extra_parts: list[str] | None = None
+        extra_params: dict[str, Any] = {}
+        extra_parts: list[str] = []
         if search:
-            extra_params = {"search_raw": f"%{search.strip().lower()}%"}
-        if hide_empty is None:
-            extra_parts = [f"{self.db_table}.translation_key IS NOT NULL"]
+            extra_params["search_raw"] = f"%{search.strip().lower()}%"
+        if media_type is not None:
+            # media_type implies non-empty: return all genres (including non-default) that
+            # have at least one mapping for the requested type.
+            gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+            extra_parts.append(
+                f"EXISTS(SELECT 1 FROM {gm} gm_mt "
+                f"WHERE gm_mt.genre_id = {self.db_table}.item_id "
+                "AND gm_mt.media_type = :filter_media_type)"
+            )
+            extra_params["filter_media_type"] = media_type.value
+        elif hide_empty is None:
+            extra_parts.append(f"{self.db_table}.translation_key IS NOT NULL")
         elif hide_empty:
             gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-            extra_parts = [
+            extra_parts.append(
                 f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
-            ]
+            )
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -647,12 +660,11 @@ class GenreController(MediaControllerBase[Genre]):
         # that accumulated "pop" as a secondary alias.
         alias_to_genre, primary_name_to_genre = await self._build_genre_lookup()
 
-        # Extract all unique raw genre names from metadata across all media tables
         union_parts = [
             f"SELECT DISTINCT TRIM(g.value) AS raw_name "
-            f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
-            f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-            f"AND json_extract({table}.metadata, '$.genres') != '[]'"
+            f"FROM {table}, "
+            f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
+            f"WHERE TRIM(g.value) != ''"
             for table, _ in MEDIA_TABLES
         ]
         unique_names_sql = " UNION ".join(union_parts)
@@ -729,10 +741,10 @@ class GenreController(MediaControllerBase[Genre]):
                     f"SELECT gl.genre_id, {table}.item_id, "
                     f"'{media_type.value}', TRIM(g.value) "
                     f"FROM {table}, "
-                    f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
+                    f"json_each(CASE WHEN json_valid({table}.metadata) "
+                    f"THEN json_extract({table}.metadata, '$.genres') END) AS g "
                     f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
-                    f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-                    f"AND json_extract({table}.metadata, '$.genres') != '[]' "
+                    f"WHERE TRIM(g.value) != '' "
                     f"AND NOT EXISTS ("
                     f"SELECT 1 FROM {excl} e "
                     f"WHERE e.genre_id = gl.genre_id "
