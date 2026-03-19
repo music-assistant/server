@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ProviderFeature
+
 from .provider import DLNAPlayerProvider
 
 if TYPE_CHECKING:

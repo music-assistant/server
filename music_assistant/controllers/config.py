@@ -73,7 +73,6 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
@@ -86,6 +85,7 @@ from music_assistant.constants import (
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
@@ -1385,13 +1385,9 @@ class ConfigController:
         discovery_core = core_configs.setdefault("discovery", {"domain": "discovery", "values": {}})
         discovery_values = discovery_core.setdefault("values", {})
         players_values = players_core.get("values", {})
-        legacy_zeroconf_interfaces = players_values.pop(
-            CONF_ENTRY_ZEROCONF_INTERFACES.key, None
-        )
+        legacy_zeroconf_interfaces = players_values.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
         if legacy_zeroconf_interfaces is None and players_core:
-            legacy_zeroconf_interfaces = players_core.pop(
-                CONF_ENTRY_ZEROCONF_INTERFACES.key, None
-            )
+            legacy_zeroconf_interfaces = players_core.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
         if (
             legacy_zeroconf_interfaces is not None
             and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_values

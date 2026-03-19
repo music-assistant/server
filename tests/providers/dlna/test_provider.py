@@ -26,4 +26,3 @@ async def test_on_upnp_service_discovered_handles_media_renderer() -> None:
         "uuid:renderer-123",
         "http://192.168.1.10/description.xml",
     )
-

@@ -1,7 +1,6 @@
 """DLNA Player Provider."""
 
 import asyncio
-import logging
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client import UpnpRequester
@@ -9,7 +8,7 @@ from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.utils import CaseInsensitiveDict
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_PLAYERS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
@@ -30,11 +29,6 @@ class DLNAPlayerProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self.lock = asyncio.Lock()
         self._ignored_udns = set()
-        # silence the async_upnp_client logger
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
         self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)

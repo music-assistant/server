@@ -2,9 +2,10 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant.mass import MusicAssistant
-from zeroconf import IPVersion, InterfaceChoice
+from zeroconf import InterfaceChoice, IPVersion
 from zeroconf.asyncio import AsyncZeroconf
+
+from music_assistant.mass import MusicAssistant
 
 
 class StubUpnpProvider:
@@ -24,7 +25,7 @@ class StubUpnpProvider:
 async def test_run_provider_discovery_dispatches_upnp_callbacks(mass: MusicAssistant) -> None:
     """Provider-targeted discovery should fan SSDP results back into the provider callback."""
     provider = StubUpnpProvider()
-    mass._providers[provider.instance_id] = provider  # noqa: SLF001
+    mass._providers[provider.instance_id] = provider
 
     async def fake_async_search(callback, search_target: str, target=None) -> None:
         del target
@@ -45,7 +46,7 @@ async def test_run_provider_discovery_dispatches_upnp_callbacks(mass: MusicAssis
     assert mock_async_search.await_count == 1
     assert mock_async_search.await_args.kwargs["search_target"] == "roku:ecp"
     provider.on_upnp_service_discovered.assert_awaited_once()
-    mass._providers.pop(provider.instance_id, None)  # noqa: SLF001
+    mass._providers.pop(provider.instance_id, None)
     mass.discovery.on_provider_unload(provider.instance_id)
 
 
@@ -66,12 +67,15 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
     mock_zc.async_unregister_service = AsyncMock()
     mock_zc.async_close = AsyncMock()
 
-    with patch(
-        "music_assistant.controllers.discovery.controller.AsyncZeroconf",
-        return_value=mock_zc,
-    ) as mock_async_zeroconf, patch(
-        "music_assistant.controllers.discovery.controller.get_ip_pton",
-        new=AsyncMock(return_value=b"\x7f\x00\x00\x01"),
+    with (
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncZeroconf",
+            return_value=mock_zc,
+        ) as mock_async_zeroconf,
+        patch(
+            "music_assistant.controllers.discovery.controller.get_ip_pton",
+            new=AsyncMock(return_value=b"\x7f\x00\x00\x01"),
+        ),
     ):
         await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
         assert mass_minimal.discovery.aiozc is mock_zc

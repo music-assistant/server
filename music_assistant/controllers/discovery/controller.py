@@ -10,17 +10,16 @@ from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.enums import ConfigEntryType
 from zeroconf import (
-    IPVersion,
     InterfaceChoice,
+    IPVersion,
     NonUniqueNameException,
     ServiceStateChange,
     Zeroconf,
 )
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
-
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
     CONF_ENTRY_ZEROCONF_INTERFACES,
