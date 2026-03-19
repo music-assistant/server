@@ -6,7 +6,6 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, cast
 
-from async_upnp_client.utils import CaseInsensitiveDict
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 from rokuecp import Roku
@@ -19,6 +18,7 @@ from .constants import CONF_AUTO_DISCOVER
 from .player import MediaAssistantPlayer
 
 if TYPE_CHECKING:
+    from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.enums import ProviderFeature
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()

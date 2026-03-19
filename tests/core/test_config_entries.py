@@ -38,7 +38,7 @@ class TestRequiresReload:
         self, mock_mass: "MockMass"
     ) -> None:
         """Test that zeroconf interface selection belongs to the discovery controller."""
-        discovery_controller = DiscoveryController(mock_mass)  # type: ignore[arg-type]
+        discovery_controller = DiscoveryController(mock_mass)
         player_controller = PlayerController(mock_mass)  # type: ignore[arg-type]
 
         discovery_entries = await discovery_controller.get_config_entries()

@@ -8,7 +8,7 @@ import inspect
 import logging
 from collections import defaultdict
 from ipaddress import IPv4Address
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
@@ -42,11 +42,11 @@ UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
 
 
-async def async_upnp_search(*args, **kwargs):
+async def async_upnp_search(*args: Any, **kwargs: Any) -> None:
     """Run async_upnp_client SSDP search with lazy import."""
-    from async_upnp_client.search import async_search
+    from async_upnp_client.search import async_search  # noqa: PLC0415
 
-    return await async_search(*args, **kwargs)
+    await async_search(*args, **kwargs)
 
 
 class DiscoveryController(CoreController):
@@ -54,7 +54,7 @@ class DiscoveryController(CoreController):
 
     domain = "discovery"
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize discovery controller."""
         super().__init__(*args, **kwargs)
         self.manifest.name = "Discovery"
