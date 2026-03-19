@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -21,8 +22,10 @@ from music_assistant_models.enums import (
 from music_assistant_models.provider import ProviderManifest
 
 import music_assistant.controllers.media.playlists as playlists_module
+from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.media.genres import GenreController
 from music_assistant.controllers.media.playlists import PlaylistController
+from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import (
     TasksController,
@@ -63,6 +66,7 @@ async def tasks_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[Tasks
     controller = TasksController(mass_minimal)
     mass_minimal.tasks = controller
     await controller.setup(await mass_minimal.config.get_core_config(controller.domain))
+    controller.initialized.set()
     try:
         yield controller
     finally:
@@ -326,6 +330,44 @@ async def test_schedule_provider_sync_registers_scheduled_background_tasks(
         tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.TRACK))
 
 
+async def test_core_maintenance_tasks_register_nightly_schedules(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+) -> None:
+    """Core maintenance controllers should register their recurring background tasks."""
+    cache = CacheController(mass_minimal)
+    mass_minimal.cache = cache
+    await cache._register_cleanup_task()
+
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+    db_cleanup_task = music._register_database_cleanup_task()
+    genre_scan_task = music.genres.register_scheduled_scan_task()
+
+    metadata = MetaDataController(mass_minimal)
+    mass_minimal.metadata = metadata
+    metadata._register_maintenance_tasks()
+
+    cache_task = tasks_controller.get_task("cache_database_cleanup")
+    artist_scan_task = tasks_controller.get_task("metadata_missing_artist_artwork_scan")
+    playlist_scan_task = tasks_controller.get_task("metadata_playlist_metadata_scan")
+
+    assert cache_task.translation_key == "background_task.cache_database_cleanup"
+    assert cache_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert cache_task.metadata == {"task_domain": "cache_database_cleanup"}
+
+    assert db_cleanup_task.schedule == TaskSchedule.daily(hour=3, minute=0)
+    assert genre_scan_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+
+    assert artist_scan_task.translation_key == "background_task.scan_missing_artist_artwork"
+    assert artist_scan_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_artwork_scan"}
+
+    assert playlist_scan_task.translation_key == "background_task.refresh_playlist_metadata"
+    assert playlist_scan_task.schedule == TaskSchedule.daily(hour=2, minute=0)
+    assert playlist_scan_task.metadata == {"task_domain": "metadata_playlist_metadata_scan"}
+
+
 async def test_music_sync_completion_queues_database_cleanup_background_task(
     mass_minimal: MusicAssistant,
     tasks_controller: TasksController,
@@ -374,6 +416,7 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
 
     task = tasks_controller.get_task("music_database_cleanup")
     assert task.translation_key == "background_task.database_cleanup"
+    assert task.schedule == TaskSchedule.daily(hour=3, minute=0)
     assert task.metadata == {
         "task_domain": "music_database_cleanup",
     }
@@ -396,9 +439,59 @@ async def test_genre_scan_queues_managed_background_task(
 
     task = tasks_controller.get_task("genre_mapping_scan")
     assert task.translation_key == "background_task.scan_genre_mappings"
+    assert task.schedule == TaskSchedule.daily(hour=2, minute=0)
     assert task.metadata == {
         "task_domain": "genre_mapping_scan",
     }
     status = await genre_controller.get_scanner_status()
     assert status["running"] is False
     assert status["last_scan_mapped"] == 3
+
+
+async def test_schedule_update_metadata_uses_managed_background_task(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+) -> None:
+    """Scheduled metadata lookups should run through the tasks controller."""
+    metadata = MetaDataController(mass_minimal)
+    mass_minimal.metadata = metadata
+    lookup_started = asyncio.Event()
+    release_lookup = asyncio.Event()
+    resolved_item = SimpleNamespace(
+        name="Test Artist",
+        media_type=MediaType.ARTIST,
+        provider="library",
+        uri="artist://library/123",
+    )
+    mass_minimal.music = SimpleNamespace(get_item_by_uri=AsyncMock(return_value=resolved_item))
+
+    async def fake_update_metadata(item: object, force_refresh: bool = False) -> object:
+        assert item is resolved_item
+        assert force_refresh is False
+        lookup_started.set()
+        await release_lookup.wait()
+        return item
+
+    metadata.update_metadata = fake_update_metadata  # type: ignore[method-assign]
+    metadata.schedule_update_metadata(resolved_item.uri)
+
+    task_id = metadata._get_metadata_lookup_task_id(resolved_item.uri)
+    await lookup_started.wait()
+
+    task = tasks_controller.get_task(task_id)
+    assert task.translation_key == "background_task.update_metadata"
+    assert task.metadata == {
+        "task_domain": "metadata_lookup",
+        "item_uri": resolved_item.uri,
+    }
+
+    release_lookup.set()
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while asyncio.get_running_loop().time() < deadline:
+        with suppress(KeyError):
+            tasks_controller.get_task(task_id)
+            await asyncio.sleep(0.01)
+            continue
+        break
+    else:
+        raise AssertionError("Metadata lookup task was not removed after finishing")

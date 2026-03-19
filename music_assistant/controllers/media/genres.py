@@ -8,7 +8,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.background_task import BackgroundTask, TaskStatus
+from music_assistant_models.background_task import BackgroundTask, TaskSchedule, TaskStatus
 from music_assistant_models.enums import EventType, ImageType, MediaType
 from music_assistant_models.media_items import (
     Album,
@@ -40,7 +40,6 @@ from music_assistant.constants import (
     GENRE_ICONS_DIR,
 )
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
@@ -1522,19 +1521,24 @@ class GenreController(MediaControllerBase[Genre]):
         """Trigger genre mapping scan when music sync tasks have completed."""
         self._queue_genre_mapping_scan_task()
 
-    def _queue_genre_mapping_scan_task(self, user_id: str | None = None) -> BackgroundTask:
-        """Queue the genre mapping scanner as a managed background task."""
-        return self.mass.tasks.create_task(
+    def register_scheduled_scan_task(self) -> BackgroundTask:
+        """Register the recurring genre mapping scan task."""
+        return self.mass.tasks.register_scheduled_task(
             task_id=GENRE_SCAN_TASK_ID,
             name="Scan genre mappings",
             handler=self._scan_genre_mappings,
+            schedule=TaskSchedule.daily(hour=2, minute=0),
             translation_key="background_task.scan_genre_mappings",
-            user_id=user_id,
             metadata={
                 "task_domain": "genre_mapping_scan",
             },
             allow_retry=True,
         )
+
+    def _queue_genre_mapping_scan_task(self) -> BackgroundTask:
+        """Queue the genre mapping scanner as a managed background task."""
+        self.register_scheduled_scan_task()
+        return self.mass.tasks.run_task(GENRE_SCAN_TASK_ID)
 
     def _get_genre_scan_task(self) -> BackgroundTask | None:
         """Return the latest managed genre scan task, if any."""
@@ -1595,8 +1599,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "message": "Genre mapping scanner is already running",
             }
 
-        user = get_current_user()
-        self._queue_genre_mapping_scan_task(user.user_id if user else None)
+        self._queue_genre_mapping_scan_task()
 
         return {
             "status": "triggered",

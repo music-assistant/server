@@ -14,10 +14,15 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, get_type_hints
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
+from music_assistant.controllers.tasks.context import (
+    update_current_task_progress_from_index,
+    update_current_task_progress_text,
+)
 from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import async_json_loads, json_dumps
@@ -34,6 +39,7 @@ CONF_CLEAR_CACHE = "clear_cache"
 DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
 DB_SCHEMA_VERSION = 7
 MAX_CACHE_DB_SIZE_MB = 2048
+CACHE_DATABASE_CLEANUP_TASK_ID = "cache_database_cleanup"
 
 BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
 
@@ -82,7 +88,7 @@ class CacheController(CoreController):
         """Async initialize of cache module."""
         self.logger.info("Initializing cache controller...")
         await self._setup_database()
-        self.__schedule_cleanup_task()
+        await self._register_cleanup_task()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -240,16 +246,26 @@ class CacheController(CoreController):
         """Run scheduled auto cleanup task."""
         assert self.database is not None
         self.logger.debug("Running automatic cleanup...")
+        update_current_task_progress_text("Loading cache records")
         # simply reset the memory cache
         self._mem_cache.clear()
         cur_timestamp = int(time.time())
         cleaned_records = 0
-        for db_row in await self.database.get_rows(DB_TABLE_CACHE):
+        db_rows = await self.database.get_rows(DB_TABLE_CACHE)
+        for index, db_row in enumerate(db_rows, 1):
+            update_current_task_progress_from_index(
+                index,
+                len(db_rows),
+                f"Scanning cache record {index}/{len(db_rows)}",
+            )
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
+        update_current_task_progress_text(
+            f"Cleaned up {cleaned_records} expired cache record(s)"
+        )
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     @asynccontextmanager
@@ -405,11 +421,21 @@ class CacheController(CoreController):
             await self.database.delete(DB_TABLE_CACHE, query="WHERE provider LIKE '%spotify%'")
         await self.database.commit()
 
-    def __schedule_cleanup_task(self) -> None:
-        """Schedule the cleanup task."""
-        self.mass.create_task(self.auto_cleanup())
-        # reschedule self
-        self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
+    async def _register_cleanup_task(self) -> None:
+        """Register the recurring cache database cleanup task."""
+        tasks_controller = getattr(self.mass, "tasks", None)
+        if tasks_controller is None:
+            return
+        await tasks_controller.initialized.wait()
+        tasks_controller.register_scheduled_task(
+            task_id=CACHE_DATABASE_CLEANUP_TASK_ID,
+            name="Cache database cleanup",
+            handler=self.auto_cleanup,
+            schedule=TaskSchedule.daily(hour=2, minute=0),
+            translation_key="background_task.cache_database_cleanup",
+            metadata={"task_domain": "cache_database_cleanup"},
+            allow_retry=True,
+        )
 
 
 Param = ParamSpec("Param")

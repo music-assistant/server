@@ -182,6 +182,10 @@ class MusicController(CoreController):
         self.config = config
         # setup library database
         await self._setup_database()
+        if tasks_controller := getattr(self.mass, "tasks", None):
+            await tasks_controller.initialized.wait()
+            self._register_database_cleanup_task()
+            self.genres.register_scheduled_scan_task()
         # make sure to finish any removal jobs
         for removed_provider in self.mass.config.get_raw_core_config_value(
             self.domain, CONF_DELETED_PROVIDERS, []
@@ -1951,18 +1955,24 @@ class MusicController(CoreController):
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
         self._queue_database_cleanup_task()
 
-    def _queue_database_cleanup_task(self) -> BackgroundTask:
-        """Queue the post-sync database cleanup as a managed background task."""
-        return self.mass.tasks.create_task(
+    def _register_database_cleanup_task(self) -> BackgroundTask:
+        """Register the recurring database cleanup background task."""
+        return self.mass.tasks.register_scheduled_task(
             task_id=DATABASE_CLEANUP_TASK_ID,
             name="Database cleanup",
             handler=self._cleanup_database,
+            schedule=TaskSchedule.daily(hour=3, minute=0),
             translation_key="background_task.database_cleanup",
             metadata={
                 "task_domain": "music_database_cleanup",
             },
             allow_retry=True,
         )
+
+    def _queue_database_cleanup_task(self) -> BackgroundTask:
+        """Queue the post-sync database cleanup as a managed background task."""
+        self._register_database_cleanup_task()
+        return self.mass.tasks.run_task(DATABASE_CLEANUP_TASK_ID)
 
     def _sort_search_result(
         self,
