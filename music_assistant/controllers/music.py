@@ -94,7 +94,6 @@ from .media.tracks import TracksController
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
     from music_assistant import MusicAssistant
@@ -110,6 +109,7 @@ CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 LAST_PROVIDER_INSTANCE_SCAN: Final[str] = "last_provider_instance_scan"
 PROVIDER_INSTANCE_SCAN_INTERVAL: Final[int] = 30 * 24 * 60 * 60  # one month in seconds
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
+MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
 
 
 class MusicController(CoreController):
@@ -132,8 +132,6 @@ class MusicController(CoreController):
         self.genres = GenreController(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
-        self._task_updates_unsubscribe: Any = None
-        self._awaiting_music_sync_completion = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
@@ -196,15 +194,9 @@ class MusicController(CoreController):
         )
         if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
             self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
-        self._task_updates_unsubscribe = self.mass.subscribe(
-            self._on_tasks_updated, EventType.TASKS_UPDATED
-        )
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        if self._task_updates_unsubscribe:
-            self._task_updates_unsubscribe()
-            self._task_updates_unsubscribe = None
         if self._database:
             await self._database.close()
 
@@ -1899,8 +1891,15 @@ class MusicController(CoreController):
         """Create the coroutine used for a managed provider sync task."""
 
         async def run_sync() -> None:
-            async with self._sync_lock:
-                await provider.sync_library(media_type)
+            try:
+                async with self._sync_lock:
+                    await provider.sync_library(media_type)
+            finally:
+                self.mass.call_later(
+                    0,
+                    self._handle_sync_completion_check,
+                    task_id=MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
+                )
 
         return run_sync
 
@@ -1945,14 +1944,10 @@ class MusicController(CoreController):
             "media_type": media_type.value,
         }
 
-    def _on_tasks_updated(self, _event: MassEvent) -> None:
-        """Run follow-up maintenance once provider sync tasks have completed."""
+    def _handle_sync_completion_check(self) -> None:
+        """Run follow-up maintenance when no provider sync tasks remain active."""
         if self.active_sync_tasks:
-            self._awaiting_music_sync_completion = True
             return
-        if not self._awaiting_music_sync_completion:
-            return
-        self._awaiting_music_sync_completion = False
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
         self._queue_database_cleanup_task()
 

@@ -331,7 +331,7 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
     tasks_controller: TasksController,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Music sync completion should queue database cleanup as a managed task."""
+    """A completed sync task should queue database cleanup as a managed task."""
     music = MusicController(mass_minimal)
     mass_minimal.music = music
     cleanup_started = asyncio.Event()
@@ -340,10 +340,35 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
         cleanup_started.set()
 
     monkeypatch.setattr(music, "_cleanup_database", fake_cleanup_database)
-    music._awaiting_music_sync_completion = True
+    provider_config = ProviderConfig(
+        values={},
+        type=ProviderType.MUSIC,
+        domain="test_provider",
+        instance_id="test_provider--instance",
+        name="Spotify",
+    )
+    provider_config.get_value = lambda *_args, **_kwargs: "GLOBAL"
+    provider = DummyMusicProvider(
+        mass_minimal,
+        manifest=ProviderManifest(
+            type=ProviderType.MUSIC,
+            domain="test_provider",
+            name="Test provider",
+            description="Test provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=provider_config,
+        supported_features={ProviderFeature.LIBRARY_ARTISTS},
+    )
 
-    music._on_tasks_updated(SimpleNamespace())
+    sync_task = tasks_controller.create_task(
+        task_id=music._get_sync_task_id(provider, MediaType.ARTIST),
+        name=music._get_sync_task_name(provider, MediaType.ARTIST),
+        handler=music._create_provider_sync_handler(provider, MediaType.ARTIST),
+        metadata=music._get_sync_task_metadata(provider, MediaType.ARTIST),
+    )
 
+    await _wait_for_task_status(tasks_controller, sync_task.id, TaskStatus.SUCCESS)
     await cleanup_started.wait()
     await _wait_for_task_status(tasks_controller, "music_database_cleanup", TaskStatus.SUCCESS)
 
