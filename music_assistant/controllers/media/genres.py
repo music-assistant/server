@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
 from music_assistant_models.enums import EventType, ImageType, MediaType, TaskStatus
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -1547,7 +1548,7 @@ class GenreController(MediaControllerBase[Genre]):
         """Return the latest managed genre scan task, if any."""
         try:
             return self.mass.tasks.get_task(GENRE_SCAN_TASK_ID)
-        except KeyError:
+        except InvalidDataError:
             return None
 
     @property

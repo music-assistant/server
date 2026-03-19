@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     TaskStatus,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     InvalidProviderID,
     InvalidProviderURI,
     MediaNotFoundError,
@@ -257,7 +258,7 @@ class MusicController(CoreController):
                 task_id = self._get_sync_task_id(provider, media_type)
                 try:
                     tasks.append(self.mass.tasks.run_task(task_id))
-                except KeyError:
+                except InvalidDataError:
                     tasks.append(
                         self.mass.tasks.create_task(
                             task_id=task_id,
@@ -1680,7 +1681,7 @@ class MusicController(CoreController):
     ) -> TaskSchedule | None:
         """Return the effective schedule for a provider sync task, if any."""
         task_id = self._get_sync_task_id(provider_instance_id, media_type)
-        with suppress(KeyError):
+        with suppress(InvalidDataError):
             task = self.mass.tasks.get_task(task_id)
             return task.schedule
         if not (provider := self.mass.get_provider(provider_instance_id)):

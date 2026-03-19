@@ -368,7 +368,7 @@ async def test_schedule_provider_sync_registers_scheduled_background_tasks(
     assert albums_task.metadata["media_type"] == "album"
     assert albums_task.schedule == TaskSchedule.hourly(every=12)
 
-    with pytest.raises(KeyError):
+    with pytest.raises(InvalidDataError):
         tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.TRACK))
 
 
@@ -549,7 +549,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
     release_lookup.set()
     deadline = asyncio.get_running_loop().time() + 2.0
     while asyncio.get_running_loop().time() < deadline:
-        with suppress(KeyError):
+        with suppress(InvalidDataError):
             tasks_controller.get_task(task_id)
             await asyncio.sleep(0.01)
             continue
