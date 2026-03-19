@@ -267,9 +267,7 @@ class CacheController(CoreController):
                 await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
-        update_current_task_progress_text(
-            f"Cleaned up {cleaned_records} expired cache record(s)"
-        )
+        update_current_task_progress_text(f"Cleaned up {cleaned_records} expired cache record(s)")
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     @asynccontextmanager

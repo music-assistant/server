@@ -111,9 +111,7 @@ class TasksController(CoreController):
     @api_command("tasks/log")
     def get_task_log(self, task_id: str) -> str:
         """Return the log buffer for a single task."""
-        return "\n".join(
-            self._get_visible_managed_task(task_id, get_current_user()).task_info.logs
-        )
+        return "\n".join(self._get_visible_managed_task(task_id, get_current_user()).task_info.logs)
 
     @api_command("tasks/run", required_role=UserRole.ADMIN)
     def run_task(self, task_id: str) -> BackgroundTask:
