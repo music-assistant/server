@@ -664,15 +664,31 @@ class SonicAnalysisProvider(PluginProvider):
         if self.mass.music.database is None:
             return _cors_json({"signatures": [], "total": 0})
 
-        all_rows = await self.mass.music.database.get_rows(
-            DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
-        )
-        track_rows = [r for r in all_rows if r.get("item_id") != CORPUS_STATS_ITEM_ID]
-        total = len(track_rows)
-        page = track_rows[offset : offset + limit]
+        try:
+            all_rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT item_id, provider, version, features FROM {DB_TABLE_SONIC_SIGNATURES}"
+                f" WHERE item_id != :skip",
+                {"skip": CORPUS_STATS_ITEM_ID},
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            self.logger.warning("Failed to fetch signatures: %s", exc)
+            return _cors_json({"signatures": [], "total": 0, "error": str(exc)})
+
+        # Get total count separately
+        try:
+            count_rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT COUNT(*) as cnt FROM {DB_TABLE_SONIC_SIGNATURES}"
+                f" WHERE item_id != :skip",
+                {"skip": CORPUS_STATS_ITEM_ID},
+            )
+            total = int(count_rows[0]["cnt"]) if count_rows else 0
+        except Exception:
+            total = len(all_rows)
 
         signatures = []
-        for row in page:
+        for row in all_rows:
             signatures.append({
                 "item_id": row["item_id"],
                 "provider": row["provider"],
