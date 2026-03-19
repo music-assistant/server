@@ -176,6 +176,7 @@ class SonicAnalysisProvider(PluginProvider):
             ("/api/sonic_analysis/similar", self._handle_similar_tracks),
             ("/api/sonic_analysis/status", self._handle_status),
             ("/api/sonic_analysis/signatures", self._handle_signatures),
+            ("/api/sonic_analysis/debug", self._handle_debug_page),
         ):
             self._on_unload.append(
                 self.mass.webserver.register_dynamic_route(path, handler, "GET")
@@ -604,6 +605,11 @@ class SonicAnalysisProvider(PluginProvider):
 
         return _cors_json({"analyzed": True, "items": items, "seed_track_id": item_id})
 
+    async def _handle_debug_page(self, request: Any) -> Any:
+        """Serve the built-in debug console as an HTML page."""
+        html = _DEBUG_HTML.replace("%%BASE_URL%%", str(request.url).rsplit("/debug", 1)[0])
+        return web.Response(text=html, content_type="text/html")
+
     async def _handle_cors_preflight(self, request: Any) -> Any:
         """Handle OPTIONS preflight requests for CORS."""
         return web.Response(
@@ -740,3 +746,199 @@ class SonicAnalysisProvider(PluginProvider):
         for unload_cb in self._on_unload:
             unload_cb()
         await asyncio.to_thread(self._save_search_index)
+
+
+_DEBUG_HTML = """\
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sonic Analysis Debug</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:monospace;background:#0a0a0f;color:#e0e0ea;padding:1.5rem}
+h1{font-size:1.1rem;color:#00e5a0;margin-bottom:1rem}
+h1 span{color:#7a7a8e;font-weight:400}
+h2{font-size:.8rem;color:#7a7a8e;text-transform:uppercase;letter-spacing:.1em;margin:1rem 0 .5rem}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.5rem;margin-bottom:1rem}
+.c{background:#12121a;border:1px solid #2a2a3a;border-radius:6px;padding:.75rem}
+.c .l{font-size:.6rem;color:#7a7a8e;text-transform:uppercase;letter-spacing:.08em}
+.c .v{font-size:1.4rem;font-weight:700;color:#00e5a0;margin-top:.25rem}
+.c .v.w{color:#ff6b6b}.c .v.i{color:#6bc5ff}.c .v.d{color:#7a7a8e}
+input,select{font-family:monospace;font-size:.8rem;padding:.4rem .6rem;background:#12121a;border:1px solid #2a2a3a;
+border-radius:4px;color:#e0e0ea;outline:0}input:focus{border-color:#00e5a0}
+button{font-family:monospace;font-size:.75rem;font-weight:600;padding:.4rem 1rem;border:1px solid #00e5a0;
+background:0 0;color:#00e5a0;border-radius:4px;cursor:pointer;text-transform:uppercase}
+button:hover{background:#00e5a0;color:#0a0a0f}
+.row{display:flex;gap:.5rem;align-items:center;margin-bottom:.75rem;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse;font-size:.75rem;margin:.5rem 0}
+th{background:#1a1a26;padding:.4rem .6rem;text-align:left;color:#7a7a8e;font-size:.65rem;text-transform:uppercase}
+td{padding:.4rem .6rem;border-bottom:1px solid #2a2a3a}
+tr:hover td{background:#00e5a010}
+.log{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;padding:.5rem;font-size:.7rem;
+max-height:200px;overflow:auto;color:#7a7a8e;line-height:1.5;margin:.5rem 0}
+.ri{display:flex;align-items:center;gap:.75rem;padding:.5rem .75rem;background:#12121a;
+border:1px solid #2a2a3a;border-radius:4px;margin-bottom:.4rem}
+.ri:hover{border-color:#00e5a0}
+.ri .rk{color:#7a7a8e;min-width:24px;text-align:center;font-size:.7rem;font-weight:700}
+.ri .id{font-weight:600;font-size:.78rem}.ri .pv{font-size:.65rem;color:#7a7a8e}
+.ri .ds{font-weight:700;padding:.2rem .5rem;border-radius:3px;min-width:60px;text-align:center;font-size:.8rem}
+.dc{background:#00e5a018;color:#00e5a0}.dm{background:#6bc5ff18;color:#6bc5ff}.df{background:#ff6b6b18;color:#ff6b6b}
+pre.raw{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;padding:.5rem;font-size:.7rem;
+overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#7a7a8e}
+</style></head><body>
+<h1>sonic_analysis <span>// debug console</span></h1>
+
+<h2>Status</h2>
+<div class="g" id="sg"></div>
+<button onclick="fetchStatus()">Refresh Status</button>
+
+<h2>Log</h2>
+<div class="log" id="lo"></div>
+
+<h2>Signatures in DB</h2>
+<div class="row">
+<button onclick="prevP()">&lt;</button>
+<span id="pi" style="font-size:.75rem;color:#7a7a8e"></span>
+<button onclick="nextP()">&gt;</button>
+<button onclick="fetchSigs()">Refresh</button>
+</div>
+<div id="st"></div>
+
+<h2>Similarity Search</h2>
+<div class="row">
+<input id="si" placeholder="item_id" style="width:180px">
+<input id="sl" type="number" value="10" min="1" max="100" style="width:60px">
+<button onclick="doSearch()">Search</button>
+</div>
+<div id="sr"></div>
+
+<h2>Raw API</h2>
+<div class="row">
+<select id="ae">
+<option value="status">GET /status</option>
+<option value="signatures">GET /signatures</option>
+<option value="similar">GET /similar</option>
+</select>
+<input id="ap" placeholder="item_id=123&limit=10" style="flex:1">
+<button onclick="doRaw()">Send</button>
+</div>
+<pre class="raw" id="ro">—</pre>
+
+<script>
+var BASE='%%BASE_URL%%';
+var pg=0,PS=50;
+
+function cl(p){while(p.firstChild)p.removeChild(p.firstChild)}
+function tx(t){return document.createTextNode(t)}
+function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text)e.textContent=text;return e}
+
+function logMsg(m,ok){
+  var d=document.getElementById('lo');
+  var line=mk('div','',new Date().toLocaleTimeString()+' '+m);
+  if(ok===true)line.style.color='#00e5a0';
+  else if(ok===false)line.style.color='#ff6b6b';
+  else line.style.color='#6bc5ff';
+  d.appendChild(line);d.scrollTop=d.scrollHeight;
+}
+
+function api(ep,params){
+  var u=BASE+'/'+ep;
+  if(params){var s=new URLSearchParams(params);u+='?'+s.toString()}
+  return fetch(u).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()});
+}
+
+function fetchStatus(){
+  api('status').then(function(d){
+    var g=document.getElementById('sg');cl(g);
+    var items=[
+      ['DB Sigs',d.db_signatures,d.db_signatures>0?'':'d'],
+      ['Index',d.index_size,d.index_size>0?'':'d'],
+      ['Labels',d.label_map_size,'i'],
+      ['Corpus',d.has_corpus_stats?'YES':'NO',d.has_corpus_stats?'':'w'],
+      ['Dims',d.signature_dimensions,'i'],
+      ['Ver','v'+d.signature_version,'i'],
+      ['On Play',d.analyze_on_play?'ON':'OFF',d.analyze_on_play?'':'d'],
+      ['On Sync',d.analyze_on_sync?'ON':'OFF',d.analyze_on_sync?'':'d'],
+    ];
+    items.forEach(function(x){
+      var c=mk('div','c');
+      c.appendChild(mk('div','l',x[0]));
+      c.appendChild(mk('div','v '+x[2],String(x[1])));
+      g.appendChild(c);
+    });
+    logMsg('Status: '+d.db_signatures+' sigs, '+d.index_size+' indexed',true);
+  }).catch(function(e){logMsg('Status error: '+e.message,false)});
+}
+
+function fetchSigs(){
+  api('signatures',{limit:PS,offset:pg*PS}).then(function(d){
+    var tp=Math.ceil(d.total/PS)||1;
+    document.getElementById('pi').textContent=(pg+1)+'/'+tp+' ('+d.total+')';
+    var w=document.getElementById('st');cl(w);
+    if(!d.signatures.length){w.appendChild(mk('div','','No signatures'));return}
+    var t=mk('table');
+    var th=mk('thead');var hr=mk('tr');
+    ['#','Item ID','Provider','Ver','Feat',''].forEach(function(h){hr.appendChild(mk('th','',h))});
+    th.appendChild(hr);t.appendChild(th);
+    var tb=mk('tbody');
+    d.signatures.forEach(function(s,i){
+      var r=mk('tr');
+      r.appendChild(mk('td','',String(pg*PS+i+1)));
+      var idTd=mk('td','',s.item_id);idTd.title=s.item_id;r.appendChild(idTd);
+      r.appendChild(mk('td','',s.provider));
+      r.appendChild(mk('td','','v'+s.version));
+      r.appendChild(mk('td','',String(s.feature_count)));
+      var btn=mk('button','','Similar');
+      btn.style.padding='0.15rem 0.4rem';btn.style.fontSize='0.6rem';
+      btn.addEventListener('click',function(){document.getElementById('si').value=s.item_id;doSearch()});
+      var btd=mk('td');btd.appendChild(btn);r.appendChild(btd);
+      tb.appendChild(r);
+    });
+    t.appendChild(tb);w.appendChild(t);
+  }).catch(function(e){logMsg('Sigs error: '+e.message,false)});
+}
+
+function prevP(){if(pg>0){pg--;fetchSigs()}}
+function nextP(){pg++;fetchSigs()}
+
+function doSearch(){
+  var id=document.getElementById('si').value.trim();
+  var lim=document.getElementById('sl').value;
+  if(!id)return;
+  var w=document.getElementById('sr');cl(w);
+  w.appendChild(mk('div','','Searching...'));
+  logMsg('Searching similar to '+id+'...');
+  api('similar',{item_id:id,limit:lim}).then(function(d){
+    cl(w);
+    if(!d.analyzed){w.appendChild(mk('div','','Not analyzed yet'));logMsg('No signature for '+id,false);return}
+    if(!d.items.length){w.appendChild(mk('div','','No results'));return}
+    d.items.forEach(function(it,i){
+      var dist=it.distance;
+      var cls=dist<0.3?'dc':dist<0.7?'dm':'df';
+      var row=mk('div','ri');
+      row.appendChild(mk('div','rk','#'+(i+1)));
+      var info=mk('div');
+      info.appendChild(mk('div','id',it.item_id));
+      info.appendChild(mk('div','pv',it.provider));
+      info.style.flex='1';
+      row.appendChild(info);
+      row.appendChild(mk('div','ds '+cls,dist.toFixed(4)));
+      w.appendChild(row);
+    });
+    logMsg('Found '+d.items.length+' similar tracks',true);
+  }).catch(function(e){cl(w);w.appendChild(mk('div','',e.message));logMsg('Search error: '+e.message,false)});
+}
+
+function doRaw(){
+  var ep=document.getElementById('ae').value;
+  var ps=document.getElementById('ap').value;
+  var o=document.getElementById('ro');
+  o.textContent='Loading...';
+  var params={};
+  if(ps)ps.split('&').forEach(function(p){var kv=p.split('=');if(kv[0])params[kv[0].trim()]=(kv[1]||'').trim()});
+  api(ep,params).then(function(d){o.textContent=JSON.stringify(d,null,2)})
+  .catch(function(e){o.textContent='ERROR: '+e.message});
+}
+
+fetchStatus();fetchSigs();
+</script></body></html>
+"""
