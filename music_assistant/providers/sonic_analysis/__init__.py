@@ -178,6 +178,7 @@ class SonicAnalysisProvider(PluginProvider):
             ("/api/sonic_analysis/signatures", self._handle_signatures),
             ("/api/sonic_analysis/trigger_backfill", self._handle_trigger_backfill),
             ("/api/sonic_analysis/rebuild_index", self._handle_rebuild_index),
+            ("/api/sonic_analysis/clear_all", self._handle_clear_all),
             ("/api/sonic_analysis/debug", self._handle_debug_page),
         ):
             self._on_unload.append(
@@ -637,6 +638,25 @@ class SonicAnalysisProvider(PluginProvider):
             self.logger.exception("trigger_backfill failed")
             return _cors_json({"status": "error", "error": str(exc)})
 
+    async def _handle_clear_all(self, request: Any) -> Any:
+        """Handle GET /api/sonic_analysis/clear_all — drop all signatures and reset index."""
+        try:
+            assert self.mass.music.database is not None
+            await self.mass.music.database._db.execute_fetchall(
+                f"DELETE FROM {DB_TABLE_SONIC_SIGNATURES}"
+            )
+            await self.mass.music.database.commit()
+            self._label_map.clear()
+            self.corpus_means = None
+            self.corpus_stds = None
+            self._init_search_index()
+            self._save_search_index()
+            self.logger.info("Cleared all sonic signatures and reset index.")
+            return _cors_json({"status": "cleared"})
+        except Exception as exc:
+            self.logger.exception("clear_all failed")
+            return _cors_json({"status": "error", "error": str(exc)})
+
     async def _handle_rebuild_index(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/rebuild_index — rebuild USearch index from DB."""
         try:
@@ -861,6 +881,7 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <button onclick="fetchStatus()">Refresh Status</button>
 <button onclick="triggerBackfill()" style="border-color:#6bc5ff;color:#6bc5ff">Trigger Backfill</button>
 <button onclick="rebuildIndex()" style="border-color:#ff6b6b;color:#ff6b6b">Rebuild Index</button>
+<button onclick="if(confirm('Delete ALL signatures and reset index?'))clearAll()" style="border-color:#ff6b6b;color:#ff6b6b">Clear All Data</button>
 <div id="dberr" style="color:#ff6b6b;font-size:.75rem;margin-top:.5rem"></div>
 
 <h2>Log</h2>
@@ -961,6 +982,15 @@ function rebuildIndex(){
     if(d.error)logMsg('Error: '+d.error,false);
     fetchStatus();
   }).catch(function(e){logMsg('Rebuild failed: '+e.message,false)});
+}
+
+function clearAll(){
+  logMsg('Clearing all data...');
+  api('clear_all').then(function(d){
+    logMsg('Clear: '+d.status,d.status==='cleared');
+    if(d.error)logMsg('Error: '+d.error,false);
+    fetchStatus();fetchSigs();
+  }).catch(function(e){logMsg('Clear failed: '+e.message,false)});
 }
 
 function fetchSigs(){
