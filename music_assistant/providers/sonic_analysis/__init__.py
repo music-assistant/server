@@ -653,50 +653,53 @@ class SonicAnalysisProvider(PluginProvider):
 
     async def _handle_signatures(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/signatures — list stored signatures."""
-        limit_str = request.query.get("limit", "50")
-        offset_str = request.query.get("offset", "0")
         try:
-            limit = min(int(limit_str), 500)
-            offset = int(offset_str)
-        except (TypeError, ValueError):
-            limit, offset = 50, 0
+            limit_str = request.query.get("limit", "50")
+            offset_str = request.query.get("offset", "0")
+            try:
+                limit = min(int(limit_str), 500)
+                offset = int(offset_str)
+            except (TypeError, ValueError):
+                limit, offset = 50, 0
 
-        if self.mass.music.database is None:
-            return _cors_json({"signatures": [], "total": 0})
+            if self.mass.music.database is None:
+                return _cors_json({"signatures": [], "total": 0})
 
-        try:
-            all_rows = await self.mass.music.database.get_rows_from_query(
-                f"SELECT item_id, provider, version, features FROM {DB_TABLE_SONIC_SIGNATURES}"
-                f" WHERE item_id != :skip",
-                {"skip": CORPUS_STATS_ITEM_ID},
-                limit=limit,
-                offset=offset,
-            )
-        except Exception as exc:
-            self.logger.warning("Failed to fetch signatures: %s", exc)
-            return _cors_json({"signatures": [], "total": 0, "error": str(exc)})
-
-        # Get total count separately
-        try:
-            count_rows = await self.mass.music.database.get_rows_from_query(
+            # Use raw SQL to avoid issues with the get_rows helper
+            db = self.mass.music.database
+            count_sql = (
                 f"SELECT COUNT(*) as cnt FROM {DB_TABLE_SONIC_SIGNATURES}"
-                f" WHERE item_id != :skip",
-                {"skip": CORPUS_STATS_ITEM_ID},
+                f" WHERE item_id != '{CORPUS_STATS_ITEM_ID}'"
             )
-            total = int(count_rows[0]["cnt"]) if count_rows else 0
-        except Exception:
-            total = len(all_rows)
+            count_result = await db._db.execute_fetchall(count_sql)
+            total = int(count_result[0][0]) if count_result else 0
 
-        signatures = []
-        for row in all_rows:
-            signatures.append({
-                "item_id": row["item_id"],
-                "provider": row["provider"],
-                "version": row["version"],
-                "feature_count": len(json.loads(row["features"])) if row.get("features") else 0,
-            })
+            data_sql = (
+                f"SELECT item_id, provider, version, features"
+                f" FROM {DB_TABLE_SONIC_SIGNATURES}"
+                f" WHERE item_id != '{CORPUS_STATS_ITEM_ID}'"
+                f" LIMIT {limit} OFFSET {offset}"
+            )
+            rows = await db._db.execute_fetchall(data_sql)
 
-        return _cors_json({"signatures": signatures, "total": total})
+            signatures = []
+            for row in rows:
+                feat_str = row[3] if len(row) > 3 else ""
+                try:
+                    feat_count = len(json.loads(feat_str)) if feat_str else 0
+                except (json.JSONDecodeError, TypeError):
+                    feat_count = 0
+                signatures.append({
+                    "item_id": row[0],
+                    "provider": row[1],
+                    "version": row[2],
+                    "feature_count": feat_count,
+                })
+
+            return _cors_json({"signatures": signatures, "total": total})
+        except Exception as exc:
+            self.logger.exception("_handle_signatures failed")
+            return _cors_json({"signatures": [], "total": 0, "error": str(exc)})
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the USearch index from all signatures in the DB.
