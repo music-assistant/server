@@ -206,6 +206,8 @@ class SendspinProvider(PlayerProvider):
 
     async def _handle_client_updated(self, client_id: str) -> None:
         """Handle a client whose hello payload changed on reconnect."""
+        if self._unloading:
+            return
         sendspin_client = self.server_api.get_client(client_id)
         if sendspin_client is None:
             return
