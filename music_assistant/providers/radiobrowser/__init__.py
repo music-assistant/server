@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -33,7 +34,6 @@ from radios import FilterBy, Order, RadioBrowser, RadioBrowserError, Station
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
@@ -59,13 +59,6 @@ CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
         **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),
         "hidden": True,
         "default_value": "import_only",
-    }
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS.to_dict(),
-        "hidden": True,
-        "default_value": 180,
     }
 )
 CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN = ConfigEntry.from_dict(
@@ -112,13 +105,16 @@ async def get_config_entries(
         ),
         # hide some of the default (dynamic) entries for library management
         CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
-        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
         CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
     )
 
 
 class RadioBrowserProvider(MusicProvider):
     """Provider implementation for RadioBrowser."""
+
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the default recurring schedule for RadioBrowser sync tasks."""
+        return TaskSchedule.hourly(every=3)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -1523,7 +1523,7 @@ class Player(ABC):
                 continue
             if group_player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
                 continue
-            if self.player_id in group_player.group_members:
+            if self.player_id in group_player.state.group_members:
                 return group_player.player_id
         return None
 

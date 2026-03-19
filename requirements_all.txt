@@ -10,7 +10,6 @@ aiohttp-fast-zlib==0.3.0
 aiojellyfin==0.14.1
 aiomusiccast==0.15.0
 aiortc>=1.6.0
-aiorun==2025.1.1
 aiosendspin==4.4.0
 aioslimproto==3.1.7
 aiosonos==0.1.9
