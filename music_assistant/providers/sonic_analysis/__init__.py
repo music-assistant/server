@@ -108,6 +108,26 @@ async def get_config_entries(
     )
 
 
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+}
+
+
+def _cors_json(data: Any, status: int = 200) -> web.Response:
+    """Return a JSON response with CORS headers for debug tooling."""
+    resp = web.json_response(data, status=status)
+    resp.headers.update(_CORS_HEADERS)
+    return resp
+
+
+def _cors_text(text: str, status: int = 200) -> web.Response:
+    """Return a text response with CORS headers for debug tooling."""
+    resp = web.Response(status=status, text=text)
+    resp.headers.update(_CORS_HEADERS)
+    return resp
+
+
 class SonicAnalysisProvider(PluginProvider):
     """Plugin provider that extracts sonic signatures and enables similarity-based discovery."""
 
@@ -152,27 +172,19 @@ class SonicAnalysisProvider(PluginProvider):
                 self.mass.subscribe(self._on_media_item_added, EventType.MEDIA_ITEM_ADDED)
             )
 
-        self._on_unload.append(
-            self.mass.webserver.register_dynamic_route(
-                "/api/sonic_analysis/similar",
-                self._handle_similar_tracks,
-                "GET",
+        for path, handler in (
+            ("/api/sonic_analysis/similar", self._handle_similar_tracks),
+            ("/api/sonic_analysis/status", self._handle_status),
+            ("/api/sonic_analysis/signatures", self._handle_signatures),
+        ):
+            self._on_unload.append(
+                self.mass.webserver.register_dynamic_route(path, handler, "GET")
             )
-        )
-        self._on_unload.append(
-            self.mass.webserver.register_dynamic_route(
-                "/api/sonic_analysis/status",
-                self._handle_status,
-                "GET",
+            self._on_unload.append(
+                self.mass.webserver.register_dynamic_route(
+                    path, self._handle_cors_preflight, "OPTIONS"
+                )
             )
-        )
-        self._on_unload.append(
-            self.mass.webserver.register_dynamic_route(
-                "/api/sonic_analysis/signatures",
-                self._handle_signatures,
-                "GET",
-            )
-        )
 
         if self.config.get_value(CONF_ANALYZE_ON_SYNC):
             self.mass.create_task(self._backfill_unanalyzed_tracks())
@@ -533,7 +545,7 @@ class SonicAnalysisProvider(PluginProvider):
         """
         item_id: str | None = request.query.get("item_id")
         if not item_id:
-            return web.Response(status=400, text="Missing required query parameter: item_id")
+            return _cors_text("Missing required query parameter: item_id", status=400)
 
         try:
             limit = int(request.query.get("limit", 25))
@@ -562,10 +574,10 @@ class SonicAnalysisProvider(PluginProvider):
                 continue
 
         if signature is None:
-            return web.json_response({"analyzed": False, "items": [], "seed_track_id": item_id})
+            return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
 
         if self.corpus_means is None or self.corpus_stds is None:
-            return web.json_response({"analyzed": False, "items": [], "seed_track_id": item_id})
+            return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
 
         normalized = normalize_features(signature.features, self.corpus_means, self.corpus_stds)
         # Request one extra result so we can discard the seed itself.
@@ -590,7 +602,18 @@ class SonicAnalysisProvider(PluginProvider):
                 {"item_id": resolved_item_id, "provider": resolved_provider, "distance": distance}
             )
 
-        return web.json_response({"analyzed": True, "items": items, "seed_track_id": item_id})
+        return _cors_json({"analyzed": True, "items": items, "seed_track_id": item_id})
+
+    async def _handle_cors_preflight(self, request: Any) -> Any:
+        """Handle OPTIONS preflight requests for CORS."""
+        return web.Response(
+            status=204,
+            headers={
+                **_CORS_HEADERS,
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Max-Age": "3600",
+            },
+        )
 
     async def _handle_status(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/status — return plugin and index stats."""
@@ -611,7 +634,7 @@ class SonicAnalysisProvider(PluginProvider):
             except Exception:
                 db_count = -1
 
-        return web.json_response({
+        return _cors_json({
             "index_size": index_size,
             "db_signatures": db_count,
             "label_map_size": label_map_size,
@@ -633,7 +656,7 @@ class SonicAnalysisProvider(PluginProvider):
             limit, offset = 50, 0
 
         if self.mass.music.database is None:
-            return web.json_response({"signatures": [], "total": 0})
+            return _cors_json({"signatures": [], "total": 0})
 
         all_rows = await self.mass.music.database.get_rows(
             DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
@@ -651,7 +674,7 @@ class SonicAnalysisProvider(PluginProvider):
                 "feature_count": len(json.loads(row["features"])) if row.get("features") else 0,
             })
 
-        return web.json_response({"signatures": signatures, "total": total})
+        return _cors_json({"signatures": signatures, "total": total})
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the USearch index from all signatures in the DB.
