@@ -6,7 +6,13 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
-from aiosendspin.server import ClientAddedEvent, ClientRemovedEvent, SendspinEvent, SendspinServer
+from aiosendspin.server import (
+    ClientAddedEvent,
+    ClientRemovedEvent,
+    ClientUpdatedEvent,
+    SendspinEvent,
+    SendspinServer,
+)
 from music_assistant_models.enums import IdentifierType, ProviderFeature
 from music_assistant_models.errors import AlreadyRegisteredError
 
@@ -81,6 +87,8 @@ class SendspinProvider(PlayerProvider):
             case ClientRemovedEvent(client_id):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
+            case ClientUpdatedEvent(client_id):
+                self.mass.create_task(self._handle_client_updated(client_id))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
@@ -193,6 +201,17 @@ class SendspinProvider(PlayerProvider):
                 unregister_event.set()
         finally:
             self._finish_client_event(client_id)
+
+    async def _handle_client_updated(self, client_id: str) -> None:
+        """Handle a client whose hello payload changed on reconnect."""
+        sendspin_client = self.server_api.get_client(client_id)
+        if sendspin_client is None:
+            return
+        existing_player = self.mass.players.get_player(client_id)
+        if not isinstance(existing_player, SendspinPlayer):
+            return
+        existing_player._refresh_client_info(sendspin_client)
+        await self.mass.players.register_or_update(existing_player)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
