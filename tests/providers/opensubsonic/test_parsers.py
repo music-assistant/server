@@ -9,11 +9,13 @@ from libopensonic.media import (
     AlbumID3,
     AlbumInfo,
     ArtistID3,
-    ArtistInfo,
+    ArtistInfo2,
     Child,
+    Lyrics,
     Playlist,
     PodcastChannel,
     PodcastEpisode,
+    StructuredLyrics,
 )
 from syrupy.assertion import SnapshotAssertion
 
@@ -23,6 +25,7 @@ from music_assistant.providers.opensubsonic.parsers import (
     parse_epsiode,
     parse_playlist,
     parse_podcast,
+    parse_structured_lyrics,
     parse_track,
 )
 
@@ -33,6 +36,8 @@ PLAYLIST_FIXTURES = list(FIXTURES_DIR.glob("playlists/*.playlist.json"))
 PODCAST_FIXTURES = list(FIXTURES_DIR.glob("podcasts/*.podcast.json"))
 EPISODE_FIXTURES = list(FIXTURES_DIR.glob("episodes/*.episode.json"))
 TRACK_FIXTURES = list(FIXTURES_DIR.glob("tracks/*.track.json"))
+LYRICS_FIXTURES = list(FIXTURES_DIR.glob("lyrics/*.lyrics.json"))
+STRUCTURED_LYRICS_FIXTURES = list(FIXTURES_DIR.glob("structured-lyrics/*.structured-lyrics.json"))
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +56,7 @@ async def test_parse_artists(example: pathlib.Path, snapshot: SnapshotAssertion)
     # Find the corresponding info file
     example_info = example.with_suffix("").with_suffix(".info.json")
     async with aiofiles.open(example_info) as fp:
-        artist_info = ArtistInfo.from_json(await fp.read())
+        artist_info = ArtistInfo2.from_json(await fp.read())
 
     parsed = parse_artist("xx-instance-id-xx", artist, artist_info).to_dict()
     # sort external Ids to ensure they are always in the same order for snapshot testing
@@ -141,10 +146,39 @@ async def test_parse_track(example: pathlib.Path, snapshot: SnapshotAssertion) -
     async with aiofiles.open(example_album) as fp:
         album = AlbumID3.from_json(await fp.read())
 
-    parsed = parse_track(_LOGGER, "xx-instance-id-xx", song, album).to_dict()
+    parsed = parse_track(
+        _LOGGER, "xx-instance-id-xx", song, parse_album(_LOGGER, "xx-instance-id-xx", album)
+    ).to_dict()
     # sort external Ids, genres, and performers to ensure they are always in the same
     # order for snapshot testing
     parsed["external_ids"].sort()
     parsed["metadata"]["genres"].sort()
     parsed["metadata"]["performers"].sort()
+    assert snapshot == parsed
+
+
+@pytest.mark.parametrize("example", LYRICS_FIXTURES, ids=lambda val: str(val.stem))
+async def test_lyrics(example: pathlib.Path, snapshot: SnapshotAssertion) -> None:
+    """Test that we can handle unstructured lyrics."""
+    async with aiofiles.open(example) as fp:
+        lyrics = Lyrics.from_json(await fp.read())
+
+    example_track = example.with_suffix("").with_suffix(".track.json")
+    async with aiofiles.open(example_track) as fp:
+        track = Child.from_json(await fp.read())
+
+    parsed = parse_track(_LOGGER, "xx-instance-id-xx", track, None, (lyrics.value, False)).to_dict()
+    parsed["external_ids"].sort()
+    parsed["metadata"]["genres"].sort()
+    parsed["metadata"]["performers"].sort()
+    assert snapshot == parsed
+
+
+@pytest.mark.parametrize("example", STRUCTURED_LYRICS_FIXTURES, ids=lambda val: str(val.stem))
+async def test_structured_lyrics(example: pathlib.Path, snapshot: SnapshotAssertion) -> None:
+    """Test that we can handle structured lyrics."""
+    async with aiofiles.open(example) as fp:
+        lyrics = StructuredLyrics.from_json(await fp.read())
+
+    parsed, _ = parse_structured_lyrics(lyrics)
     assert snapshot == parsed
