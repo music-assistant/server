@@ -68,6 +68,7 @@ from music_assistant.constants import (
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
@@ -108,6 +109,7 @@ DB_SCHEMA_VERSION: Final[int] = 33
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 LAST_PROVIDER_INSTANCE_SCAN: Final[str] = "last_provider_instance_scan"
 PROVIDER_INSTANCE_SCAN_INTERVAL: Final[int] = 30 * 24 * 60 * 60  # one month in seconds
+DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
 
 
 class MusicController(CoreController):
@@ -1952,7 +1954,20 @@ class MusicController(CoreController):
             return
         self._awaiting_music_sync_completion = False
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
-        self.mass.create_task(self._cleanup_database())
+        self._queue_database_cleanup_task()
+
+    def _queue_database_cleanup_task(self) -> BackgroundTask:
+        """Queue the post-sync database cleanup as a managed background task."""
+        return self.mass.tasks.create_task(
+            task_id=DATABASE_CLEANUP_TASK_ID,
+            name="Database cleanup",
+            handler=self._cleanup_database,
+            translation_key="background_task.database_cleanup",
+            metadata={
+                "task_domain": "music_database_cleanup",
+            },
+            allow_retry=True,
+        )
 
     def _sort_search_result(
         self,
@@ -2019,6 +2034,7 @@ class MusicController(CoreController):
     async def _cleanup_database(self) -> None:
         """Perform database cleanup/maintenance."""
         self.logger.debug("Performing database cleanup...")
+        update_current_task_progress_text("Cleaning old playlog entries")
         # Remove playlog entries older than 90 days
         await self.database.delete_where_query(
             DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
@@ -2031,6 +2047,7 @@ class MusicController(CoreController):
             self.playlists,
             self.radio,
         ):
+            update_current_task_progress_text(f"Cleaning {ctrl.media_type.value} library records")
             # Provider mappings where the db item is removed
             query = (
                 f"item_id not in (SELECT item_id from {ctrl.db_table}) "
@@ -2049,6 +2066,7 @@ class MusicController(CoreController):
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+        update_current_task_progress_text("Database cleanup finished")
         self.logger.debug("Database cleanup done")
 
     async def _setup_database(self) -> None:

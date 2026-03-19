@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.provider import ProviderManifest
 
 import music_assistant.controllers.media.playlists as playlists_module
+from music_assistant.controllers.media.genres import GenreController
 from music_assistant.controllers.media.playlists import PlaylistController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import (
@@ -323,3 +324,56 @@ async def test_schedule_provider_sync_registers_scheduled_background_tasks(
 
     with pytest.raises(KeyError):
         tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.TRACK))
+
+
+async def test_music_sync_completion_queues_database_cleanup_background_task(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Music sync completion should queue database cleanup as a managed task."""
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+    cleanup_started = asyncio.Event()
+
+    async def fake_cleanup_database() -> None:
+        cleanup_started.set()
+
+    monkeypatch.setattr(music, "_cleanup_database", fake_cleanup_database)
+    music._awaiting_music_sync_completion = True
+
+    music._on_tasks_updated(SimpleNamespace())
+
+    await cleanup_started.wait()
+    await _wait_for_task_status(tasks_controller, "music_database_cleanup", TaskStatus.SUCCESS)
+
+    task = tasks_controller.get_task("music_database_cleanup")
+    assert task.translation_key == "background_task.database_cleanup"
+    assert task.metadata == {
+        "task_domain": "music_database_cleanup",
+    }
+
+
+async def test_genre_scan_queues_managed_background_task(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual genre scans should run as managed background tasks."""
+    genre_controller = GenreController(mass_minimal)
+    mass_minimal.music = SimpleNamespace(active_sync_tasks=[])
+    monkeypatch.setattr(genre_controller, "_bulk_scan_unmapped_genres", AsyncMock(return_value=3))
+
+    result = await genre_controller.scan_mappings()
+
+    assert result["status"] == "triggered"
+    await _wait_for_task_status(tasks_controller, "genre_mapping_scan", TaskStatus.SUCCESS)
+
+    task = tasks_controller.get_task("genre_mapping_scan")
+    assert task.translation_key == "background_task.scan_genre_mappings"
+    assert task.metadata == {
+        "task_domain": "genre_mapping_scan",
+    }
+    status = await genre_controller.get_scanner_status()
+    assert status["running"] is False
+    assert status["last_scan_mapped"] == 3
