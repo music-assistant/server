@@ -177,6 +177,7 @@ class SonicAnalysisProvider(PluginProvider):
             ("/api/sonic_analysis/status", self._handle_status),
             ("/api/sonic_analysis/signatures", self._handle_signatures),
             ("/api/sonic_analysis/trigger_backfill", self._handle_trigger_backfill),
+            ("/api/sonic_analysis/rebuild_index", self._handle_rebuild_index),
             ("/api/sonic_analysis/debug", self._handle_debug_page),
         ):
             self._on_unload.append(
@@ -609,12 +610,21 @@ class SonicAnalysisProvider(PluginProvider):
     async def _handle_trigger_backfill(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/trigger_backfill — manually start backfill."""
         try:
-            # Ensure table exists
             await self._create_db_table()
             self.mass.create_task(self._backfill_unanalyzed_tracks())
             return _cors_json({"status": "backfill_started"})
         except Exception as exc:
             self.logger.exception("trigger_backfill failed")
+            return _cors_json({"status": "error", "error": str(exc)})
+
+    async def _handle_rebuild_index(self, request: Any) -> Any:
+        """Handle GET /api/sonic_analysis/rebuild_index — rebuild USearch index from DB."""
+        try:
+            await self._rebuild_search_index()
+            index_size = len(self._search_index) if self._search_index is not None else 0
+            return _cors_json({"status": "rebuilt", "index_size": index_size})
+        except Exception as exc:
+            self.logger.exception("rebuild_index failed")
             return _cors_json({"status": "error", "error": str(exc)})
 
     async def _handle_debug_page(self, request: Any) -> Any:
@@ -830,6 +840,7 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <div class="g" id="sg"></div>
 <button onclick="fetchStatus()">Refresh Status</button>
 <button onclick="triggerBackfill()" style="border-color:#6bc5ff;color:#6bc5ff">Trigger Backfill</button>
+<button onclick="rebuildIndex()" style="border-color:#ff6b6b;color:#ff6b6b">Rebuild Index</button>
 <div id="dberr" style="color:#ff6b6b;font-size:.75rem;margin-top:.5rem"></div>
 
 <h2>Log</h2>
@@ -921,6 +932,15 @@ function triggerBackfill(){
     logMsg('Backfill response: '+d.status,d.status==='backfill_started');
     if(d.error)logMsg('Error: '+d.error,false);
   }).catch(function(e){logMsg('Trigger failed: '+e.message,false)});
+}
+
+function rebuildIndex(){
+  logMsg('Rebuilding index from DB...');
+  api('rebuild_index').then(function(d){
+    logMsg('Rebuild: '+d.status+' (index_size='+d.index_size+')',d.status==='rebuilt');
+    if(d.error)logMsg('Error: '+d.error,false);
+    fetchStatus();
+  }).catch(function(e){logMsg('Rebuild failed: '+e.message,false)});
 }
 
 function fetchSigs(){
