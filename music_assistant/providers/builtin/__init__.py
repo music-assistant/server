@@ -550,7 +550,7 @@ class BuiltinProvider(MusicProvider):
         """
         parsed = urlparse(url)
         path_lower = parsed.path.lower()
-        is_playlist = path_lower.endswith((".pls"))
+        is_playlist = path_lower.endswith(".pls")
         if not is_playlist:
             return url
 
