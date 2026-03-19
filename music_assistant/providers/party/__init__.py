@@ -56,9 +56,6 @@ CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 CONF_PARTY_DISPLAY_LYRICS = "display_lyrics"
 CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
 CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
-# QR code instruction text
-CONF_QR_SHOW_INSTRUCTION_TEXT = "qr_show_instruction_text"
-CONF_QR_INSTRUCTION_TEXT = "qr_instruction_text"
 # Anti burn-in
 CONF_ANTI_BURN_IN = "anti_burn_in"
 
@@ -117,9 +114,6 @@ class PartyConfig(DataClassDictMixin):
     # Badge colors (hex values)
     request_badge_color: str
     boost_badge_color: str
-    # QR code instruction text
-    qr_show_instruction_text: bool
-    qr_instruction_text: str
     # Anti burn-in
     anti_burn_in: bool
 
@@ -167,22 +161,6 @@ async def get_config_entries(
                     mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                 )
             ],
-        ),
-        ConfigEntry(
-            key=CONF_QR_SHOW_INSTRUCTION_TEXT,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Show QR Code Instruction Text",
-            description="Display instruction text below the QR code in the party view.",
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-        ),
-        ConfigEntry(
-            key=CONF_QR_INSTRUCTION_TEXT,
-            type=ConfigEntryType.STRING,
-            default_value="Scan to join!",
-            label="QR Code Instruction Text",
-            description="Text displayed below the QR code.",
-            depends_on=CONF_QR_SHOW_INSTRUCTION_TEXT,
         ),
         ConfigEntry(
             key=CONF_PARTY_DISPLAY_LYRICS,
@@ -568,10 +546,6 @@ class PartyPlugin(PluginProvider):
             highlight_ahead=cast("bool", self.config.get_value(CONF_PARTY_HIGHLIGHT_AHEAD)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
-            qr_show_instruction_text=cast(
-                "bool", self.config.get_value(CONF_QR_SHOW_INSTRUCTION_TEXT)
-            ),
-            qr_instruction_text=cast("str", self.config.get_value(CONF_QR_INSTRUCTION_TEXT)),
             anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
         )
 
