@@ -657,10 +657,6 @@ class AirPlayPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        if volume_level == 0:
-            import traceback
-
-            self.logger.warning("volume_set(0) called!\n%s", "".join(traceback.format_stack()))
         if self.stream and self.stream.running and self.volume_muted is not True:
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
         self._attr_volume_level = volume_level
@@ -851,12 +847,6 @@ class AirPlayPlayer(Player):
         ):
             if self._attr_volume_level == parent_player.state.volume_level:
                 return
-            self.logger.warning(
-                "sync_volume_level: syncing from parent %s: %s -> %s",
-                self.protocol_parent_id,
-                self._attr_volume_level,
-                parent_player.state.volume_level,
-            )
             self._attr_volume_level = parent_player.state.volume_level
             self.mass.config.set_raw_player_config_value(
                 self.player_id, CONF_STORED_VOLUME, self._attr_volume_level

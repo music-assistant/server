@@ -81,7 +81,6 @@ class BridgePlayerRole(Role):
         self._on_stream_start_cb = on_stream_start
         self._on_stream_end_cb = on_stream_end
         self._volume = initial_volume
-        self._emit_volume_changed()
 
     @property
     def role_id(self) -> str:
