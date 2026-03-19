@@ -179,6 +179,7 @@ class SonicAnalysisProvider(PluginProvider):
             ("/api/sonic_analysis/trigger_backfill", self._handle_trigger_backfill),
             ("/api/sonic_analysis/rebuild_index", self._handle_rebuild_index),
             ("/api/sonic_analysis/clear_all", self._handle_clear_all),
+            ("/api/sonic_analysis/make_playlist", self._handle_make_playlist),
             ("/api/sonic_analysis/debug", self._handle_debug_page),
         ):
             self._on_unload.append(
@@ -660,6 +661,109 @@ class SonicAnalysisProvider(PluginProvider):
             self.logger.exception("clear_all failed")
             return _cors_json({"status": "error", "error": str(exc)})
 
+    async def _handle_make_playlist(self, request: Any) -> Any:
+        """Handle GET /api/sonic_analysis/make_playlist — create a playlist from similar tracks."""
+        try:
+            item_id = request.query.get("item_id")
+            if not item_id:
+                return _cors_text("Missing required query parameter: item_id", status=400)
+
+            # Get the seed track name
+            try:
+                seed_track = await self.mass.music.tracks.get(item_id, "library")
+                seed_name = seed_track.name
+            except Exception:
+                seed_name = f"Track {item_id}"
+
+            # Get top 10 similar to the seed
+            similar_result = await self._get_similar_item_ids(item_id, limit=10)
+            if not similar_result:
+                return _cors_json({"status": "error", "error": "No similar tracks found"})
+
+            # Collect all unique track IDs: seed + tier1 + tier2
+            seen_ids: set[str] = {item_id}
+            ordered_ids: list[str] = []
+
+            # Add tier 1 (direct similar)
+            tier1_ids = []
+            for sim_id, _dist in similar_result:
+                if sim_id not in seen_ids:
+                    seen_ids.add(sim_id)
+                    ordered_ids.append(sim_id)
+                    tier1_ids.append(sim_id)
+
+            # For each tier 1 track, get its top 10 similar (tier 2)
+            for t1_id in tier1_ids:
+                tier2_result = await self._get_similar_item_ids(t1_id, limit=10)
+                for sim_id, _dist in tier2_result:
+                    if sim_id not in seen_ids:
+                        seen_ids.add(sim_id)
+                        ordered_ids.append(sim_id)
+
+            # Create the playlist
+            playlist_name = f"Songs like {seed_name}"
+            playlist = await self.mass.music.playlists.create_playlist(playlist_name)
+
+            # Build URIs for all tracks
+            uris = [f"library://track/{tid}" for tid in ordered_ids]
+
+            if uris:
+                await self.mass.music.playlists.add_playlist_tracks(
+                    playlist.item_id, uris
+                )
+
+            self.logger.info(
+                "Created playlist '%s' with %d tracks", playlist_name, len(uris)
+            )
+            return _cors_json({
+                "status": "created",
+                "playlist_name": playlist_name,
+                "track_count": len(uris),
+                "playlist_id": playlist.item_id,
+            })
+        except Exception as exc:
+            self.logger.exception("make_playlist failed")
+            return _cors_json({"status": "error", "error": str(exc)})
+
+    async def _get_similar_item_ids(
+        self, item_id: str, limit: int = 10
+    ) -> list[tuple[str, float]]:
+        """Get similar track item_ids from the index.
+
+        :param item_id: library item ID of the seed track.
+        :param limit: max results to return.
+        """
+        assert self.mass.music.database is not None
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_SONIC_SIGNATURES, {"item_id": item_id}
+        )
+        sig_row = None
+        seed_provider = ""
+        for row in rows:
+            if row["item_id"] != CORPUS_STATS_ITEM_ID:
+                sig_row = row
+                seed_provider = row["provider"]
+                break
+        if sig_row is None or self.corpus_means is None or self.corpus_stds is None:
+            return []
+
+        features = json.loads(sig_row["features"])
+        normalized = normalize_features(features, self.corpus_means, self.corpus_stds)
+        raw_results = self._query_index(normalized, k=limit + 1)
+
+        seed_label = abs(hash((seed_provider, item_id))) % (2**31)
+        results: list[tuple[str, float]] = []
+        for result_id, distance in raw_results:
+            if result_id == seed_label:
+                continue
+            resolved = self._label_map.get(result_id)
+            if resolved is None:
+                continue
+            results.append((resolved[0], distance))
+            if len(results) >= limit:
+                break
+        return results
+
     async def _handle_rebuild_index(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/rebuild_index — rebuild USearch index from DB."""
         try:
@@ -904,6 +1008,7 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <input id="si" placeholder="item_id" style="width:180px">
 <input id="sl" type="number" value="10" min="1" max="100" style="width:60px">
 <button onclick="doSearch()">Search</button>
+<button onclick="makePlaylist()" style="border-color:#6bc5ff;color:#6bc5ff">Make Playlist</button>
 </div>
 <div id="sr"></div>
 
@@ -1053,6 +1158,22 @@ function doSearch(){
     });
     logMsg('Found '+d.items.length+' similar tracks',true);
   }).catch(function(e){cl(w);w.appendChild(mk('div','',e.message));logMsg('Search error: '+e.message,false)});
+}
+
+function makePlaylist(){
+  var id=document.getElementById('si').value.trim();
+  if(!id){logMsg('Enter a track ID first',false);return}
+  logMsg('Creating playlist from similar tracks...');
+  var w=document.getElementById('sr');
+  w.appendChild(mk('div','','Creating playlist...'));
+  api('make_playlist',{item_id:id}).then(function(d){
+    if(d.status==='created'){
+      logMsg('Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks!',true);
+      w.appendChild(mk('div','','Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks'));
+    } else {
+      logMsg('Playlist error: '+(d.error||d.status),false);
+    }
+  }).catch(function(e){logMsg('Playlist failed: '+e.message,false)});
 }
 
 function doRaw(){
