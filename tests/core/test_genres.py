@@ -221,11 +221,67 @@ class TestGenreCRUD:
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
 
     async def test_library_items_search(self, genre_ctrl: GenreController) -> None:
-        """Search 'country' returns only matching genres."""
-        await genre_ctrl.add_item_to_library(_make_genre("Country"))
+        """Search 'country' returns Country genre but not unrelated ones like Metal."""
         await genre_ctrl.add_item_to_library(_make_genre("Metal"))
         items = await genre_ctrl.library_items(search="country", hide_empty=False)
-        assert all("country" in g.name.lower() for g in items)
+        names = {g.name for g in items}
+        assert "country" in names
+        assert "Metal" not in names
+
+    async def test_library_items_hide_empty_true(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """hide_empty=True returns only genres with media mappings."""
+        mapped = await genre_ctrl.add_item_to_library(_make_genre("HideEmptyMapped"))
+        await genre_ctrl.add_item_to_library(_make_genre("HideEmptyUnmapped"))
+        track = await _add_test_track(mass, "HideEmpty Track")
+        await genre_ctrl.add_media_mapping(
+            int(mapped.item_id), MediaType.TRACK, track.item_id, "HideEmptyMapped"
+        )
+        items = await genre_ctrl.library_items(hide_empty=True)
+        names = {g.name for g in items}
+        assert "HideEmptyMapped" in names
+        assert "HideEmptyUnmapped" not in names
+
+    async def test_library_items_hide_empty_false(self, genre_ctrl: GenreController) -> None:
+        """hide_empty=False returns all genres regardless of mappings."""
+        await genre_ctrl.add_item_to_library(_make_genre("HideEmptyFalseGenre"))
+        items = await genre_ctrl.library_items(hide_empty=False)
+        names = {g.name for g in items}
+        assert "HideEmptyFalseGenre" in names
+
+    async def test_library_items_hide_empty_none_returns_default_genres(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """hide_empty=None (default) returns only default genres (translation_key IS NOT NULL).
+
+        Default genres are seeded via restore_default_genres (translation_key IS NOT NULL).
+        Non-default genres created via _find_genres_for_alias mirror the library scan path
+        and store translation_key=NULL in the DB.
+        """
+        await genre_ctrl.restore_default_genres()
+        scanned_name = "ScannedNonDefaultGenreXyz"
+        await genre_ctrl._find_genres_for_alias(scanned_name)
+
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        items = await genre_ctrl.library_items(hide_empty=None)
+        names = {g.name for g in items}
+        assert default_genre_name in names
+        assert scanned_name not in names
+
+    async def test_library_items_default_is_hide_empty_none(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Calling library_items() with no hide_empty arg behaves like hide_empty=None."""
+        await genre_ctrl.restore_default_genres()
+        await genre_ctrl._find_genres_for_alias("DefaultArgScannedGenreXyz")
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        items_default = await genre_ctrl.library_items()
+        items_none = await genre_ctrl.library_items(hide_empty=None)
+        assert {g.item_id for g in items_default} == {g.item_id for g in items_none}
+        names = {g.name for g in items_default}
+        assert default_genre_name in names
+        assert "DefaultArgScannedGenreXyz" not in names
 
     async def test_library_items_rejects_genre_param(self, genre_ctrl: GenreController) -> None:
         """library_items(genre=1) raises ValueError."""
@@ -476,10 +532,11 @@ class TestSyncMediaItemGenres:
     ) -> None:
         """New genre created, mapping exists."""
         track = await _add_test_track(mass, "Sync Track 1")
-        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Psytrance"})
+        unique_genre = "SzTestSyncGenreXYZ"
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {unique_genre})
         rows = await mass.music.database.get_rows_from_query(
             f"SELECT * FROM {DB_TABLE_GENRES} WHERE name = :name",
-            {"name": "Psytrance"},
+            {"name": unique_genre},
             limit=1,
         )
         assert len(rows) == 1
@@ -812,12 +869,14 @@ class TestRestoreDefaultGenres:
     """Tests for restore_default_genres."""
 
     async def test_restore_partial_on_empty(self, genre_ctrl: GenreController) -> None:
-        """Creates genres from DEFAULT_GENRE_MAPPING with self-aliases."""
+        """Partial restore on pre-seeded DB returns empty (nothing to add)."""
+        # Genres are already seeded during startup (_setup_database), so a partial
+        # restore is idempotent and returns no new genres.
         created = await genre_ctrl.restore_default_genres(full_restore=False)
-        assert len(created) > 0
-        for genre in created[:3]:
-            assert genre.genre_aliases is not None
-            assert genre.name in genre.genre_aliases
+        assert len(created) == 0
+        # Verify the default genres are actually present
+        count = await genre_ctrl.library_count()
+        assert count >= len(DEFAULT_GENRE_MAPPING)
 
     async def test_restore_partial_idempotent(self, genre_ctrl: GenreController) -> None:
         """Second call returns empty list (no duplicates)."""
@@ -984,20 +1043,17 @@ class TestQueryMethods:
         assert int(mapped.item_id) in result_ids
         assert int(unmapped.item_id) not in result_ids
 
-    async def test_library_items_hide_empty_default(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
-    ) -> None:
-        """Default (hide_empty=True) excludes unmapped genres."""
-        mapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterMapped"))
-        unmapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterUnmapped"))
-        track = await _add_test_track(mass, "DefaultFilter Track")
-        await genre_ctrl.add_media_mapping(
-            mapped.item_id, MediaType.TRACK, track.item_id, "DefaultFilterMapped"
-        )
+    async def test_library_items_hide_empty_default(self, genre_ctrl: GenreController) -> None:
+        """Default (hide_empty=None) returns only default genres (translation_key IS NOT NULL)."""
+        await genre_ctrl.restore_default_genres()
+        scanned = await genre_ctrl._find_genres_for_alias("DefaultFilterScannedXyz")
+        assert scanned
+
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
         results = await genre_ctrl.library_items()
-        result_ids = {int(g.item_id) for g in results}
-        assert int(mapped.item_id) in result_ids
-        assert int(unmapped.item_id) not in result_ids
+        names = {g.name for g in results}
+        assert default_genre_name in names
+        assert "DefaultFilterScannedXyz" not in names
 
     async def test_library_items_show_all(
         self, mass: MusicAssistant, genre_ctrl: GenreController
@@ -1046,8 +1102,11 @@ class TestGenreLookupAndScanner:
         Regression test: a bare "pop" tag must not fan out to Rock/Punk/etc. that
         accumulated "pop" as a side-effect alias, when a dedicated Pop genre exists.
         """
-        pop_genre = await genre_ctrl.add_item_to_library(_make_genre("Pop"))
-        rock_genre = await genre_ctrl.add_item_to_library(_make_genre("Rock"))
+        # Use the pre-seeded Pop and Rock genres (seeded during startup).
+        pop_items = await genre_ctrl.library_items(search="Pop", hide_empty=False)
+        rock_items = await genre_ctrl.library_items(search="Rock", hide_empty=False)
+        pop_genre = next(g for g in pop_items if g.name == "pop")
+        rock_genre = next(g for g in rock_items if g.name == "rock")
         # Simulate "pop" being written as a secondary alias on Rock (the bug scenario)
         await genre_ctrl.add_alias(rock_genre.item_id, "pop")
 

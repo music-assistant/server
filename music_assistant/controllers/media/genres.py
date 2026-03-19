@@ -301,14 +301,16 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
-        hide_empty: bool = True,
+        hide_empty: bool | None = None,
         **kwargs: Any,
     ) -> list[Genre]:
         """Get genres in the library.
 
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
-        :param hide_empty: If True (default), only return genres that have media mappings.
-            Set to False to return all genres including unmapped ones.
+        :param hide_empty: Controls which genres are returned.
+            True: only return genres that have media mappings.
+            False: return all genres including unmapped ones.
+            None (default): only return default genres (those with a translation_key).
         """
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
@@ -321,7 +323,9 @@ class GenreController(MediaControllerBase[Genre]):
         extra_parts: list[str] | None = None
         if search:
             extra_params = {"search_raw": f"%{search.strip().lower()}%"}
-        if hide_empty:
+        if hide_empty is None:
+            extra_parts = [f"{self.db_table}.translation_key IS NOT NULL"]
+        elif hide_empty:
             gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
             extra_parts = [
                 f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
@@ -587,11 +591,17 @@ class GenreController(MediaControllerBase[Genre]):
                     await self._ensure_aliases(genre_id, all_aliases)
                 continue
 
-            # Create new genre
+            # Stage new genre insert without committing yet (batch all in one transaction)
             translation_key = entry.get("translation_key")
             icon_metadata = self._get_genre_icon_metadata(translation_key)
-            genre_id = await self.mass.music.database.insert(
-                DB_TABLE_GENRES,
+            cursor = await self.mass.music.database.execute(
+                f"INSERT INTO {DB_TABLE_GENRES}"
+                "(name, sort_name, translation_key, description, favorite, metadata, "
+                "external_ids, genre_aliases, play_count, last_played, "
+                "search_name, search_sort_name) "
+                "VALUES (:name, :sort_name, :translation_key, :description, :favorite, "
+                ":metadata, :external_ids, :genre_aliases, :play_count, :last_played, "
+                ":search_name, :search_sort_name)",
                 {
                     "name": name_value,
                     "sort_name": sort_name,
@@ -605,11 +615,13 @@ class GenreController(MediaControllerBase[Genre]):
                     "last_played": 0,
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
-                    "timestamp_added": UNSET,
                 },
             )
-            created_ids.append(genre_id)
+            created_ids.append(cursor.lastrowid)
             existing.add(search_name)
+
+        if created_ids:
+            await self.mass.music.database.commit()
 
         if full_restore:
             await self._bulk_scan_media_genres()

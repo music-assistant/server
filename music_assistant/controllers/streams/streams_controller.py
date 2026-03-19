@@ -1222,6 +1222,7 @@ class StreamsController(CoreController):
                 )
                 # Clean up and continue to next track
                 queue_track.streamdetails.stream_error = True
+                play_log_entry.seconds_streamed = 0
                 del buffer
                 continue
             if last_fadeout_part:
