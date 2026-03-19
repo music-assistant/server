@@ -13,6 +13,8 @@ from music_assistant.constants import (
     CONF_PUBLISH_IP,
     CONF_ZEROCONF_INTERFACES,
 )
+from music_assistant.controllers.discovery import DiscoveryController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.models.core_controller import CoreController
 
 
@@ -29,6 +31,20 @@ class TestRequiresReload:
             f"CONF_ENTRY_ZEROCONF_INTERFACES ({CONF_ZEROCONF_INTERFACES}) should have "
             "requires_reload=True because it's read at startup time"
         )
+
+    @pytest.mark.asyncio
+    async def test_zeroconf_interfaces_entry_lives_on_discovery_controller(
+        self, mock_mass: "MockMass"
+    ) -> None:
+        """Test that zeroconf interface selection belongs to the discovery controller."""
+        discovery_controller = DiscoveryController(mock_mass)  # type: ignore[arg-type]
+        player_controller = PlayerController(mock_mass)  # type: ignore[arg-type]
+
+        discovery_entries = await discovery_controller.get_config_entries()
+        player_entries = await player_controller.get_config_entries()
+
+        assert any(entry.key == CONF_ZEROCONF_INTERFACES for entry in discovery_entries)
+        assert all(entry.key != CONF_ZEROCONF_INTERFACES for entry in player_entries)
 
 
 class TestStreamsControllerConfigEntries:

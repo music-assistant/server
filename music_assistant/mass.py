@@ -21,15 +21,12 @@ from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.provider import ProviderManifest
-from zeroconf import InterfaceChoice, IPVersion
-from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.constants import (
     API_SCHEMA_VERSION,
     CONF_DEFAULT_PROVIDERS_SETUP,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
-    CONF_ZEROCONF_INTERFACES,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_PROVIDERS,
     MASS_LOGGER_NAME,
@@ -103,7 +100,6 @@ class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
     loop: asyncio.AbstractEventLoop
-    aiozc: AsyncZeroconf
     config: ConfigController
     webserver: WebserverController
     cache: CacheController
@@ -146,16 +142,7 @@ class MusicAssistant:
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
         await self.config.setup()
-        # create shared zeroconf instance
-        zeroconf_interfaces = self.config.get_raw_core_config_value(
-            "players", CONF_ZEROCONF_INTERFACES, "default"
-        )
-        # IPv6 requires InterfaceChoice.All, so only enable when zeroconf_interfaces is "all"
-        use_all_interfaces = zeroconf_interfaces == "all"
-        self.aiozc = AsyncZeroconf(
-            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
-            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
-        )
+        self.discovery = DiscoveryController(self)
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup/migrate storage
@@ -175,7 +162,6 @@ class MusicAssistant:
         self.music = MusicController(self)
         self.players = PlayerController(self)
         self.player_queues = PlayerQueuesController(self)
-        self.discovery = DiscoveryController(self)
         self.streams = StreamsController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
@@ -843,7 +829,7 @@ class MusicAssistant:
             if require_mdns:
                 # if mdns discovery is required, check if we have seen any mdns entries
                 # for this provider before setting it up
-                for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                for mdns_name in set(self.discovery.aiozc.zeroconf.cache.cache):
                     if manifest.mdns_discovery and any(
                         mdns_type in mdns_name for mdns_type in manifest.mdns_discovery
                     ):

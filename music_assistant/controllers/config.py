@@ -73,6 +73,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
@@ -1375,6 +1376,30 @@ class ConfigController:
                 continue
             values["manual_discovery_ip_addresses"] = ips.split(",")
             del values["ips"]
+            changed = True
+
+        # migrate zeroconf interface selection from players controller to discovery controller
+        # TODO: remove after 2.8 release
+        core_configs = self._data.setdefault(CONF_CORE, {})
+        players_core = core_configs.get("players", {})
+        discovery_core = core_configs.setdefault("discovery", {"domain": "discovery", "values": {}})
+        discovery_values = discovery_core.setdefault("values", {})
+        players_values = players_core.get("values", {})
+        legacy_zeroconf_interfaces = players_values.pop(
+            CONF_ENTRY_ZEROCONF_INTERFACES.key, None
+        )
+        if legacy_zeroconf_interfaces is None and players_core:
+            legacy_zeroconf_interfaces = players_core.pop(
+                CONF_ENTRY_ZEROCONF_INTERFACES.key, None
+            )
+        if (
+            legacy_zeroconf_interfaces is not None
+            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_values
+            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_core
+        ):
+            discovery_values[CONF_ENTRY_ZEROCONF_INTERFACES.key] = legacy_zeroconf_interfaces
+            changed = True
+        elif legacy_zeroconf_interfaces is not None:
             changed = True
 
         # migrate sample_rates config entry

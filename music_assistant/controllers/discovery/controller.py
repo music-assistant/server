@@ -10,13 +10,23 @@ from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING
 
-from zeroconf import NonUniqueNameException, ServiceStateChange, Zeroconf
-from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
+from zeroconf import (
+    IPVersion,
+    InterfaceChoice,
+    NonUniqueNameException,
+    ServiceStateChange,
+    Zeroconf,
+)
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENTRY_ZEROCONF_INTERFACES,
+    CONF_ZEROCONF_INTERFACES,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.core_controller import CoreController
 
@@ -48,20 +58,29 @@ class DiscoveryController(CoreController):
     def __init__(self, *args, **kwargs) -> None:
         """Initialize discovery controller."""
         super().__init__(*args, **kwargs)
-        self.manifest.name = "Discovery Core controller"
+        self.manifest.name = "Discovery"
         self.manifest.description = (
             "Handles mDNS/Zeroconf, SSDP/UPnP discovery and Music Assistant network broadcast."
         )
         self.manifest.icon = "radar"
+        self._aiozc: AsyncZeroconf | None = None
         self._mdns_browser: AsyncServiceBrowser | None = None
         self._mass_service_info: AsyncServiceInfo | None = None
         self._mdns_locks: dict[str, asyncio.Lock] = {}
         self._upnp_locks: dict[str, asyncio.Lock] = {}
         self._upnp_run_lock = asyncio.Lock()
 
+    @property
+    def aiozc(self) -> AsyncZeroconf:
+        """Return the shared AsyncZeroconf instance for discovery consumers."""
+        assert self._aiozc is not None, "DiscoveryController is not initialized"
+        return self._aiozc
+
     async def setup(self, config: CoreConfig) -> None:
         """Initialize discovery controller."""
         self.config = config
+        if self._aiozc is None:
+            self._aiozc = self._create_aiozc(config)
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()
@@ -75,6 +94,7 @@ class DiscoveryController(CoreController):
         """Return config entries for the discovery controller."""
         del action, values
         return (
+            CONF_ENTRY_ZEROCONF_INTERFACES,
             ConfigEntry(
                 key=CONF_UPNP_NETWORK_SCAN,
                 type=ConfigEntryType.BOOLEAN,
@@ -93,15 +113,19 @@ class DiscoveryController(CoreController):
 
         await self._cancel_mdns_browser()
 
+        aiozc = self._aiozc
         if self._mass_service_info:
             with contextlib.suppress(Exception):
-                await self.mass.aiozc.async_unregister_service(self._mass_service_info)
+                assert aiozc is not None
+                await aiozc.async_unregister_service(self._mass_service_info)
             self._mass_service_info = None
 
         self._mdns_locks.clear()
         self._upnp_locks.clear()
-        with contextlib.suppress(Exception):
-            await self.mass.aiozc.async_close()
+        if aiozc is not None:
+            with contextlib.suppress(Exception):
+                await aiozc.async_close()
+            self._aiozc = None
 
     async def run_provider_discovery(self, provider: ProviderInstanceType) -> None:
         """Run discovery for a specific provider."""
@@ -124,6 +148,16 @@ class DiscoveryController(CoreController):
         else:
             logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
 
+    def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
+        """Create the shared AsyncZeroconf instance for the discovery controller."""
+        zeroconf_interfaces = str(config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
+        # IPv6 requires InterfaceChoice.All, so only enable when all interfaces are used.
+        use_all_interfaces = zeroconf_interfaces == "all"
+        return AsyncZeroconf(
+            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
+            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
+        )
+
     async def _setup_mdns_browser(self) -> None:
         """Create the global mDNS browser for all subscribed provider types."""
         await self._cancel_mdns_browser()
@@ -137,7 +171,7 @@ class DiscoveryController(CoreController):
             return
 
         self._mdns_browser = AsyncServiceBrowser(
-            self.mass.aiozc.zeroconf,
+            self.aiozc.zeroconf,
             list(all_types),
             handlers=[self._on_mdns_service_state_change],
         )
@@ -174,9 +208,9 @@ class DiscoveryController(CoreController):
         )
         try:
             if self._mass_service_info:
-                await self.mass.aiozc.async_update_service(info)
+                await self.aiozc.async_update_service(info)
             else:
-                await self.mass.aiozc.async_register_service(info)
+                await self.aiozc.async_register_service(info)
             self._mass_service_info = info
         except NonUniqueNameException:
             self.logger.error(
@@ -220,11 +254,11 @@ class DiscoveryController(CoreController):
         lock = self._mdns_locks.setdefault(provider.instance_id, asyncio.Lock())
         async with lock:
             for mdns_type in provider.manifest.mdns_discovery or []:
-                for mdns_name in set(self.mass.aiozc.zeroconf.cache.cache):
+                for mdns_name in set(self.aiozc.zeroconf.cache.cache):
                     if mdns_type not in mdns_name or mdns_type == mdns_name:
                         continue
                     info = AsyncServiceInfo(mdns_type, mdns_name)
-                    if await info.async_request(self.mass.aiozc.zeroconf, 3000):
+                    if await info.async_request(self.aiozc.zeroconf, 3000):
                         await provider.on_mdns_service_state_change(
                             mdns_name, ServiceStateChange.Added, info
                         )

@@ -3,6 +3,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant.mass import MusicAssistant
+from zeroconf import IPVersion, InterfaceChoice
+from zeroconf.asyncio import AsyncZeroconf
 
 
 class StubUpnpProvider:
@@ -45,3 +47,39 @@ async def test_run_provider_discovery_dispatches_upnp_callbacks(mass: MusicAssis
     provider.on_upnp_service_discovered.assert_awaited_once()
     mass._providers.pop(provider.instance_id, None)  # noqa: SLF001
     mass.discovery.on_provider_unload(provider.instance_id)
+
+
+async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssistant) -> None:
+    """The shared AsyncZeroconf instance should be created by the discovery controller."""
+    mass_minimal.config.set(
+        "core/discovery",
+        {"domain": "discovery", "values": {"zeroconf_interfaces": "all"}},
+    )
+    mass_minimal.webserver = MagicMock(
+        publish_ip="127.0.0.1",
+        publish_port=8095,
+        base_url="http://127.0.0.1:8095",
+    )
+    mock_zc = MagicMock(spec=AsyncZeroconf)
+    mock_zc.async_register_service = AsyncMock()
+    mock_zc.async_update_service = AsyncMock()
+    mock_zc.async_unregister_service = AsyncMock()
+    mock_zc.async_close = AsyncMock()
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncZeroconf",
+        return_value=mock_zc,
+    ) as mock_async_zeroconf, patch(
+        "music_assistant.controllers.discovery.controller.get_ip_pton",
+        new=AsyncMock(return_value=b"\x7f\x00\x00\x01"),
+    ):
+        await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
+        assert mass_minimal.discovery.aiozc is mock_zc
+        assert mass_minimal.discovery.aiozc is mock_zc
+
+    await mass_minimal.discovery.close()
+
+    mock_async_zeroconf.assert_called_once_with(
+        ip_version=IPVersion.All,
+        interfaces=InterfaceChoice.All,
+    )
