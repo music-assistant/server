@@ -5,11 +5,24 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import TaskScheduleType, TaskStatus
+from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.enums import (
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+    TaskScheduleType,
+    TaskStatus,
+)
+from music_assistant_models.provider import ProviderManifest
 
+import music_assistant.controllers.media.playlists as playlists_module
+from music_assistant.controllers.media.playlists import PlaylistController
+from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import (
     TasksController,
     get_current_task,
@@ -21,6 +34,7 @@ from music_assistant.controllers.tasks import (
 )
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 
 
 async def _wait_for_task_status(
@@ -186,3 +200,126 @@ async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) ->
     finally:
         mass_minimal.cancel_timer(TASK_UPDATE_TIMER_ID)
         await restored.close()
+
+
+async def test_add_playlist_tracks_creates_and_runs_background_task(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Playlist controller should return and execute a managed background task."""
+    playlist_controller = PlaylistController(mass_minimal)
+    handler_called = asyncio.Event()
+
+    async def fake_get_library_item(_db_playlist_id: int) -> SimpleNamespace:
+        return SimpleNamespace(name="Test playlist")
+
+    async def fake_handle_add_playlist_tracks(
+        db_playlist_id: str | int, uris: list[str]
+    ) -> None:
+        assert db_playlist_id == "42"
+        assert uris == ["spotify://track/1", "spotify://track/2"]
+        handler_called.set()
+
+    monkeypatch.setattr(playlist_controller, "get_library_item", fake_get_library_item)
+    monkeypatch.setattr(
+        playlist_controller,
+        "_handle_add_playlist_tracks",
+        fake_handle_add_playlist_tracks,
+    )
+    monkeypatch.setattr(
+        playlists_module,
+        "get_current_user",
+        lambda: SimpleNamespace(user_id="user-123"),
+    )
+
+    task = await playlist_controller.add_playlist_tracks(
+        "42",
+        ["spotify://track/1", "spotify://track/2"],
+    )
+
+    await handler_called.wait()
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
+
+    task = tasks_controller.get_task(task.id)
+    assert task.translation_key == "background_task.add_playlist_tracks"
+    assert task.translation_args == ["Test playlist"]
+    assert task.user_id == "user-123"
+    assert task.last_run_user_id == "user-123"
+    assert task.metadata == {
+        "task_domain": "playlist_add_tracks",
+        "playlist_id": "42",
+        "playlist_name": "Test playlist",
+        "item_count": 2,
+    }
+
+
+class DummyMusicProvider(MusicProvider):
+    """Minimal music provider used for scheduling tests."""
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """No-op sync implementation for tests."""
+
+
+async def test_schedule_provider_sync_registers_scheduled_background_tasks(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+) -> None:
+    """Music controller should register scheduled sync tasks for supported media types."""
+    mass_minimal.config.get_provider_config_value = AsyncMock(return_value=True)
+
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+
+    provider_config = ProviderConfig(
+        values={},
+        type=ProviderType.MUSIC,
+        domain="test_provider",
+        instance_id="test_provider--instance",
+        name="Spotify",
+    )
+    provider_config.get_value = lambda *_args, **_kwargs: "GLOBAL"
+
+    provider = DummyMusicProvider(
+        mass_minimal,
+        manifest=ProviderManifest(
+            type=ProviderType.MUSIC,
+            domain="test_provider",
+            name="Test provider",
+            description="Test provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=provider_config,
+        supported_features={
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+        },
+    )
+    provider.available = True
+    mass_minimal._providers[provider.instance_id] = provider
+
+    await music.schedule_provider_sync(provider.instance_id)
+
+    artists_task = tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.ARTIST))
+    albums_task = tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.ALBUM))
+
+    assert artists_task.status == TaskStatus.IDLE
+    assert artists_task.translation_key == "background_task.sync_provider_artists"
+    assert artists_task.translation_args == ["Spotify"]
+    assert artists_task.metadata == {
+        "task_domain": "music_sync",
+        "provider_domain": "test_provider",
+        "provider_instance": "test_provider--instance",
+        "provider_name": "Spotify",
+        "media_type": "artist",
+    }
+    assert artists_task.schedule == TaskSchedule.hourly(every=12)
+    assert artists_task.next_run is not None
+    assert artists_task.allow_retry is True
+
+    assert albums_task.translation_key == "background_task.sync_provider_albums"
+    assert albums_task.metadata["media_type"] == "album"
+    assert albums_task.schedule == TaskSchedule.hourly(every=12)
+
+    with pytest.raises(KeyError):
+        tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.TRACK))
