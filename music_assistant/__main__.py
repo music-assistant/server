@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from typing import Any, Final
@@ -234,12 +235,9 @@ def main() -> None:
     # enable alpine subprocess workaround
     _enable_posix_spawn()
 
-    def on_shutdown(loop: asyncio.AbstractEventLoop) -> None:
-        logger.info("shutdown requested!")
-        loop.run_until_complete(mass.stop())
-
     async def run_mass() -> None:
         loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=32))
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
@@ -251,8 +249,10 @@ def main() -> None:
             stop_event.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
-            with suppress(NotImplementedError):
+            try:
                 loop.add_signal_handler(sig, _set_stop)
+            except NotImplementedError:
+                pass
 
         await mass.start()
         try:
