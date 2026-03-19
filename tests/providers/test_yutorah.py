@@ -568,10 +568,12 @@ async def test_browse_series_teacher_episodes(auth_provider: YuTorahProvider) ->
         patch.object(auth_provider, "_api_get", new=AsyncMock(side_effect=api_side)),
     ):
         results = await auth_provider.browse("yutorah://series/daf-yomi/teacher/rabbi-c")
-    # first item is the teacher Podcast, followed by episodes
+    # first item is the series+teacher Podcast, followed by episodes
     assert len(results) == 2
     assert isinstance(results[0], Podcast)
-    assert results[0].item_id == "t_7"
+    assert results[0].item_id == "st_100_7"
+    assert "Daf Yomi" in results[0].name
+    assert "Rabbi C" in results[0].name
     assert results[1].item_id == "12345"
 
 
