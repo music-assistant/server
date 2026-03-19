@@ -329,8 +329,13 @@ class HeosPlayer(Player):
 
     def _start_queue_cleanup_task(self) -> None:
         """Start the queue cleanup task if not already running."""
-        if not self._ma_controls_playback or not self._queue_cleanup_pending:
+        if (
+            not self._ma_controls_playback
+            or not self._queue_cleanup_pending
+            or self._queue_cleanup_lock.locked()
+        ):
             return
+
         self.mass.create_task(
             self._cleanup_heos_queue(),
             task_id=f"heos_queue_cleanup_task_{self.player_id}",
