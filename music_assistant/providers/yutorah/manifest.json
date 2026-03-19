@@ -1,0 +1,31 @@
+{
+    "type": "music",
+    "domain": "yutorah",
+    "name": "YuTorah",
+    "description": "Stream over 400,000 Torah shiurim (audio lectures) from YUTorah Online as podcasts. Browse by series (e.g. Daf Yomi, Ten Minute Halacha), search by topic or teacher, and subscribe to any series.",
+    "stage": "beta",
+    "icon": "podcast",
+    "codeowners": ["@russlevy"],
+    "requirements": [],
+    "documentation": "https://github.com/music-assistant/server/discussions/",
+    "multi_instance": false,
+    "config_entries": [
+        {
+            "key": "label_auth",
+            "type": "label",
+            "label": "Login is optional. Without it, only a preview of each series is available. With a free YuTorah account the full episode list and search are unlocked."
+        },
+        {
+            "key": "email",
+            "type": "string",
+            "label": "Email address",
+            "required": false
+        },
+        {
+            "key": "password",
+            "type": "secure_string",
+            "label": "Password",
+            "required": false
+        }
+    ]
+}
