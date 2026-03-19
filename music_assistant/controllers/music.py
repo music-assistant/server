@@ -7,7 +7,7 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
@@ -16,6 +16,7 @@ from math import inf
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import numpy as np
+from music_assistant_models.background_task import BackgroundTask, TaskSchedule, TaskStatus
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -42,7 +43,6 @@ from music_assistant_models.media_items import (
     SearchResults,
     Track,
 )
-from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
@@ -93,6 +93,7 @@ from .media.tracks import TracksController
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
     from music_assistant import MusicAssistant
@@ -104,7 +105,6 @@ CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 DB_SCHEMA_VERSION: Final[int] = 33
 
-CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 LAST_PROVIDER_INSTANCE_SCAN: Final[str] = "last_provider_instance_scan"
 PROVIDER_INSTANCE_SCAN_INTERVAL: Final[int] = 30 * 24 * 60 * 60  # one month in seconds
@@ -128,9 +128,10 @@ class MusicController(CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)
-        self.in_progress_syncs: list[SyncTask] = []
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
+        self._task_updates_unsubscribe: Any = None
+        self._awaiting_music_sync_completion = False
         self.manifest.name = "Music controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
@@ -193,9 +194,15 @@ class MusicController(CoreController):
         )
         if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
             self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
+        self._task_updates_unsubscribe = self.mass.subscribe(
+            self._on_tasks_updated, EventType.TASKS_UPDATED
+        )
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        if self._task_updates_unsubscribe:
+            self._task_updates_unsubscribe()
+            self._task_updates_unsubscribe = None
         if self._database:
             await self._database.close()
 
@@ -205,11 +212,7 @@ class MusicController(CoreController):
 
     async def on_provider_unload(self, provider: MusicProvider) -> None:
         """Handle logic when a provider is (about to get) unloaded."""
-        # make sure to stop any running sync tasks first
-        for sync_task in list(self.in_progress_syncs):
-            if sync_task.provider_instance == provider.instance_id:
-                if sync_task.task:
-                    sync_task.task.cancel()
+        self.unschedule_provider_sync(provider.instance_id)
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -232,12 +235,13 @@ class MusicController(CoreController):
         self,
         media_types: list[MediaType] | None = None,
         providers: list[str] | None = None,
-    ) -> None:
+    ) -> list[BackgroundTask]:
         """Start running the sync of (all or selected) musicproviders.
 
         media_types: only sync these media types. None for all.
         providers: only sync these provider instances. None for all.
         """
+        tasks: list[BackgroundTask] = []
         if media_types is None:
             media_types = MediaType.ALL
         if providers is None:
@@ -256,12 +260,33 @@ class MusicController(CoreController):
                 )
                 if not sync_conf:
                     continue
-                self._start_provider_sync(provider, media_type)
+                await self._schedule_provider_mediatype_sync(provider, media_type, True)
+                task_id = self._get_sync_task_id(provider, media_type)
+                try:
+                    tasks.append(self.mass.tasks.run_task(task_id))
+                except KeyError:
+                    tasks.append(
+                        self.mass.tasks.create_task(
+                            task_id=task_id,
+                            name=self._get_sync_task_name(provider, media_type),
+                            handler=self._create_provider_sync_handler(provider, media_type),
+                            translation_key=self._get_sync_task_translation_key(media_type),
+                            translation_args=[provider.name],
+                            user_id=get_current_user().user_id if get_current_user() else None,
+                            metadata=self._get_sync_task_metadata(provider, media_type),
+                            allow_retry=True,
+                        )
+                    )
+        return tasks
 
-    @api_command("music/synctasks")
-    def get_running_sync_tasks(self) -> list[SyncTask]:
-        """Return list with providers that are currently (scheduled for) syncing."""
-        return self.in_progress_syncs
+    @property
+    def active_sync_tasks(self) -> list[BackgroundTask]:
+        """Return provider sync tasks that are currently pending or running."""
+        return [
+            task
+            for task in self.mass.tasks.get_tasks_by_metadata(task_domain="music_sync")
+            if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+        ]
 
     @api_command("music/search")
     async def search(
@@ -1652,14 +1677,24 @@ class MusicController(CoreController):
 
     def unschedule_provider_sync(self, provider_instance_id: str) -> None:
         """Unschedule Library sync for given provider."""
-        # cancel all scheduled sync tasks
         for media_type in MediaType:
-            key = f"sync_{provider_instance_id}_{media_type.value}"
-            self.mass.cancel_timer(key)
-        # cancel any running sync tasks
-        for sync_task in list(self.in_progress_syncs):
-            if sync_task.provider_instance == provider_instance_id:
-                sync_task.task.cancel()
+            self.mass.tasks.unregister_scheduled_task(
+                self._get_sync_task_id(provider_instance_id, media_type)
+            )
+
+    def get_provider_sync_schedule(
+        self, provider_instance_id: str, media_type: MediaType
+    ) -> TaskSchedule | None:
+        """Return the effective schedule for a provider sync task, if any."""
+        task_id = self._get_sync_task_id(provider_instance_id, media_type)
+        with suppress(KeyError):
+            task = self.mass.tasks.get_task(task_id)
+            return task.schedule
+        if not (provider := self.mass.get_provider(provider_instance_id)):
+            return None
+        if not provider.library_supported(media_type):
+            return None
+        return provider.get_default_library_sync_schedule(media_type)
 
     def match_provider_instances(
         self,
@@ -1856,70 +1891,68 @@ class MusicController(CoreController):
             )
             return []
 
-    def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
-        """Start sync task on provider and track progress."""
-        # check if we're not already running a sync task for this provider/mediatype
-        for sync_task in list(self.in_progress_syncs):
-            if sync_task.provider_instance != provider.instance_id:
-                continue
-            if sync_task.task.done():
-                continue
-            if media_type in sync_task.media_types:
-                self.logger.debug(
-                    "Skip sync task for %s/%ss because another task is already in progress",
-                    provider.name,
-                    media_type.value,
-                )
-                return
+    def _create_provider_sync_handler(
+        self, provider: MusicProvider, media_type: MediaType
+    ) -> Callable[[], Awaitable[None]]:
+        """Create the coroutine used for a managed provider sync task."""
 
         async def run_sync() -> None:
-            # Wrap the provider sync into a lock to prevent
-            # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
                 await provider.sync_library(media_type)
 
-        # we keep track of running sync tasks
-        task = self.mass.create_task(run_sync())
-        sync_spec = SyncTask(
-            provider_domain=provider.domain,
-            provider_instance=provider.instance_id,
-            media_types=(media_type,),
-            task=task,
+        return run_sync
+
+    def _get_sync_task_id(self, provider: MusicProvider | str, media_type: MediaType) -> str:
+        """Return deterministic task id for a provider sync."""
+        provider_instance = (
+            provider.instance_id if isinstance(provider, MusicProvider) else provider
         )
-        self.in_progress_syncs.append(sync_spec)
+        return f"music_sync_{provider_instance}_{media_type.value}"
 
-        self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
+    def _get_sync_task_name(self, provider: MusicProvider, media_type: MediaType) -> str:
+        """Return display name for a provider sync task."""
+        return f"Sync {provider.name} {media_type.value}s"
 
-        def on_sync_task_done(task: asyncio.Task) -> None:
-            self.in_progress_syncs.remove(sync_spec)
-            if task.cancelled():
-                return
-            if task_err := task.exception():
-                self.logger.warning(
-                    "Sync task for %s/%ss completed with errors",
-                    provider.name,
-                    media_type.value,
-                    exc_info=task_err if self.logger.isEnabledFor(10) else None,
-                )
-            else:
-                self.logger.info("Sync task for %s/%ss completed", provider.name, media_type.value)
-            self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            self.mass.create_task(
-                self.mass.cache.set(
-                    key=media_type.value,
-                    data=self.mass.loop.time(),
-                    provider=provider.instance_id,
-                    category=CACHE_CATEGORY_LAST_SYNC,
-                )
-            )
-            # schedule db cleanup after sync
-            if not self.in_progress_syncs:
-                self.mass.create_task(self._cleanup_database())
-            # reschedule next execution
-            self.mass.create_task(self._schedule_provider_mediatype_sync(provider, media_type))
+    def _get_sync_task_translation_key(self, media_type: MediaType) -> str:
+        """Return translation key for a provider sync task."""
+        if media_type == MediaType.ARTIST:
+            return "background_task.sync_provider_artists"
+        if media_type == MediaType.ALBUM:
+            return "background_task.sync_provider_albums"
+        if media_type == MediaType.TRACK:
+            return "background_task.sync_provider_tracks"
+        if media_type == MediaType.PLAYLIST:
+            return "background_task.sync_provider_playlists"
+        if media_type == MediaType.RADIO:
+            return "background_task.sync_provider_radios"
+        if media_type == MediaType.AUDIOBOOK:
+            return "background_task.sync_provider_audiobooks"
+        if media_type == MediaType.PODCAST:
+            return "background_task.sync_provider_podcasts"
+        return "settings.sync"
 
-        task.add_done_callback(on_sync_task_done)
-        return
+    def _get_sync_task_metadata(
+        self, provider: MusicProvider, media_type: MediaType
+    ) -> dict[str, str]:
+        """Return metadata for a provider sync task."""
+        return {
+            "task_domain": "music_sync",
+            "provider_domain": provider.domain,
+            "provider_instance": provider.instance_id,
+            "provider_name": provider.name,
+            "media_type": media_type.value,
+        }
+
+    def _on_tasks_updated(self, _event: MassEvent) -> None:
+        """Run follow-up maintenance once provider sync tasks have completed."""
+        if self.active_sync_tasks:
+            self._awaiting_music_sync_completion = True
+            return
+        if not self._awaiting_music_sync_completion:
+            return
+        self._awaiting_music_sync_completion = False
+        self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
+        self.mass.create_task(self._cleanup_database())
 
     def _sort_search_result(
         self,
@@ -1965,40 +1998,22 @@ class MusicController(CoreController):
         self, provider: MusicProvider, media_type: MediaType, is_initial: bool = False
     ) -> None:
         """Schedule Library sync for given provider and media type."""
-        job_key = f"sync_{provider.instance_id}_{media_type.value}"
-        # cancel any existing timers
-        self.mass.cancel_timer(job_key)
         # handle mediatype specific sync config
         conf_key = f"library_sync_{media_type}s"
         sync_conf = await self.mass.config.get_provider_config_value(provider.instance_id, conf_key)
         if not sync_conf:
+            self.mass.tasks.unregister_scheduled_task(self._get_sync_task_id(provider, media_type))
             return
-        conf_key = f"provider_sync_interval_{media_type.value}s"
-        sync_interval = await self.mass.config.get_provider_config_value(
-            provider.instance_id, conf_key, return_type=int
-        )
-        if sync_interval <= 0:
-            # sync disabled for this media type
-            return
-        sync_interval = sync_interval * 60  # config interval is in minutes - convert to seconds
-
-        if is_initial:
-            # schedule the first sync run
-            initial_interval = 10
-            if last_sync := await self.mass.cache.get(
-                key=media_type.value,
-                provider=provider.instance_id,
-                category=CACHE_CATEGORY_LAST_SYNC,
-            ):
-                initial_interval += max(0, sync_interval - (self.mass.loop.time() - last_sync))
-            sync_interval = initial_interval
-
-        self.mass.call_later(
-            sync_interval,
-            self._start_provider_sync,
-            provider,
-            media_type,
-            task_id=job_key,
+        self.mass.tasks.register_scheduled_task(
+            task_id=self._get_sync_task_id(provider, media_type),
+            name=self._get_sync_task_name(provider, media_type),
+            handler=self._create_provider_sync_handler(provider, media_type),
+            schedule=provider.get_default_library_sync_schedule(media_type),
+            initial_delay=10 if is_initial else None,
+            translation_key=self._get_sync_task_translation_key(media_type),
+            translation_args=[provider.name],
+            metadata=self._get_sync_task_metadata(provider, media_type),
+            allow_retry=True,
         )
 
     async def _cleanup_database(self) -> None:

@@ -799,7 +799,7 @@ class PlayerQueuesController(CoreController):
         if not uris:
             raise InvalidDataError("No valid items in queue to save as playlist.")
         playlist = await self.mass.music.playlists.create_playlist(name)
-        await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
+        await self.mass.music.playlists._handle_add_playlist_tracks(playlist.item_id, uris)
         return playlist
 
     @api_command("player_queues/stop")

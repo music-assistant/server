@@ -71,7 +71,6 @@ class GenreController(MediaControllerBase[Genre]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        # Background scanner state tracking
         self._scanner_running: bool = False
         self._last_scan_time: float = 0
         self._last_scan_mapped: int = 0
@@ -167,7 +166,7 @@ class GenreController(MediaControllerBase[Genre]):
         )
 
         # Run genre mapping scanner after library sync completes
-        self.mass.subscribe(self._on_sync_tasks_updated, EventType.SYNC_TASKS_UPDATED)
+        self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
 
     @staticmethod
     def _get_genre_icon_metadata(translation_key: str | None) -> MediaItemMetadata | None:
@@ -1516,21 +1515,22 @@ class GenreController(MediaControllerBase[Genre]):
         search_sort_name = create_safe_string(sort_name or "", True, True)
         return name, sort_name, search_name, search_sort_name
 
-    def _on_sync_tasks_updated(self, _event: MassEvent) -> None:
-        """Trigger genre mapping scan when all sync tasks complete."""
-        if self.mass.music.in_progress_syncs or self._scanner_running:
+    def _on_music_sync_completed(self, _event: MassEvent) -> None:
+        """Trigger genre mapping scan when music sync tasks have completed."""
+        if self._scanner_running:
             return
         self._scanner_running = True
         self.mass.create_task(self._scan_genre_mappings())
 
     async def _scan_genre_mappings(self) -> None:
-        """Scan media items with metadata.genres and map them to genres.
+        """
+        Scan media items with metadata.genres and map them to genres.
 
         Triggered after library sync completes or via manual API call.
         Callers must set _scanner_running = True before calling this method.
         """
         # Double-check syncs haven't started since the event was dispatched
-        if self.mass.music.in_progress_syncs:
+        if self.mass.music.active_sync_tasks:
             self.logger.debug("Syncs still in progress, deferring genre scan")
             self._scanner_running = False
             return
@@ -1556,7 +1556,8 @@ class GenreController(MediaControllerBase[Genre]):
             self._scanner_running = False
 
     async def scan_mappings(self) -> dict[str, Any]:
-        """Manually trigger a genre mapping scan (admin only).
+        """
+        Manually trigger a genre mapping scan (admin only).
 
         :return: Status information about the scan trigger.
         """
@@ -1576,7 +1577,8 @@ class GenreController(MediaControllerBase[Genre]):
         }
 
     async def get_scanner_status(self) -> dict[str, Any]:
-        """Get status of the genre mapping background scanner.
+        """
+        Get status of the genre mapping background scanner.
 
         :return: Scanner status information.
         """
