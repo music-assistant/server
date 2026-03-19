@@ -573,7 +573,9 @@ class SonicAnalysisProvider(PluginProvider):
         Useful for recovery after index loss or a schema migration.
         """
         assert self.mass.music.database is not None
-        all_rows = await self.mass.music.database.get_rows(DB_TABLE_SONIC_SIGNATURES, {})
+        all_rows = await self.mass.music.database.get_rows(
+            DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
+        )
 
         track_rows = [row for row in all_rows if row.get("item_id") != CORPUS_STATS_ITEM_ID]
 
