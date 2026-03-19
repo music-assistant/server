@@ -61,6 +61,10 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress_text,
+)
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
@@ -357,10 +361,16 @@ class LocalFileSystemProvider(MusicProvider):
         def run_sync() -> None:
             """Run the actual sync (in an executor job)."""
             self.sync_running = True
+            processed_items = 0
             try:
                 for item in recursive_iter(
                     self.base_path, self.base_path, SUPPORTED_EXTENSIONS, self.logger
                 ):
+                    processed_items += 1
+                    current_folder = os.path.dirname(item.relative_path) or item.relative_path
+                    update_current_task_progress_text(
+                        f"Scanned {processed_items} files: {current_folder}"
+                    )
                     prev_checksum = file_checksums.get(item.relative_path)
                     if self._process_item(item, prev_checksum):
                         cur_filenames.add(item.relative_path)
@@ -478,6 +488,7 @@ class LocalFileSystemProvider(MusicProvider):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
+            report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
         return False
 
     async def _process_orphaned_albums_and_artists(self) -> None:

@@ -41,6 +41,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
@@ -104,6 +105,7 @@ class MusicAssistant:
     webserver: WebserverController
     cache: CacheController
     metadata: MetaDataController
+    tasks: TasksController
     music: MusicController
     players: PlayerController
     player_queues: PlayerQueuesController
@@ -157,6 +159,7 @@ class MusicAssistant:
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
         self.cache = CacheController(self)
+        self.tasks = TasksController(self)
         self.webserver = WebserverController(self)
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
@@ -175,11 +178,23 @@ class MusicAssistant:
 
         async with asyncio.TaskGroup() as tg:
             tg.create_task(setup_controller(self.cache))
+            tg.create_task(setup_controller(self.tasks))
             tg.create_task(setup_controller(self.streams))
             tg.create_task(setup_controller(self.music))
             tg.create_task(setup_controller(self.metadata))
             tg.create_task(setup_controller(self.players))
             tg.create_task(setup_controller(self.player_queues))
+
+        for controller_name in (
+            "cache",
+            "tasks",
+            "streams",
+            "music",
+            "metadata",
+            "players",
+            "player_queues",
+        ):
+            await cast("CoreController", getattr(self, controller_name)).post_setup()
 
         # load webserver/api now that the core controllers are setup and ready to be used
         self._register_api_commands()
@@ -213,6 +228,7 @@ class MusicAssistant:
         await self.discovery.close()
         await self.streams.close()
         await self.webserver.close()
+        await self.tasks.close()
         await self.metadata.close()
         await self.music.close()
         await self.player_queues.close()
@@ -754,6 +770,7 @@ class MusicAssistant:
             self,
             self.config,
             self.metadata,
+            self.tasks,
             self.music,
             self.players,
             self.player_queues,
