@@ -849,9 +849,9 @@ class AirPlayPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         if self.stream:
-            # stop the stream session if it is running
+            # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
-                self.mass.create_task(self.stream.session.stop())
+                await self.stream.session.remove_client(self)
             self.stream = None
         if self._active_pairing:
             await self._active_pairing.close()
