@@ -198,13 +198,31 @@ class SonicAnalysisProvider(PluginProvider):
         analyzed_count = 0
         skipped_count = 0
 
+        # Paginate through ALL library tracks (default limit is 500)
+        page_size = 500
+        offset = 0
+        all_tracks: list[Any] = []
         try:
-            tracks = await self.mass.music.tracks.library_items()
+            while True:
+                page = await self.mass.music.tracks.library_items(
+                    limit=page_size, offset=offset
+                )
+                if not page:
+                    break
+                all_tracks.extend(page)
+                self.logger.info(
+                    "Backfill: fetched %d tracks so far...", len(all_tracks)
+                )
+                if len(page) < page_size:
+                    break
+                offset += page_size
         except Exception:
             self.logger.warning("Could not fetch library tracks for backfill", exc_info=True)
             return
 
-        for track in tracks:
+        self.logger.info("Backfill: %d total library tracks to process", len(all_tracks))
+
+        for track in all_tracks:
             item_id = str(track.item_id)
 
             has_signature = False
