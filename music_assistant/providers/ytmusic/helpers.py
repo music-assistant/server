@@ -37,7 +37,7 @@ async def get_artist(
     return await asyncio.to_thread(_get_artist)
 
 
-async def get_album(prov_album_id: str, language: str = "en") -> dict[str, str]:
+async def get_album(headers: dict[str, str], prov_album_id: str, language: str = "en", user: str | None = None) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_album function."""
 
     def _get_album():
@@ -238,7 +238,7 @@ async def library_add_remove_album(
     headers: dict[str, str], prov_item_id: str, add: bool = True, user: str | None = None
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
-    album = await get_album(prov_album_id=prov_item_id)
+    album = await get_album(headers=headers, prov_album_id=prov_item_id, user=user)
 
     def _library_add_remove_album():
         ytm = ytmusicapi.YTMusic(auth=headers, user=user)
