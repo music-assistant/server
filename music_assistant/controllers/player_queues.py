@@ -22,7 +22,6 @@ from contextlib import suppress
 from types import NoneType
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, cast
 
-from music_assistant_models import BackgroundTask
 import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
@@ -88,6 +87,7 @@ from music_assistant.models.player import Player, PlayerMedia
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from music_assistant_models import BackgroundTask
     from music_assistant_models.auth import User
     from music_assistant_models.media_items.metadata import MediaItemImage
 
@@ -801,7 +801,6 @@ class PlayerQueuesController(CoreController):
             raise InvalidDataError("No valid items in queue to save as playlist.")
         playlist = await self.mass.music.playlists.create_playlist(name)
         return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
-
 
     @api_command("player_queues/stop")
     @handle_play_action

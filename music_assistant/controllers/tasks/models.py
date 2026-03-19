@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.background_task import BackgroundTask, TaskStatus
+from music_assistant_models.enums import TaskStatus
 
 from .constants import DEFAULT_TASK_LOG_LINES
+
+if TYPE_CHECKING:
+    from music_assistant_models.background_task import BackgroundTask
 
 
 @dataclass

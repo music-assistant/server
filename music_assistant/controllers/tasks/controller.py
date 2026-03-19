@@ -13,15 +13,14 @@ from threading import get_ident
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.background_task import (
     BackgroundTask,
     TaskMetadata,
     TaskMetadataValue,
     TaskSchedule,
-    TaskStatus,
 )
-from music_assistant_models.enums import EventType
+from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -98,17 +97,23 @@ class TasksController(CoreController):
     @api_command("tasks/list")
     def list_tasks(self) -> list[BackgroundTask]:
         """Return all visible managed tasks."""
-        return [managed.task_info for managed in get_visible_tasks(self._tasks.values())]
+        return self.list_tasks_for_user(get_current_user())
+
+    def list_tasks_for_user(self, user: User | None) -> list[BackgroundTask]:
+        """Return tasks visible to the given user."""
+        return [managed.task_info for managed in get_visible_tasks(self._tasks.values(), user)]
 
     @api_command("tasks/get")
     def get_task(self, task_id: str) -> BackgroundTask:
         """Return a single task by id."""
-        return self._get_managed_task(task_id).task_info
+        return self._get_visible_managed_task(task_id, get_current_user()).task_info
 
     @api_command("tasks/log")
     def get_task_log(self, task_id: str) -> str:
         """Return the log buffer for a single task."""
-        return "\n".join(self._get_managed_task(task_id).task_info.logs)
+        return "\n".join(
+            self._get_visible_managed_task(task_id, get_current_user()).task_info.logs
+        )
 
     @api_command("tasks/run", required_role=UserRole.ADMIN)
     def run_task(self, task_id: str) -> BackgroundTask:
@@ -409,6 +414,17 @@ class TasksController(CoreController):
             raise KeyError(f"Task {task_id} not found")
         return managed
 
+    def _get_visible_managed_task(self, task_id: str, user: User | None) -> ManagedTask:
+        """Return a managed task if it is visible to the given user."""
+        managed = self._get_managed_task(task_id)
+        if (
+            user is not None
+            and user.role != UserRole.ADMIN
+            and managed.task_info.user_id != user.user_id
+        ):
+            raise KeyError(f"Task {task_id} not found")
+        return managed
+
     def _append_task_log(self, task_id: str, line: str) -> None:
         """Append a log line to a task."""
         if get_ident() != self.mass.loop_thread_id:
@@ -636,9 +652,7 @@ class TasksController(CoreController):
         """Restore persisted runtime state for a scheduled task."""
         if task_info.schedule is None:
             return
-        states = self.mass.config.get_raw_core_config_value(self.domain, TASK_STATE_CONFIG_KEY, {})
-        if not isinstance(states, dict):
-            return
+        states = self._get_persisted_task_states()
         if not (state := states.get(task_info.id)) or not isinstance(state, dict):
             return
         restore_task_state(task_info, state)
@@ -647,27 +661,26 @@ class TasksController(CoreController):
         """Persist runtime state for a scheduled task."""
         if not managed.is_scheduled:
             return
-        states = self.mass.config.get_raw_core_config_value(self.domain, TASK_STATE_CONFIG_KEY, {})
-        updated_states = dict(states) if isinstance(states, dict) else {}
+        updated_states = dict(self._get_persisted_task_states())
         updated_states[managed.task_info.id] = serialize_task_state(managed.task_info)
-        self.mass.config.set_raw_core_config_value(
-            self.domain,
-            TASK_STATE_CONFIG_KEY,
-            updated_states,
-        )
+        self._set_persisted_task_states(updated_states)
 
     def _clear_scheduled_task_state(self, task_id: str) -> None:
         """Remove persisted runtime state for a scheduled task."""
-        states = self.mass.config.get_raw_core_config_value(self.domain, TASK_STATE_CONFIG_KEY, {})
-        if not isinstance(states, dict) or task_id not in states:
+        updated_states = dict(self._get_persisted_task_states())
+        if task_id not in updated_states:
             return
-        updated_states = dict(states)
         updated_states.pop(task_id, None)
-        self.mass.config.set_raw_core_config_value(
-            self.domain,
-            TASK_STATE_CONFIG_KEY,
-            updated_states,
-        )
+        self._set_persisted_task_states(updated_states)
+
+    def _get_persisted_task_states(self) -> dict[str, Any]:
+        """Return persisted runtime state for scheduled tasks."""
+        states = self.mass.config.get(f"core/{self.domain}/{TASK_STATE_CONFIG_KEY}", {})
+        return states if isinstance(states, dict) else {}
+
+    def _set_persisted_task_states(self, states: dict[str, Any]) -> None:
+        """Persist runtime state for scheduled tasks."""
+        self.mass.config.set(f"core/{self.domain}/{TASK_STATE_CONFIG_KEY}", states)
 
     @staticmethod
     def _resolve_schedule(
@@ -733,4 +746,4 @@ class TasksController(CoreController):
         """Emit the current managed task list."""
         self._scheduled_task_update_at = None
         self._last_task_update_signal = self.mass.loop.time()
-        self.mass.signal_event(EventType.TASKS_UPDATED, data=self.list_tasks())
+        self.mass.signal_event(EventType.TASKS_UPDATED, data=self.list_tasks_for_user(None))

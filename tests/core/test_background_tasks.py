@@ -7,9 +7,11 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
@@ -37,6 +39,7 @@ from music_assistant.controllers.tasks import (
     update_current_task_progress_text,
 )
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -137,6 +140,44 @@ async def test_task_can_report_partial_success(tasks_controller: TasksController
     assert any("completed with 1 issue" in line for line in task.logs)
 
 
+async def test_user_scoped_task_visibility(tasks_controller: TasksController) -> None:
+    """Non-admin users should only see and access their own tasks."""
+
+    async def handler() -> None:
+        """No-op test handler."""
+
+    user_task = tasks_controller.create_task(
+        name="Add playlist tracks",
+        handler=handler,
+        user_id="user-123",
+        queue_immediately=False,
+    )
+    system_task = tasks_controller.create_task(
+        name="Database cleanup",
+        handler=handler,
+        queue_immediately=False,
+    )
+
+    all_tasks = tasks_controller.list_tasks_for_user(None)
+    assert {task.id for task in all_tasks} >= {user_task.id}
+
+    set_current_user(
+        User(
+            user_id="user-123",
+            username="user123",
+            role=UserRole.USER,
+        )
+    )
+    try:
+        visible_tasks = tasks_controller.list_tasks()
+        assert [task.id for task in visible_tasks] == [user_task.id]
+        assert tasks_controller.get_task(user_task.id).id == user_task.id
+        with pytest.raises(KeyError):
+            tasks_controller.get_task(system_task.id)
+    finally:
+        set_current_user(None)
+
+
 async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) -> None:
     """Scheduled tasks should restore their edited schedule and persisted runtime state."""
     controller = TasksController(mass_minimal)
@@ -165,11 +206,7 @@ async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) ->
     task.failure_messages[:] = ["Album import failed", "Artwork lookup failed"]
     controller._persist_scheduled_task_state(controller._get_managed_task(task.id))
 
-    persisted_states = mass_minimal.config.get_raw_core_config_value(
-        controller.domain,
-        "scheduled_task_states",
-        {},
-    )
+    persisted_states = mass_minimal.config.get("core/tasks/scheduled_task_states", {})
     assert isinstance(persisted_states, dict)
     assert task.id in persisted_states
 
@@ -220,9 +257,7 @@ async def test_add_playlist_tracks_creates_and_runs_background_task(
     async def fake_get_library_item(_db_playlist_id: int) -> SimpleNamespace:
         return SimpleNamespace(name="Test playlist")
 
-    async def fake_handle_add_playlist_tracks(
-        db_playlist_id: str | int, uris: list[str]
-    ) -> None:
+    async def fake_handle_add_playlist_tracks(db_playlist_id: str | int, uris: list[str]) -> None:
         assert db_playlist_id == "42"
         assert uris == ["spotify://track/1", "spotify://track/2"]
         handler_called.set()
@@ -270,9 +305,14 @@ class DummyMusicProvider(MusicProvider):
 async def test_schedule_provider_sync_registers_scheduled_background_tasks(
     mass_minimal: MusicAssistant,
     tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Music controller should register scheduled sync tasks for supported media types."""
-    mass_minimal.config.get_provider_config_value = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        mass_minimal.config,
+        "get_provider_config_value",
+        AsyncMock(return_value=True),
+    )
 
     music = MusicController(mass_minimal)
     mass_minimal.music = music
@@ -284,7 +324,7 @@ async def test_schedule_provider_sync_registers_scheduled_background_tasks(
         instance_id="test_provider--instance",
         name="Spotify",
     )
-    provider_config.get_value = lambda *_args, **_kwargs: "GLOBAL"
+    monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
 
     provider = DummyMusicProvider(
         mass_minimal,
@@ -369,9 +409,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
         hour=maintenance_hour,
         minute=maintenance_minute,
     )
-    assert provider_mapping_task.metadata == {
-        "task_domain": "music_provider_mapping_correction"
-    }
+    assert provider_mapping_task.metadata == {"task_domain": "music_provider_mapping_correction"}
     assert genre_scan_task.schedule == maintenance_schedule
 
     assert artist_scan_task.translation_key == "background_task.scan_missing_artist_artwork"
@@ -406,7 +444,7 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
         instance_id="test_provider--instance",
         name="Spotify",
     )
-    provider_config.get_value = lambda *_args, **_kwargs: "GLOBAL"
+    monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
     provider = DummyMusicProvider(
         mass_minimal,
         manifest=ProviderManifest(
@@ -448,7 +486,7 @@ async def test_genre_scan_queues_managed_background_task(
     maintenance_hour, maintenance_minute = local_clock_time_to_utc(4, 0)
     maintenance_schedule = TaskSchedule.daily(hour=maintenance_hour, minute=maintenance_minute)
     genre_controller = GenreController(mass_minimal)
-    mass_minimal.music = SimpleNamespace(active_sync_tasks=[])
+    mass_minimal.music = cast("Any", SimpleNamespace(active_sync_tasks=[]))
     monkeypatch.setattr(genre_controller, "_bulk_scan_unmapped_genres", AsyncMock(return_value=3))
 
     result = await genre_controller.scan_mappings()
@@ -470,6 +508,7 @@ async def test_genre_scan_queues_managed_background_task(
 async def test_schedule_update_metadata_uses_managed_background_task(
     mass_minimal: MusicAssistant,
     tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Scheduled metadata lookups should run through the tasks controller."""
     metadata = MetaDataController(mass_minimal)
@@ -482,7 +521,9 @@ async def test_schedule_update_metadata_uses_managed_background_task(
         provider="library",
         uri="artist://library/123",
     )
-    mass_minimal.music = SimpleNamespace(get_item_by_uri=AsyncMock(return_value=resolved_item))
+    mass_minimal.music = cast(
+        "Any", SimpleNamespace(get_item_by_uri=AsyncMock(return_value=resolved_item))
+    )
 
     async def fake_update_metadata(item: object, force_refresh: bool = False) -> object:
         assert item is resolved_item
@@ -491,7 +532,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
         await release_lookup.wait()
         return item
 
-    metadata.update_metadata = fake_update_metadata  # type: ignore[method-assign]
+    monkeypatch.setattr(metadata, "update_metadata", fake_update_metadata)
     metadata.schedule_update_metadata(resolved_item.uri)
 
     task_id = metadata._get_metadata_lookup_task_id(resolved_item.uri)

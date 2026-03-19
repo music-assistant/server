@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
 
 
-def _api_method_returning_background_task() -> BackgroundTask:
-    return None  # pragma: no cover
+async def _api_method_returning_background_task() -> BackgroundTask:
+    raise NotImplementedError  # pragma: no cover
 
 
 def _example_with_type_param(

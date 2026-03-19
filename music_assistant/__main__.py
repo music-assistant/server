@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -14,7 +15,6 @@ from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from typing import Any, Final
 
-from aiorun import run
 from colorlog import ColoredFormatter
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
@@ -238,24 +238,35 @@ def main() -> None:
         logger.info("shutdown requested!")
         loop.run_until_complete(mass.stop())
 
-    async def start_mass() -> None:
+    async def run_mass() -> None:
         loop = asyncio.get_running_loop()
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
         loop.set_exception_handler(_global_loop_exception_handler)
-        try:
-            await mass.start()
-        except Exception:
-            # exit immediately if startup fails
-            loop.stop()
-            raise
 
-    run(
-        start_mass(),
-        shutdown_callback=on_shutdown,
-        executor_workers=16,
-    )
+        stop_event = asyncio.Event()
+
+        def _set_stop() -> None:
+            stop_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _set_stop)
+            except NotImplementedError:
+                pass
+
+        await mass.start()
+        try:
+            await stop_event.wait()
+        finally:
+            logger.info("shutdown requested!")
+            await mass.stop()
+
+    try:
+        asyncio.run(run_mass())
+    except KeyboardInterrupt:
+        logger.info("shutdown requested by keyboard interrupt")
 
 
 if __name__ == "__main__":

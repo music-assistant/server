@@ -8,8 +8,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.background_task import BackgroundTask, TaskSchedule, TaskStatus
-from music_assistant_models.enums import EventType, ImageType, MediaType
+from music_assistant_models.background_task import BackgroundTask, TaskSchedule
+from music_assistant_models.enums import EventType, ImageType, MediaType, TaskStatus
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -1574,9 +1574,7 @@ class GenreController(MediaControllerBase[Genre]):
             self.logger.debug("Starting genre mapping scan...")
             update_current_task_progress_text("Scanning unmapped genre metadata")
             self._last_scan_mapped = await self._bulk_scan_unmapped_genres()
-            update_current_task_progress_text(
-                f"Mapped {self._last_scan_mapped} genre reference(s)"
-            )
+            update_current_task_progress_text(f"Mapped {self._last_scan_mapped} genre reference(s)")
             self.logger.info(
                 "Genre mapping scan completed: %d items mapped (%.1fs)",
                 self._last_scan_mapped,

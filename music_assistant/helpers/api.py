@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Seque
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
+from functools import cache
 from types import NoneType, UnionType
 from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
@@ -25,7 +26,6 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 # Cache for resolved type alias strings to avoid repeated imports
 _TYPE_ALIAS_CACHE: dict[str, Any] = {}
 _MODEL_TYPE_CACHE: dict[str, Any] = {}
-_MODEL_MODULES: list[str] | None = None
 _MAX_TYPE_HINT_RESOLVE_ATTEMPTS = 32
 
 
@@ -69,6 +69,24 @@ def _resolve_string_type(type_str: str) -> Any:
         return type_str
 
 
+@cache
+def _get_model_module_names() -> tuple[str, ...]:
+    """Return all module names from the music_assistant_models package."""
+    try:
+        music_assistant_models = importlib.import_module("music_assistant_models")
+    except ImportError:
+        return ()
+    try:
+        return tuple(
+            mod.name
+            for mod in pkgutil.walk_packages(
+                music_assistant_models.__path__, prefix="music_assistant_models."
+            )
+        )
+    except Exception:
+        return ()
+
+
 def _resolve_model_type(name: str) -> Any | None:
     """Resolve a type from the music_assistant_models package by name."""
     if name in _MODEL_TYPE_CACHE:
@@ -85,20 +103,7 @@ def _resolve_model_type(name: str) -> Any | None:
         _MODEL_TYPE_CACHE[name] = resolved
         return resolved
 
-    module_names = getattr(_resolve_model_type, "_module_names", None)
-    if module_names is None:
-        try:
-            module_names = [
-                mod.name
-                for mod in pkgutil.walk_packages(
-                    music_assistant_models.__path__, prefix="music_assistant_models."
-                )
-            ]
-        except Exception:
-            module_names = []
-        _resolve_model_type._module_names = module_names
-
-    for module_name in module_names:
+    for module_name in _get_model_module_names():
         try:
             module = importlib.import_module(module_name)
             if hasattr(module, name):

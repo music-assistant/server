@@ -15,7 +15,7 @@ from math import inf
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import numpy as np
-from music_assistant_models.background_task import BackgroundTask, TaskSchedule, TaskStatus
+from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderType,
+    TaskStatus,
 )
 from music_assistant_models.errors import (
     InvalidProviderID,
@@ -1932,7 +1933,7 @@ class MusicController(CoreController):
 
     def _get_sync_task_metadata(
         self, provider: MusicProvider, media_type: MediaType
-    ) -> dict[str, str]:
+    ) -> TaskMetadata:
         """Return metadata for a provider sync task."""
         return {
             "task_domain": "music_sync",

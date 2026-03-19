@@ -769,10 +769,12 @@ class MusicProvider(Provider):
         update_current_task_progress_text(message)
 
     def _report_sync_task_failure(
-        self, media_type: MediaType, item_ref: str, err: Exception
+        self, media_type: MediaType, item_ref: str | None, err: Exception
     ) -> None:
         """Record a non-fatal sync failure on the active background task."""
-        report_current_task_failure(f"Failed to sync {media_type.value} {item_ref}: {err}")
+        report_current_task_failure(
+            f"Failed to sync {media_type.value} {item_ref or '<unknown>'}: {err}"
+        )
 
     async def _sync_item_genres(
         self,
