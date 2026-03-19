@@ -176,6 +176,7 @@ class SonicAnalysisProvider(PluginProvider):
             ("/api/sonic_analysis/similar", self._handle_similar_tracks),
             ("/api/sonic_analysis/status", self._handle_status),
             ("/api/sonic_analysis/signatures", self._handle_signatures),
+            ("/api/sonic_analysis/trigger_backfill", self._handle_trigger_backfill),
             ("/api/sonic_analysis/debug", self._handle_debug_page),
         ):
             self._on_unload.append(
@@ -605,6 +606,17 @@ class SonicAnalysisProvider(PluginProvider):
 
         return _cors_json({"analyzed": True, "items": items, "seed_track_id": item_id})
 
+    async def _handle_trigger_backfill(self, request: Any) -> Any:
+        """Handle GET /api/sonic_analysis/trigger_backfill — manually start backfill."""
+        try:
+            # Ensure table exists
+            await self._create_db_table()
+            self.mass.create_task(self._backfill_unanalyzed_tracks())
+            return _cors_json({"status": "backfill_started"})
+        except Exception as exc:
+            self.logger.exception("trigger_backfill failed")
+            return _cors_json({"status": "error", "error": str(exc)})
+
     async def _handle_debug_page(self, request: Any) -> Any:
         """Serve the built-in debug console as an HTML page."""
         html = _DEBUG_HTML.replace("%%BASE_URL%%", str(request.url).rsplit("/debug", 1)[0])
@@ -629,20 +641,22 @@ class SonicAnalysisProvider(PluginProvider):
 
         # Count signatures in DB
         db_count = 0
+        db_error = ""
         if self.mass.music.database is not None:
             try:
-                rows = await self.mass.music.database.get_rows(
-                    DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
+                result = await self.mass.music.database._db.execute_fetchall(
+                    f"SELECT COUNT(*) FROM {DB_TABLE_SONIC_SIGNATURES}"
+                    f" WHERE item_id != '{CORPUS_STATS_ITEM_ID}'"
                 )
-                db_count = sum(
-                    1 for r in rows if r.get("item_id") != CORPUS_STATS_ITEM_ID
-                )
-            except Exception:
+                db_count = int(result[0][0]) if result else 0
+            except Exception as exc:
                 db_count = -1
+                db_error = str(exc)
 
         return _cors_json({
             "index_size": index_size,
             "db_signatures": db_count,
+            "db_error": db_error,
             "label_map_size": label_map_size,
             "has_corpus_stats": has_corpus_stats,
             "signature_version": SIGNATURE_VERSION,
@@ -806,9 +820,17 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 </style></head><body>
 <h1>sonic_analysis <span>// debug console</span></h1>
 
+<div class="row" style="margin-bottom:1rem">
+<label style="font-size:.7rem;color:#7a7a8e">Token:</label>
+<input id="tk" type="password" placeholder="paste long-lived token" style="flex:1">
+<button onclick="saveToken()">Save</button>
+</div>
+
 <h2>Status</h2>
 <div class="g" id="sg"></div>
 <button onclick="fetchStatus()">Refresh Status</button>
+<button onclick="triggerBackfill()" style="border-color:#6bc5ff;color:#6bc5ff">Trigger Backfill</button>
+<div id="dberr" style="color:#ff6b6b;font-size:.75rem;margin-top:.5rem"></div>
 
 <h2>Log</h2>
 <div class="log" id="lo"></div>
@@ -845,6 +867,9 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <script>
 var BASE='%%BASE_URL%%';
 var pg=0,PS=50;
+var TOKEN=localStorage.getItem('sa_token')||'';
+if(TOKEN)document.getElementById('tk').value=TOKEN;
+function saveToken(){TOKEN=document.getElementById('tk').value.trim();localStorage.setItem('sa_token',TOKEN);fetchStatus();fetchSigs()}
 
 function cl(p){while(p.firstChild)p.removeChild(p.firstChild)}
 function tx(t){return document.createTextNode(t)}
@@ -884,8 +909,18 @@ function fetchStatus(){
       c.appendChild(mk('div','v '+x[2],String(x[1])));
       g.appendChild(c);
     });
+    var errEl=document.getElementById('dberr');
+    errEl.textContent=d.db_error||'';
     logMsg('Status: '+d.db_signatures+' sigs, '+d.index_size+' indexed',true);
   }).catch(function(e){logMsg('Status error: '+e.message,false)});
+}
+
+function triggerBackfill(){
+  logMsg('Triggering backfill...');
+  api('trigger_backfill').then(function(d){
+    logMsg('Backfill response: '+d.status,d.status==='backfill_started');
+    if(d.error)logMsg('Error: '+d.error,false);
+  }).catch(function(e){logMsg('Trigger failed: '+e.message,false)});
 }
 
 function fetchSigs(){
