@@ -218,7 +218,6 @@ class SendspinProvider(PlayerProvider):
         if previous_type == PlayerType.PROTOCOL and existing_player.type != PlayerType.PROTOCOL:
             existing_player.set_protocol_parent_id(None)
         await self.mass.players.register_or_update(existing_player)
-        self.mass.players._evaluate_protocol_links(existing_player)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
