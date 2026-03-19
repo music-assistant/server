@@ -955,12 +955,15 @@ class TestRebuildSearchIndex:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_track(item_id: str, provider_instance: str) -> MagicMock:
+def _make_mock_track(
+    item_id: str, provider_instance: str, provider_item_id: str = "",
+) -> MagicMock:
     """Return a minimal mock Track with item_id and provider_mappings."""
     track = MagicMock()
     track.item_id = item_id
     mapping = MagicMock()
     mapping.provider_instance = provider_instance
+    mapping.item_id = provider_item_id or item_id
     track.provider_mappings = [mapping]
     return track
 
@@ -1067,7 +1070,7 @@ class TestBackfill:
         ):
             await provider._backfill_unanalyzed_tracks()
 
-        mock_fetch.assert_called_once_with("track_1", "local")
+        mock_fetch.assert_called_once_with("track_1", "local", "track_1")
 
     @pytest.mark.asyncio
     async def test_backfill_handles_library_fetch_error_gracefully(self, tmp_path: Any) -> None:
@@ -1098,7 +1101,7 @@ class TestBackfill:
 
         call_count = 0
 
-        async def _fetch_side_effect(item_id: str, _provider: str) -> None:
+        async def _fetch_side_effect(item_id: str, _provider: str, _prov_id: str | None = None) -> None:
             nonlocal call_count
             call_count += 1
             if item_id == "track_a":

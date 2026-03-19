@@ -186,7 +186,9 @@ class SonicAnalysisProvider(PluginProvider):
 
             for mapping in track.provider_mappings:
                 try:
-                    await self._fetch_and_analyze(item_id, mapping.provider_instance)
+                    await self._fetch_and_analyze(
+                        item_id, mapping.provider_instance, mapping.item_id
+                    )
                     analyzed_count += 1
                     break
                 except Exception:
@@ -294,30 +296,36 @@ class SonicAnalysisProvider(PluginProvider):
 
         return signature
 
-    async def _fetch_and_analyze(self, item_id: str, provider: str) -> None:
+    async def _fetch_and_analyze(
+        self,
+        item_id: str,
+        provider: str,
+        provider_item_id: str | None = None,
+    ) -> None:
         """Fetch audio for a track and run the analysis pipeline.
 
         For local files the path is read directly via librosa; for streamed content
         a PCM pipeline is used (not yet implemented — placeholder logs a warning).
 
-        :param item_id: Provider-scoped track identifier.
-        :param provider: Provider domain or instance ID that owns the track.
+        :param item_id: Library track identifier (used for DB storage).
+        :param provider: Provider instance ID that owns the track.
+        :param provider_item_id: Provider-scoped track ID for stream details.
+            Falls back to item_id if not provided.
         """
         try:
             audio: np.ndarray
             sample_rate = 22050
+            prov_item_id = provider_item_id or item_id
 
-            # Attempt to resolve a local file path via the provider's stream details.
-            # Cast to Any so mypy does not enforce the MusicProvider.get_stream_details
-            # signature, which requires a media_type argument that is irrelevant here
-            # because we only want the path for local-file providers.
             stream_details: Any = None
             try:
                 provider_instance: Any = self.mass.get_provider(provider)
                 if provider_instance is not None and hasattr(
                     provider_instance, "get_stream_details"
                 ):
-                    stream_details = await provider_instance.get_stream_details(item_id)
+                    stream_details = await provider_instance.get_stream_details(
+                        prov_item_id, MediaType.TRACK
+                    )
             except Exception:
                 self.logger.debug("Could not resolve stream details for %s/%s", provider, item_id)
 
