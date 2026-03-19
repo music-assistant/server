@@ -13,7 +13,7 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
-from music_assistant_models.enums import IdentifierType, ProviderFeature
+from music_assistant_models.enums import IdentifierType, PlayerType, ProviderFeature
 from music_assistant_models.errors import AlreadyRegisteredError
 
 from music_assistant.constants import CONF_ENABLED
@@ -106,6 +106,16 @@ class SendspinProvider(PlayerProvider):
         """
         self._bridge_identifiers[client_id] = identifiers
 
+    async def _apply_hass_name_override(self, player: SendspinPlayer, client_id: str) -> None:
+        """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
+        if player.device_info.manufacturer != "ESPHome":
+            return
+        if not (hass := self.mass.get_provider("hass")):
+            return
+        hass = cast("HomeAssistantProvider", hass)
+        if hass_device := await hass.get_device_by_connection(client_id):
+            player._attr_name = hass_device["name_by_user"] or hass_device["name"] or player.name
+
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
         try:
@@ -164,15 +174,7 @@ class SendspinProvider(PlayerProvider):
                 for id_type, id_value in extra_ids.items():
                     player.device_info.add_identifier(id_type, id_value)
             self.logger.debug("Client %s connected", client_id)
-            if player.device_info.manufacturer == "ESPHome" and (
-                hass := self.mass.get_provider("hass")
-            ):
-                # Try to get device name from Home Assistant for ESPHome devices
-                hass = cast("HomeAssistantProvider", hass)
-                if hass_device := await hass.get_device_by_connection(client_id):
-                    player._attr_name = (
-                        hass_device["name_by_user"] or hass_device["name"] or player.name
-                    )
+            await self._apply_hass_name_override(player, client_id)
             try:
                 await self.mass.players.register(player)
             except AlreadyRegisteredError:
@@ -210,8 +212,13 @@ class SendspinProvider(PlayerProvider):
         existing_player = self.mass.players.get_player(client_id)
         if not isinstance(existing_player, SendspinPlayer):
             return
+        previous_type = existing_player.type
         existing_player._refresh_client_info(sendspin_client)
+        await self._apply_hass_name_override(existing_player, client_id)
+        if previous_type == PlayerType.PROTOCOL and existing_player.type != PlayerType.PROTOCOL:
+            existing_player.set_protocol_parent_id(None)
         await self.mass.players.register_or_update(existing_player)
+        self.mass.players._evaluate_protocol_links(existing_player)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
