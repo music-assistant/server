@@ -127,7 +127,7 @@ class SendspinAirPlayBridge:
             client_id=self._bridge_client_id,
             name=f"{self.airplay_player.display_name} (AirPlay)",
             version=1,
-            supported_roles=[BRIDGE_ROLE_ID],
+            supported_roles=[BRIDGE_ROLE_ID, "player@v1"],
             device_info=SendspinDeviceInfo(
                 product_name=self.airplay_player.device_info.model,
                 manufacturer=self.airplay_player.device_info.manufacturer,
