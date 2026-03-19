@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import json
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.constants import DB_TABLE_SONIC_SIGNATURES
 from music_assistant.helpers.sonic_analysis import (
+    SIGNATURE_DIMENSIONS,
     SIGNATURE_VERSION,
     SonicSignature,
 )
@@ -90,15 +94,18 @@ class SonicAnalysisProvider(PluginProvider):
     corpus_means: list[float] | None
     corpus_stds: list[float] | None
     _on_unload: list[Callable[[], None]]
+    _voyager_index: Any  # voyager.Index — typed as Any to avoid hard import at class level
 
     async def handle_async_init(self) -> None:
-        """Handle async initialisation: create DB table and load corpus stats."""
+        """Handle async initialisation: create DB table, load corpus stats, init ANN index."""
         self._on_unload = []
         self.corpus_means = None
         self.corpus_stds = None
+        self._voyager_index = None
 
         await self._create_db_table()
         await self._load_corpus_stats()
+        self._init_voyager_index()
 
     async def _create_db_table(self) -> None:
         """Create the sonic_signatures table if it does not already exist."""
@@ -196,6 +203,62 @@ class SonicAnalysisProvider(PluginProvider):
             },
         )
 
+    def _init_voyager_index(self) -> None:
+        """Initialize or load the Voyager ANN index."""
+        index_path = Path(self.mass.storage_path) / VOYAGER_INDEX_FILENAME
+        if index_path.exists():
+            with open(index_path, "rb") as f:
+                self._voyager_index = voyager.Index.load(f)
+        else:
+            self._voyager_index = voyager.Index(
+                voyager.Space.Cosine,
+                num_dimensions=SIGNATURE_DIMENSIONS,
+                storage_data_type=voyager.StorageDataType.E4M3,
+            )
+
+    def _add_to_index(self, item_id_int: int, normalized_features: list[float]) -> None:
+        """Add a normalised feature vector to the ANN index with an explicit item ID.
+
+        :param item_id_int: Integer library item ID used as the Voyager label.
+        :param normalized_features: Z-score normalised feature values, one per dimension.
+        """
+        vector_2d = np.array([normalized_features], dtype=np.float32)
+        self._voyager_index.add_items(vector_2d, ids=np.array([item_id_int], dtype=np.int64))
+
+    def _query_index(
+        self, normalized_features: list[float], k: int = 25
+    ) -> list[tuple[int, float]]:
+        """Query the ANN index for the k nearest neighbours.
+
+        Returns an empty list when the index has no elements.
+        When k exceeds num_elements the query is clamped automatically.
+
+        :param normalized_features: Per-feature z-score normalised query vector.
+        :param k: Maximum number of nearest neighbours to return.
+        """
+        if self._voyager_index.num_elements == 0:
+            return []
+
+        effective_k = min(k, self._voyager_index.num_elements)
+        query_2d = np.array([normalized_features], dtype=np.float32)
+        ids_2d, distances_2d = self._voyager_index.query(query_2d, k=effective_k)
+        return [(int(ids_2d[0][i]), float(distances_2d[0][i])) for i in range(len(ids_2d[0]))]
+
+    def _save_voyager_index(self) -> None:
+        """Persist the Voyager ANN index to storage_path."""
+        if self._voyager_index is None:
+            return
+
+        index_path = Path(self.mass.storage_path) / VOYAGER_INDEX_FILENAME
+        if not index_path.parent.exists():
+            return
+
+        # voyager.Index.save(path_str) is unreliable on Windows; writing via BytesIO is safe.
+        buf = io.BytesIO()
+        self._voyager_index.save(buf)
+        buf.seek(0)
+        index_path.write_bytes(buf.read())
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider.
 
@@ -205,3 +268,4 @@ class SonicAnalysisProvider(PluginProvider):
         """
         for unload_cb in self._on_unload:
             unload_cb()
+        self._save_voyager_index()

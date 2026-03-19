@@ -7,11 +7,16 @@ from collections.abc import Mapping
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 from music_assistant.constants import DB_TABLE_SONIC_SIGNATURES
-from music_assistant.helpers.sonic_analysis import SIGNATURE_VERSION, SonicSignature
-from music_assistant.providers.sonic_analysis import SonicAnalysisProvider
+from music_assistant.helpers.sonic_analysis import (
+    SIGNATURE_DIMENSIONS,
+    SIGNATURE_VERSION,
+    SonicSignature,
+)
+from music_assistant.providers.sonic_analysis import VOYAGER_INDEX_FILENAME, SonicAnalysisProvider
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -218,3 +223,162 @@ class TestUnload:
         await provider.unload()
 
         unsubscribe_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Voyager index
+# ---------------------------------------------------------------------------
+
+
+class TestVoyagerIndex:
+    """Tests for Voyager ANN index methods."""
+
+    def _make_provider_with_storage(self, tmp_path: Any) -> tuple[SonicAnalysisProvider, MagicMock]:
+        """Create a provider whose storage_path points to tmp_path."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider(mass)
+        return provider, mass
+
+    def test_init_creates_fresh_index_when_no_file(self, tmp_path: Any) -> None:
+        """_init_voyager_index must create a new empty index when no file exists."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+        provider._init_voyager_index()
+
+        assert provider._voyager_index is not None
+        assert provider._voyager_index.num_elements == 0
+
+    def test_init_loads_existing_index_from_disk(self, tmp_path: Any) -> None:
+        """_init_voyager_index must load an existing index file if present."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+
+        # Build and save an index with a known item
+        provider._init_voyager_index()
+        rng = np.random.default_rng(seed=0)
+        vec = rng.random((1, SIGNATURE_DIMENSIONS), dtype=np.float32)
+        provider._add_to_index(99, vec[0].tolist())
+        provider._save_voyager_index()
+
+        # Create a new provider instance pointing to the same path
+        provider2, _ = self._make_provider_with_storage(tmp_path)
+        provider2._init_voyager_index()
+
+        assert provider2._voyager_index.num_elements == 1
+
+    def test_add_to_index_increases_element_count(self, tmp_path: Any) -> None:
+        """_add_to_index must add a vector to the index."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+        provider._init_voyager_index()
+
+        vec = [float(i) / SIGNATURE_DIMENSIONS for i in range(SIGNATURE_DIMENSIONS)]
+        provider._add_to_index(1, vec)
+
+        assert provider._voyager_index.num_elements == 1
+
+    def test_query_returns_empty_list_for_empty_index(self, tmp_path: Any) -> None:
+        """_query_index must return [] when the index has no elements."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+        provider._init_voyager_index()
+
+        query_vec = [0.5] * SIGNATURE_DIMENSIONS
+        results = provider._query_index(query_vec)
+
+        assert results == []
+
+    def test_query_returns_id_distance_pairs(self, tmp_path: Any) -> None:
+        """_query_index must return list of (item_id, distance) tuples."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+        provider._init_voyager_index()
+
+        vec = [float(i) / SIGNATURE_DIMENSIONS for i in range(SIGNATURE_DIMENSIONS)]
+        provider._add_to_index(42, vec)
+
+        results = provider._query_index(vec, k=1)
+
+        assert len(results) == 1
+        item_id, distance = results[0]
+        assert item_id == 42
+        assert isinstance(distance, float)
+
+    def test_query_k_clamped_to_num_elements(self, tmp_path: Any) -> None:
+        """_query_index must not fail when k > num_elements."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+        provider._init_voyager_index()
+
+        vec = [float(i) / SIGNATURE_DIMENSIONS for i in range(SIGNATURE_DIMENSIONS)]
+        provider._add_to_index(1, vec)
+
+        # k=25 but only 1 element — should return 1 result without error
+        results = provider._query_index(vec, k=25)
+
+        assert len(results) == 1
+
+    def test_similar_vector_ranks_higher_than_dissimilar(self, tmp_path: Any) -> None:
+        """A nearly-identical vector must have a lower distance than a very different one."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+        provider._init_voyager_index()
+
+        # Reference vector
+        base = np.zeros(SIGNATURE_DIMENSIONS, dtype=np.float32)
+        base[0] = 1.0
+
+        # Nearly identical: tiny perturbation
+        similar = base.copy()
+        similar[1] = 0.001
+
+        # Very different: orthogonal direction
+        different = np.zeros(SIGNATURE_DIMENSIONS, dtype=np.float32)
+        different[-1] = 1.0
+
+        provider._add_to_index(1, base.tolist())
+        provider._add_to_index(2, similar.tolist())
+        provider._add_to_index(3, different.tolist())
+
+        results = provider._query_index(base.tolist(), k=3)
+        assert len(results) >= 2
+
+        ids_by_rank = [r[0] for r in results]
+        # similar (id=2) should rank before different (id=3)
+        assert ids_by_rank.index(2) < ids_by_rank.index(3)
+
+    @pytest.mark.asyncio
+    async def test_save_voyager_index_writes_file(self, tmp_path: Any) -> None:
+        """_save_voyager_index must write the index file to storage_path."""
+        provider, _ = self._make_provider_with_storage(tmp_path)
+        provider._init_voyager_index()
+
+        vec = [0.1] * SIGNATURE_DIMENSIONS
+        provider._add_to_index(7, vec)
+        provider._save_voyager_index()
+
+        index_path = tmp_path / VOYAGER_INDEX_FILENAME
+        assert index_path.exists()
+        assert index_path.stat().st_size > 0
+
+    @pytest.mark.asyncio
+    async def test_unload_saves_voyager_index(self, tmp_path: Any) -> None:
+        """unload() must persist the Voyager index to disk."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider(mass)
+        await provider.handle_async_init()
+
+        vec = [0.2] * SIGNATURE_DIMENSIONS
+        provider._add_to_index(5, vec)
+
+        await provider.unload()
+
+        index_path = tmp_path / VOYAGER_INDEX_FILENAME
+        assert index_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_handle_async_init_initialises_voyager_index(self, tmp_path: Any) -> None:
+        """handle_async_init must initialise the Voyager index."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider(mass)
+
+        await provider.handle_async_init()
+
+        assert hasattr(provider, "_voyager_index")
+        assert provider._voyager_index is not None
