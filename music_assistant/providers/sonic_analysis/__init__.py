@@ -136,6 +136,11 @@ class SonicAnalysisProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Subscribe to library and playback events based on configuration."""
         await super().loaded_in_mass()
+        self.logger.info(
+            "loaded_in_mass called. analyze_on_play=%s, analyze_on_sync=%s",
+            self.config.get_value(CONF_ANALYZE_ON_PLAY),
+            self.config.get_value(CONF_ANALYZE_ON_SYNC),
+        )
 
         if self.config.get_value(CONF_ANALYZE_ON_PLAY):
             self._on_unload.append(
