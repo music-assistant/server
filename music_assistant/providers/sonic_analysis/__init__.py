@@ -159,6 +159,20 @@ class SonicAnalysisProvider(PluginProvider):
                 "GET",
             )
         )
+        self._on_unload.append(
+            self.mass.webserver.register_dynamic_route(
+                "/api/sonic_analysis/status",
+                self._handle_status,
+                "GET",
+            )
+        )
+        self._on_unload.append(
+            self.mass.webserver.register_dynamic_route(
+                "/api/sonic_analysis/signatures",
+                self._handle_signatures,
+                "GET",
+            )
+        )
 
         if self.config.get_value(CONF_ANALYZE_ON_SYNC):
             self.mass.create_task(self._backfill_unanalyzed_tracks())
@@ -577,6 +591,67 @@ class SonicAnalysisProvider(PluginProvider):
             )
 
         return web.json_response({"analyzed": True, "items": items, "seed_track_id": item_id})
+
+    async def _handle_status(self, request: Any) -> Any:
+        """Handle GET /api/sonic_analysis/status — return plugin and index stats."""
+        index_size = len(self._search_index) if self._search_index is not None else 0
+        has_corpus_stats = self.corpus_means is not None and len(self.corpus_means) > 0
+        label_map_size = len(self._label_map)
+
+        # Count signatures in DB
+        db_count = 0
+        if self.mass.music.database is not None:
+            try:
+                rows = await self.mass.music.database.get_rows(
+                    DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
+                )
+                db_count = sum(
+                    1 for r in rows if r.get("item_id") != CORPUS_STATS_ITEM_ID
+                )
+            except Exception:
+                db_count = -1
+
+        return web.json_response({
+            "index_size": index_size,
+            "db_signatures": db_count,
+            "label_map_size": label_map_size,
+            "has_corpus_stats": has_corpus_stats,
+            "signature_version": SIGNATURE_VERSION,
+            "signature_dimensions": SIGNATURE_DIMENSIONS,
+            "analyze_on_play": bool(self.config.get_value(CONF_ANALYZE_ON_PLAY)),
+            "analyze_on_sync": bool(self.config.get_value(CONF_ANALYZE_ON_SYNC)),
+        })
+
+    async def _handle_signatures(self, request: Any) -> Any:
+        """Handle GET /api/sonic_analysis/signatures — list stored signatures."""
+        limit_str = request.query.get("limit", "50")
+        offset_str = request.query.get("offset", "0")
+        try:
+            limit = min(int(limit_str), 500)
+            offset = int(offset_str)
+        except (TypeError, ValueError):
+            limit, offset = 50, 0
+
+        if self.mass.music.database is None:
+            return web.json_response({"signatures": [], "total": 0})
+
+        all_rows = await self.mass.music.database.get_rows(
+            DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
+        )
+        track_rows = [r for r in all_rows if r.get("item_id") != CORPUS_STATS_ITEM_ID]
+        total = len(track_rows)
+        page = track_rows[offset : offset + limit]
+
+        signatures = []
+        for row in page:
+            signatures.append({
+                "item_id": row["item_id"],
+                "provider": row["provider"],
+                "version": row["version"],
+                "feature_count": len(json.loads(row["features"])) if row.get("features") else 0,
+            })
+
+        return web.json_response({"signatures": signatures, "total": total})
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the USearch index from all signatures in the DB.
