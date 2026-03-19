@@ -106,7 +106,6 @@ class SendspinAirPlayBridge:
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
         self._airplay_stream_ready = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
-        self._muted: bool = False
         self._lock = asyncio.Lock()
 
     @property
@@ -173,6 +172,7 @@ class SendspinAirPlayBridge:
             self._bridge_role.set_callbacks(
                 on_audio_chunk=self._on_audio_chunk,
                 on_volume_change=self._on_volume_change,
+                on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
                 initial_volume=self.airplay_player.volume_level or 25,
@@ -334,14 +334,13 @@ class SendspinAirPlayBridge:
                 err,
             )
 
-    def _on_volume_change(self, volume: int, muted: bool) -> None:
-        """Forward volume/mute changes to the AirPlay player."""
-        self._muted = muted
-        self.mass.create_task(self._apply_volume(volume, muted))
+    def _on_volume_change(self, volume: int) -> None:
+        """Forward volume changes to the AirPlay player."""
+        self.mass.create_task(self.airplay_player.volume_set(volume))
 
-    async def _apply_volume(self, volume: int, muted: bool) -> None:
-        """Apply volume change to the AirPlay player and stream."""
-        await self.airplay_player.volume_set(0 if muted else volume)
+    def _on_mute_change(self, muted: bool) -> None:
+        """Forward mute changes to the AirPlay player."""
+        self.mass.create_task(self.airplay_player.volume_mute(muted))
 
     def _on_bridge_stream_end(self) -> None:
         """Stop the AirPlay protocol immediately when the stream ends.
