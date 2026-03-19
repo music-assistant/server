@@ -421,6 +421,9 @@ class SonicAnalysisProvider(PluginProvider):
 
     def _init_voyager_index(self) -> None:
         """Initialize or load the Voyager ANN index."""
+        if voyager is None:
+            return
+
         index_path = Path(self.mass.storage_path) / VOYAGER_INDEX_FILENAME
         if index_path.exists():
             with open(index_path, "rb") as f:
@@ -567,6 +570,9 @@ class SonicAnalysisProvider(PluginProvider):
 
         means, stds = compute_corpus_stats(all_features)
         await self._save_corpus_stats(means, stds)
+
+        if voyager is None:
+            return
 
         self._voyager_index = voyager.Index(
             voyager.Space.Cosine,

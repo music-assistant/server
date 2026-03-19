@@ -26,6 +26,16 @@ from music_assistant.providers.sonic_analysis import (
     SonicAnalysisProvider,
 )
 
+try:
+    import voyager as _voyager_module
+except ImportError:
+    _voyager_module = None  # type: ignore[assignment]
+
+_voyager_available = _voyager_module is not None
+_requires_voyager = pytest.mark.skipif(
+    not _voyager_available, reason="voyager package not installed"
+)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -244,6 +254,7 @@ class TestUnload:
 # ---------------------------------------------------------------------------
 
 
+@_requires_voyager
 class TestVoyagerIndex:
     """Tests for Voyager ANN index methods."""
 
@@ -587,10 +598,11 @@ class TestAnalyzeTrack:
         assert len(stored_features) == SIGNATURE_DIMENSIONS
 
     @pytest.mark.asyncio
+    @_requires_voyager
     async def test_analyze_track_adds_to_voyager_index_when_corpus_stats_set(
         self, tmp_path: Any
     ) -> None:
-        """_analyze_track must add a normalised vector to the Voyager index when corpus stats exist."""
+        """_analyze_track must add a normalised vector to the Voyager index when corpus stats are set."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         provider = _make_provider_with_config(mass)
@@ -607,6 +619,7 @@ class TestAnalyzeTrack:
         assert provider._voyager_index.num_elements == before + 1
 
     @pytest.mark.asyncio
+    @_requires_voyager
     async def test_analyze_track_does_not_add_to_index_without_corpus_stats(
         self, tmp_path: Any
     ) -> None:
