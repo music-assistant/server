@@ -137,7 +137,7 @@ def normalize_features(
     :param corpus_stds: Per-feature standard deviations over the analysis corpus.
     """
     result: list[float] = []
-    for value, mean, std in zip(raw_features, corpus_means, corpus_stds, strict=False):
+    for value, mean, std in zip(raw_features, corpus_means, corpus_stds, strict=True):
         if std == 0.0:
             result.append(0.0)
         else:

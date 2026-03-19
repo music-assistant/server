@@ -9,10 +9,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import librosa
 import numpy as np
 from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
+from music_assistant_models.media_items import Track
+from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.constants import DB_TABLE_SONIC_SIGNATURES
 from music_assistant.helpers.sonic_analysis import (
@@ -23,6 +26,7 @@ from music_assistant.helpers.sonic_analysis import (
     extract_signature,
     normalize_features,
 )
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -101,6 +105,7 @@ class SonicAnalysisProvider(PluginProvider):
     corpus_stds: list[float] | None
     _on_unload: list[Callable[[], None]]
     _voyager_index: Any  # voyager.Index — typed as Any to avoid hard import at class level
+    _label_map: dict[int, tuple[str, str]]
     _analysis_semaphore: asyncio.Semaphore
 
     async def handle_async_init(self) -> None:
@@ -109,6 +114,7 @@ class SonicAnalysisProvider(PluginProvider):
         self.corpus_means = None
         self.corpus_stds = None
         self._voyager_index = None
+        self._label_map: dict[int, tuple[str, str]] = {}
 
         max_concurrent = int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2)  # type: ignore[arg-type]
         self._analysis_semaphore = asyncio.Semaphore(max_concurrent)
@@ -194,22 +200,29 @@ class SonicAnalysisProvider(PluginProvider):
 
     async def _on_media_item_played(self, event: MassEvent) -> None:
         """Handle media item played — analyze if no signature exists."""
-        from music_assistant_models.enums import MediaType
-        from music_assistant_models.playback_progress_report import (
-            MediaItemPlaybackProgressReport,
-        )
-
         report = event.data
         if not isinstance(report, MediaItemPlaybackProgressReport):
             return
         if report.media_type != MediaType.TRACK:
             return
 
-        from music_assistant.helpers.uri import parse_uri
-
         try:
             _media_type, provider, item_id = await parse_uri(report.uri)
         except Exception:
+            return
+
+        # Only attempt analysis when the track has a resolvable local file path.
+        # Streaming-only tracks are silently skipped here; _fetch_and_analyze will
+        # log a debug message for non-local tracks (v1 limitation).
+        try:
+            track = await self.mass.music.tracks.get(item_id, provider)
+        except Exception:
+            track = None
+        has_local_mapping = track is not None and any(
+            getattr(m, "provider_instance", "").startswith("filesystem")
+            for m in getattr(track, "provider_mappings", [])
+        )
+        if not has_local_mapping:
             return
 
         existing = await self.get_sonic_signature(item_id, provider)
@@ -220,9 +233,6 @@ class SonicAnalysisProvider(PluginProvider):
 
     async def _on_media_item_added(self, event: MassEvent) -> None:
         """Handle media item added — queue for background analysis."""
-        from music_assistant_models.enums import MediaType
-        from music_assistant_models.media_items import Track
-
         item = event.data
         if not isinstance(item, Track):
             return
@@ -269,6 +279,7 @@ class SonicAnalysisProvider(PluginProvider):
             # Python's built-in hash is deterministic within a process but may vary
             # across runs; for now this is acceptable as the index is rebuilt on startup.
             label = abs(hash((provider_instance, item_id))) % (2**31)
+            self._label_map[label] = (item_id, provider_instance)
             self._add_to_index(label, normalized)
 
         return signature
@@ -282,8 +293,6 @@ class SonicAnalysisProvider(PluginProvider):
         :param item_id: Provider-scoped track identifier.
         :param provider: Provider domain or instance ID that owns the track.
         """
-        import librosa
-
         try:
             audio: np.ndarray
             sample_rate = 22050
@@ -300,7 +309,7 @@ class SonicAnalysisProvider(PluginProvider):
                 ):
                     stream_details = await provider_instance.get_stream_details(item_id)
             except Exception:
-                pass
+                self.logger.debug("Could not resolve stream details for %s/%s", provider, item_id)
 
             file_path: str | None = (
                 str(stream_details.path)
@@ -312,8 +321,12 @@ class SonicAnalysisProvider(PluginProvider):
                     librosa.load, file_path, sr=sample_rate, mono=True
                 )
             else:
-                self.logger.warning(
-                    "No local path available for %s/%s; streaming analysis not yet supported",
+                # Streaming track analysis is intentionally not supported in v1.
+                # Only local filesystem tracks with a resolvable path are analysed.
+                # This can be extended in a future iteration using a PCM pipeline.
+                self.logger.debug(
+                    "Skipping analysis for %s/%s: no local file path available."
+                    " Streaming track analysis is not supported in v1.",
                     provider,
                     item_id,
                 )
@@ -499,6 +512,7 @@ class SonicAnalysisProvider(PluginProvider):
         # Look up the seed track's signature in the DB.
         # We iterate over all providers; the first hit wins.
         signature = None
+        seed_provider = ""
         assert self.mass.music.database is not None
         rows = await self.mass.music.database.get_rows(
             DB_TABLE_SONIC_SIGNATURES,
@@ -510,6 +524,7 @@ class SonicAnalysisProvider(PluginProvider):
             try:
                 features: list[float] = json.loads(row["features"])
                 signature = SonicSignature(features=features, version=int(row["version"]))
+                seed_provider = row.get("provider", "")
                 break
             except (KeyError, ValueError, TypeError):
                 continue
@@ -524,17 +539,24 @@ class SonicAnalysisProvider(PluginProvider):
         # Request one extra result so we can discard the seed itself.
         raw_results = self._query_index(normalized, k=limit + 1)
 
-        seed_label = abs(hash(("local", item_id))) % (2**31)
+        # Compute the seed label using the provider from the DB row so it matches
+        # the hash used at insertion time (fixes hardcoded "local" provider bug).
+        seed_label = abs(hash((seed_provider, item_id))) % (2**31)
+
         items: list[dict[str, Any]] = []
         for result_id, distance in raw_results:
             if result_id == seed_label:
                 continue
             if len(items) >= limit:
                 break
-            # Voyager labels are opaque integer hashes; we cannot recover the
-            # original (provider, item_id) pair needed by TracksController.get,
-            # so we expose the raw label and distance for callers to resolve.
-            items.append({"id": result_id, "distance": distance})
+            # Resolve the Voyager label back to (item_id, provider) via the in-memory map.
+            resolved = self._label_map.get(result_id)
+            if resolved is None:
+                continue
+            resolved_item_id, resolved_provider = resolved
+            items.append(
+                {"item_id": resolved_item_id, "provider": resolved_provider, "distance": distance}
+            )
 
         return web.json_response({"analyzed": True, "items": items, "seed_track_id": item_id})
 
@@ -579,13 +601,15 @@ class SonicAnalysisProvider(PluginProvider):
             num_dimensions=SIGNATURE_DIMENSIONS,
             storage_data_type=voyager.StorageDataType.E4M3,
         )
+        self._label_map = {}
 
         for item_id, provider_instance, features in parsed:
             normalized = normalize_features(features, means, stds)
             label = abs(hash((provider_instance, item_id))) % (2**31)
+            self._label_map[label] = (item_id, provider_instance)
             self._add_to_index(label, normalized)
 
-        self._save_voyager_index()
+        await asyncio.to_thread(self._save_voyager_index)
         self.logger.info("Voyager index rebuilt with %d entries.", len(parsed))
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -597,4 +621,4 @@ class SonicAnalysisProvider(PluginProvider):
         """
         for unload_cb in self._on_unload:
             unload_cb()
-        self._save_voyager_index()
+        await asyncio.to_thread(self._save_voyager_index)
