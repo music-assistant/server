@@ -803,7 +803,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(player.state.volume_control):
+        if protocol_player := self.get_player(player.mute_control):
             self.logger.debug(
                 "Redirecting mute command to protocol player %s",
                 protocol_player.provider.manifest.name,
