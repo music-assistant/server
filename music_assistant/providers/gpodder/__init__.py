@@ -558,6 +558,10 @@ class GPodder(MusicProvider):
             return
         if time.time() - self.progress_guard_timestamp <= 5:
             return
+        if position is None and fully_played:
+            position = media_item.duration
+        elif position is None:
+            position = 0
         podcast_id, guid_or_stream_url = prov_item_id.split(" ")
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         assert stream_url is not None
