@@ -649,8 +649,11 @@ class SonicAnalysisProvider(PluginProvider):
             self._label_map.clear()
             self.corpus_means = None
             self.corpus_stds = None
+            # Delete the index file before re-init so it creates a fresh empty one
+            index_path = Path(self.mass.storage_path) / USEARCH_INDEX_FILENAME
+            if index_path.exists():
+                index_path.unlink()
             self._init_search_index()
-            self._save_search_index()
             self.logger.info("Cleared all sonic signatures and reset index.")
             return _cors_json({"status": "cleared"})
         except Exception as exc:
