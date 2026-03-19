@@ -22,6 +22,7 @@ from contextlib import suppress
 from types import NoneType
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, cast
 
+from music_assistant_models import BackgroundTask
 import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
@@ -780,7 +781,7 @@ class PlayerQueuesController(CoreController):
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
-    async def save_as_playlist(self, queue_id: str, name: str) -> Playlist:
+    async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
         """Save the current queue items as a new playlist.
 
         :param queue_id: The queue_id of the queue to save.
@@ -799,8 +800,8 @@ class PlayerQueuesController(CoreController):
         if not uris:
             raise InvalidDataError("No valid items in queue to save as playlist.")
         playlist = await self.mass.music.playlists.create_playlist(name)
-        await self.mass.music.playlists._handle_add_playlist_tracks(playlist.item_id, uris)
-        return playlist
+        return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
+
 
     @api_command("player_queues/stop")
     @handle_play_action
