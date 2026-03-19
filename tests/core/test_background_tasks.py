@@ -347,6 +347,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     music = MusicController(mass_minimal)
     mass_minimal.music = music
     db_cleanup_task = music._register_database_cleanup_task()
+    provider_mapping_task = music._register_provider_mapping_correction_task()
     genre_scan_task = music.genres.register_scheduled_scan_task()
 
     metadata = MetaDataController(mass_minimal)
@@ -362,6 +363,15 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert cache_task.metadata == {"task_domain": "cache_database_cleanup"}
 
     assert db_cleanup_task.schedule == cleanup_schedule
+    assert provider_mapping_task.translation_key == "background_task.correct_provider_mappings"
+    assert provider_mapping_task.schedule == TaskSchedule.daily(
+        every=30,
+        hour=maintenance_hour,
+        minute=maintenance_minute,
+    )
+    assert provider_mapping_task.metadata == {
+        "task_domain": "music_provider_mapping_correction"
+    }
     assert genre_scan_task.schedule == maintenance_schedule
 
     assert artist_scan_task.translation_key == "background_task.scan_missing_artist_artwork"

@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import shutil
-import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
@@ -106,9 +105,8 @@ CONF_DELETED_PROVIDERS = "deleted_providers"
 DB_SCHEMA_VERSION: Final[int] = 33
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
-LAST_PROVIDER_INSTANCE_SCAN: Final[str] = "last_provider_instance_scan"
-PROVIDER_INSTANCE_SCAN_INTERVAL: Final[int] = 30 * 24 * 60 * 60  # one month in seconds
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
+PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
 
 
@@ -187,17 +185,11 @@ class MusicController(CoreController):
             self.domain, CONF_DELETED_PROVIDERS, []
         ):
             await self.cleanup_provider(removed_provider)
-        # schedule cleanup task for matching provider instances
-        last_scan = cast(
-            "int",
-            self.mass.config.get_raw_core_config_value(self.domain, LAST_PROVIDER_INSTANCE_SCAN, 0),
-        )
-        if time.time() - last_scan > PROVIDER_INSTANCE_SCAN_INTERVAL:
-            self.mass.call_later(60, self.correct_multi_instance_provider_mappings)
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
         self._register_database_cleanup_task()
+        self._register_provider_mapping_correction_task()
         self.genres.register_scheduled_scan_task()
 
     async def close(self) -> None:
@@ -1973,10 +1965,31 @@ class MusicController(CoreController):
             allow_retry=True,
         )
 
+    def _register_provider_mapping_correction_task(self) -> BackgroundTask:
+        """Register the recurring provider mapping correction background task."""
+        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        desired_schedule = TaskSchedule.daily(every=30, hour=utc_hour, minute=utc_minute)
+        return self.mass.tasks.register_scheduled_task(
+            task_id=PROVIDER_MAPPING_CORRECTION_TASK_ID,
+            name="Correct provider mappings",
+            handler=self.correct_multi_instance_provider_mappings,
+            schedule=desired_schedule,
+            translation_key="background_task.correct_provider_mappings",
+            metadata={
+                "task_domain": "music_provider_mapping_correction",
+            },
+            allow_retry=True,
+        )
+
     def _queue_database_cleanup_task(self) -> BackgroundTask:
         """Queue the post-sync database cleanup as a managed background task."""
         self._register_database_cleanup_task()
         return self.mass.tasks.run_task(DATABASE_CLEANUP_TASK_ID)
+
+    def queue_provider_mapping_correction_task(self) -> BackgroundTask:
+        """Queue the provider mapping correction as a managed background task."""
+        self._register_provider_mapping_correction_task()
+        return self.mass.tasks.run_task(PROVIDER_MAPPING_CORRECTION_TASK_ID)
 
     def _sort_search_result(
         self,
@@ -3090,9 +3103,6 @@ class MusicController(CoreController):
                     await ctrl.update_item_in_library(db_item.item_id, db_item)
                 # prevent overwhelming the event loop
                 await asyncio.sleep(0.2)
-        self.mass.config.set_raw_core_config_value(
-            self.domain, LAST_PROVIDER_INSTANCE_SCAN, int(time.time())
-        )
         self.logger.debug("Provider mappings correction done")
 
     async def _get_user_for_provider(

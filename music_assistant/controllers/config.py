@@ -1608,7 +1608,7 @@ class ConfigController:
             await self.set_onboard_complete()
         if manifest.type == ProviderType.MUSIC:
             # correct any multi-instance provider mappings
-            self.mass.create_task(self.mass.music.correct_multi_instance_provider_mappings())
+            self.mass.music.queue_provider_mapping_correction_task()
         return config
 
     async def _get_player_config_entries(
