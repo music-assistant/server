@@ -565,12 +565,12 @@ class SonicAnalysisProvider(PluginProvider):
             {"item_id": item_id},
         )
         for row in rows:
-            if row.get("item_id") == CORPUS_STATS_ITEM_ID:
+            if row["item_id"] == CORPUS_STATS_ITEM_ID:
                 continue
             try:
                 features: list[float] = json.loads(row["features"])
                 signature = SonicSignature(features=features, version=int(row["version"]))
-                seed_provider = row.get("provider", "")
+                seed_provider = row["provider"]
                 break
             except (KeyError, ValueError, TypeError):
                 continue
@@ -727,7 +727,7 @@ class SonicAnalysisProvider(PluginProvider):
             DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
         )
 
-        track_rows = [row for row in all_rows if row.get("item_id") != CORPUS_STATS_ITEM_ID]
+        track_rows = [row for row in all_rows if row["item_id"] != CORPUS_STATS_ITEM_ID]
 
         if not track_rows:
             self.logger.info("No sonic signatures found in DB; skipping index rebuild.")
