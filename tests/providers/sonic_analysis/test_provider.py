@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+from music_assistant_models.enums import EventType
 
 from music_assistant.constants import DB_TABLE_SONIC_SIGNATURES
 from music_assistant.helpers.sonic_analysis import (
@@ -16,7 +18,13 @@ from music_assistant.helpers.sonic_analysis import (
     SIGNATURE_VERSION,
     SonicSignature,
 )
-from music_assistant.providers.sonic_analysis import VOYAGER_INDEX_FILENAME, SonicAnalysisProvider
+from music_assistant.providers.sonic_analysis import (
+    CONF_ANALYZE_ON_PLAY,
+    CONF_ANALYZE_ON_SYNC,
+    CONF_MAX_CONCURRENT_ANALYSES,
+    VOYAGER_INDEX_FILENAME,
+    SonicAnalysisProvider,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -47,8 +55,14 @@ def _make_provider(mass: MagicMock) -> SonicAnalysisProvider:
     manifest.name = "Sonic Analysis"
     manifest.domain = "sonic_analysis"
     config = MagicMock()
-    # get_value must return a plain string so the logger level branch doesn't crash
-    config.get_value = MagicMock(return_value="GLOBAL")
+
+    def _get_value(key: str) -> Any:
+        if key == CONF_MAX_CONCURRENT_ANALYSES:
+            return 2
+        # default string return keeps other branches (e.g. logger level) working
+        return "GLOBAL"
+
+    config.get_value = MagicMock(side_effect=_get_value)
 
     return SonicAnalysisProvider(mass, manifest, config, set())
 
@@ -382,3 +396,242 @@ class TestVoyagerIndex:
 
         assert hasattr(provider, "_voyager_index")
         assert provider._voyager_index is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests: loaded_in_mass — event subscriptions (Task 7)
+# ---------------------------------------------------------------------------
+
+
+def _make_provider_with_config(
+    mass: MagicMock, **config_overrides: bool | int
+) -> SonicAnalysisProvider:
+    """Instantiate SonicAnalysisProvider with configurable boolean config values."""
+    manifest = MagicMock()
+    manifest.name = "Sonic Analysis"
+    manifest.domain = "sonic_analysis"
+    config = MagicMock()
+
+    defaults: dict[str, Any] = {
+        CONF_ANALYZE_ON_PLAY: True,
+        CONF_ANALYZE_ON_SYNC: True,
+        "max_concurrent_analyses": 2,
+    }
+    defaults.update(config_overrides)
+    config.get_value = MagicMock(side_effect=lambda key: defaults.get(key, "GLOBAL"))
+
+    return SonicAnalysisProvider(mass, manifest, config, set())
+
+
+class TestLoadedInMass:
+    """Tests for SonicAnalysisProvider.loaded_in_mass event subscriptions."""
+
+    @pytest.mark.asyncio
+    async def test_subscribes_to_media_item_played_when_analyze_on_play_enabled(
+        self, tmp_path: Any
+    ) -> None:
+        """loaded_in_mass must subscribe to MEDIA_ITEM_PLAYED when analyze_on_play is True."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: True, CONF_ANALYZE_ON_SYNC: False}
+        )
+
+        await provider.handle_async_init()
+        await provider.loaded_in_mass()
+
+        subscribed_event_types = [
+            c.args[1] for c in mass.subscribe.call_args_list if len(c.args) >= 2
+        ]
+        assert EventType.MEDIA_ITEM_PLAYED in subscribed_event_types
+
+    @pytest.mark.asyncio
+    async def test_subscribes_to_media_item_added_when_analyze_on_sync_enabled(
+        self, tmp_path: Any
+    ) -> None:
+        """loaded_in_mass must subscribe to MEDIA_ITEM_ADDED when analyze_on_sync is True."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: False, CONF_ANALYZE_ON_SYNC: True}
+        )
+
+        await provider.handle_async_init()
+        await provider.loaded_in_mass()
+
+        subscribed_event_types = [
+            c.args[1] for c in mass.subscribe.call_args_list if len(c.args) >= 2
+        ]
+        assert EventType.MEDIA_ITEM_ADDED in subscribed_event_types
+
+    @pytest.mark.asyncio
+    async def test_does_not_subscribe_to_played_when_analyze_on_play_disabled(
+        self, tmp_path: Any
+    ) -> None:
+        """loaded_in_mass must not subscribe to MEDIA_ITEM_PLAYED when analyze_on_play is False."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: False, CONF_ANALYZE_ON_SYNC: False}
+        )
+
+        await provider.handle_async_init()
+        await provider.loaded_in_mass()
+
+        subscribed_event_types = [
+            c.args[1] for c in mass.subscribe.call_args_list if len(c.args) >= 2
+        ]
+        assert EventType.MEDIA_ITEM_PLAYED not in subscribed_event_types
+
+    @pytest.mark.asyncio
+    async def test_does_not_subscribe_to_added_when_analyze_on_sync_disabled(
+        self, tmp_path: Any
+    ) -> None:
+        """loaded_in_mass must not subscribe to MEDIA_ITEM_ADDED when analyze_on_sync is False."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: False, CONF_ANALYZE_ON_SYNC: False}
+        )
+
+        await provider.handle_async_init()
+        await provider.loaded_in_mass()
+
+        subscribed_event_types = [
+            c.args[1] for c in mass.subscribe.call_args_list if len(c.args) >= 2
+        ]
+        assert EventType.MEDIA_ITEM_ADDED not in subscribed_event_types
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_callables_stored_in_on_unload(self, tmp_path: Any) -> None:
+        """Unsubscribe callables returned by mass.subscribe must be stored in _on_unload."""
+        unsub_played = MagicMock()
+        unsub_added = MagicMock()
+
+        call_index = 0
+
+        def subscribe_side_effect(*args: Any, **kwargs: Any) -> MagicMock:
+            nonlocal call_index
+            result = unsub_played if call_index == 0 else unsub_added
+            call_index += 1
+            return result
+
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.subscribe = MagicMock(side_effect=subscribe_side_effect)
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: True, CONF_ANALYZE_ON_SYNC: True}
+        )
+
+        await provider.handle_async_init()
+        await provider.loaded_in_mass()
+
+        assert unsub_played in provider._on_unload
+        assert unsub_added in provider._on_unload
+
+    @pytest.mark.asyncio
+    async def test_both_subscriptions_registered_when_both_enabled(self, tmp_path: Any) -> None:
+        """loaded_in_mass must register both subscriptions when both config flags are True."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: True, CONF_ANALYZE_ON_SYNC: True}
+        )
+
+        await provider.handle_async_init()
+        await provider.loaded_in_mass()
+
+        assert mass.subscribe.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: _analyze_track (Task 8)
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeTrack:
+    """Tests for SonicAnalysisProvider._analyze_track."""
+
+    def _make_sine_audio(self, duration: float = 3.0, sample_rate: int = 22050) -> np.ndarray:
+        """Generate a synthetic sine wave for testing."""
+        t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+        return (np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+
+    @pytest.mark.asyncio
+    async def test_analyze_track_stores_signature_in_db(self, tmp_path: Any) -> None:
+        """_analyze_track must persist the extracted signature via set_sonic_signature."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(mass)
+        await provider.handle_async_init()
+
+        audio = self._make_sine_audio()
+        sig = await provider._analyze_track("track_1", "local", audio, 22050)
+
+        assert sig is not None
+        assert len(sig.features) == SIGNATURE_DIMENSIONS
+
+        # Verify insert_or_replace was called with the expected item_id
+        db = mass.music.database
+        assert db.insert_or_replace.called
+        stored_calls = [
+            c
+            for c in db.insert_or_replace.call_args_list
+            if c.args and c.args[0] == DB_TABLE_SONIC_SIGNATURES
+        ]
+        assert stored_calls, "No insert_or_replace call found for sonic_signatures table"
+        stored_values = stored_calls[-1].args[1]
+        assert stored_values["item_id"] == "track_1"
+        assert stored_values["provider"] == "local"
+        stored_features = json.loads(stored_values["features"])
+        assert len(stored_features) == SIGNATURE_DIMENSIONS
+
+    @pytest.mark.asyncio
+    async def test_analyze_track_adds_to_voyager_index_when_corpus_stats_set(
+        self, tmp_path: Any
+    ) -> None:
+        """_analyze_track must add a normalised vector to the Voyager index when corpus stats exist."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(mass)
+        await provider.handle_async_init()
+
+        # Seed corpus stats so normalisation is possible
+        provider.corpus_means = [0.0] * SIGNATURE_DIMENSIONS
+        provider.corpus_stds = [1.0] * SIGNATURE_DIMENSIONS
+
+        before = provider._voyager_index.num_elements
+        audio = self._make_sine_audio()
+        await provider._analyze_track("track_42", "local", audio, 22050)
+
+        assert provider._voyager_index.num_elements == before + 1
+
+    @pytest.mark.asyncio
+    async def test_analyze_track_does_not_add_to_index_without_corpus_stats(
+        self, tmp_path: Any
+    ) -> None:
+        """_analyze_track must skip the Voyager index when corpus stats are absent."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(mass)
+        await provider.handle_async_init()
+
+        # Corpus stats explicitly None (default after init with empty DB)
+        assert provider.corpus_means is None
+
+        before = provider._voyager_index.num_elements
+        audio = self._make_sine_audio()
+        await provider._analyze_track("track_99", "local", audio, 22050)
+
+        assert provider._voyager_index.num_elements == before
+
+    @pytest.mark.asyncio
+    async def test_analyze_track_respects_semaphore(self, tmp_path: Any) -> None:
+        """_analyze_track must use _analysis_semaphore to limit concurrency."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(mass, max_concurrent_analyses=1)
+        await provider.handle_async_init()
+
+        assert hasattr(provider, "_analysis_semaphore")
+        assert isinstance(provider._analysis_semaphore, asyncio.Semaphore)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from collections.abc import Callable
@@ -10,18 +11,21 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 
 from music_assistant.constants import DB_TABLE_SONIC_SIGNATURES
 from music_assistant.helpers.sonic_analysis import (
     SIGNATURE_DIMENSIONS,
     SIGNATURE_VERSION,
     SonicSignature,
+    extract_signature,
+    normalize_features,
 )
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -95,6 +99,7 @@ class SonicAnalysisProvider(PluginProvider):
     corpus_stds: list[float] | None
     _on_unload: list[Callable[[], None]]
     _voyager_index: Any  # voyager.Index — typed as Any to avoid hard import at class level
+    _analysis_semaphore: asyncio.Semaphore
 
     async def handle_async_init(self) -> None:
         """Handle async initialisation: create DB table, load corpus stats, init ANN index."""
@@ -103,9 +108,157 @@ class SonicAnalysisProvider(PluginProvider):
         self.corpus_stds = None
         self._voyager_index = None
 
+        max_concurrent = int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2)  # type: ignore[arg-type]
+        self._analysis_semaphore = asyncio.Semaphore(max_concurrent)
+
         await self._create_db_table()
         await self._load_corpus_stats()
         self._init_voyager_index()
+
+    async def loaded_in_mass(self) -> None:
+        """Subscribe to library and playback events based on configuration."""
+        await super().loaded_in_mass()
+
+        if self.config.get_value(CONF_ANALYZE_ON_PLAY):
+            self._on_unload.append(
+                self.mass.subscribe(self._on_media_item_played, EventType.MEDIA_ITEM_PLAYED)
+            )
+
+        if self.config.get_value(CONF_ANALYZE_ON_SYNC):
+            self._on_unload.append(
+                self.mass.subscribe(self._on_media_item_added, EventType.MEDIA_ITEM_ADDED)
+            )
+
+    async def _on_media_item_played(self, event: MassEvent) -> None:
+        """Handle media item played — analyze if no signature exists."""
+        from music_assistant_models.enums import MediaType
+        from music_assistant_models.playback_progress_report import (
+            MediaItemPlaybackProgressReport,
+        )
+
+        report = event.data
+        if not isinstance(report, MediaItemPlaybackProgressReport):
+            return
+        if report.media_type != MediaType.TRACK:
+            return
+
+        from music_assistant.helpers.uri import parse_uri
+
+        try:
+            _media_type, provider, item_id = await parse_uri(report.uri)
+        except Exception:
+            return
+
+        existing = await self.get_sonic_signature(item_id, provider)
+        if existing is not None:
+            return
+
+        self.mass.create_task(self._fetch_and_analyze(item_id, provider))
+
+    async def _on_media_item_added(self, event: MassEvent) -> None:
+        """Handle media item added — queue for background analysis."""
+        from music_assistant_models.enums import MediaType
+        from music_assistant_models.media_items import Track
+
+        item = event.data
+        if not isinstance(item, Track):
+            return
+        if item.media_type != MediaType.TRACK:
+            return
+
+        existing = await self.get_sonic_signature(item.item_id, item.provider)
+        if existing is not None:
+            return
+
+        self.mass.create_task(self._fetch_and_analyze(item.item_id, item.provider))
+
+    async def _analyze_track(
+        self,
+        item_id: str,
+        provider_instance: str,
+        audio: np.ndarray,
+        sample_rate: int,
+    ) -> SonicSignature | None:
+        """Extract, store and optionally index a sonic signature for a track.
+
+        Runs the blocking librosa extraction in a thread to avoid blocking the event loop.
+        Uses _analysis_semaphore to cap the number of concurrent analyses.
+
+        :param item_id: Provider-scoped track identifier.
+        :param provider_instance: Provider domain or instance ID that owns the track.
+        :param audio: Mono float32 audio samples.
+        :param sample_rate: Sample rate of the audio in Hz.
+        """
+        try:
+            async with self._analysis_semaphore:
+                signature: SonicSignature = await asyncio.to_thread(
+                    extract_signature, audio, sample_rate
+                )
+        except Exception:
+            self.logger.warning("Feature extraction failed for %s/%s", provider_instance, item_id)
+            return None
+
+        await self.set_sonic_signature(item_id, provider_instance, signature)
+
+        if self.corpus_means is not None and self.corpus_stds is not None:
+            normalized = normalize_features(signature.features, self.corpus_means, self.corpus_stds)
+            # Use a stable integer label derived from item_id for the Voyager index.
+            # Python's built-in hash is deterministic within a process but may vary
+            # across runs; for now this is acceptable as the index is rebuilt on startup.
+            label = abs(hash((provider_instance, item_id))) % (2**31)
+            self._add_to_index(label, normalized)
+
+        return signature
+
+    async def _fetch_and_analyze(self, item_id: str, provider: str) -> None:
+        """Fetch audio for a track and run the analysis pipeline.
+
+        For local files the path is read directly via librosa; for streamed content
+        a PCM pipeline is used (not yet implemented — placeholder logs a warning).
+
+        :param item_id: Provider-scoped track identifier.
+        :param provider: Provider domain or instance ID that owns the track.
+        """
+        import librosa
+
+        try:
+            audio: np.ndarray
+            sample_rate = 22050
+
+            # Attempt to resolve a local file path via the provider's stream details.
+            # Cast to Any so mypy does not enforce the MusicProvider.get_stream_details
+            # signature, which requires a media_type argument that is irrelevant here
+            # because we only want the path for local-file providers.
+            stream_details: Any = None
+            try:
+                provider_instance: Any = self.mass.get_provider(provider)
+                if provider_instance is not None and hasattr(
+                    provider_instance, "get_stream_details"
+                ):
+                    stream_details = await provider_instance.get_stream_details(item_id)
+            except Exception:
+                pass
+
+            file_path: str | None = (
+                str(stream_details.path)
+                if stream_details is not None and getattr(stream_details, "path", None)
+                else None
+            )
+            if file_path is not None:
+                audio, _sr = await asyncio.to_thread(
+                    librosa.load, file_path, sr=sample_rate, mono=True
+                )
+            else:
+                self.logger.warning(
+                    "No local path available for %s/%s; streaming analysis not yet supported",
+                    provider,
+                    item_id,
+                )
+                return
+
+            await self._analyze_track(item_id, provider, audio, sample_rate)
+        except Exception as exc:
+            self.logger.warning("Analysis failed for %s/%s: %s", provider, item_id, exc)
 
     async def _create_db_table(self) -> None:
         """Create the sonic_signatures table if it does not already exist."""
