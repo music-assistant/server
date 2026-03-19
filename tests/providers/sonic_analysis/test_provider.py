@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import DB_TABLE_SONIC_SIGNATURES
@@ -22,18 +23,18 @@ from music_assistant.providers.sonic_analysis import (
     CONF_ANALYZE_ON_PLAY,
     CONF_ANALYZE_ON_SYNC,
     CONF_MAX_CONCURRENT_ANALYSES,
-    VOYAGER_INDEX_FILENAME,
+    USEARCH_INDEX_FILENAME,
     SonicAnalysisProvider,
 )
 
 try:
-    import voyager as _voyager_module
+    from usearch.index import Index as _USearchIndex
 except ImportError:
-    _voyager_module = None  # type: ignore[assignment]
+    _USearchIndex = None  # type: ignore[assignment, misc]
 
-_voyager_available = _voyager_module is not None
-_requires_voyager = pytest.mark.skipif(
-    not _voyager_available, reason="voyager package not installed"
+_usearch_available = _USearchIndex is not None
+_requires_usearch = pytest.mark.skipif(
+    not _usearch_available, reason="usearch package not installed"
 )
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ class TestHandleAsyncInit:
         mass = _make_mock_mass()
         provider = _make_provider(mass)
 
-        with patch("music_assistant.providers.sonic_analysis.voyager", create=True):
+        with patch("music_assistant.providers.sonic_analysis.USearchIndex", create=True):
             await provider.handle_async_init()
 
         db = mass.music.database
@@ -117,7 +118,7 @@ class TestHandleAsyncInit:
         mass.music.database.get_row = AsyncMock(return_value=None)
         provider = _make_provider(mass)
 
-        with patch("music_assistant.providers.sonic_analysis.voyager", create=True):
+        with patch("music_assistant.providers.sonic_analysis.USearchIndex", create=True):
             await provider.handle_async_init()
 
         assert provider.corpus_means is None
@@ -139,7 +140,7 @@ class TestSignatureRoundTrip:
         mass.music.database.get_row = AsyncMock(return_value=None)
         provider = _make_provider(mass)
 
-        with patch("music_assistant.providers.sonic_analysis.voyager", create=True):
+        with patch("music_assistant.providers.sonic_analysis.USearchIndex", create=True):
             await provider.handle_async_init()
 
         result = await provider.get_sonic_signature("track_1", "local")
@@ -159,7 +160,7 @@ class TestSignatureRoundTrip:
         mass.music.database.get_row = AsyncMock(return_value=db_row)
         provider = _make_provider(mass)
 
-        with patch("music_assistant.providers.sonic_analysis.voyager", create=True):
+        with patch("music_assistant.providers.sonic_analysis.USearchIndex", create=True):
             await provider.handle_async_init()
 
         result = await provider.get_sonic_signature("track_1", "local")
@@ -173,7 +174,7 @@ class TestSignatureRoundTrip:
         mass = _make_mock_mass()
         provider = _make_provider(mass)
 
-        with patch("music_assistant.providers.sonic_analysis.voyager", create=True):
+        with patch("music_assistant.providers.sonic_analysis.USearchIndex", create=True):
             await provider.handle_async_init()
 
         sig = SonicSignature(features=[1.0] * 38, version=SIGNATURE_VERSION)
@@ -212,7 +213,7 @@ class TestSignatureRoundTrip:
         mass.music.database.get_row = AsyncMock(side_effect=fake_get_row)
 
         provider = _make_provider(mass)
-        with patch("music_assistant.providers.sonic_analysis.voyager", create=True):
+        with patch("music_assistant.providers.sonic_analysis.USearchIndex", create=True):
             await provider.handle_async_init()
 
         await provider.set_sonic_signature("track_1", "local", sig)
@@ -237,7 +238,7 @@ class TestUnload:
         mass = _make_mock_mass()
         provider = _make_provider(mass)
 
-        with patch("music_assistant.providers.sonic_analysis.voyager", create=True):
+        with patch("music_assistant.providers.sonic_analysis.USearchIndex", create=True):
             await provider.handle_async_init()
 
         # Manually register a mock unsubscribe callback
@@ -250,13 +251,13 @@ class TestUnload:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Voyager index
+# Tests: USearch index
 # ---------------------------------------------------------------------------
 
 
-@_requires_voyager
-class TestVoyagerIndex:
-    """Tests for Voyager ANN index methods."""
+@_requires_usearch
+class TestUSearchIndex:
+    """Tests for USearch ANN index methods."""
 
     def _make_provider_with_storage(self, tmp_path: Any) -> tuple[SonicAnalysisProvider, MagicMock]:
         """Create a provider whose storage_path points to tmp_path."""
@@ -266,44 +267,44 @@ class TestVoyagerIndex:
         return provider, mass
 
     def test_init_creates_fresh_index_when_no_file(self, tmp_path: Any) -> None:
-        """_init_voyager_index must create a new empty index when no file exists."""
+        """_init_search_index must create a new empty index when no file exists."""
         provider, _ = self._make_provider_with_storage(tmp_path)
-        provider._init_voyager_index()
+        provider._init_search_index()
 
-        assert provider._voyager_index is not None
-        assert provider._voyager_index.num_elements == 0
+        assert provider._search_index is not None
+        assert len(provider._search_index) == 0
 
     def test_init_loads_existing_index_from_disk(self, tmp_path: Any) -> None:
-        """_init_voyager_index must load an existing index file if present."""
+        """_init_search_index must load an existing index file if present."""
         provider, _ = self._make_provider_with_storage(tmp_path)
 
         # Build and save an index with a known item
-        provider._init_voyager_index()
+        provider._init_search_index()
         rng = np.random.default_rng(seed=0)
-        vec = rng.random((1, SIGNATURE_DIMENSIONS), dtype=np.float32)
-        provider._add_to_index(99, vec[0].tolist())
-        provider._save_voyager_index()
+        vec = rng.random(SIGNATURE_DIMENSIONS, dtype=np.float32)
+        provider._add_to_index(99, vec.tolist())
+        provider._save_search_index()
 
         # Create a new provider instance pointing to the same path
         provider2, _ = self._make_provider_with_storage(tmp_path)
-        provider2._init_voyager_index()
+        provider2._init_search_index()
 
-        assert provider2._voyager_index.num_elements == 1
+        assert len(provider2._search_index) == 1
 
     def test_add_to_index_increases_element_count(self, tmp_path: Any) -> None:
         """_add_to_index must add a vector to the index."""
         provider, _ = self._make_provider_with_storage(tmp_path)
-        provider._init_voyager_index()
+        provider._init_search_index()
 
         vec = [float(i) / SIGNATURE_DIMENSIONS for i in range(SIGNATURE_DIMENSIONS)]
         provider._add_to_index(1, vec)
 
-        assert provider._voyager_index.num_elements == 1
+        assert len(provider._search_index) == 1
 
     def test_query_returns_empty_list_for_empty_index(self, tmp_path: Any) -> None:
         """_query_index must return [] when the index has no elements."""
         provider, _ = self._make_provider_with_storage(tmp_path)
-        provider._init_voyager_index()
+        provider._init_search_index()
 
         query_vec = [0.5] * SIGNATURE_DIMENSIONS
         results = provider._query_index(query_vec)
@@ -313,7 +314,7 @@ class TestVoyagerIndex:
     def test_query_returns_id_distance_pairs(self, tmp_path: Any) -> None:
         """_query_index must return list of (item_id, distance) tuples."""
         provider, _ = self._make_provider_with_storage(tmp_path)
-        provider._init_voyager_index()
+        provider._init_search_index()
 
         vec = [float(i) / SIGNATURE_DIMENSIONS for i in range(SIGNATURE_DIMENSIONS)]
         provider._add_to_index(42, vec)
@@ -326,9 +327,9 @@ class TestVoyagerIndex:
         assert isinstance(distance, float)
 
     def test_query_k_clamped_to_num_elements(self, tmp_path: Any) -> None:
-        """_query_index must not fail when k > num_elements."""
+        """_query_index must not fail when k > len(index)."""
         provider, _ = self._make_provider_with_storage(tmp_path)
-        provider._init_voyager_index()
+        provider._init_search_index()
 
         vec = [float(i) / SIGNATURE_DIMENSIONS for i in range(SIGNATURE_DIMENSIONS)]
         provider._add_to_index(1, vec)
@@ -341,19 +342,19 @@ class TestVoyagerIndex:
     def test_similar_vector_ranks_higher_than_dissimilar(self, tmp_path: Any) -> None:
         """A nearly-identical vector must have a lower distance than a very different one."""
         provider, _ = self._make_provider_with_storage(tmp_path)
-        provider._init_voyager_index()
+        provider._init_search_index()
 
-        # Reference vector
-        base = np.zeros(SIGNATURE_DIMENSIONS, dtype=np.float32)
-        base[0] = 1.0
+        # Use dense random vectors so that I8 quantization preserves meaningful differences.
+        rng = np.random.default_rng(42)
 
-        # Nearly identical: tiny perturbation
-        similar = base.copy()
-        similar[1] = 0.001
+        # Reference vector: dense random
+        base = rng.standard_normal(SIGNATURE_DIMENSIONS).astype(np.float32)
 
-        # Very different: orthogonal direction
-        different = np.zeros(SIGNATURE_DIMENSIONS, dtype=np.float32)
-        different[-1] = 1.0
+        # Nearly identical: base plus very small noise
+        similar = base + rng.standard_normal(SIGNATURE_DIMENSIONS).astype(np.float32) * 0.01
+
+        # Very different: negated base plus noise — cosine distance ≈ 2
+        different = -base + rng.standard_normal(SIGNATURE_DIMENSIONS).astype(np.float32) * 0.1
 
         provider._add_to_index(1, base.tolist())
         provider._add_to_index(2, similar.tolist())
@@ -367,22 +368,22 @@ class TestVoyagerIndex:
         assert ids_by_rank.index(2) < ids_by_rank.index(3)
 
     @pytest.mark.asyncio
-    async def test_save_voyager_index_writes_file(self, tmp_path: Any) -> None:
-        """_save_voyager_index must write the index file to storage_path."""
+    async def test_save_search_index_writes_file(self, tmp_path: Any) -> None:
+        """_save_search_index must write the index file to storage_path."""
         provider, _ = self._make_provider_with_storage(tmp_path)
-        provider._init_voyager_index()
+        provider._init_search_index()
 
         vec = [0.1] * SIGNATURE_DIMENSIONS
         provider._add_to_index(7, vec)
-        provider._save_voyager_index()
+        provider._save_search_index()
 
-        index_path = tmp_path / VOYAGER_INDEX_FILENAME
+        index_path = tmp_path / USEARCH_INDEX_FILENAME
         assert index_path.exists()
         assert index_path.stat().st_size > 0
 
     @pytest.mark.asyncio
-    async def test_unload_saves_voyager_index(self, tmp_path: Any) -> None:
-        """unload() must persist the Voyager index to disk."""
+    async def test_unload_saves_search_index(self, tmp_path: Any) -> None:
+        """unload() must persist the USearch index to disk."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         provider = _make_provider(mass)
@@ -393,20 +394,20 @@ class TestVoyagerIndex:
 
         await provider.unload()
 
-        index_path = tmp_path / VOYAGER_INDEX_FILENAME
+        index_path = tmp_path / USEARCH_INDEX_FILENAME
         assert index_path.exists()
 
     @pytest.mark.asyncio
-    async def test_handle_async_init_initialises_voyager_index(self, tmp_path: Any) -> None:
-        """handle_async_init must initialise the Voyager index."""
+    async def test_handle_async_init_initialises_search_index(self, tmp_path: Any) -> None:
+        """handle_async_init must initialise the USearch index."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         provider = _make_provider(mass)
 
         await provider.handle_async_init()
 
-        assert hasattr(provider, "_voyager_index")
-        assert provider._voyager_index is not None
+        assert hasattr(provider, "_search_index")
+        assert provider._search_index is not None
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +522,7 @@ class TestLoadedInMass:
 
         call_index = 0
 
-        def subscribe_side_effect(*args: Any, **kwargs: Any) -> MagicMock:
+        def subscribe_side_effect(*_args: Any, **_kwargs: Any) -> MagicMock:
             nonlocal call_index
             result = unsub_played if call_index == 0 else unsub_added
             call_index += 1
@@ -598,11 +599,11 @@ class TestAnalyzeTrack:
         assert len(stored_features) == SIGNATURE_DIMENSIONS
 
     @pytest.mark.asyncio
-    @_requires_voyager
-    async def test_analyze_track_adds_to_voyager_index_when_corpus_stats_set(
+    @_requires_usearch
+    async def test_analyze_track_adds_to_search_index_when_corpus_stats_set(
         self, tmp_path: Any
     ) -> None:
-        """_analyze_track must add a normalised vector to the Voyager index when corpus stats are set."""
+        """_analyze_track must add a normalised vector to the index when corpus stats are set."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         provider = _make_provider_with_config(mass)
@@ -612,18 +613,18 @@ class TestAnalyzeTrack:
         provider.corpus_means = [0.0] * SIGNATURE_DIMENSIONS
         provider.corpus_stds = [1.0] * SIGNATURE_DIMENSIONS
 
-        before = provider._voyager_index.num_elements
+        before = len(provider._search_index)
         audio = self._make_sine_audio()
         await provider._analyze_track("track_42", "local", audio, 22050)
 
-        assert provider._voyager_index.num_elements == before + 1
+        assert len(provider._search_index) == before + 1
 
     @pytest.mark.asyncio
-    @_requires_voyager
+    @_requires_usearch
     async def test_analyze_track_does_not_add_to_index_without_corpus_stats(
         self, tmp_path: Any
     ) -> None:
-        """_analyze_track must skip the Voyager index when corpus stats are absent."""
+        """_analyze_track must skip the index when corpus stats are absent."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         provider = _make_provider_with_config(mass)
@@ -632,11 +633,11 @@ class TestAnalyzeTrack:
         # Corpus stats explicitly None (default after init with empty DB)
         assert provider.corpus_means is None
 
-        before = provider._voyager_index.num_elements
+        before = len(provider._search_index)
         audio = self._make_sine_audio()
         await provider._analyze_track("track_99", "local", audio, 22050)
 
-        assert provider._voyager_index.num_elements == before
+        assert len(provider._search_index) == before
 
     @pytest.mark.asyncio
     async def test_analyze_track_respects_semaphore(self, tmp_path: Any) -> None:
@@ -654,7 +655,7 @@ class TestAnalyzeTrack:
 # Tests: _handle_similar_tracks API endpoint (Task 9)
 # ---------------------------------------------------------------------------
 
-_VOYAGER_PATCH = "music_assistant.providers.sonic_analysis.voyager"
+_USEARCH_PATCH = "music_assistant.providers.sonic_analysis.USearchIndex"
 
 
 class TestHandleSimilarTracks:
@@ -663,13 +664,11 @@ class TestHandleSimilarTracks:
     @pytest.mark.asyncio
     async def test_missing_item_id_returns_400(self, tmp_path: Any) -> None:
         """_handle_similar_tracks must return HTTP 400 when item_id is missing."""
-        from aiohttp.test_utils import make_mocked_request
-
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         provider = _make_provider(mass)
 
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         request = make_mocked_request("GET", "/api/sonic_analysis/similar")
@@ -680,15 +679,13 @@ class TestHandleSimilarTracks:
     @pytest.mark.asyncio
     async def test_no_signature_returns_analyzed_false(self, tmp_path: Any) -> None:
         """_handle_similar_tracks must return analyzed=false when no signature exists."""
-        from aiohttp.test_utils import make_mocked_request
-
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         # get_rows returns empty list — no signature stored
         mass.music.database.get_rows = AsyncMock(return_value=[])
         provider = _make_provider(mass)
 
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
@@ -704,14 +701,12 @@ class TestHandleSimilarTracks:
     @pytest.mark.asyncio
     async def test_limit_defaults_to_25(self, tmp_path: Any) -> None:
         """_handle_similar_tracks must use limit=25 by default."""
-        from aiohttp.test_utils import make_mocked_request
-
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         mass.music.database.get_rows = AsyncMock(return_value=[])
         provider = _make_provider(mass)
 
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
@@ -723,14 +718,12 @@ class TestHandleSimilarTracks:
     @pytest.mark.asyncio
     async def test_limit_capped_at_100(self, tmp_path: Any) -> None:
         """_handle_similar_tracks must cap limit at 100."""
-        from aiohttp.test_utils import make_mocked_request
-
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         mass.music.database.get_rows = AsyncMock(return_value=[])
         provider = _make_provider(mass)
 
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
@@ -742,8 +735,6 @@ class TestHandleSimilarTracks:
     @pytest.mark.asyncio
     async def test_with_signature_returns_analyzed_true(self, tmp_path: Any) -> None:
         """_handle_similar_tracks must return analyzed=true when signature is found."""
-        from aiohttp.test_utils import make_mocked_request
-
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
 
@@ -759,7 +750,7 @@ class TestHandleSimilarTracks:
         mass.music.tracks.get = AsyncMock(return_value=None)
 
         provider = _make_provider(mass)
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         provider.corpus_means = [0.0] * SIGNATURE_DIMENSIONS
@@ -767,8 +758,8 @@ class TestHandleSimilarTracks:
 
         # Directly set a mock index that returns empty results (no neighbours)
         mock_index = MagicMock()
-        mock_index.num_elements = 0
-        provider._voyager_index = mock_index
+        mock_index.__len__ = MagicMock(return_value=0)
+        provider._search_index = mock_index
 
         request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
         request._rel_url = request._rel_url.with_query({"item_id": "track_1", "limit": "5"})
@@ -789,7 +780,7 @@ class TestHandleSimilarTracks:
         mass.webserver.register_dynamic_route = MagicMock(return_value=lambda: None)
         provider = _make_provider(mass)
 
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
         await provider.loaded_in_mass()
 
@@ -802,42 +793,40 @@ class TestHandleSimilarTracks:
 
 
 # ---------------------------------------------------------------------------
-# Tests: _rebuild_voyager_index (Task 10)
+# Tests: _rebuild_search_index (Task 10)
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_voyager_index() -> MagicMock:
-    """Return a MagicMock that behaves like a minimal voyager.Index.
+def _make_mock_usearch_index() -> MagicMock:
+    """Return a MagicMock that behaves like a minimal USearch Index.
 
-    Tracks added items so num_elements reflects actual calls to add_items.
+    Tracks added items so len() reflects actual calls to add().
     """
     index = MagicMock()
     _items: list[Any] = []
 
-    def _add_items(vectors: Any, ids: Any) -> None:
-        for _ in ids:
-            _items.append(True)
+    def _add(key: int, _vector: Any) -> None:
+        _items.append(key)
 
-    index.add_items.side_effect = _add_items
-    type(index).num_elements = property(lambda self: len(_items))
+    index.add.side_effect = _add
+    index.__len__ = MagicMock(side_effect=lambda: len(_items))
     return index
 
 
-def _make_mock_voyager_module(index: MagicMock) -> MagicMock:
-    """Return a MagicMock for the voyager module that yields `index` from Index(...)."""
-    mock_voy = MagicMock()
-    mock_voy.Index.return_value = index
-    mock_voy.Space.Cosine = "Cosine"
-    mock_voy.StorageDataType.E4M3 = "E4M3"
-    return mock_voy
+def _make_mock_usearch_class(index: MagicMock) -> MagicMock:
+    """Return a MagicMock for USearchIndex that yields `index` from Index(...)."""
+    mock_cls = MagicMock()
+    mock_cls.return_value = index
+    mock_cls.restore = MagicMock(return_value=index)
+    return mock_cls
 
 
-class TestRebuildVoyagerIndex:
-    """Tests for SonicAnalysisProvider._rebuild_voyager_index."""
+class TestRebuildSearchIndex:
+    """Tests for SonicAnalysisProvider._rebuild_search_index."""
 
     @pytest.mark.asyncio
     async def test_rebuild_with_two_signatures(self, tmp_path: Any) -> None:
-        """_rebuild_voyager_index must populate the index with all stored signatures."""
+        """_rebuild_search_index must populate the index with all stored signatures."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
 
@@ -860,19 +849,19 @@ class TestRebuildVoyagerIndex:
         ]
         mass.music.database.get_rows = AsyncMock(return_value=rows)
 
-        mock_index = _make_mock_voyager_index()
-        mock_voy = _make_mock_voyager_module(mock_index)
+        mock_index = _make_mock_usearch_index()
+        mock_cls = _make_mock_usearch_class(mock_index)
 
         provider = _make_provider(mass)
-        with patch(_VOYAGER_PATCH, mock_voy):
+        with patch(_USEARCH_PATCH, mock_cls):
             await provider.handle_async_init()
-            await provider._rebuild_voyager_index()
+            await provider._rebuild_search_index()
 
-        assert provider._voyager_index.num_elements == 2
+        assert len(provider._search_index) == 2
 
     @pytest.mark.asyncio
     async def test_rebuild_saves_corpus_stats(self, tmp_path: Any) -> None:
-        """_rebuild_voyager_index must save new corpus stats to the DB."""
+        """_rebuild_search_index must save new corpus stats to the DB."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
 
@@ -895,12 +884,12 @@ class TestRebuildVoyagerIndex:
         ]
         mass.music.database.get_rows = AsyncMock(return_value=rows)
 
-        mock_voy = _make_mock_voyager_module(_make_mock_voyager_index())
+        mock_cls = _make_mock_usearch_class(_make_mock_usearch_index())
 
         provider = _make_provider(mass)
-        with patch(_VOYAGER_PATCH, mock_voy):
+        with patch(_USEARCH_PATCH, mock_cls):
             await provider.handle_async_init()
-            await provider._rebuild_voyager_index()
+            await provider._rebuild_search_index()
 
         corpus_stats_calls = [
             call
@@ -911,7 +900,7 @@ class TestRebuildVoyagerIndex:
 
     @pytest.mark.asyncio
     async def test_rebuild_skips_corpus_stats_row(self, tmp_path: Any) -> None:
-        """_rebuild_voyager_index must not include the __corpus_stats__ sentinel in the index."""
+        """_rebuild_search_index must not include the __corpus_stats__ sentinel in the index."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
 
@@ -933,32 +922,32 @@ class TestRebuildVoyagerIndex:
         ]
         mass.music.database.get_rows = AsyncMock(return_value=rows)
 
-        mock_index = _make_mock_voyager_index()
-        mock_voy = _make_mock_voyager_module(mock_index)
+        mock_index = _make_mock_usearch_index()
+        mock_cls = _make_mock_usearch_class(mock_index)
 
         provider = _make_provider(mass)
-        with patch(_VOYAGER_PATCH, mock_voy):
+        with patch(_USEARCH_PATCH, mock_cls):
             await provider.handle_async_init()
-            await provider._rebuild_voyager_index()
+            await provider._rebuild_search_index()
 
-        assert provider._voyager_index.num_elements == 1
+        assert len(provider._search_index) == 1
 
     @pytest.mark.asyncio
     async def test_rebuild_with_no_signatures_logs_and_returns(self, tmp_path: Any) -> None:
-        """_rebuild_voyager_index must return early when there are no track signatures."""
+        """_rebuild_search_index must return early when there are no track signatures."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
         mass.music.database.get_rows = AsyncMock(return_value=[])
 
-        mock_voy = _make_mock_voyager_module(_make_mock_voyager_index())
+        mock_cls = _make_mock_usearch_class(_make_mock_usearch_index())
 
         provider = _make_provider(mass)
-        with patch(_VOYAGER_PATCH, mock_voy):
+        with patch(_USEARCH_PATCH, mock_cls):
             await provider.handle_async_init()
-            await provider._rebuild_voyager_index()
+            await provider._rebuild_search_index()
 
         # Index must remain empty — rebuild returned early
-        assert provider._voyager_index.num_elements == 0
+        assert len(provider._search_index) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -995,7 +984,7 @@ class TestBackfill:
             mass, **{CONF_ANALYZE_ON_PLAY: False, CONF_ANALYZE_ON_SYNC: True}
         )
 
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         with patch.object(
@@ -1023,7 +1012,7 @@ class TestBackfill:
             mass, **{CONF_ANALYZE_ON_PLAY: False, CONF_ANALYZE_ON_SYNC: False}
         )
 
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         await provider.loaded_in_mass()
@@ -1043,7 +1032,7 @@ class TestBackfill:
         existing_sig = MagicMock()
 
         provider = _make_provider_with_config(mass)
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         get_sig = patch.object(
@@ -1066,11 +1055,11 @@ class TestBackfill:
         mass.music.tracks.library_items = AsyncMock(return_value=[track])
 
         provider = _make_provider_with_config(mass)
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         get_sig = patch.object(provider, "get_sonic_signature", AsyncMock(return_value=None))
-        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        rebuild = patch.object(provider, "_rebuild_search_index", AsyncMock())
         with (
             get_sig,
             patch.object(provider, "_fetch_and_analyze", AsyncMock()) as mock_fetch,
@@ -1090,7 +1079,7 @@ class TestBackfill:
         mass.music.tracks.library_items = AsyncMock(side_effect=RuntimeError("DB error"))
 
         provider = _make_provider_with_config(mass)
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         # Must not raise
@@ -1109,21 +1098,21 @@ class TestBackfill:
 
         call_count = 0
 
-        async def _fetch_side_effect(item_id: str, provider: str) -> None:
+        async def _fetch_side_effect(item_id: str, _provider: str) -> None:
             nonlocal call_count
             call_count += 1
             if item_id == "track_a":
                 raise RuntimeError("Analysis failed")
 
         provider = _make_provider_with_config(mass)
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         get_sig = patch.object(provider, "get_sonic_signature", AsyncMock(return_value=None))
         fetch = patch.object(
             provider, "_fetch_and_analyze", AsyncMock(side_effect=_fetch_side_effect)
         )
-        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        rebuild = patch.object(provider, "_rebuild_search_index", AsyncMock())
         with get_sig, fetch, rebuild:
             await provider._backfill_unanalyzed_tracks()
 
@@ -1132,7 +1121,7 @@ class TestBackfill:
 
     @pytest.mark.asyncio
     async def test_backfill_rebuilds_index_after_analyzing_tracks(self, tmp_path: Any) -> None:
-        """_backfill_unanalyzed_tracks must call _rebuild_voyager_index after analyzing tracks."""
+        """_backfill_unanalyzed_tracks must call _rebuild_search_index after analyzing tracks."""
         mass = _make_mock_mass()
         mass.storage_path = str(tmp_path)
 
@@ -1141,12 +1130,12 @@ class TestBackfill:
         mass.music.tracks.library_items = AsyncMock(return_value=[track])
 
         provider = _make_provider_with_config(mass)
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         get_sig = patch.object(provider, "get_sonic_signature", AsyncMock(return_value=None))
         fetch = patch.object(provider, "_fetch_and_analyze", AsyncMock())
-        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        rebuild = patch.object(provider, "_rebuild_search_index", AsyncMock())
         with get_sig, fetch, rebuild as mock_rebuild:
             await provider._backfill_unanalyzed_tracks()
 
@@ -1167,13 +1156,13 @@ class TestBackfill:
         existing_sig = MagicMock()
 
         provider = _make_provider_with_config(mass)
-        with patch(_VOYAGER_PATCH, create=True):
+        with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
         get_sig = patch.object(
             provider, "get_sonic_signature", AsyncMock(return_value=existing_sig)
         )
-        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        rebuild = patch.object(provider, "_rebuild_search_index", AsyncMock())
         with get_sig, rebuild as mock_rebuild:
             await provider._backfill_unanalyzed_tracks()
 

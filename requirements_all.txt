@@ -72,6 +72,7 @@ soundcloudpy==0.1.4
 srptools>=1.0.0
 sxm==0.2.8
 unidecode==1.4.0
+usearch>=2.23.0
 uv>=0.8.0
 websocket-client==1.9.0
 xmltodict==1.0.4

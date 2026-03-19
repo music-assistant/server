@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -39,17 +38,28 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
-VOYAGER_INDEX_FILENAME = "sonic_signatures.voy"
+USEARCH_INDEX_FILENAME = "sonic_signatures.usearch"
 CORPUS_STATS_ITEM_ID = "__corpus_stats__"
 
 CONF_ANALYZE_ON_PLAY = "analyze_on_play"
 CONF_ANALYZE_ON_SYNC = "analyze_on_sync"
 CONF_MAX_CONCURRENT_ANALYSES = "max_concurrent_analyses"
 
+_usearch_index_module: Any = None
+_USEARCH_AVAILABLE = False
+USearchIndex: Any = None
+MetricKind: Any = None
+ScalarKind: Any = None
+
 try:
-    import voyager
+    import usearch.index as _usearch_index_module
+
+    USearchIndex = _usearch_index_module.Index
+    MetricKind = _usearch_index_module.MetricKind
+    ScalarKind = _usearch_index_module.ScalarKind
+    _USEARCH_AVAILABLE = True
 except ImportError:
-    voyager = None
+    pass
 
 
 async def setup(
@@ -104,7 +114,7 @@ class SonicAnalysisProvider(PluginProvider):
     corpus_means: list[float] | None
     corpus_stds: list[float] | None
     _on_unload: list[Callable[[], None]]
-    _voyager_index: Any  # voyager.Index — typed as Any to avoid hard import at class level
+    _search_index: Any  # USearchIndex — typed as Any to avoid hard import at class level
     _label_map: dict[int, tuple[str, str]]
     _analysis_semaphore: asyncio.Semaphore
 
@@ -113,7 +123,7 @@ class SonicAnalysisProvider(PluginProvider):
         self._on_unload = []
         self.corpus_means = None
         self.corpus_stds = None
-        self._voyager_index = None
+        self._search_index = None
         self._label_map: dict[int, tuple[str, str]] = {}
 
         max_concurrent = int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2)  # type: ignore[arg-type]
@@ -121,7 +131,7 @@ class SonicAnalysisProvider(PluginProvider):
 
         await self._create_db_table()
         await self._load_corpus_stats()
-        self._init_voyager_index()
+        self._init_search_index()
 
     async def loaded_in_mass(self) -> None:
         """Subscribe to library and playback events based on configuration."""
@@ -190,7 +200,7 @@ class SonicAnalysisProvider(PluginProvider):
             await asyncio.sleep(0)
 
         if analyzed_count > 0:
-            await self._rebuild_voyager_index()
+            await self._rebuild_search_index()
 
         self.logger.info(
             "Backfill complete: %d analyzed, %d already had signatures",
@@ -275,7 +285,7 @@ class SonicAnalysisProvider(PluginProvider):
 
         if self.corpus_means is not None and self.corpus_stds is not None:
             normalized = normalize_features(signature.features, self.corpus_means, self.corpus_stds)
-            # Use a stable integer label derived from item_id for the Voyager index.
+            # Use a stable integer label derived from item_id for the ANN index.
             # Python's built-in hash is deterministic within a process but may vary
             # across runs; for now this is acceptable as the index is rebuilt on startup.
             label = abs(hash((provider_instance, item_id))) % (2**31)
@@ -432,30 +442,29 @@ class SonicAnalysisProvider(PluginProvider):
             },
         )
 
-    def _init_voyager_index(self) -> None:
-        """Initialize or load the Voyager ANN index."""
-        if voyager is None:
+    def _init_search_index(self) -> None:
+        """Initialize or load the USearch ANN index."""
+        if not _USEARCH_AVAILABLE:
             return
 
-        index_path = Path(self.mass.storage_path) / VOYAGER_INDEX_FILENAME
+        index_path = Path(self.mass.storage_path) / USEARCH_INDEX_FILENAME
         if index_path.exists():
-            with open(index_path, "rb") as f:
-                self._voyager_index = voyager.Index.load(f)
+            self._search_index = _usearch_index_module.Index.restore(str(index_path))
         else:
-            self._voyager_index = voyager.Index(
-                voyager.Space.Cosine,
-                num_dimensions=SIGNATURE_DIMENSIONS,
-                storage_data_type=voyager.StorageDataType.E4M3,
+            self._search_index = _usearch_index_module.Index(
+                ndim=SIGNATURE_DIMENSIONS,
+                metric=MetricKind.Cos,
+                dtype=ScalarKind.I8,
             )
 
     def _add_to_index(self, item_id_int: int, normalized_features: list[float]) -> None:
         """Add a normalised feature vector to the ANN index with an explicit item ID.
 
-        :param item_id_int: Integer library item ID used as the Voyager label.
+        :param item_id_int: Integer label used as the USearch key.
         :param normalized_features: Z-score normalised feature values, one per dimension.
         """
-        vector_2d = np.array([normalized_features], dtype=np.float32)
-        self._voyager_index.add_items(vector_2d, ids=np.array([item_id_int], dtype=np.int64))
+        vector = np.array(normalized_features, dtype=np.float32)
+        self._search_index.add(item_id_int, vector)
 
     def _query_index(
         self, normalized_features: list[float], k: int = 25
@@ -463,39 +472,35 @@ class SonicAnalysisProvider(PluginProvider):
         """Query the ANN index for the k nearest neighbours.
 
         Returns an empty list when the index has no elements.
-        When k exceeds num_elements the query is clamped automatically.
+        When k exceeds len(index) the query is clamped automatically.
 
         :param normalized_features: Per-feature z-score normalised query vector.
         :param k: Maximum number of nearest neighbours to return.
         """
-        if self._voyager_index.num_elements == 0:
+        if len(self._search_index) == 0:
             return []
 
-        effective_k = min(k, self._voyager_index.num_elements)
-        query_2d = np.array([normalized_features], dtype=np.float32)
-        ids_2d, distances_2d = self._voyager_index.query(query_2d, k=effective_k)
-        return [(int(ids_2d[0][i]), float(distances_2d[0][i])) for i in range(len(ids_2d[0]))]
+        effective_k = min(k, len(self._search_index))
+        query = np.array(normalized_features, dtype=np.float32)
+        matches = self._search_index.search(query, count=effective_k)
+        return [(int(matches.keys[i]), float(matches.distances[i])) for i in range(len(matches))]
 
-    def _save_voyager_index(self) -> None:
-        """Persist the Voyager ANN index to storage_path."""
-        if self._voyager_index is None:
+    def _save_search_index(self) -> None:
+        """Persist the USearch ANN index to storage_path."""
+        if self._search_index is None:
             return
 
-        index_path = Path(self.mass.storage_path) / VOYAGER_INDEX_FILENAME
+        index_path = Path(self.mass.storage_path) / USEARCH_INDEX_FILENAME
         if not index_path.parent.exists():
             return
 
-        # voyager.Index.save(path_str) is unreliable on Windows; writing via BytesIO is safe.
-        buf = io.BytesIO()
-        self._voyager_index.save(buf)
-        buf.seek(0)
-        index_path.write_bytes(buf.read())
+        self._search_index.save(str(index_path))
 
     async def _handle_similar_tracks(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/similar endpoint.
 
         Returns tracks whose sonic signatures are nearest to the seed track in the
-        Voyager ANN index.  Query parameters:
+        ANN index.  Query parameters:
 
         :param request: Incoming aiohttp web request.
         """
@@ -549,7 +554,7 @@ class SonicAnalysisProvider(PluginProvider):
                 continue
             if len(items) >= limit:
                 break
-            # Resolve the Voyager label back to (item_id, provider) via the in-memory map.
+            # Resolve the ANN label back to (item_id, provider) via the in-memory map.
             resolved = self._label_map.get(result_id)
             if resolved is None:
                 continue
@@ -560,11 +565,11 @@ class SonicAnalysisProvider(PluginProvider):
 
         return web.json_response({"analyzed": True, "items": items, "seed_track_id": item_id})
 
-    async def _rebuild_voyager_index(self) -> None:
-        """Rebuild the Voyager index from all signatures in the DB.
+    async def _rebuild_search_index(self) -> None:
+        """Rebuild the USearch index from all signatures in the DB.
 
         Fetches every row from the sonic_signatures table, recomputes corpus statistics,
-        creates a fresh E4M3 index, and populates it with normalised feature vectors.
+        creates a fresh index, and populates it with normalised feature vectors.
         Useful for recovery after index loss or a schema migration.
         """
         assert self.mass.music.database is not None
@@ -593,13 +598,13 @@ class SonicAnalysisProvider(PluginProvider):
         means, stds = compute_corpus_stats(all_features)
         await self._save_corpus_stats(means, stds)
 
-        if voyager is None:
+        if not _USEARCH_AVAILABLE:
             return
 
-        self._voyager_index = voyager.Index(
-            voyager.Space.Cosine,
-            num_dimensions=SIGNATURE_DIMENSIONS,
-            storage_data_type=voyager.StorageDataType.E4M3,
+        self._search_index = _usearch_index_module.Index(
+            ndim=SIGNATURE_DIMENSIONS,
+            metric=MetricKind.Cos,
+            dtype=ScalarKind.I8,
         )
         self._label_map = {}
 
@@ -609,8 +614,8 @@ class SonicAnalysisProvider(PluginProvider):
             self._label_map[label] = (item_id, provider_instance)
             self._add_to_index(label, normalized)
 
-        await asyncio.to_thread(self._save_voyager_index)
-        self.logger.info("Voyager index rebuilt with %d entries.", len(parsed))
+        await asyncio.to_thread(self._save_search_index)
+        self.logger.info("Search index rebuilt with %d entries.", len(parsed))
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider.
@@ -621,4 +626,4 @@ class SonicAnalysisProvider(PluginProvider):
         """
         for unload_cb in self._on_unload:
             unload_cb()
-        await asyncio.to_thread(self._save_voyager_index)
+        await asyncio.to_thread(self._save_search_index)
