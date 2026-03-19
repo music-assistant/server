@@ -11,8 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from aiosendspin.server.roles import AudioRequirements, Role
 from aiosendspin.server import VolumeChangedEvent
+from aiosendspin.server.roles import AudioRequirements, Role
 from aiosendspin.server.roles.registry import register_role
 
 from music_assistant.mass import LOGGER
