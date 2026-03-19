@@ -524,6 +524,8 @@ class SonicAnalysisProvider(PluginProvider):
         :param normalized_features: Z-score normalised feature values, one per dimension.
         """
         vector = np.array(normalized_features, dtype=np.float32)
+        if item_id_int in self._search_index:
+            self._search_index.remove(item_id_int)
         self._search_index.add(item_id_int, vector)
 
     def _query_index(
