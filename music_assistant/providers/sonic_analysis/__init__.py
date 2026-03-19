@@ -139,6 +139,59 @@ class SonicAnalysisProvider(PluginProvider):
             )
         )
 
+        if self.config.get_value(CONF_ANALYZE_ON_SYNC):
+            self.mass.create_task(self._backfill_unanalyzed_tracks())
+
+    async def _backfill_unanalyzed_tracks(self) -> None:
+        """Background task: analyze all local tracks without signatures."""
+        self.logger.info("Starting background sonic analysis backfill...")
+        analyzed_count = 0
+        skipped_count = 0
+
+        try:
+            tracks = await self.mass.music.tracks.library_items()
+        except Exception:
+            self.logger.warning("Could not fetch library tracks for backfill", exc_info=True)
+            return
+
+        for track in tracks:
+            item_id = str(track.item_id)
+
+            has_signature = False
+            for mapping in track.provider_mappings:
+                existing = await self.get_sonic_signature(item_id, mapping.provider_instance)
+                if existing:
+                    has_signature = True
+                    break
+
+            if has_signature:
+                skipped_count += 1
+                continue
+
+            for mapping in track.provider_mappings:
+                try:
+                    await self._fetch_and_analyze(item_id, mapping.provider_instance)
+                    analyzed_count += 1
+                    break
+                except Exception:
+                    self.logger.debug(
+                        "Backfill: failed to analyze track %s via %s",
+                        item_id,
+                        mapping.provider_instance,
+                    )
+                    continue
+
+            await asyncio.sleep(0)
+
+        if analyzed_count > 0:
+            await self._rebuild_voyager_index()
+
+        self.logger.info(
+            "Backfill complete: %d analyzed, %d already had signatures",
+            analyzed_count,
+            skipped_count,
+        )
+
     async def _on_media_item_played(self, event: MassEvent) -> None:
         """Handle media item played — analyze if no signature exists."""
         from music_assistant_models.enums import MediaType

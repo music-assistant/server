@@ -946,3 +946,222 @@ class TestRebuildVoyagerIndex:
 
         # Index must remain empty — rebuild returned early
         assert provider._voyager_index.num_elements == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: background backfill (Task 11)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_track(item_id: str, provider_instance: str) -> MagicMock:
+    """Return a minimal mock Track with item_id and provider_mappings."""
+    track = MagicMock()
+    track.item_id = item_id
+    mapping = MagicMock()
+    mapping.provider_instance = provider_instance
+    track.provider_mappings = [mapping]
+    return track
+
+
+class TestBackfill:
+    """Tests for SonicAnalysisProvider._backfill_unanalyzed_tracks and loaded_in_mass scheduling."""
+
+    @pytest.mark.asyncio
+    async def test_loaded_in_mass_schedules_backfill_when_analyze_on_sync_enabled(
+        self, tmp_path: Any
+    ) -> None:
+        """loaded_in_mass must schedule backfill via mass.create_task.
+
+        Applies when analyze_on_sync is True.
+        """
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.create_task = MagicMock()
+
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: False, CONF_ANALYZE_ON_SYNC: True}
+        )
+
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        with patch.object(
+            provider, "_backfill_unanalyzed_tracks", return_value=None
+        ) as mock_backfill:
+            await provider.loaded_in_mass()
+
+        mass.create_task.assert_called_once()
+        # The argument must be the coroutine returned by _backfill_unanalyzed_tracks
+        assert mock_backfill.called
+
+    @pytest.mark.asyncio
+    async def test_loaded_in_mass_does_not_schedule_backfill_when_analyze_on_sync_disabled(
+        self, tmp_path: Any
+    ) -> None:
+        """loaded_in_mass must not call mass.create_task for backfill.
+
+        Applies when analyze_on_sync is False.
+        """
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.create_task = MagicMock()
+
+        provider = _make_provider_with_config(
+            mass, **{CONF_ANALYZE_ON_PLAY: False, CONF_ANALYZE_ON_SYNC: False}
+        )
+
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        await provider.loaded_in_mass()
+
+        mass.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_backfill_skips_tracks_with_existing_signatures(self, tmp_path: Any) -> None:
+        """_backfill_unanalyzed_tracks must not analyze tracks that already have a signature."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        track = _make_mock_track("track_1", "local")
+        mass.music.tracks = MagicMock()
+        mass.music.tracks.library_items = AsyncMock(return_value=[track])
+
+        existing_sig = MagicMock()
+
+        provider = _make_provider_with_config(mass)
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        get_sig = patch.object(
+            provider, "get_sonic_signature", AsyncMock(return_value=existing_sig)
+        )
+        fetch = patch.object(provider, "_fetch_and_analyze", AsyncMock())
+        with get_sig, fetch as mock_fetch:
+            await provider._backfill_unanalyzed_tracks()
+
+        mock_fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_backfill_analyzes_tracks_without_signatures(self, tmp_path: Any) -> None:
+        """_backfill_unanalyzed_tracks must call _fetch_and_analyze for tracks with no signature."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        track = _make_mock_track("track_1", "local")
+        mass.music.tracks = MagicMock()
+        mass.music.tracks.library_items = AsyncMock(return_value=[track])
+
+        provider = _make_provider_with_config(mass)
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        get_sig = patch.object(provider, "get_sonic_signature", AsyncMock(return_value=None))
+        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        with (
+            get_sig,
+            patch.object(provider, "_fetch_and_analyze", AsyncMock()) as mock_fetch,
+            rebuild,
+        ):
+            await provider._backfill_unanalyzed_tracks()
+
+        mock_fetch.assert_called_once_with("track_1", "local")
+
+    @pytest.mark.asyncio
+    async def test_backfill_handles_library_fetch_error_gracefully(self, tmp_path: Any) -> None:
+        """_backfill_unanalyzed_tracks must return early and not raise if library_items fails."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        mass.music.tracks = MagicMock()
+        mass.music.tracks.library_items = AsyncMock(side_effect=RuntimeError("DB error"))
+
+        provider = _make_provider_with_config(mass)
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        # Must not raise
+        await provider._backfill_unanalyzed_tracks()
+
+    @pytest.mark.asyncio
+    async def test_backfill_continues_after_per_track_failure(self, tmp_path: Any) -> None:
+        """_backfill_unanalyzed_tracks must not abort after a single-track analysis failure."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        track_a = _make_mock_track("track_a", "local")
+        track_b = _make_mock_track("track_b", "local")
+        mass.music.tracks = MagicMock()
+        mass.music.tracks.library_items = AsyncMock(return_value=[track_a, track_b])
+
+        call_count = 0
+
+        async def _fetch_side_effect(item_id: str, provider: str) -> None:
+            nonlocal call_count
+            call_count += 1
+            if item_id == "track_a":
+                raise RuntimeError("Analysis failed")
+
+        provider = _make_provider_with_config(mass)
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        get_sig = patch.object(provider, "get_sonic_signature", AsyncMock(return_value=None))
+        fetch = patch.object(
+            provider, "_fetch_and_analyze", AsyncMock(side_effect=_fetch_side_effect)
+        )
+        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        with get_sig, fetch, rebuild:
+            await provider._backfill_unanalyzed_tracks()
+
+        # track_b must have been attempted despite track_a failing
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_backfill_rebuilds_index_after_analyzing_tracks(self, tmp_path: Any) -> None:
+        """_backfill_unanalyzed_tracks must call _rebuild_voyager_index after analyzing tracks."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        track = _make_mock_track("track_1", "local")
+        mass.music.tracks = MagicMock()
+        mass.music.tracks.library_items = AsyncMock(return_value=[track])
+
+        provider = _make_provider_with_config(mass)
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        get_sig = patch.object(provider, "get_sonic_signature", AsyncMock(return_value=None))
+        fetch = patch.object(provider, "_fetch_and_analyze", AsyncMock())
+        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        with get_sig, fetch, rebuild as mock_rebuild:
+            await provider._backfill_unanalyzed_tracks()
+
+        mock_rebuild.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_backfill_does_not_rebuild_index_when_no_tracks_analyzed(
+        self, tmp_path: Any
+    ) -> None:
+        """_backfill_unanalyzed_tracks must not rebuild the index when all tracks were skipped."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        track = _make_mock_track("track_1", "local")
+        mass.music.tracks = MagicMock()
+        mass.music.tracks.library_items = AsyncMock(return_value=[track])
+
+        existing_sig = MagicMock()
+
+        provider = _make_provider_with_config(mass)
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        get_sig = patch.object(
+            provider, "get_sonic_signature", AsyncMock(return_value=existing_sig)
+        )
+        rebuild = patch.object(provider, "_rebuild_voyager_index", AsyncMock())
+        with get_sig, rebuild as mock_rebuild:
+            await provider._backfill_unanalyzed_tracks()
+
+        mock_rebuild.assert_not_called()
