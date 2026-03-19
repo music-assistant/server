@@ -175,6 +175,10 @@ class SendspinProvider(PlayerProvider):
                     player.device_info.add_identifier(id_type, id_value)
             self.logger.debug("Client %s connected", client_id)
             await self._apply_hass_name_override(player, client_id)
+            if not self._is_current_client_event(client_id, event_version):
+                self.logger.debug("Skipping stale add event for %s after name override", client_id)
+                player._unsubscribe_client_callbacks()
+                return
             try:
                 await self.mass.players.register(player)
             except AlreadyRegisteredError:
