@@ -635,3 +635,314 @@ class TestAnalyzeTrack:
 
         assert hasattr(provider, "_analysis_semaphore")
         assert isinstance(provider._analysis_semaphore, asyncio.Semaphore)
+
+
+# ---------------------------------------------------------------------------
+# Tests: _handle_similar_tracks API endpoint (Task 9)
+# ---------------------------------------------------------------------------
+
+_VOYAGER_PATCH = "music_assistant.providers.sonic_analysis.voyager"
+
+
+class TestHandleSimilarTracks:
+    """Tests for SonicAnalysisProvider._handle_similar_tracks."""
+
+    @pytest.mark.asyncio
+    async def test_missing_item_id_returns_400(self, tmp_path: Any) -> None:
+        """_handle_similar_tracks must return HTTP 400 when item_id is missing."""
+        from aiohttp.test_utils import make_mocked_request
+
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider(mass)
+
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        request = make_mocked_request("GET", "/api/sonic_analysis/similar")
+
+        response = await provider._handle_similar_tracks(request)
+        assert response.status == 400
+
+    @pytest.mark.asyncio
+    async def test_no_signature_returns_analyzed_false(self, tmp_path: Any) -> None:
+        """_handle_similar_tracks must return analyzed=false when no signature exists."""
+        from aiohttp.test_utils import make_mocked_request
+
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        # get_rows returns empty list — no signature stored
+        mass.music.database.get_rows = AsyncMock(return_value=[])
+        provider = _make_provider(mass)
+
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
+        request._rel_url = request._rel_url.with_query({"item_id": "track_1"})
+
+        response = await provider._handle_similar_tracks(request)
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert body["analyzed"] is False
+        assert body["items"] == []
+        assert body["seed_track_id"] == "track_1"
+
+    @pytest.mark.asyncio
+    async def test_limit_defaults_to_25(self, tmp_path: Any) -> None:
+        """_handle_similar_tracks must use limit=25 by default."""
+        from aiohttp.test_utils import make_mocked_request
+
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.music.database.get_rows = AsyncMock(return_value=[])
+        provider = _make_provider(mass)
+
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
+        request._rel_url = request._rel_url.with_query({"item_id": "track_1"})
+
+        response = await provider._handle_similar_tracks(request)
+        assert response.status == 200
+
+    @pytest.mark.asyncio
+    async def test_limit_capped_at_100(self, tmp_path: Any) -> None:
+        """_handle_similar_tracks must cap limit at 100."""
+        from aiohttp.test_utils import make_mocked_request
+
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.music.database.get_rows = AsyncMock(return_value=[])
+        provider = _make_provider(mass)
+
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
+        request._rel_url = request._rel_url.with_query({"item_id": "track_1", "limit": "999"})
+
+        response = await provider._handle_similar_tracks(request)
+        assert response.status == 200
+
+    @pytest.mark.asyncio
+    async def test_with_signature_returns_analyzed_true(self, tmp_path: Any) -> None:
+        """_handle_similar_tracks must return analyzed=true when signature is found."""
+        from aiohttp.test_utils import make_mocked_request
+
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        features = [float(i) * 0.01 for i in range(38)]
+        db_row: dict[str, Any] = {
+            "item_id": "track_1",
+            "provider": "local",
+            "features": json.dumps(features),
+            "version": SIGNATURE_VERSION,
+        }
+        mass.music.database.get_rows = AsyncMock(return_value=[db_row])
+        mass.music.tracks = MagicMock()
+        mass.music.tracks.get = AsyncMock(return_value=None)
+
+        provider = _make_provider(mass)
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+
+        provider.corpus_means = [0.0] * SIGNATURE_DIMENSIONS
+        provider.corpus_stds = [1.0] * SIGNATURE_DIMENSIONS
+
+        # Directly set a mock index that returns empty results (no neighbours)
+        mock_index = MagicMock()
+        mock_index.num_elements = 0
+        provider._voyager_index = mock_index
+
+        request = make_mocked_request("GET", "/api/sonic_analysis/similar", match_info={})
+        request._rel_url = request._rel_url.with_query({"item_id": "track_1", "limit": "5"})
+
+        response = await provider._handle_similar_tracks(request)
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert body["analyzed"] is True
+        assert body["seed_track_id"] == "track_1"
+        assert isinstance(body["items"], list)
+
+    @pytest.mark.asyncio
+    async def test_route_registered_in_loaded_in_mass(self, tmp_path: Any) -> None:
+        """loaded_in_mass must register the /api/sonic_analysis/similar GET route."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.webserver = MagicMock()
+        mass.webserver.register_dynamic_route = MagicMock(return_value=lambda: None)
+        provider = _make_provider(mass)
+
+        with patch(_VOYAGER_PATCH, create=True):
+            await provider.handle_async_init()
+        await provider.loaded_in_mass()
+
+        registered_paths = [
+            call.args[0]
+            for call in mass.webserver.register_dynamic_route.call_args_list
+            if call.args
+        ]
+        assert "/api/sonic_analysis/similar" in registered_paths
+
+
+# ---------------------------------------------------------------------------
+# Tests: _rebuild_voyager_index (Task 10)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_voyager_index() -> MagicMock:
+    """Return a MagicMock that behaves like a minimal voyager.Index.
+
+    Tracks added items so num_elements reflects actual calls to add_items.
+    """
+    index = MagicMock()
+    _items: list[Any] = []
+
+    def _add_items(vectors: Any, ids: Any) -> None:
+        for _ in ids:
+            _items.append(True)
+
+    index.add_items.side_effect = _add_items
+    type(index).num_elements = property(lambda self: len(_items))
+    return index
+
+
+def _make_mock_voyager_module(index: MagicMock) -> MagicMock:
+    """Return a MagicMock for the voyager module that yields `index` from Index(...)."""
+    mock_voy = MagicMock()
+    mock_voy.Index.return_value = index
+    mock_voy.Space.Cosine = "Cosine"
+    mock_voy.StorageDataType.E4M3 = "E4M3"
+    return mock_voy
+
+
+class TestRebuildVoyagerIndex:
+    """Tests for SonicAnalysisProvider._rebuild_voyager_index."""
+
+    @pytest.mark.asyncio
+    async def test_rebuild_with_two_signatures(self, tmp_path: Any) -> None:
+        """_rebuild_voyager_index must populate the index with all stored signatures."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        features_a = [0.1] * SIGNATURE_DIMENSIONS
+        features_b = [0.9] * SIGNATURE_DIMENSIONS
+
+        rows = [
+            {
+                "item_id": "track_a",
+                "provider": "local",
+                "features": json.dumps(features_a),
+                "version": SIGNATURE_VERSION,
+            },
+            {
+                "item_id": "track_b",
+                "provider": "local",
+                "features": json.dumps(features_b),
+                "version": SIGNATURE_VERSION,
+            },
+        ]
+        mass.music.database.get_rows = AsyncMock(return_value=rows)
+
+        mock_index = _make_mock_voyager_index()
+        mock_voy = _make_mock_voyager_module(mock_index)
+
+        provider = _make_provider(mass)
+        with patch(_VOYAGER_PATCH, mock_voy):
+            await provider.handle_async_init()
+            await provider._rebuild_voyager_index()
+
+        assert provider._voyager_index.num_elements == 2
+
+    @pytest.mark.asyncio
+    async def test_rebuild_saves_corpus_stats(self, tmp_path: Any) -> None:
+        """_rebuild_voyager_index must save new corpus stats to the DB."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        features_a = [0.2] * SIGNATURE_DIMENSIONS
+        features_b = [0.8] * SIGNATURE_DIMENSIONS
+
+        rows = [
+            {
+                "item_id": "track_a",
+                "provider": "local",
+                "features": json.dumps(features_a),
+                "version": SIGNATURE_VERSION,
+            },
+            {
+                "item_id": "track_b",
+                "provider": "local",
+                "features": json.dumps(features_b),
+                "version": SIGNATURE_VERSION,
+            },
+        ]
+        mass.music.database.get_rows = AsyncMock(return_value=rows)
+
+        mock_voy = _make_mock_voyager_module(_make_mock_voyager_index())
+
+        provider = _make_provider(mass)
+        with patch(_VOYAGER_PATCH, mock_voy):
+            await provider.handle_async_init()
+            await provider._rebuild_voyager_index()
+
+        corpus_stats_calls = [
+            call
+            for call in mass.music.database.insert_or_replace.call_args_list
+            if call.args and call.args[1].get("item_id") == "__corpus_stats__"
+        ]
+        assert corpus_stats_calls, "insert_or_replace not called with __corpus_stats__ sentinel"
+
+    @pytest.mark.asyncio
+    async def test_rebuild_skips_corpus_stats_row(self, tmp_path: Any) -> None:
+        """_rebuild_voyager_index must not include the __corpus_stats__ sentinel in the index."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+
+        features_a = [0.5] * SIGNATURE_DIMENSIONS
+
+        rows = [
+            {
+                "item_id": "__corpus_stats__",
+                "provider": "__corpus_stats__",
+                "features": json.dumps({"means": [0.0] * 38, "stds": [1.0] * 38}),
+                "version": SIGNATURE_VERSION,
+            },
+            {
+                "item_id": "track_a",
+                "provider": "local",
+                "features": json.dumps(features_a),
+                "version": SIGNATURE_VERSION,
+            },
+        ]
+        mass.music.database.get_rows = AsyncMock(return_value=rows)
+
+        mock_index = _make_mock_voyager_index()
+        mock_voy = _make_mock_voyager_module(mock_index)
+
+        provider = _make_provider(mass)
+        with patch(_VOYAGER_PATCH, mock_voy):
+            await provider.handle_async_init()
+            await provider._rebuild_voyager_index()
+
+        assert provider._voyager_index.num_elements == 1
+
+    @pytest.mark.asyncio
+    async def test_rebuild_with_no_signatures_logs_and_returns(self, tmp_path: Any) -> None:
+        """_rebuild_voyager_index must return early when there are no track signatures."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.music.database.get_rows = AsyncMock(return_value=[])
+
+        mock_voy = _make_mock_voyager_module(_make_mock_voyager_index())
+
+        provider = _make_provider(mass)
+        with patch(_VOYAGER_PATCH, mock_voy):
+            await provider.handle_async_init()
+            await provider._rebuild_voyager_index()
+
+        # Index must remain empty — rebuild returned early
+        assert provider._voyager_index.num_elements == 0

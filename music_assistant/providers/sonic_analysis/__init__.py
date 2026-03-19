@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 
@@ -18,6 +19,7 @@ from music_assistant.helpers.sonic_analysis import (
     SIGNATURE_DIMENSIONS,
     SIGNATURE_VERSION,
     SonicSignature,
+    compute_corpus_stats,
     extract_signature,
     normalize_features,
 )
@@ -128,6 +130,14 @@ class SonicAnalysisProvider(PluginProvider):
             self._on_unload.append(
                 self.mass.subscribe(self._on_media_item_added, EventType.MEDIA_ITEM_ADDED)
             )
+
+        self._on_unload.append(
+            self.mass.webserver.register_dynamic_route(
+                "/api/sonic_analysis/similar",
+                self._handle_similar_tracks,
+                "GET",
+            )
+        )
 
     async def _on_media_item_played(self, event: MassEvent) -> None:
         """Handle media item played — analyze if no signature exists."""
@@ -411,6 +421,113 @@ class SonicAnalysisProvider(PluginProvider):
         self._voyager_index.save(buf)
         buf.seek(0)
         index_path.write_bytes(buf.read())
+
+    async def _handle_similar_tracks(self, request: Any) -> Any:
+        """Handle GET /api/sonic_analysis/similar endpoint.
+
+        Returns tracks whose sonic signatures are nearest to the seed track in the
+        Voyager ANN index.  Query parameters:
+
+        :param request: Incoming aiohttp web request.
+        """
+        item_id: str | None = request.query.get("item_id")
+        if not item_id:
+            return web.Response(status=400, text="Missing required query parameter: item_id")
+
+        try:
+            limit = int(request.query.get("limit", 25))
+        except (TypeError, ValueError):
+            limit = 25
+        limit = min(limit, 100)
+
+        # Look up the seed track's signature in the DB.
+        # We iterate over all providers; the first hit wins.
+        signature = None
+        assert self.mass.music.database is not None
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_SONIC_SIGNATURES,
+            {"item_id": item_id},
+        )
+        for row in rows:
+            if row.get("item_id") == CORPUS_STATS_ITEM_ID:
+                continue
+            try:
+                features: list[float] = json.loads(row["features"])
+                signature = SonicSignature(features=features, version=int(row["version"]))
+                break
+            except (KeyError, ValueError, TypeError):
+                continue
+
+        if signature is None:
+            return web.json_response({"analyzed": False, "items": [], "seed_track_id": item_id})
+
+        if self.corpus_means is None or self.corpus_stds is None:
+            return web.json_response({"analyzed": False, "items": [], "seed_track_id": item_id})
+
+        normalized = normalize_features(signature.features, self.corpus_means, self.corpus_stds)
+        # Request one extra result so we can discard the seed itself.
+        raw_results = self._query_index(normalized, k=limit + 1)
+
+        seed_label = abs(hash(("local", item_id))) % (2**31)
+        items: list[dict[str, Any]] = []
+        for result_id, distance in raw_results:
+            if result_id == seed_label:
+                continue
+            if len(items) >= limit:
+                break
+            # Voyager labels are opaque integer hashes; we cannot recover the
+            # original (provider, item_id) pair needed by TracksController.get,
+            # so we expose the raw label and distance for callers to resolve.
+            items.append({"id": result_id, "distance": distance})
+
+        return web.json_response({"analyzed": True, "items": items, "seed_track_id": item_id})
+
+    async def _rebuild_voyager_index(self) -> None:
+        """Rebuild the Voyager index from all signatures in the DB.
+
+        Fetches every row from the sonic_signatures table, recomputes corpus statistics,
+        creates a fresh E4M3 index, and populates it with normalised feature vectors.
+        Useful for recovery after index loss or a schema migration.
+        """
+        assert self.mass.music.database is not None
+        all_rows = await self.mass.music.database.get_rows(DB_TABLE_SONIC_SIGNATURES, {})
+
+        track_rows = [row for row in all_rows if row.get("item_id") != CORPUS_STATS_ITEM_ID]
+
+        if not track_rows:
+            self.logger.info("No sonic signatures found in DB; skipping index rebuild.")
+            return
+
+        all_features: list[list[float]] = []
+        parsed: list[tuple[str, str, list[float]]] = []
+        for row in track_rows:
+            try:
+                features = json.loads(row["features"])
+                all_features.append(features)
+                parsed.append((row["item_id"], row["provider"], features))
+            except (KeyError, ValueError, TypeError):
+                continue
+
+        if not all_features:
+            self.logger.info("No valid sonic signatures found; skipping index rebuild.")
+            return
+
+        means, stds = compute_corpus_stats(all_features)
+        await self._save_corpus_stats(means, stds)
+
+        self._voyager_index = voyager.Index(
+            voyager.Space.Cosine,
+            num_dimensions=SIGNATURE_DIMENSIONS,
+            storage_data_type=voyager.StorageDataType.E4M3,
+        )
+
+        for item_id, provider_instance, features in parsed:
+            normalized = normalize_features(features, means, stds)
+            label = abs(hash((provider_instance, item_id))) % (2**31)
+            self._add_to_index(label, normalized)
+
+        self._save_voyager_index()
+        self.logger.info("Voyager index rebuilt with %d entries.", len(parsed))
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider.
