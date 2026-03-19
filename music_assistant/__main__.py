@@ -249,10 +249,8 @@ def main() -> None:
             stop_event.set()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+            with suppress(NotImplementedError):
                 loop.add_signal_handler(sig, _set_stop)
-            except NotImplementedError:
-                pass
 
         await mass.start()
         try:
