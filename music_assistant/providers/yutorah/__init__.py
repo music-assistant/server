@@ -691,9 +691,7 @@ class YuTorahProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return stream details for a shiur.
 
-        We first check if the URL was cached in the ProviderMapping.details
-        field (set when building the episode), and only fall back to an API
-        call if it's missing.
+        Calls shiur/details to retrieve the direct MP3 download URL.
         """
         data = await self._api_get("shiur/details", shiurID=item_id)
         mp3_url = (data.get("shiurFileURL") or "") if data and isinstance(data, dict) else ""
