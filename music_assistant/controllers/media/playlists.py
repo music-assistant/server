@@ -376,16 +376,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if self.mass.music.match_provider_instances(db_item):
             await self.add_provider_mappings(db_item.item_id, db_item.provider_mappings)
 
-    def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
+    async def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
         """Refresh playlist tracks by forcing a cache refresh."""
-
-        async def _refresh(playlist: Playlist) -> None:
-            # simply iterate all tracks with force_refresh=True to refresh the cache
-            async for _ in self.tracks(playlist.item_id, playlist.provider, force_refresh=True):
-                pass
-
-        task_id = f"refresh_playlist_tracks_{playlist.item_id}"
-        self.mass.call_later(5, _refresh, playlist, task_id=task_id)  # debounce multiple calls
+        async for _ in self.tracks(playlist.item_id, playlist.provider, force_refresh=True):
+            pass
 
     async def _handle_add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Handle adding playlist items inside a managed task."""
@@ -701,7 +695,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
         # invalidate cache so tracks get refreshed
         update_current_task_progress(95, "Refreshing playlist")
-        self._refresh_playlist_tracks(playlist)
+        await self._refresh_playlist_tracks(playlist)
         await self.update_item_in_library(db_playlist_id, playlist)
         update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
 
