@@ -1160,16 +1160,6 @@ class PlayerQueuesController(CoreController):
         while True:
             next_index = self._get_next_index(queue_id, cur_index + idx)
             if next_index is None:
-                # For RADIO type items, treat them as a continuous source: clear the
-                # cached stream details and re-request the next track from the provider.
-                cur_item = self.get_item(queue_id, cur_index)
-                if cur_item is not None and cur_item.media_type == MediaType.RADIO:
-                    cur_item.streamdetails = None
-                    try:
-                        await self._load_item(cur_item, None)
-                    except (MediaNotFoundError, AudioError) as err:
-                        raise QueueEmpty("No more tracks available from radio station.") from err
-                    return cur_item
                 raise QueueEmpty("No more tracks left in the queue.")
             queue_item = self.get_item(queue_id, next_index)
             if queue_item is None:
@@ -1867,17 +1857,6 @@ class PlayerQueuesController(CoreController):
             media.album = (
                 album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
             )
-            # For track-based radio stations (e.g. Apple Music Artist Radio)
-            # stream_metadata carries the currently playing track's artist/title.
-            if (
-                queue_item.media_type == MediaType.RADIO
-                and queue_item.streamdetails
-                and (sm := queue_item.streamdetails.stream_metadata)
-            ):
-                if sm.title:
-                    media.title = sm.title
-                if sm.artist:
-                    media.artist = sm.artist
             if queue_item.image:
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
                 # we prefer the imageproxy on the streamserver here because this request is sent
@@ -2949,10 +2928,6 @@ class PlayerQueuesController(CoreController):
         if prev_state["current_item_id"] is None:
             return
 
-        # retrieve prev_item here so it's available in the _clear_or_resume_delayed closure
-        # regardless of which code path (flow mode or non-flow mode) creates the task
-        prev_item = prev_state["current_item"]
-
         async def _clear_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
@@ -2973,61 +2948,6 @@ class PlayerQueuesController(CoreController):
                         )
                         await self.play_index(queue.queue_id, next_index)
                     return
-            # If the queue was started from a dynamic playlist, fetch fresh tracks and continue.
-            dynamic_playlist = next(
-                (
-                    item
-                    for item in reversed(queue.radio_source)
-                    if isinstance(item, Playlist) and item.is_dynamic
-                ),
-                None,
-            )
-            if dynamic_playlist is None:
-                dynamic_playlist = next(
-                    (
-                        item
-                        for item in reversed(queue.enqueued_media_items)
-                        if isinstance(item, Playlist) and item.is_dynamic
-                    ),
-                    None,
-                )
-            if dynamic_playlist is not None:
-                try:
-                    dynamic_tracks = await self.get_playlist_tracks(
-                        dynamic_playlist, start_item=None
-                    )
-                    if dynamic_tracks:
-                        queue_items = [
-                            QueueItem.from_media_item(queue.queue_id, x)
-                            for x in dynamic_tracks
-                            if x.available
-                        ]
-                        if queue_items:
-                            cur_index = queue.current_index or 0
-                            await self.load(
-                                queue.queue_id,
-                                queue_items,
-                                insert_at_index=cur_index + 1,
-                                keep_remaining=False,
-                                keep_played=True,
-                                shuffle=False,
-                            )
-                            if queue.current_index is not None and (
-                                next_item := self.get_next_item(queue.queue_id, queue.current_index)
-                            ):
-                                next_index = self.index_by_id(
-                                    queue.queue_id, next_item.queue_item_id
-                                )
-                                if next_index is not None:
-                                    await self.play_index(queue.queue_id, next_index)
-                                    return
-                except MusicAssistantError as err:
-                    self.logger.warning(
-                        "Failed to refresh dynamic playlist %s for queue %s: %s",
-                        getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
-                        queue.display_name,
-                        err,
-                    )
             self.logger.info("End of queue reached, clearing items")
             self.clear(queue.queue_id)
 
@@ -3044,6 +2964,7 @@ class PlayerQueuesController(CoreController):
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
+        prev_item = prev_state["current_item"]
         if prev_item and (streamdetails := prev_item.streamdetails):
             duration = streamdetails.duration or prev_item.duration or 24 * 3600
         elif prev_item:
