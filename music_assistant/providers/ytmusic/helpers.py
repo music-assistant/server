@@ -41,12 +41,21 @@ async def get_album(headers: dict[str, str], prov_album_id: str, language: str =
     """Async wrapper around the ytmusicapi get_album function."""
 
     def _get_album():
-        ytm = ytmusicapi.YTMusic(language=language)
-        album = ytm.get_album(browseId=prov_album_id)
+        if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
+            ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+            album = ytm.get_library_upload_album(browseId=prov_album_id)
+        else:
+            ytm = ytmusicapi.YTMusic(language=language)
+            album = ytm.get_album(browseId=prov_album_id)
+
         if "audioPlaylistId" in album:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
-            album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
+            try:
+                album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
+            except ytmusicapi.YTMusicError:
+                return album
+
             # Do some basic checks
             if len(album_playlist.get("tracks", [])) != len(album.get("tracks", [])):
                 return album
@@ -57,8 +66,7 @@ async def get_album(headers: dict[str, str], prov_album_id: str, language: str =
                     album_track["videoId"] = playlist_track["videoId"]
                     album_track["isAvailable"] = playlist_track.get("isAvailable", True)
                     album_track["likeStatus"] = playlist_track.get("likeStatus", "INDIFFERENT")
-            return album
-        return ytm.get_album(browseId=prov_album_id)
+        return album
 
     return await asyncio.to_thread(_get_album)
 
