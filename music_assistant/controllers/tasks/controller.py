@@ -230,12 +230,11 @@ class TasksController(CoreController):
         metadata: TaskMetadata | None = None,
         allow_retry: bool = False,
         allow_cancel: bool = True,
-        run_immediately: bool = True,
         priority: bool = False,
         max_log_lines: int = DEFAULT_TASK_LOG_LINES,
         remove_on_finish: bool = False,
     ) -> BackgroundTask:
-        """Create and optionally queue a long running background task.
+        """Create and queue a long running background task.
 
         :param name: Human-readable display name for the task.
         :param handler: Async callable that performs the actual work.
@@ -248,9 +247,6 @@ class TasksController(CoreController):
         :param metadata: Optional key/value metadata attached to the task.
         :param allow_retry: Whether the task can be retried after failure.
         :param allow_cancel: Whether the task can be cancelled by a user.
-        :param run_immediately: When True (default), the task is queued for execution right away.
-            When False, the task is created in IDLE state and must be started manually
-            (e.g. via run_task) or by a scheduled trigger.
         :param priority: When True, the task is inserted at the front of the pending queue
             so it runs before lower-priority tasks. Use this for user-initiated actions that
             should not be delayed by background work such as metadata refreshes.
@@ -282,10 +278,7 @@ class TasksController(CoreController):
             remove_on_finish=remove_on_finish,
         )
         self._tasks[task_info.id] = managed
-        if run_immediately:
-            self._queue_task(managed, reset_logs=True, run_user_id=user_id)
-        else:
-            self._schedule_task_update(force=True)
+        self._queue_task(managed, reset_logs=True, run_user_id=user_id)
         return task_info
 
     def register_scheduled_task(
