@@ -2,7 +2,7 @@
     "type": "music",
     "domain": "yutorah",
     "name": "YuTorah",
-    "description": "Stream over 400,000 Torah shiurim (audio lectures) from YUTorah Online as podcasts. Browse by series (e.g. Daf Yomi, Ten Minute Halacha), search by topic or teacher, and subscribe to any series.",
+    "description": "Stream over 400,000 Torah shiurim (audio lectures) from YUTorah Online.",
     "stage": "beta",
     "icon": "podcast",
     "codeowners": ["@russlevy"],
