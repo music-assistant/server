@@ -106,7 +106,7 @@ class AirPlayProtocol(ABC):
                 await self._cli_proc.write_eof()
             if self._cli_proc and not self._cli_proc.closed:
                 await self._cli_proc.close()
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+        self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
     async def write_audio(self, data: bytes) -> None:
         """Write raw audio data to the CLI process stdin.

@@ -59,7 +59,7 @@ class ChromecastProvider(PlayerProvider):
                 remove_callback=self._on_chromecast_removed,
                 update_callback=self._on_chromecast_discovered,
             ),
-            self.mass.aiozc.zeroconf,
+            self.mass.discovery.aiozc.zeroconf,
             known_hosts=manual_ip_config,
         )
         self._discovery_running = False
@@ -153,7 +153,7 @@ class ChromecastProvider(PlayerProvider):
             self.logger.debug("Discovered new chromecast %s", disc_info)
 
             cast_info = ChromecastInfo.from_cast_info(disc_info)
-            cast_info.fill_out_missing_chromecast_info(self.mass.aiozc.zeroconf)
+            cast_info.fill_out_missing_chromecast_info(self.mass.discovery.aiozc.zeroconf)
             if cast_info.is_dynamic_group:
                 self.logger.debug("Discovered a dynamic cast group which will be ignored.")
                 return
@@ -165,7 +165,7 @@ class ChromecastProvider(PlayerProvider):
             # create new Chromecast instance
             chromecast = pychromecast.get_chromecast_from_cast_info(
                 disc_info,
-                self.mass.aiozc.zeroconf,
+                self.mass.discovery.aiozc.zeroconf,
             )
             # create and register the new ChromeCastPlayer
             asyncio.run_coroutine_threadsafe(

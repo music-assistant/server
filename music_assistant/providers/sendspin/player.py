@@ -294,6 +294,14 @@ class SendspinPlayer(Player):
         )
         await self.playback_session.sync_members(set(desired_session_members))
 
+    def _schedule_membership_sync(self, group: SendspinGroup) -> None:
+        """Schedule a coalesced membership reconciliation task for this player."""
+        self.mass.create_task(
+            self._sync_membership_from_group(group),
+            task_id=f"sendspin_membership_sync_{self.player_id}",
+            abort_existing=True,
+        )
+
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
         match event:
@@ -321,7 +329,7 @@ class SendspinPlayer(Player):
                 # Update in case this is a newly created group
                 # GroupMemberAddedEvent or GroupMemberRemovedEvent will be fired before this
                 # so group members are already up to date at this point
-                self.mass.create_task(self._sync_membership_from_group(new_group))
+                self._schedule_membership_sync(new_group)
                 self.update_state()
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
@@ -357,12 +365,10 @@ class SendspinPlayer(Player):
                 if client_id not in self._attr_group_members:
                     self._attr_group_members.append(client_id)
                     self.update_state()
-                self.mass.create_task(self.playback_session.add_member(client_id))
-                self.mass.create_task(self._sync_membership_from_group(group))
+                self._schedule_membership_sync(group)
             case GroupMemberRemovedEvent(client_id=client_id):
-                self.mass.create_task(self.playback_session.remove_member(client_id))
                 self.mass.create_task(self._handle_group_member_removed(group, client_id))
-                self.mass.create_task(self._sync_membership_from_group(group))
+                self._schedule_membership_sync(group)
             case GroupDeletedEvent():
                 pass
             case ControllerEvent() as controller_event:
@@ -422,10 +428,10 @@ class SendspinPlayer(Player):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
-        # Update player state optimistically
+        # Set current media; elapsed_time will be updated once audio actually commits.
         self._attr_current_media = media
-        self._attr_elapsed_time = 0
-        self._attr_elapsed_time_last_updated = time.time()
+        self._attr_elapsed_time = None
+        self._attr_elapsed_time_last_updated = None
         # playback_state will be set by the group state change event
 
         # Stop previous stream in case we were already playing something.
@@ -439,7 +445,7 @@ class SendspinPlayer(Player):
         await self._apply_preferred_format()
 
     async def _apply_preferred_format(self) -> None:
-        """Read config and call set_preferred_format() if not automatic."""
+        """Read config and set/clear the players preferred format."""
         player_role = self._player_role
         if player_role is None:
             return
@@ -449,7 +455,8 @@ class SendspinPlayer(Player):
             self.config.get_value(CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC),
         )
         if config_value == SENDSPIN_FORMAT_AUTOMATIC:
-            # Automatic mode: don't set a preferred format, let client decide.
+            # Automatic mode: clear override and let client decide.
+            player_role.set_preferred_format(None, None)
             return
 
         parsed = option_value_to_format(config_value)

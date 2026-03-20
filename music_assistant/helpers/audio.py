@@ -303,6 +303,8 @@ async def get_stream_details(
         else:
             preferred_providers = [x.provider_instance for x in media_item.provider_mappings]
         for allow_other_provider in (False, True):
+            if streamdetails:
+                break
             # sort by quality and check item's availability
             for prov_media in sorted(
                 media_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
@@ -348,8 +350,8 @@ async def get_stream_details(
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
-            # Set up metadata monitoring callback for HLS radio streams
-            if stream_type == StreamType.HLS:
+            # Set up metadata monitoring callback for HLS radio streams, if not already set
+            if stream_type == StreamType.HLS and not streamdetails.stream_metadata_update_callback:
                 streamdetails.stream_metadata_update_callback = partial(
                     _update_hls_radio_metadata, mass
                 )

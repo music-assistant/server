@@ -13,7 +13,15 @@ from music_assistant.helpers.compare import compare_strings
 
 logger = logging.getLogger(__name__)
 
-IGNORE_DIRS = ("recycle", "Recently-Snaphot", "#recycle", "System Volume Information", "lost+found")
+IGNORE_DIRS = (
+    "recycle",
+    "Recently-Snaphot",
+    "Recently-Snapshot",
+    "#recycle",
+    "System Volume Information",
+    "lost+found",
+    "@eaDir",
+)
 
 
 @dataclass
