@@ -161,6 +161,32 @@ class SonicAnalysisProvider(PluginProvider):
         await self._create_db_table()
         await self._load_corpus_stats()
         self._init_search_index()
+        await self._restore_label_maps()
+
+    async def _restore_label_maps(self) -> None:
+        """Rebuild the in-memory label maps from stored signatures.
+
+        The USearch index is persisted to disk and loaded by _init_search_index,
+        but the label-to-track mappings are memory-only. This method restores
+        them from the DB so that similarity queries can resolve results
+        immediately after startup without a full index rebuild.
+        """
+        assert self.mass.music.database is not None
+        try:
+            rows = await self.mass.music.database.get_rows(
+                DB_TABLE_SONIC_SIGNATURES, match=None, limit=0
+            )
+        except Exception:
+            return
+
+        for row in rows:
+            if row["item_id"] == CORPUS_STATS_ITEM_ID:
+                continue
+            self._get_or_assign_label(row["item_id"], row["provider"])
+
+        self.logger.info(
+            "Restored %d label mappings from DB", len(self._label_map)
+        )
 
     async def loaded_in_mass(self) -> None:
         """Subscribe to library and playback events based on configuration."""
