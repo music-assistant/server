@@ -513,6 +513,14 @@ class SonicAnalysisProvider(PluginProvider):
         self._reverse_label_map[key] = label
         return label
 
+    async def _has_signature(self, item_id: str) -> bool:
+        """Return True if at least one signature row exists for *item_id*."""
+        assert self.mass.music.database is not None
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_SONIC_SIGNATURES, {"item_id": item_id}
+        )
+        return any(r["item_id"] != CORPUS_STATS_ITEM_ID for r in rows)
+
     async def _create_db_table(self) -> None:
         """Create the sonic_signatures table if it does not already exist."""
         assert self.mass.music.database is not None
@@ -691,17 +699,15 @@ class SonicAnalysisProvider(PluginProvider):
         except (TypeError, ValueError):
             year_weight = 0.0
 
-        assert self.mass.music.database is not None
-        sig_rows = await self.mass.music.database.get_rows(
-            DB_TABLE_SONIC_SIGNATURES, {"item_id": item_id}
-        )
-        has_signature = any(r["item_id"] != CORPUS_STATS_ITEM_ID for r in sig_rows)
-        if not has_signature:
-            return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
-
         results = await self._get_similar_item_ids(
             item_id, limit=limit, genre_weight=genre_weight, year_weight=year_weight
         )
+
+        if not results and (
+            self.corpus_means is None
+            or not await self._has_signature(item_id)
+        ):
+            return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
 
         items = [
             {"item_id": rid, "distance": dist} for rid, dist in results
