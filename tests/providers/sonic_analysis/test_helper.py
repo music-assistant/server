@@ -346,3 +346,8 @@ class TestComputeCorpusStats:
         means, stds = compute_corpus_stats(corpus)
         assert all(isinstance(v, float) for v in means)
         assert all(isinstance(v, float) for v in stds)
+
+    def test_empty_input_raises_value_error(self) -> None:
+        """An empty feature list must raise ValueError, not produce NaN."""
+        with pytest.raises(ValueError, match="empty"):
+            compute_corpus_stats([])

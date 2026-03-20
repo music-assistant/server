@@ -172,7 +172,11 @@ def compute_corpus_stats(
     """Compute per-feature mean and standard deviation across a corpus of signatures.
 
     :param all_features: List of feature vectors, one per track in the corpus.
+    :raises ValueError: If *all_features* is empty.
     """
+    if not all_features:
+        msg = "Cannot compute corpus stats from an empty feature list"
+        raise ValueError(msg)
     matrix = np.array(all_features, dtype=np.float64)
     means = matrix.mean(axis=0).tolist()
     stds = matrix.std(axis=0).tolist()
