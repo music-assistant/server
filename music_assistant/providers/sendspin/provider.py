@@ -236,8 +236,10 @@ class SendspinProvider(PlayerProvider):
             existing_player = self.mass.players.get_player(client_id)
             if not isinstance(existing_player, SendspinPlayer):
                 return
+            previous_device_info = existing_player.device_info
             previous_type = existing_player.type
             existing_player._refresh_client_info(sendspin_client)
+            existing_player.restore_bridge_identity(previous_device_info, previous_type)
             await self._apply_hass_name_override(existing_player, client_id)
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)

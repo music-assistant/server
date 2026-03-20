@@ -183,6 +183,30 @@ class SendspinPlayer(Player):
             else:
                 self._attr_supported_features.discard(feature)
 
+    def restore_bridge_identity(
+        self, previous_device_info: DeviceInfo, previous_type: PlayerType
+    ) -> None:
+        """Keep bridge players exposed as protocol bridges after client attach updates."""
+        if previous_type != PlayerType.PROTOCOL:
+            return
+        if not (
+            IdentifierType.CAST_UUID in previous_device_info.identifiers
+            or IdentifierType.AIRPLAY_ID in previous_device_info.identifiers
+        ):
+            return
+        refreshed_identifiers = dict(self._attr_device_info.identifiers)
+        self._attr_device_info = DeviceInfo(
+            model=previous_device_info.model,
+            manufacturer=previous_device_info.manufacturer,
+            software_version=self._attr_device_info.software_version,
+        )
+        for id_type, id_value in refreshed_identifiers.items():
+            self._attr_device_info.add_identifier(id_type, id_value)
+        self.is_web_player = False
+        self._attr_hidden_by_default = False
+        self._attr_expose_to_ha_by_default = True
+        self._attr_type = PlayerType.PROTOCOL
+
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
         self.api.disconnect_behaviour = DisconnectBehaviour.STOP
