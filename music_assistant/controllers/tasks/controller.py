@@ -239,8 +239,8 @@ class TasksController(CoreController):
         :param name: Human-readable display name for the task.
         :param handler: Async callable that performs the actual work.
         :param task_id: Optional deterministic id. Auto-generated if not provided.
-            When a task with the same id already exists, the existing task is
-            cancelled and replaced by the new one. If inactive, it is simply removed.
+            When a task with the same id already exists and is active,
+            the existing task is returned as-is. If inactive, it is replaced.
         :param translation_key: Optional translation key for localised task names.
         :param translation_args: Optional arguments for the translation key.
         :param user_id: Optional user id that initiated the task.
@@ -256,7 +256,7 @@ class TasksController(CoreController):
         resolved_task_id = task_id or uuid4().hex
         if existing := self._tasks.get(resolved_task_id):
             if existing.is_active:
-                self._cancel_managed_task(existing)
+                return existing.task_info
             self._tasks.pop(resolved_task_id, None)
 
         task_info = BackgroundTask(
