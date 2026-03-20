@@ -6,7 +6,6 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, cast
 
-from async_upnp_client.search import async_search
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 from rokuecp import Roku
@@ -29,7 +28,6 @@ class MediaAssistantprovider(PlayerProvider):
     """Media Assistant Player provider."""
 
     roku_players: dict[str, MediaAssistantPlayer] = {}
-    _discovery_running: bool = False
     lock: asyncio.Lock
 
     @property
@@ -40,11 +38,6 @@ class MediaAssistantprovider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.lock = asyncio.Lock()
-        # silence the async_upnp_client logger
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
         # silence the rokuecp logger
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("rokuecp").setLevel(logging.DEBUG)
@@ -61,7 +54,6 @@ class MediaAssistantprovider(PlayerProvider):
             await self._device_discovered(ip)
 
         self.logger.info("MediaAssistantProvider loaded")
-        await self.discover_players()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -71,54 +63,22 @@ class MediaAssistantprovider(PlayerProvider):
             for roku_player in self.roku_players.values():
                 tg.create_task(self._device_disconnect(roku_player))
 
-    async def discover_players(self) -> None:
-        """Discover Roku players on the network."""
+    async def on_upnp_service_discovered(
+        self, search_target: str, discovery_info: CaseInsensitiveDict
+    ) -> None:
+        """Handle SSDP discovery callbacks."""
+        del search_target
         if not self.config.get_value(CONF_AUTO_DISCOVER):
             return
-        if self._discovery_running:
+        ssdp_st: str | None = discovery_info.get("st")
+        if not ssdp_st or "roku:ecp" not in ssdp_st:
             return
-        try:
-            self._discovery_running = True
-            self.logger.debug("Roku discovery started...")
-            discovered_devices: set[str] = set()
-
-            async def on_response(discovery_info: CaseInsensitiveDict) -> None:
-                """Process discovered device from ssdp search."""
-                ssdp_st: str | None = discovery_info.get("st")
-                if not ssdp_st:
-                    return
-
-                if "roku:ecp" not in ssdp_st:
-                    # we're only interested in Roku devices
-                    return
-
-                ssdp_usn: str = discovery_info["usn"]
-                ssdp_udn: str | None = discovery_info.get("_udn")
-                if not ssdp_udn and ssdp_usn.startswith("uuid:"):
-                    ssdp_udn = "ROKU_" + ssdp_usn.split(":")[-1]
-                elif ssdp_udn:
-                    ssdp_udn = "ROKU_" + ssdp_udn.split(":")[-1]
-                else:
-                    return
-
-                if ssdp_udn in discovered_devices:
-                    # already processed this device
-                    return
-
-                discovered_devices.add(ssdp_udn)
-
-                await self._device_discovered(discovery_info["_host"])
-
-            await async_search(on_response, search_target="roku:ecp")
-
-        finally:
-            self._discovery_running = False
-
-        def reschedule() -> None:
-            self.mass.create_task(self.discover_players())
-
-        # reschedule self once finished
-        self.mass.loop.call_later(300, reschedule)
+        if not discovery_info.get("usn"):
+            return
+        device_ip: str | None = discovery_info.get("_host")
+        if not device_ip:
+            return
+        await self._device_discovered(device_ip)
 
     async def _device_disconnect(self, roku_player: MediaAssistantPlayer) -> None:
         """Destroy connections to the device."""

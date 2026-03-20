@@ -634,6 +634,7 @@ class SendspinPlaybackSession:
         # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
+        last_elapsed_update_s = 0.0
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
@@ -678,7 +679,7 @@ class SendspinPlaybackSession:
                             )
 
         async def _commit_pending_chunks() -> None:
-            nonlocal pending_duration_us
+            nonlocal pending_duration_us, last_elapsed_update_s
             while True:
                 pending = await pending_chunks.get()
                 if pending is None:
@@ -738,6 +739,13 @@ class SendspinPlaybackSession:
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
+                if self._timeline_start_us is not None:
+                    elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
+                    if elapsed_real_s - last_elapsed_update_s >= 1.0:
+                        last_elapsed_update_s = elapsed_real_s
+                        self.player._attr_elapsed_time = elapsed_real_s
+                        self.player._attr_elapsed_time_last_updated = time.time()
+                        self.player.update_state()
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
         self._attach_task_exception_logger(commit_task, "commit_pending_chunks")
