@@ -673,7 +673,7 @@ class SonicAnalysisProvider(PluginProvider):
         """Handle GET /api/sonic_analysis/clear_all — drop all signatures and reset index."""
         try:
             assert self.mass.music.database is not None
-            await self.mass.music.database._db.execute_fetchall(
+            await self.mass.music.database.execute(
                 f"DELETE FROM {DB_TABLE_SONIC_SIGNATURES}"
             )
             await self.mass.music.database.commit()
@@ -901,11 +901,11 @@ class SonicAnalysisProvider(PluginProvider):
         db_error = ""
         if self.mass.music.database is not None:
             try:
-                result = await self.mass.music.database._db.execute_fetchall(
-                    f"SELECT COUNT(*) FROM {DB_TABLE_SONIC_SIGNATURES}"
-                    f" WHERE item_id != '{CORPUS_STATS_ITEM_ID}'"
+                db_count = await self.mass.music.database.get_count_from_query(
+                    f"SELECT * FROM {DB_TABLE_SONIC_SIGNATURES}"
+                    " WHERE item_id != :skip",
+                    {"skip": CORPUS_STATS_ITEM_ID},
                 )
-                db_count = int(result[0][0]) if result else 0
             except Exception as exc:
                 db_count = -1
                 db_error = str(exc)
@@ -936,34 +936,35 @@ class SonicAnalysisProvider(PluginProvider):
             if self.mass.music.database is None:
                 return _cors_json({"signatures": [], "total": 0})
 
-            # Use raw SQL to avoid issues with the get_rows helper
             db = self.mass.music.database
-            count_sql = (
-                f"SELECT COUNT(*) as cnt FROM {DB_TABLE_SONIC_SIGNATURES}"
-                f" WHERE item_id != '{CORPUS_STATS_ITEM_ID}'"
+            base_query = (
+                f"SELECT * FROM {DB_TABLE_SONIC_SIGNATURES}"
+                " WHERE item_id != :skip"
             )
-            count_result = await db._db.execute_fetchall(count_sql)
-            total = int(count_result[0][0]) if count_result else 0
+            query_params = {"skip": CORPUS_STATS_ITEM_ID}
 
-            data_sql = (
+            total = await db.get_count_from_query(base_query, query_params)
+
+            all_rows = await db.get_rows_from_query(
                 f"SELECT item_id, provider, version, features"
                 f" FROM {DB_TABLE_SONIC_SIGNATURES}"
-                f" WHERE item_id != '{CORPUS_STATS_ITEM_ID}'"
-                f" LIMIT {limit} OFFSET {offset}"
+                " WHERE item_id != :skip",
+                query_params,
+                limit=limit,
+                offset=offset,
             )
-            rows = await db._db.execute_fetchall(data_sql)
 
             signatures = []
-            for row in rows:
-                feat_str = row[3] if len(row) > 3 else ""
+            for row in all_rows:
+                feat_str = row["features"] if "features" in row else ""
                 try:
                     feat_count = len(json.loads(feat_str)) if feat_str else 0
                 except (json.JSONDecodeError, TypeError):
                     feat_count = 0
                 signatures.append({
-                    "item_id": row[0],
-                    "provider": row[1],
-                    "version": row[2],
+                    "item_id": row["item_id"],
+                    "provider": row["provider"],
+                    "version": row["version"],
                     "feature_count": feat_count,
                 })
 
