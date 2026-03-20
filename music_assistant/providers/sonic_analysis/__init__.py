@@ -247,18 +247,17 @@ class SonicAnalysisProvider(PluginProvider):
         :returns: Number of successfully analyzed tracks.
         """
         async def _analyze_one(item_id: str, track: Any) -> bool:
-            async with self._analysis_semaphore:
-                for mapping in track.provider_mappings:
-                    try:
-                        await self._fetch_and_analyze(
-                            item_id, mapping.provider_instance, mapping.item_id
-                        )
-                        return True
-                    except Exception as exc:
-                        report_current_task_failure(
-                            f"Track {item_id} via {mapping.provider_instance}: {exc}"
-                        )
-                        continue
+            for mapping in track.provider_mappings:
+                try:
+                    await self._fetch_and_analyze(
+                        item_id, mapping.provider_instance, mapping.item_id
+                    )
+                    return True
+                except Exception as exc:
+                    report_current_task_failure(
+                        f"Track {item_id} via {mapping.provider_instance}: {exc}"
+                    )
+                    continue
             return False
 
         analyzed_count = 0
@@ -410,8 +409,10 @@ class SonicAnalysisProvider(PluginProvider):
     ) -> SonicSignature | None:
         """Extract, store and optionally index a sonic signature for a track.
 
-        Runs the blocking librosa extraction in a thread to avoid blocking the event loop.
-        Uses _analysis_semaphore to cap the number of concurrent analyses.
+        Runs the blocking librosa extraction in a thread to avoid blocking the
+        event loop. Callers are responsible for concurrency gating (the backfill
+        path uses ``_analysis_semaphore``; event-triggered paths use
+        ``_fetch_and_analyze`` which acquires the semaphore internally).
 
         :param item_id: Provider-scoped track identifier.
         :param provider_instance: Provider domain or instance ID that owns the track.
@@ -446,52 +447,60 @@ class SonicAnalysisProvider(PluginProvider):
         For local files the path is read directly via librosa; for streamed content
         a PCM pipeline is used (not yet implemented — placeholder logs a warning).
 
+        Acquires ``_analysis_semaphore`` to limit concurrent analyses across
+        both event-triggered and manually triggered code paths.
+
         :param item_id: Library track identifier (used for DB storage).
         :param provider: Provider instance ID that owns the track.
         :param provider_item_id: Provider-scoped track ID for stream details.
             Falls back to item_id if not provided.
         """
-        try:
-            audio: np.ndarray
-            sample_rate = 22050
-            prov_item_id = provider_item_id or item_id
-
-            stream_details: Any = None
+        async with self._analysis_semaphore:
             try:
-                provider_instance: Any = self.mass.get_provider(provider)
-                if provider_instance is not None and hasattr(
-                    provider_instance, "get_stream_details"
-                ):
-                    stream_details = await provider_instance.get_stream_details(
-                        prov_item_id, MediaType.TRACK
+                audio: np.ndarray
+                sample_rate = 22050
+                prov_item_id = provider_item_id or item_id
+
+                stream_details: Any = None
+                try:
+                    prov_inst: Any = self.mass.get_provider(provider)
+                    if prov_inst is not None and hasattr(
+                        prov_inst, "get_stream_details"
+                    ):
+                        stream_details = await prov_inst.get_stream_details(
+                            prov_item_id, MediaType.TRACK
+                        )
+                except Exception:
+                    self.logger.debug(
+                        "Could not resolve stream details for %s/%s",
+                        provider,
+                        item_id,
                     )
-            except Exception:
-                self.logger.debug("Could not resolve stream details for %s/%s", provider, item_id)
 
-            file_path: str | None = (
-                str(stream_details.path)
-                if stream_details is not None and getattr(stream_details, "path", None)
-                else None
-            )
-            if file_path is not None:
-                audio, _sr = await asyncio.to_thread(
-                    librosa.load, file_path, sr=sample_rate, mono=True
+                file_path: str | None = (
+                    str(stream_details.path)
+                    if stream_details is not None
+                    and getattr(stream_details, "path", None)
+                    else None
                 )
-            else:
-                # Streaming track analysis is intentionally not supported in v1.
-                # Only local filesystem tracks with a resolvable path are analysed.
-                # This can be extended in a future iteration using a PCM pipeline.
-                self.logger.debug(
-                    "Skipping analysis for %s/%s: no local file path available."
-                    " Streaming track analysis is not supported in v1.",
-                    provider,
-                    item_id,
-                )
-                return
+                if file_path is not None:
+                    audio, _sr = await asyncio.to_thread(
+                        librosa.load, file_path, sr=sample_rate, mono=True
+                    )
+                else:
+                    self.logger.debug(
+                        "Skipping analysis for %s/%s: no local file path."
+                        " Streaming analysis is not supported in v1.",
+                        provider,
+                        item_id,
+                    )
+                    return
 
-            await self._analyze_track(item_id, provider, audio, sample_rate)
-        except Exception as exc:
-            self.logger.warning("Analysis failed for %s/%s: %s", provider, item_id, exc)
+                await self._analyze_track(item_id, provider, audio, sample_rate)
+            except Exception as exc:
+                self.logger.warning(
+                    "Analysis failed for %s/%s: %s", provider, item_id, exc
+                )
 
     def _get_or_assign_label(self, item_id: str, provider: str) -> int:
         """Return the integer label for a (item_id, provider) pair, assigning one if new."""
