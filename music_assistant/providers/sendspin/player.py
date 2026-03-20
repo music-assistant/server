@@ -9,7 +9,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models import AudioCodec, MediaCommand
-from aiosendspin.models.types import PlaybackStateType
+from aiosendspin.models.types import PlaybackStateType, PlayerCommand
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -166,10 +166,14 @@ class SendspinPlayer(Player):
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
-            PlayerFeature.VOLUME_SET,
-            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.MULTI_DEVICE_DSP,
         }
+        if sendspin_client.info.player_support:
+            _supported_commands = sendspin_client.info.player_support.supported_commands
+            if PlayerCommand.VOLUME in _supported_commands:
+                self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+            if PlayerCommand.MUTE in _supported_commands:
+                self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
         self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
         if device_info := sendspin_client.info.device_info:
