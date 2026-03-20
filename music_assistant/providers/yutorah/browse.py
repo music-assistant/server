@@ -76,78 +76,61 @@ class YuTorahBrowseMixin:
         """
         section, p1, p2, *_ = [*path.split("://", 1)[1].split("/"), "", ""]
 
-        if section == "":
-            return [
-                BrowseFolder(
-                    item_id="series",
-                    provider=self.instance_id,
-                    path=f"{self.domain}://series",
-                    name="Browse by Series",
-                    translation_key="podcasts",
-                    is_playable=False,
-                ),
-                BrowseFolder(
-                    item_id="teachers",
-                    provider=self.instance_id,
-                    path=f"{self.domain}://teachers",
-                    name="Browse by Teacher",
-                    translation_key="artists",
-                    is_playable=False,
-                ),
-                BrowseFolder(
-                    item_id="categories",
-                    provider=self.instance_id,
-                    path=f"{self.domain}://categories",
-                    name="Browse by Topic",
-                    is_playable=False,
-                ),
-                BrowseFolder(
-                    item_id="recent",
-                    provider=self.instance_id,
-                    path=f"{self.domain}://recent",
-                    name="Recent Shiurim",
-                    is_playable=True,
-                ),
-            ]
-
+        if not section:
+            return self._browse_root()
         if section == "series" and not p1:
             return await self._browse_all_series()
         if section == "series" and p1 and p2:
-            return await self._browse_series_teacher(p1, p2)
+            return await self._browse_series_teacher(_segment_id(p1), _segment_id(p2))
         if section == "series" and p1:
-            series_id = _segment_id(p1)
-            teacher_folders, series_list = await asyncio.gather(
-                self._browse_series_teachers(p1),
-                self._fetch_series_list(),
-            )
-            series_item: Podcast | None = next(
-                (
-                    _series_to_podcast(s, self.instance_id)
-                    for s in series_list
-                    if str(s.get("ID") or s.get("seriesID") or "") == series_id
-                ),
-                None,
-            )
-            items: list[Podcast | BrowseFolder] = []
-            if series_item:
-                items.append(series_item)
-            items.extend(teacher_folders)
-            return items
-
+            return await self._browse_series(_segment_id(p1))
         if section == "teachers" and not p1:
             return await self._browse_all_teachers()
         if section == "teachers" and p1:
             return await self._browse_teacher_episodes(_segment_id(p1))
-
         if section == "categories" and not p1:
             return await self._browse_category_list()
         if section == "categories" and p1:
             return await self._browse_category(_segment_id(p1))
-
         if section == "recent":
             return await self._browse_recent()
-
         return []
+
+    def _browse_root(self) -> list[BrowseFolder]:
+        """Return the four top-level browse folders."""
+        sections = [
+            ("series", "Browse by Series", "podcasts", False),
+            ("teachers", "Browse by Teacher", "artists", False),
+            ("categories", "Browse by Topic", None, False),
+            ("recent", "Recent Shiurim", None, True),
+        ]
+        return [
+            BrowseFolder(
+                item_id=item_id,
+                provider=self.instance_id,
+                path=f"{self.domain}://{item_id}",
+                name=name,
+                translation_key=translation_key,
+                is_playable=playable,
+            )
+            for item_id, name, translation_key, playable in sections
+        ]
+
+    async def _browse_series(self, series_id: str) -> list[Podcast | BrowseFolder]:
+        """Return the series Podcast plus teacher sub-folders for a given series ID."""
+        teacher_folders, series_list = await asyncio.gather(
+            self._browse_series_teachers(series_id),
+            self._fetch_series_list(),
+        )
+        series_raw = next(
+            (s for s in series_list if str(s.get("ID") or s.get("seriesID") or "") == series_id),
+            None,
+        )
+        items: list[Podcast | BrowseFolder] = []
+        if series_raw:
+            items.append(_series_to_podcast(series_raw, self.instance_id))
+        items.extend(teacher_folders)
+        return items
 
     async def _browse_all_series(self) -> list[BrowseFolder]:
         """Return all series as browse folders (each expands to teacher sub-folders)."""
@@ -170,15 +153,21 @@ class YuTorahBrowseMixin:
         folders.sort(key=lambda f: f.name.lower())
         return folders
 
-    async def _browse_series_teachers(self, series_segment: str) -> list[BrowseFolder]:
-        """Return teacher sub-folders for a series, derived from search facets.
-
-        :param series_segment: Full path segment for this series (e.g. 'Daf Yomi|4015').
-        """
-        series_id = _segment_id(series_segment)
-        data = await self._api_get("search/get", searchTerm="", seriesID=series_id, getFacets=True)
+    async def _browse_series_teachers(self, series_id: str) -> list[BrowseFolder]:
+        """Return teacher sub-folders for a series, derived from search facets."""
+        data, series_list = await asyncio.gather(
+            self._api_get("search/get", searchTerm="", seriesID=series_id, getFacets=True),
+            self._fetch_series_list(),
+        )
         if not data or not isinstance(data, dict):
             return []
+
+        series_raw = next(
+            (s for s in series_list if str(s.get("ID") or s.get("seriesID") or "") == series_id),
+            None,
+        )
+        series_name = (series_raw.get("name") or "") if series_raw else ""
+        series_seg = _path_segment(series_name, series_id)
 
         teachers = (data.get("facet_counts") or {}).get("facet_fields", {}).get("teachers", [])
         folders = []
@@ -192,7 +181,7 @@ class YuTorahBrowseMixin:
                 BrowseFolder(
                     item_id=f"st_{series_id}_{tid}",
                     provider=self.instance_id,
-                    path=f"{self.domain}://series/{series_segment}/{_path_segment(name, tid)}",
+                    path=f"{self.domain}://series/{series_seg}/{_path_segment(name, tid)}",
                     name=f"{name} ({count})",
                     is_playable=False,
                 )
@@ -200,11 +189,9 @@ class YuTorahBrowseMixin:
         return folders
 
     async def _browse_series_teacher(
-        self, series_segment: str, teacher_segment: str
+        self, series_id: str, teacher_id: str
     ) -> list[Podcast | PodcastEpisode]:
         """Return a subscribable st_ Podcast followed by its episodes."""
-        series_id = _segment_id(series_segment)
-        teacher_id = _segment_id(teacher_segment)
         episodes, teachers_map, series_list = await asyncio.gather(
             self._browse_series_teacher_episodes(series_id, teacher_id),
             self._fetch_teachers_map(),

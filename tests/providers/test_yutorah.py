@@ -447,14 +447,15 @@ async def test_browse_series_list(provider: YuTorahProvider) -> None:
     assert results[0].name == "Daf Yomi"  # alphabetically first
 
 
-async def test_browse_series_list_uses_name_id_segment_in_path(provider: YuTorahProvider) -> None:
-    """Series folders encode the name and ID in their browse path as 'name|id'."""
+async def test_browse_series_list_path_format(provider: YuTorahProvider) -> None:
+    """Series folders use name|id encoding in their browse path."""
     series_list = [{"ID": "100", "name": "Daf Yomi"}]
     with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)):
         results = await provider.browse("yutorah://series")
     folder = results[0]
     assert isinstance(folder, BrowseFolder)
     assert folder.path == "yutorah://series/Daf Yomi|100"
+    assert folder.name == "Daf Yomi"
 
 
 async def test_browse_series_authenticated(auth_provider: YuTorahProvider) -> None:
@@ -483,12 +484,14 @@ async def test_browse_series_authenticated(auth_provider: YuTorahProvider) -> No
 
 
 async def test_browse_series_teacher_episodes(auth_provider: YuTorahProvider) -> None:
-    """yutorah://series/<series>/<teacher> returns a subscribable Podcast then episodes."""
+    """yutorah://series/<series_id>/<teacher_id> returns a subscribable Podcast then episodes."""
     series_list = [{"ID": "100", "name": "Daf Yomi"}]
     teachers_map = {"7": SAMPLE_TEACHER}
 
     async def api_side(endpoint: str, **_kw: Any) -> Any:
-        return [SAMPLE_SEARCH_DOC] if endpoint == "search/get" else None
+        if endpoint == "search/get":
+            return [SAMPLE_SEARCH_DOC]
+        return None
 
     with (
         patch.object(auth_provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)),
@@ -564,6 +567,7 @@ async def test_browse_categories(provider: YuTorahProvider) -> None:
     assert "Kashrut" in folder.name
     assert "Jewish Law" in folder.name
     assert folder.path == "yutorah://categories/Jewish Law — Kashrut|50"
+    assert "Kashrut" in folder.name
 
 
 async def test_browse_category_by_id(provider: YuTorahProvider) -> None:
@@ -582,7 +586,7 @@ async def test_browse_category_by_id(provider: YuTorahProvider) -> None:
         return None
 
     with patch.object(provider, "_api_get", new=AsyncMock(side_effect=api_side)):
-        results = await provider.browse("yutorah://categories/50")
+        results = await provider.browse("yutorah://categories/Jewish Law — Kashrut|50")
     assert len(results) == 1
     assert results[0].name == "Daf Yomi"
 

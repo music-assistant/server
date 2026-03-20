@@ -262,7 +262,8 @@ def _parse_duration(s: str) -> int:
 def _path_segment(name: str, item_id: str) -> str:
     """Build a browse path segment encoding display name and ID as 'name|id'.
 
-    The frontend displays the name portion; the provider parses the ID portion for API calls.
+    The frontend can display the name portion; the provider parses the ID for API calls.
+    Mirrors the pattern used by the Apple Music provider.
     """
     safe = name.replace("|", "-").replace("/", "-").strip()
     return f"{safe}|{item_id}"
@@ -277,7 +278,6 @@ def _slugify(name: str) -> str:
     """Create a URL-safe slug from a display name.
 
     Used only for building decorative external website URLs (e.g. yutorah.org/series/daf-yomi).
-    Browse paths use numeric IDs instead.
     """
     result = name.lower()
     for ch in ",'\"()[]{}":
