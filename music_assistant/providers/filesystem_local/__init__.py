@@ -63,6 +63,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
+    update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
@@ -408,8 +409,10 @@ class LocalFileSystemProvider(MusicProvider):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
                 if processed_count % 50 == 0 or processed_count == total_items:
-                    update_current_task_progress_text(
-                        f"Processed {processed_count}/{total_items} files"
+                    update_current_task_progress_from_index(
+                        processed_count,
+                        total_items,
+                        f"Processed {processed_count}/{total_items} files",
                     )
 
             async with TaskManager(self.mass, 16) as tm:
