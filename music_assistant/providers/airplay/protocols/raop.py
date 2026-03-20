@@ -16,7 +16,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
 )
-from music_assistant.providers.airplay.helpers import get_cli_binary
+from music_assistant.providers.airplay.helpers import get_cli_binary, resolve_if_ip
 
 from ._protocol import AirPlayProtocol
 
@@ -36,10 +36,12 @@ class RaopStream(AirPlayProtocol):
 
     async def start(self, start_ntp: int) -> None:
         """Start CLIRaop process."""
-        assert self.player.raop_discovery_info is not None  # for type checker
+        if self.player.raop_discovery_info is None:
+            raise RuntimeError(f"RAOP service not discovered for {self.player.display_name}")
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
-        extra_args += ["-if", self.mass.streams.bind_ip]
+        if_ip = resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
+        extra_args += ["-if", if_ip]
         if self.player.config.get_value(CONF_ENCRYPTION, True):
             extra_args += ["-encrypt"]
         if self.player.config.get_value(CONF_ALAC_ENCODE, True):

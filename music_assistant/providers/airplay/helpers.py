@@ -5,11 +5,14 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import socket
 import time
+from ipaddress import ip_address
 from typing import TYPE_CHECKING
 
 from zeroconf import IPVersion
 
+from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_2_DEFAULT_MODELS,
@@ -20,10 +23,72 @@ from music_assistant.providers.airplay.constants import (
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.mass import MusicAssistant
+
 _LOGGER = logging.getLogger(__name__)
 
 # NTP epoch delta: difference between Unix epoch (1970) and NTP epoch (1900)
 NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
+
+
+def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
+    """Resolve best local interface IP for cliraop's -if argument.
+
+    :param mass: The MusicAssistant instance.
+    :param target_ip: The IP address of the target AirPlay device.
+    """
+    # 1. Prefer an explicitly configured zeroconf interface if the user has specified
+    #    a specific IP/interface (not the automatic "default" or "all" choices).
+    zc_iface = str(mass.discovery.config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
+    if zc_iface not in ("default", "all", ""):
+        return zc_iface
+    # 2. Use the OS routing table via a connected UDP socket to find the outbound
+    #    interface for the specific Apple TV address. This correctly handles
+    #    multi-homed hosts where different Apple TVs are on different subnets.
+    # 3. Fall back to publish_ip if it is a bindable local interface (handles
+    #    Docker/OrbStack where the container needs to advertise the host IP).
+    # 4. Fall back to bind_ip as a last resort.
+    if_ip = str(mass.streams.bind_ip)
+    try:
+        is_ipv6_target = ip_address(target_ip).version == 6
+    except ValueError:
+        is_ipv6_target = False
+    route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
+    route_target: tuple[str, int] | tuple[str, int, int, int] = (
+        (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
+    )
+    _s = socket.socket(route_family, socket.SOCK_DGRAM)
+    try:
+        _s.connect(route_target)
+        routed_ip = _s.getsockname()[0]
+        if routed_ip and routed_ip not in ("0.0.0.0", ""):
+            if_ip = routed_ip
+    except OSError:
+        pass
+    finally:
+        _s.close()
+    if if_ip in ("0.0.0.0", ""):
+        # Routing gave no usable result; try publish_ip as a bindable override
+        # (Docker/OrbStack scenario where the host IP should be advertised)
+        publish_ip = str(mass.streams.publish_ip or "")
+        if publish_ip:
+            try:
+                publish_is_ipv6 = ip_address(publish_ip).version == 6
+            except ValueError:
+                publish_is_ipv6 = False
+            publish_family = socket.AF_INET6 if publish_is_ipv6 else socket.AF_INET
+            bind_target: tuple[str, int] | tuple[str, int, int, int] = (
+                (publish_ip, 0, 0, 0) if publish_is_ipv6 else (publish_ip, 0)
+            )
+            _s = socket.socket(publish_family, socket.SOCK_DGRAM)
+            try:
+                _s.bind(bind_target)
+                if_ip = publish_ip
+            except OSError:
+                pass
+            finally:
+                _s.close()
+    return if_ip
 
 
 def convert_airplay_volume(value: float) -> int:

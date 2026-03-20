@@ -173,7 +173,16 @@ class AirPlayProvider(PlayerProvider):
         else:
             return  # should not happen, but guard just in case
 
-        address = get_primary_ip_address_from_zeroconf(discovery_info)
+        # get address from discovery_info; fall back to airplay or raop info if not available
+        # (the RAOP service announcement may not include the A record immediately)
+        address = (
+            get_primary_ip_address_from_zeroconf(discovery_info)
+            or (
+                airplay_discovery_info
+                and get_primary_ip_address_from_zeroconf(airplay_discovery_info)
+            )
+            or (raop_discovery_info and get_primary_ip_address_from_zeroconf(raop_discovery_info))
+        )
         if not address:
             return  # should not happen, but guard just in case
 
