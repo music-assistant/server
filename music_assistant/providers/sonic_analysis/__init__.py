@@ -17,6 +17,11 @@ from music_assistant_models.media_items import Track
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.constants import DB_TABLE_SONIC_SIGNATURES
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress_from_index,
+    update_current_task_progress_text,
+)
 from music_assistant.helpers.sonic_analysis import (
     SIGNATURE_DIMENSIONS,
     SIGNATURE_VERSION,
@@ -204,19 +209,91 @@ class SonicAnalysisProvider(PluginProvider):
                 allow_retry=True,
             )
 
+    async def _collect_unanalyzed_tracks(
+        self, all_tracks: list[Any]
+    ) -> tuple[list[tuple[str, Any]], int]:
+        """Separate library tracks into those needing analysis and those already done.
+
+        :param all_tracks: Full list of library tracks to inspect.
+        :returns: Tuple of (tracks_to_analyze, skipped_count).
+        """
+        to_analyze: list[tuple[str, Any]] = []
+        skipped_count = 0
+        for track in all_tracks:
+            item_id = str(track.item_id)
+            has_signature = False
+            for mapping in track.provider_mappings:
+                existing = await self.get_sonic_signature(item_id, mapping.provider_instance)
+                if existing:
+                    has_signature = True
+                    break
+            if has_signature:
+                skipped_count += 1
+            else:
+                to_analyze.append((item_id, track))
+        return to_analyze, skipped_count
+
+    async def _run_concurrent_analyses(
+        self,
+        to_analyze: list[tuple[str, Any]],
+        skipped_count: int,
+        total: int,
+    ) -> int:
+        """Run analyses concurrently, bounded by the configured semaphore.
+
+        :param to_analyze: List of (item_id, track) pairs to analyze.
+        :param skipped_count: Number of tracks already skipped (for progress reporting).
+        :param total: Total number of tracks (for progress reporting).
+        :returns: Number of successfully analyzed tracks.
+        """
+        async def _analyze_one(item_id: str, track: Any) -> bool:
+            async with self._analysis_semaphore:
+                for mapping in track.provider_mappings:
+                    try:
+                        await self._fetch_and_analyze(
+                            item_id, mapping.provider_instance, mapping.item_id
+                        )
+                        return True
+                    except Exception as exc:
+                        report_current_task_failure(
+                            f"Track {item_id} via {mapping.provider_instance}: {exc}"
+                        )
+                        continue
+            return False
+
+        analyzed_count = 0
+        pending: set[asyncio.Task[bool]] = set()
+        processed = 0
+        for item_id, track in to_analyze:
+            task = asyncio.create_task(_analyze_one(item_id, track))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
+
+            if len(pending) >= int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2):
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for t in done:
+                    if t.result():
+                        analyzed_count += 1
+                    processed += 1
+                update_current_task_progress_from_index(
+                    skipped_count + processed,
+                    total,
+                    f"Analyzed {analyzed_count} of {len(to_analyze)} ({processed} processed)",
+                )
+
+        if pending:
+            done_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in done_results:
+                if result is True:
+                    analyzed_count += 1
+                processed += 1
+
+        return analyzed_count
+
     async def _backfill_unanalyzed_tracks(self) -> None:
         """Background task: analyze all local tracks without signatures."""
-        from music_assistant.controllers.tasks.context import (
-            report_current_task_failure,
-            update_current_task_progress_from_index,
-            update_current_task_progress_text,
-        )
-
         self.logger.info("Starting background sonic analysis backfill...")
-        analyzed_count = 0
-        skipped_count = 0
 
-        # Paginate through ALL library tracks (default limit is 500)
         update_current_task_progress_text("Fetching library tracks...")
         page_size = 500
         offset = 0
@@ -242,71 +319,18 @@ class SonicAnalysisProvider(PluginProvider):
         total = len(all_tracks)
         self.logger.info("Backfill: %d total library tracks to process", total)
 
-        # Collect tracks that need analysis
-        to_analyze: list[tuple[str, Any]] = []
-        for track in all_tracks:
-            item_id = str(track.item_id)
-            has_signature = False
-            for mapping in track.provider_mappings:
-                existing = await self.get_sonic_signature(item_id, mapping.provider_instance)
-                if existing:
-                    has_signature = True
-                    break
-            if has_signature:
-                skipped_count += 1
-            else:
-                to_analyze.append((item_id, track))
+        to_analyze, skipped_count = await self._collect_unanalyzed_tracks(all_tracks)
 
         self.logger.info(
             "Backfill: %d to analyze, %d already have signatures", len(to_analyze), skipped_count
         )
         update_current_task_progress_from_index(
-            skipped_count, total, f"Checked existing: {skipped_count} skipped, {len(to_analyze)} to analyze"
+            skipped_count,
+            total,
+            f"Checked existing: {skipped_count} skipped, {len(to_analyze)} to analyze",
         )
 
-        # Process in concurrent batches using the semaphore
-        async def _analyze_one(item_id: str, track: Any) -> bool:
-            async with self._analysis_semaphore:
-                for mapping in track.provider_mappings:
-                    try:
-                        await self._fetch_and_analyze(
-                            item_id, mapping.provider_instance, mapping.item_id
-                        )
-                        return True
-                    except Exception as exc:
-                        report_current_task_failure(
-                            f"Track {item_id} via {mapping.provider_instance}: {exc}"
-                        )
-                        continue
-            return False
-
-        # Launch all analyses concurrently, semaphore limits parallelism
-        pending: set[asyncio.Task[bool]] = set()
-        processed = 0
-        for item_id, track in to_analyze:
-            task = asyncio.create_task(_analyze_one(item_id, track))
-            pending.add(task)
-            task.add_done_callback(pending.discard)
-
-            # When we hit the concurrency limit, wait for one to finish
-            if len(pending) >= int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2):
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                for t in done:
-                    if t.result():
-                        analyzed_count += 1
-                    processed += 1
-                update_current_task_progress_from_index(
-                    skipped_count + processed, total,
-                    f"Analyzed {analyzed_count} of {len(to_analyze)} ({processed} processed)",
-                )
-
-        # Wait for remaining
-        if pending:
-            done = await asyncio.gather(*pending, return_exceptions=True)
-            for result in done:
-                if result is True:
-                    analyzed_count += 1
-                processed += 1
+        analyzed_count = await self._run_concurrent_analyses(to_analyze, skipped_count, total)
 
         if analyzed_count > 0:
             update_current_task_progress_text("Rebuilding search index...")
@@ -969,7 +993,7 @@ class SonicAnalysisProvider(PluginProvider):
 
             signatures = []
             for row in all_rows:
-                feat_str = row["features"] if "features" in row else ""
+                feat_str = row.get("features", "")
                 try:
                     feat_count = len(json.loads(feat_str)) if feat_str else 0
                 except (json.JSONDecodeError, TypeError):
@@ -1055,7 +1079,10 @@ class SonicAnalysisProvider(PluginProvider):
 
 _DEBUG_HTML = """\
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sonic Analysis Debug</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1063,31 +1090,42 @@ body{font-family:monospace;background:#0a0a0f;color:#e0e0ea;padding:1.5rem}
 h1{font-size:1.1rem;color:#00e5a0;margin-bottom:1rem}
 h1 span{color:#7a7a8e;font-weight:400}
 h2{font-size:.8rem;color:#7a7a8e;text-transform:uppercase;letter-spacing:.1em;margin:1rem 0 .5rem}
-.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.5rem;margin-bottom:1rem}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
+gap:.5rem;margin-bottom:1rem}
 .c{background:#12121a;border:1px solid #2a2a3a;border-radius:6px;padding:.75rem}
 .c .l{font-size:.6rem;color:#7a7a8e;text-transform:uppercase;letter-spacing:.08em}
 .c .v{font-size:1.4rem;font-weight:700;color:#00e5a0;margin-top:.25rem}
 .c .v.w{color:#ff6b6b}.c .v.i{color:#6bc5ff}.c .v.d{color:#7a7a8e}
-input,select{font-family:monospace;font-size:.8rem;padding:.4rem .6rem;background:#12121a;border:1px solid #2a2a3a;
-border-radius:4px;color:#e0e0ea;outline:0}input:focus{border-color:#00e5a0}
-button{font-family:monospace;font-size:.75rem;font-weight:600;padding:.4rem 1rem;border:1px solid #00e5a0;
+input,select{font-family:monospace;font-size:.8rem;padding:.4rem .6rem;
+background:#12121a;border:1px solid #2a2a3a;
+border-radius:4px;color:#e0e0ea;outline:0}
+input:focus{border-color:#00e5a0}
+button{font-family:monospace;font-size:.75rem;font-weight:600;
+padding:.4rem 1rem;border:1px solid #00e5a0;
 background:0 0;color:#00e5a0;border-radius:4px;cursor:pointer;text-transform:uppercase}
 button:hover{background:#00e5a0;color:#0a0a0f}
 .row{display:flex;gap:.5rem;align-items:center;margin-bottom:.75rem;flex-wrap:wrap}
 table{width:100%;border-collapse:collapse;font-size:.75rem;margin:.5rem 0}
-th{background:#1a1a26;padding:.4rem .6rem;text-align:left;color:#7a7a8e;font-size:.65rem;text-transform:uppercase}
+th{background:#1a1a26;padding:.4rem .6rem;text-align:left;
+color:#7a7a8e;font-size:.65rem;text-transform:uppercase}
 td{padding:.4rem .6rem;border-bottom:1px solid #2a2a3a}
 tr:hover td{background:#00e5a010}
-.log{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;padding:.5rem;font-size:.7rem;
+.log{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;
+padding:.5rem;font-size:.7rem;
 max-height:200px;overflow:auto;color:#7a7a8e;line-height:1.5;margin:.5rem 0}
-.ri{display:flex;align-items:center;gap:.75rem;padding:.5rem .75rem;background:#12121a;
+.ri{display:flex;align-items:center;gap:.75rem;padding:.5rem .75rem;
+background:#12121a;
 border:1px solid #2a2a3a;border-radius:4px;margin-bottom:.4rem}
 .ri:hover{border-color:#00e5a0}
 .ri .rk{color:#7a7a8e;min-width:24px;text-align:center;font-size:.7rem;font-weight:700}
 .ri .id{font-weight:600;font-size:.78rem}.ri .pv{font-size:.65rem;color:#7a7a8e}
-.ri .ds{font-weight:700;padding:.2rem .5rem;border-radius:3px;min-width:60px;text-align:center;font-size:.8rem}
-.dc{background:#00e5a018;color:#00e5a0}.dm{background:#6bc5ff18;color:#6bc5ff}.df{background:#ff6b6b18;color:#ff6b6b}
-pre.raw{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;padding:.5rem;font-size:.7rem;
+.ri .ds{font-weight:700;padding:.2rem .5rem;border-radius:3px;
+min-width:60px;text-align:center;font-size:.8rem}
+.dc{background:#00e5a018;color:#00e5a0}
+.dm{background:#6bc5ff18;color:#6bc5ff}
+.df{background:#ff6b6b18;color:#ff6b6b}
+pre.raw{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;
+padding:.5rem;font-size:.7rem;
 overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#7a7a8e}
 </style></head><body>
 <h1>sonic_analysis <span>// debug console</span></h1>
@@ -1101,9 +1139,12 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <h2>Status</h2>
 <div class="g" id="sg"></div>
 <button onclick="fetchStatus()">Refresh Status</button>
-<button onclick="triggerBackfill()" style="border-color:#6bc5ff;color:#6bc5ff">Trigger Backfill</button>
-<button onclick="rebuildIndex()" style="border-color:#ff6b6b;color:#ff6b6b">Rebuild Index</button>
-<button onclick="if(confirm('Delete ALL signatures and reset index?'))clearAll()" style="border-color:#ff6b6b;color:#ff6b6b">Clear All Data</button>
+<button onclick="triggerBackfill()"
+  style="border-color:#6bc5ff;color:#6bc5ff">Trigger Backfill</button>
+<button onclick="rebuildIndex()"
+  style="border-color:#ff6b6b;color:#ff6b6b">Rebuild Index</button>
+<button onclick="if(confirm('Delete ALL signatures and reset index?'))clearAll()"
+  style="border-color:#ff6b6b;color:#ff6b6b">Clear All Data</button>
 <div id="dberr" style="color:#ff6b6b;font-size:.75rem;margin-top:.5rem"></div>
 
 <h2>Log</h2>
@@ -1123,11 +1164,18 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <input id="si" placeholder="item_id" style="width:180px">
 <input id="sl" type="number" value="10" min="1" max="100" style="width:60px">
 <button onclick="doSearch()">Search</button>
-<button onclick="makePlaylist()" style="border-color:#6bc5ff;color:#6bc5ff">Make Playlist</button>
+<button onclick="makePlaylist()"
+  style="border-color:#6bc5ff;color:#6bc5ff">Make Playlist</button>
 </div>
 <div class="row" style="font-size:.75rem;gap:1rem">
-<label style="color:#7a7a8e">Genre: <input id="gw" type="range" min="0" max="100" value="0" style="width:100px;vertical-align:middle"> <span id="gwv">0%</span></label>
-<label style="color:#7a7a8e">Year: <input id="yw" type="range" min="0" max="100" value="0" style="width:100px;vertical-align:middle"> <span id="ywv">0%</span></label>
+<label style="color:#7a7a8e">Genre:
+  <input id="gw" type="range" min="0" max="100" value="0"
+    style="width:100px;vertical-align:middle">
+  <span id="gwv">0%</span></label>
+<label style="color:#7a7a8e">Year:
+  <input id="yw" type="range" min="0" max="100" value="0"
+    style="width:100px;vertical-align:middle">
+  <span id="ywv">0%</span></label>
 </div>
 <div id="sr"></div>
 
@@ -1148,15 +1196,33 @@ var BASE='%%BASE_URL%%';
 var pg=0,PS=50;
 var TOKEN=localStorage.getItem('sa_token')||'';
 if(TOKEN)document.getElementById('tk').value=TOKEN;
-function saveToken(){TOKEN=document.getElementById('tk').value.trim();localStorage.setItem('sa_token',TOKEN);fetchStatus();fetchSigs()}
+function saveToken(){
+  TOKEN=document.getElementById('tk').value.trim();
+  localStorage.setItem('sa_token',TOKEN);
+  fetchStatus();fetchSigs()
+}
 
-document.getElementById('gw').oninput=function(){document.getElementById('gwv').textContent=this.value+'%'};
-document.getElementById('yw').oninput=function(){document.getElementById('ywv').textContent=this.value+'%'};
-function getWeights(){return{genre_weight:document.getElementById('gw').value/100,year_weight:document.getElementById('yw').value/100}}
+document.getElementById('gw').oninput=function(){
+  document.getElementById('gwv').textContent=this.value+'%'
+};
+document.getElementById('yw').oninput=function(){
+  document.getElementById('ywv').textContent=this.value+'%'
+};
+function getWeights(){
+  return{
+    genre_weight:document.getElementById('gw').value/100,
+    year_weight:document.getElementById('yw').value/100
+  }
+}
 
 function cl(p){while(p.firstChild)p.removeChild(p.firstChild)}
 function tx(t){return document.createTextNode(t)}
-function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text)e.textContent=text;return e}
+function mk(tag,cls,text){
+  var e=document.createElement(tag);
+  if(cls)e.className=cls;
+  if(text)e.textContent=text;
+  return e
+}
 
 function logMsg(m,ok){
   var d=document.getElementById('lo');
@@ -1170,7 +1236,10 @@ function logMsg(m,ok){
 function api(ep,params){
   var u=BASE+'/'+ep;
   if(params){var s=new URLSearchParams(params);u+='?'+s.toString()}
-  return fetch(u).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()});
+  return fetch(u).then(function(r){
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    return r.json()
+  });
 }
 
 function fetchStatus(){
@@ -1232,7 +1301,9 @@ function fetchSigs(){
     if(!d.signatures.length){w.appendChild(mk('div','','No signatures'));return}
     var t=mk('table');
     var th=mk('thead');var hr=mk('tr');
-    ['#','Item ID','Provider','Ver','Feat',''].forEach(function(h){hr.appendChild(mk('th','',h))});
+    ['#','Item ID','Provider','Ver','Feat',''].forEach(function(h){
+      hr.appendChild(mk('th','',h))
+    });
     th.appendChild(hr);t.appendChild(th);
     var tb=mk('tbody');
     d.signatures.forEach(function(s,i){
@@ -1244,7 +1315,9 @@ function fetchSigs(){
       r.appendChild(mk('td','',String(s.feature_count)));
       var btn=mk('button','','Similar');
       btn.style.padding='0.15rem 0.4rem';btn.style.fontSize='0.6rem';
-      btn.addEventListener('click',function(){document.getElementById('si').value=s.item_id;doSearch()});
+      btn.addEventListener('click',function(){
+        document.getElementById('si').value=s.item_id;doSearch()
+      });
       var btd=mk('td');btd.appendChild(btn);r.appendChild(btd);
       tb.appendChild(r);
     });
@@ -1262,10 +1335,21 @@ function doSearch(){
   var wt=getWeights();
   var w=document.getElementById('sr');cl(w);
   w.appendChild(mk('div','','Searching...'));
-  logMsg('Searching similar to '+id+' (genre='+Math.round(wt.genre_weight*100)+'% year='+Math.round(wt.year_weight*100)+'%)...');
-  api('similar',{item_id:id,limit:lim,genre_weight:wt.genre_weight,year_weight:wt.year_weight}).then(function(d){
+  logMsg(
+    'Searching similar to '+id
+    +' (genre='+Math.round(wt.genre_weight*100)
+    +'% year='+Math.round(wt.year_weight*100)+'%)...'
+  );
+  api('similar',{
+    item_id:id,limit:lim,
+    genre_weight:wt.genre_weight,year_weight:wt.year_weight
+  }).then(function(d){
     cl(w);
-    if(!d.analyzed){w.appendChild(mk('div','','Not analyzed yet'));logMsg('No signature for '+id,false);return}
+    if(!d.analyzed){
+      w.appendChild(mk('div','','Not analyzed yet'));
+      logMsg('No signature for '+id,false);
+      return
+    }
     if(!d.items.length){w.appendChild(mk('div','','No results'));return}
     d.items.forEach(function(it,i){
       var dist=it.distance;
@@ -1281,7 +1365,10 @@ function doSearch(){
       w.appendChild(row);
     });
     logMsg('Found '+d.items.length+' similar tracks',true);
-  }).catch(function(e){cl(w);w.appendChild(mk('div','',e.message));logMsg('Search error: '+e.message,false)});
+  }).catch(function(e){
+    cl(w);w.appendChild(mk('div','',e.message));
+    logMsg('Search error: '+e.message,false)
+  });
 }
 
 function makePlaylist(){
@@ -1291,10 +1378,14 @@ function makePlaylist(){
   var w=document.getElementById('sr');
   w.appendChild(mk('div','','Creating playlist...'));
   var wt=getWeights();
-  api('make_playlist',{item_id:id,genre_weight:wt.genre_weight,year_weight:wt.year_weight}).then(function(d){
+  api('make_playlist',{
+    item_id:id,genre_weight:wt.genre_weight,year_weight:wt.year_weight
+  }).then(function(d){
     if(d.status==='created'){
       logMsg('Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks!',true);
-      w.appendChild(mk('div','','Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks'));
+      w.appendChild(mk('div','',
+        'Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks'
+      ));
     } else {
       logMsg('Playlist error: '+(d.error||d.status),false);
     }
@@ -1307,7 +1398,10 @@ function doRaw(){
   var o=document.getElementById('ro');
   o.textContent='Loading...';
   var params={};
-  if(ps)ps.split('&').forEach(function(p){var kv=p.split('=');if(kv[0])params[kv[0].trim()]=(kv[1]||'').trim()});
+  if(ps)ps.split('&').forEach(function(p){
+    var kv=p.split('=');
+    if(kv[0])params[kv[0].trim()]=(kv[1]||'').trim()
+  });
   api(ep,params).then(function(d){o.textContent=JSON.stringify(d,null,2)})
   .catch(function(e){o.textContent='ERROR: '+e.message});
 }
