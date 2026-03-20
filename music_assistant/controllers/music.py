@@ -269,6 +269,7 @@ class MusicController(CoreController):
                             user_id=get_current_user().user_id if get_current_user() else None,
                             metadata=self._get_sync_task_metadata(provider, media_type),
                             allow_retry=True,
+                            priority=True,
                         )
                     )
         return tasks

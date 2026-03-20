@@ -151,12 +151,12 @@ async def test_user_scoped_task_visibility(tasks_controller: TasksController) ->
         name="Add playlist tracks",
         handler=handler,
         user_id="user-123",
-        queue_immediately=False,
+        run_immediately=False,
     )
     system_task = tasks_controller.create_task(
         name="Database cleanup",
         handler=handler,
-        queue_immediately=False,
+        run_immediately=False,
     )
 
     all_tasks = tasks_controller.list_tasks_for_user(None)

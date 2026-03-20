@@ -230,6 +230,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "item_count": len(uris),
             },
             allow_retry=True,
+            priority=True,
         )
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
@@ -264,6 +265,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "playlist_name": playlist_name,
                 "item_count": len(positions_to_remove),
             },
+            priority=True,
         )
 
     async def _add_library_item(self, item: Playlist, overwrite_existing: bool = False) -> int:
