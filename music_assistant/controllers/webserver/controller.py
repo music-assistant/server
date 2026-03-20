@@ -100,7 +100,10 @@ class WebserverController(CoreController):
     @property
     def base_url(self) -> str:
         """Return the base_url for the webserver."""
-        return str(self.config.get_value(CONF_BASE_URL)).removesuffix("/")
+        config = getattr(self, "config", None)
+        if config is None:
+            return ""
+        return str(config.get_value(CONF_BASE_URL)).removesuffix("/")
 
     async def get_config_entries(
         self,
