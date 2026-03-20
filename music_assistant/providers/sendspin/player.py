@@ -428,10 +428,10 @@ class SendspinPlayer(Player):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
-        # Update player state optimistically
+        # Set current media; elapsed_time will be updated once audio actually commits.
         self._attr_current_media = media
-        self._attr_elapsed_time = 0
-        self._attr_elapsed_time_last_updated = time.time()
+        self._attr_elapsed_time = None
+        self._attr_elapsed_time_last_updated = None
         # playback_state will be set by the group state change event
 
         # Stop previous stream in case we were already playing something.

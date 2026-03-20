@@ -221,11 +221,12 @@ class TestGenreCRUD:
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
 
     async def test_library_items_search(self, genre_ctrl: GenreController) -> None:
-        """Search 'country' returns only matching genres."""
-        await genre_ctrl.add_item_to_library(_make_genre("Country"))
+        """Search 'country' returns Country genre but not unrelated ones like Metal."""
         await genre_ctrl.add_item_to_library(_make_genre("Metal"))
         items = await genre_ctrl.library_items(search="country", hide_empty=False)
-        assert all("country" in g.name.lower() for g in items)
+        names = {g.name for g in items}
+        assert "country" in names
+        assert "Metal" not in names
 
     async def test_library_items_hide_empty_true(
         self, mass: MusicAssistant, genre_ctrl: GenreController
@@ -286,6 +287,86 @@ class TestGenreCRUD:
         """library_items(genre=1) raises ValueError."""
         with pytest.raises(ValueError, match="genre parameter is not supported"):
             await genre_ctrl.library_items(genre=1)
+
+    async def test_library_items_media_type_filter(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """media_type filter returns all non-empty genres for that type, including non-defaults.
+
+        Verifies:
+        - Non-default genres (no translation_key) with mappings ARE returned — the default
+          translation_key IS NOT NULL filter is bypassed when media_type is set.
+        - Genres mapped only to another type are excluded.
+        - Default genres (with translation_key) that have no mapping for the type are excluded.
+        - A genre mapped to multiple types appears in results for each of those types.
+        - search composing with media_type works correctly.
+        - No mappings for the requested type returns an empty list.
+        """
+        track_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterTrackOnlyGenre"))
+        album_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterAlbumOnlyGenre"))
+        shared_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterSharedGenre"))
+
+        track = await _add_test_track(mass, "MT Filter Track")
+        album = await _add_test_album(mass, "MT Filter Album")
+        await genre_ctrl.add_media_mapping(
+            int(track_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterTrackOnlyGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(album_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterAlbumOnlyGenre"
+        )
+        # shared_genre is mapped to both tracks and albums
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterSharedGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterSharedGenre"
+        )
+
+        # Add a default genre (has translation_key) that has NO mappings for any type —
+        # it must not appear in media_type results even though hide_empty=None would normally
+        # include all defaults.
+        await genre_ctrl.restore_default_genres()
+
+        track_results = await genre_ctrl.library_items(media_type=MediaType.TRACK)
+        track_names = {g.name for g in track_results}
+        assert "MT_FilterTrackOnlyGenre" in track_names, (
+            "track-mapped genre missing from TRACK results"
+        )
+        assert "MT_FilterSharedGenre" in track_names, "shared genre missing from TRACK results"
+        assert "MT_FilterAlbumOnlyGenre" not in track_names, (
+            "album-only genre appeared in TRACK results"
+        )
+        # Unmapped default genres must not bleed through —
+        # media_type overrides the translation_key filter
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        assert default_genre_name not in track_names, (
+            "unmapped default genre appeared in TRACK results"
+        )
+
+        album_results = await genre_ctrl.library_items(media_type=MediaType.ALBUM)
+        album_names = {g.name for g in album_results}
+        assert "MT_FilterAlbumOnlyGenre" in album_names, (
+            "album-mapped genre missing from ALBUM results"
+        )
+        assert "MT_FilterSharedGenre" in album_names, "shared genre missing from ALBUM results"
+        assert "MT_FilterTrackOnlyGenre" not in album_names, (
+            "track-only genre appeared in ALBUM results"
+        )
+
+        # search composes correctly with media_type
+        search_results = await genre_ctrl.library_items(
+            media_type=MediaType.TRACK, search="MT_FilterShared"
+        )
+        search_names = {g.name for g in search_results}
+        assert "MT_FilterSharedGenre" in search_names
+        assert "MT_FilterTrackOnlyGenre" not in search_names
+
+        # No mappings for the requested type returns an empty list
+        playlist_results = await genre_ctrl.library_items(media_type=MediaType.PLAYLIST)
+        playlist_names = {g.name for g in playlist_results}
+        assert "MT_FilterTrackOnlyGenre" not in playlist_names
+        assert "MT_FilterAlbumOnlyGenre" not in playlist_names
+        assert "MT_FilterSharedGenre" not in playlist_names
 
     async def test_library_count(self, genre_ctrl: GenreController) -> None:
         """Returns correct count; favorite_only=True filters."""
@@ -531,10 +612,11 @@ class TestSyncMediaItemGenres:
     ) -> None:
         """New genre created, mapping exists."""
         track = await _add_test_track(mass, "Sync Track 1")
-        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Psytrance"})
+        unique_genre = "SzTestSyncGenreXYZ"
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {unique_genre})
         rows = await mass.music.database.get_rows_from_query(
             f"SELECT * FROM {DB_TABLE_GENRES} WHERE name = :name",
-            {"name": "Psytrance"},
+            {"name": unique_genre},
             limit=1,
         )
         assert len(rows) == 1
@@ -867,12 +949,14 @@ class TestRestoreDefaultGenres:
     """Tests for restore_default_genres."""
 
     async def test_restore_partial_on_empty(self, genre_ctrl: GenreController) -> None:
-        """Creates genres from DEFAULT_GENRE_MAPPING with self-aliases."""
+        """Partial restore on pre-seeded DB returns empty (nothing to add)."""
+        # Genres are already seeded during startup (_setup_database), so a partial
+        # restore is idempotent and returns no new genres.
         created = await genre_ctrl.restore_default_genres(full_restore=False)
-        assert len(created) > 0
-        for genre in created[:3]:
-            assert genre.genre_aliases is not None
-            assert genre.name in genre.genre_aliases
+        assert len(created) == 0
+        # Verify the default genres are actually present
+        count = await genre_ctrl.library_count()
+        assert count >= len(DEFAULT_GENRE_MAPPING)
 
     async def test_restore_partial_idempotent(self, genre_ctrl: GenreController) -> None:
         """Second call returns empty list (no duplicates)."""
@@ -1098,8 +1182,11 @@ class TestGenreLookupAndScanner:
         Regression test: a bare "pop" tag must not fan out to Rock/Punk/etc. that
         accumulated "pop" as a side-effect alias, when a dedicated Pop genre exists.
         """
-        pop_genre = await genre_ctrl.add_item_to_library(_make_genre("Pop"))
-        rock_genre = await genre_ctrl.add_item_to_library(_make_genre("Rock"))
+        # Use the pre-seeded Pop and Rock genres (seeded during startup).
+        pop_items = await genre_ctrl.library_items(search="Pop", hide_empty=False)
+        rock_items = await genre_ctrl.library_items(search="Rock", hide_empty=False)
+        pop_genre = next(g for g in pop_items if g.name == "pop")
+        rock_genre = next(g for g in rock_items if g.name == "rock")
         # Simulate "pop" being written as a secondary alias on Rock (the bug scenario)
         await genre_ctrl.add_alias(rock_genre.item_id, "pop")
 

@@ -75,7 +75,7 @@ class AirPlayProvider(PlayerProvider):
             },
             server=f"{socket.gethostname()}.local",
         )
-        await self.mass.aiozc.async_register_service(self._dacp_info)
+        await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -125,7 +125,7 @@ class AirPlayProvider(PlayerProvider):
             self._dacp_server.close()
         # shutdown DACP zeroconf service
         if self._dacp_info:
-            await self.mass.aiozc.async_unregister_service(self._dacp_info)
+            await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
@@ -148,7 +148,9 @@ class AirPlayProvider(PlayerProvider):
                 AIRPLAY_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
             )
-            if not await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+            if not await airplay_discovery_info.async_request(
+                self.mass.discovery.aiozc.zeroconf, 3000
+            ):
                 airplay_discovery_info = None
         else:
             # AirPlay service discovered
@@ -159,7 +161,9 @@ class AirPlayProvider(PlayerProvider):
                 RAOP_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_airplay", "_raop"),
             )
-            if not await raop_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+            if not await raop_discovery_info.async_request(
+                self.mass.discovery.aiozc.zeroconf, 3000
+            ):
                 raop_discovery_info = None
 
         if airplay_discovery_info:

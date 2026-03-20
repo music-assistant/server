@@ -2538,6 +2538,66 @@ class TestFinalGroupMembersTranslation:
         assert "airplay_sonos" not in final_members
 
 
+class TestFinalActiveGroupTranslation:
+    """Tests for __final_active_group with translated protocol player IDs."""
+
+    def test_active_group_uses_translated_group_members(self, mock_mass: MagicMock) -> None:
+        """Test that visible players resolve active_group from translated group members."""
+        controller = PlayerController(mock_mass)
+
+        group_provider = MockProvider(
+            "universal_group", instance_id="universal_group", mass=mock_mass
+        )
+        airplay_provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        group_player = MockPlayer(
+            group_provider,
+            "group_1",
+            "House Group",
+            player_type=PlayerType.GROUP,
+        )
+        group_player._attr_playback_state = PlaybackState.PLAYING
+        group_player._attr_group_members = ["airplay_sonos"]
+        group_player._cache.clear()
+
+        sonos_player = MockPlayer(sonos_provider, "sonos_1", "Sonos")
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._cache.clear()
+
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Sonos (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sonos_airplay.set_protocol_parent_id("sonos_1")
+        sonos_airplay._cache.clear()
+
+        mock_mass.players = controller
+        controller._players = {
+            "group_1": group_player,
+            "sonos_1": sonos_player,
+            "airplay_sonos": sonos_airplay,
+        }
+        controller._player_throttlers = {
+            "group_1": Throttler(1, 0.05),
+            "sonos_1": Throttler(1, 0.05),
+            "airplay_sonos": Throttler(1, 0.05),
+        }
+
+        group_player.set_initialized()
+        sonos_player.set_initialized()
+        sonos_airplay.set_initialized()
+
+        group_player.update_state(signal_event=False)
+        sonos_airplay.update_state(signal_event=False)
+        sonos_player.update_state(signal_event=False)
+
+        assert sonos_player.state.active_group == "group_1"
+        assert sonos_airplay.state.active_group is None
+
+
 class TestFinalSyncedToWithNativeProtocolParent:
     """Tests for __final_synced_to when sync parent is a native protocol player."""
 

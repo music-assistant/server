@@ -73,18 +73,12 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_SMART_FADES_MODE,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
@@ -361,7 +355,7 @@ class ConfigController:
         )
 
     @api_command("config/providers/get_entries")
-    async def get_provider_config_entries(  # noqa: PLR0915
+    async def get_provider_config_entries(
         self,
         provider_domain: str,
         instance_id: str | None = None,
@@ -427,21 +421,6 @@ class ConfigController:
                 extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
             if ProviderFeature.LIBRARY_RADIOS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
-            # sync interval settings
-            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS)
-            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS)
-            if ProviderFeature.LIBRARY_TRACKS in supported_features:
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS)
-            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS)
-            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS)
-            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS)
-            if ProviderFeature.LIBRARY_RADIOS in supported_features:
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS)
             # sync export settings
             if supported_features.intersection(
                 {
@@ -1054,7 +1033,11 @@ class ConfigController:
     @api_command("config/core/get")
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
-        raw_conf = self.get(f"{CONF_CORE}/{domain}", {"domain": domain})
+        raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
+        if not isinstance(raw_conf, dict):
+            raw_conf = {}
+        if "domain" not in raw_conf:
+            raw_conf = {**raw_conf, "domain": domain}
         config_entries = await self.get_core_config_entries(domain)
         return cast("CoreConfig", CoreConfig.parse(config_entries, raw_conf))
 
@@ -1366,6 +1349,16 @@ class ConfigController:
                 LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
                 changed = True
 
+        # The background tasks controller originally persisted runtime state directly under
+        # core/tasks, which could create a CoreConfig object without the required domain field.
+        # Repair that single known corruption case on load.
+        # TODO: remove after 2.9 release
+        tasks_core_config = self._data.get(CONF_CORE, {}).get("tasks")
+        if isinstance(tasks_core_config, dict) and "domain" not in tasks_core_config:
+            tasks_core_config["domain"] = "tasks"
+            LOGGER.warning("Repaired corrupt tasks core configuration")
+            changed = True
+
         # migrate manual_ips to new format
         # TODO: remove after 2.8 release
         for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
@@ -1375,6 +1368,26 @@ class ConfigController:
                 continue
             values["manual_discovery_ip_addresses"] = ips.split(",")
             del values["ips"]
+            changed = True
+
+        # migrate zeroconf interface selection from players controller to discovery controller
+        # TODO: remove after 2.8 release
+        core_configs = self._data.setdefault(CONF_CORE, {})
+        players_core = core_configs.get("players", {})
+        discovery_core = core_configs.setdefault("discovery", {"domain": "discovery", "values": {}})
+        discovery_values = discovery_core.setdefault("values", {})
+        players_values = players_core.get("values", {})
+        legacy_zeroconf_interfaces = players_values.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
+        if legacy_zeroconf_interfaces is None and players_core:
+            legacy_zeroconf_interfaces = players_core.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
+        if (
+            legacy_zeroconf_interfaces is not None
+            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_values
+            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_core
+        ):
+            discovery_values[CONF_ENTRY_ZEROCONF_INTERFACES.key] = legacy_zeroconf_interfaces
+            changed = True
+        elif legacy_zeroconf_interfaces is not None:
             changed = True
 
         # migrate sample_rates config entry
@@ -1616,7 +1629,7 @@ class ConfigController:
             await self.set_onboard_complete()
         if manifest.type == ProviderType.MUSIC:
             # correct any multi-instance provider mappings
-            self.mass.create_task(self.mass.music.correct_multi_instance_provider_mappings())
+            self.mass.music.queue_provider_mapping_correction_task()
         return config
 
     async def _get_player_config_entries(

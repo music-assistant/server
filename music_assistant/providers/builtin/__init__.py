@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 import aiofiles
 import shortuuid
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -56,9 +57,6 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
     CONF_KEY_PLAYLISTS,
     CONF_KEY_RADIOS,
     CONF_KEY_TRACKS,
@@ -125,9 +123,6 @@ async def get_config_entries(
         CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
         CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
         CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
-        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
-        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
-        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
         CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
     )
 
@@ -151,6 +146,10 @@ class BuiltinProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
+
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the default recurring schedule for builtin library sync tasks."""
+        return TaskSchedule.hourly(every=3)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
