@@ -709,6 +709,39 @@ class TestAnalyzeTrack:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _fetch_and_analyze semaphore gating
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAndAnalyzeSemaphore:
+    """Verify that _fetch_and_analyze acquires the concurrency semaphore."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_and_analyze_acquires_semaphore(self, tmp_path: Any) -> None:
+        """_fetch_and_analyze must acquire _analysis_semaphore before proceeding."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        mass.get_provider = MagicMock(return_value=None)
+
+        provider = _make_provider_with_config(mass)
+        with patch(_USEARCH_PATCH, create=True):
+            await provider.handle_async_init()
+
+        acquire_count = 0
+        original_acquire = provider._analysis_semaphore.acquire
+
+        async def _tracking_acquire() -> bool:
+            nonlocal acquire_count
+            acquire_count += 1
+            return await original_acquire()
+
+        provider._analysis_semaphore.acquire = _tracking_acquire
+
+        await provider._fetch_and_analyze("1", "prov")
+        assert acquire_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Tests: _handle_similar_tracks API endpoint (Task 9)
 # ---------------------------------------------------------------------------
 
@@ -1049,7 +1082,7 @@ class TestBackfill:
 
         with patch.object(
             provider, "_backfill_unanalyzed_tracks", return_value=None
-        ) as mock_backfill:
+        ):
             await provider.loaded_in_mass()
 
         mass.tasks.create_task.assert_called_once()
@@ -1159,7 +1192,9 @@ class TestBackfill:
 
         call_count = 0
 
-        async def _fetch_side_effect(item_id: str, _provider: str, _prov_id: str | None = None) -> None:
+        async def _fetch_side_effect(
+            item_id: str, _provider: str, _prov_id: str | None = None
+        ) -> None:
             nonlocal call_count
             call_count += 1
             if item_id == "track_a":
