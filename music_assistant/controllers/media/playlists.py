@@ -217,7 +217,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         with suppress(MediaNotFoundError):
             playlist_name = (await self.get_library_item(int(db_playlist_id))).name
         user = get_current_user()
-        return self.mass.tasks.create_task(
+        return self.mass.tasks.run_background_task(
             name=f"Add items to playlist {playlist_name}",
             handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris),
             translation_key="background_task.add_playlist_tracks",
@@ -230,6 +230,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "item_count": len(uris),
             },
             allow_retry=True,
+            priority=True,
         )
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
@@ -250,7 +251,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         with suppress(MediaNotFoundError):
             playlist_name = (await self.get_library_item(int(db_playlist_id))).name
         user = get_current_user()
-        return self.mass.tasks.create_task(
+        return self.mass.tasks.run_background_task(
             name=f"Remove items from playlist {playlist_name}",
             handler=lambda: self._handle_remove_playlist_tracks(
                 db_playlist_id, positions_to_remove
@@ -264,6 +265,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "playlist_name": playlist_name,
                 "item_count": len(positions_to_remove),
             },
+            priority=True,
         )
 
     async def _add_library_item(self, item: Playlist, overwrite_existing: bool = False) -> int:
