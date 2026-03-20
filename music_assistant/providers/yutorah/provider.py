@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -38,6 +39,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .browse import YuTorahBrowseMixin
 from .constants import API_BASE, API_HEADERS, MAX_EPISODES, PAGE_SIZE, YUTORAH_BASE
 from .helpers import (
+    _build_st_podcast,
     _extract_docs,
     _make_images,
     _series_to_podcast,
@@ -48,6 +50,8 @@ from .helpers import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+_T = TypeVar("_T")
 
 
 class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
@@ -114,32 +118,8 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
                 self._fetch_teachers_map(),
                 self._fetch_series_list(),
             )
-            t = teachers_map.get(teacher_id) or {}
-            teacher_name = t.get("fullName") or f"Teacher {teacher_id}"
-            image_url = t.get("imageURL") or ""
-            series_name = next(
-                (
-                    str(s.get("name") or "")
-                    for s in series_list
-                    if str(s.get("ID") or s.get("seriesID") or "") == series_id
-                ),
-                "",
-            )
-            podcast_name = f"{series_name} — {teacher_name}" if series_name else teacher_name
-            return Podcast(
-                item_id=prov_podcast_id,
-                provider=self.instance_id,
-                name=podcast_name,
-                metadata=MediaItemMetadata(
-                    images=UniqueList(_make_images(image_url, self.instance_id)) or None,
-                ),
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=prov_podcast_id,
-                        provider_domain="yutorah",
-                        provider_instance=self.instance_id,
-                    )
-                },
+            return _build_st_podcast(
+                series_id, teacher_id, teachers_map, series_list, self.instance_id
             )
 
         if prov_podcast_id.startswith("t_"):
@@ -232,27 +212,10 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Return the most recent shiurim by a teacher as Track objects."""
-        tracks: list[Track] = []
-        page = 1
-        while len(tracks) < MAX_EPISODES:
-            if page == 1:
-                extra: dict[str, Any] = {"getFacets": True}
-            else:
-                extra = {"getFacets": False, "start": page}
-            data = await self._api_get(
-                "search/get", searchTerm="", teacherID=prov_artist_id, **extra
-            )
-            docs = _extract_docs(data)
-            if not docs:
-                break
-            for raw in docs:
-                track = _shiur_to_track(raw, len(tracks), self.instance_id)
-                if track:
-                    tracks.append(track)
-            if len(docs) < PAGE_SIZE:
-                break
-            page += 1
-        return tracks
+        return await self._paginate_search(
+            lambda raw, i: _shiur_to_track(raw, i, self.instance_id),
+            teacherID=prov_artist_id,
+        )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Return a single shiur as a Track by its shiurID."""
@@ -390,25 +353,39 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
 
         Passes any keyword args as extra filter params (e.g. seriesID, teacherID).
         """
-        episodes: list[PodcastEpisode] = []
+        return await self._paginate_search(
+            lambda raw, i: _shiur_to_episode(raw, i, self.instance_id, parent_series_id),
+            **filter_params,
+        )
+
+    async def _paginate_search(
+        self,
+        converter: Callable[[dict[str, Any], int], _T | None],
+        **filter_params: Any,
+    ) -> list[_T]:
+        """Paginate search/get results, applying converter to each doc.
+
+        :param converter: Called with (raw_doc, current_count); returns an item or None to skip.
+        :param filter_params: Extra filter kwargs forwarded to the API (e.g. seriesID, teacherID).
+        """
+        results: list[_T] = []
         page = 1
-        while len(episodes) < MAX_EPISODES:
-            if page == 1:
-                extra: dict[str, Any] = {"getFacets": True}
-            else:
-                extra = {"getFacets": False, "start": page}
+        while len(results) < MAX_EPISODES:
+            extra: dict[str, Any] = (
+                {"getFacets": True} if page == 1 else {"getFacets": False, "start": page}
+            )
             data = await self._api_get("search/get", searchTerm="", **filter_params, **extra)
             docs = _extract_docs(data)
             if not docs:
                 break
             for raw in docs:
-                episode = _shiur_to_episode(raw, len(episodes), self.instance_id, parent_series_id)
-                if episode:
-                    episodes.append(episode)
+                item = converter(raw, len(results))
+                if item is not None:
+                    results.append(item)
             if len(docs) < PAGE_SIZE:
                 break
             page += 1
-        return episodes
+        return results
 
     async def _api_get(self, endpoint: str, **params: Any) -> Any:
         """Make a GET request to the YuTorah JSON API and return parsed JSON.

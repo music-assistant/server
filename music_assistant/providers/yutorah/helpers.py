@@ -289,6 +289,67 @@ def _slugify(name: str) -> str:
     return result.strip("-")
 
 
+def _build_st_podcast(
+    series_id: str,
+    teacher_id: str,
+    teachers_map: dict[str, dict[str, Any]],
+    series_list: list[dict[str, Any]],
+    instance_id: str,
+) -> Podcast:
+    """Build a virtual series+teacher Podcast for a combined st_ podcast ID."""
+    t = teachers_map.get(teacher_id) or {}
+    teacher_name = t.get("fullName") or f"Teacher {teacher_id}"
+    image_url = t.get("imageURL") or ""
+    series_name = next(
+        (
+            str(s.get("name") or "")
+            for s in series_list
+            if str(s.get("ID") or s.get("seriesID") or "") == series_id
+        ),
+        "",
+    )
+    podcast_id = f"st_{series_id}_{teacher_id}"
+    podcast_name = f"{series_name} — {teacher_name}" if series_name else teacher_name
+    return Podcast(
+        item_id=podcast_id,
+        provider=instance_id,
+        name=podcast_name,
+        metadata=MediaItemMetadata(
+            images=UniqueList(_make_images(image_url, instance_id)) or None,
+        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id=podcast_id,
+                provider_domain="yutorah",
+                provider_instance=instance_id,
+            )
+        },
+    )
+
+
+def _series_or_stub_podcast(
+    sid: str,
+    raw: dict[str, Any],
+    series_by_id: dict[str, Any],
+    instance_id: str,
+) -> Podcast:
+    """Return a full Podcast for a known series, or a minimal stub for an unknown one."""
+    if sid in series_by_id:
+        return _series_to_podcast(series_by_id[sid], instance_id)
+    return Podcast(
+        item_id=sid,
+        provider=instance_id,
+        name=raw.get("shiurSeriesName") or sid,
+        provider_mappings={
+            ProviderMapping(
+                item_id=sid,
+                provider_domain="yutorah",
+                provider_instance=instance_id,
+            )
+        },
+    )
+
+
 def _extract_docs(data: Any) -> list[dict[str, Any]]:
     """Extract the list of shiur documents from a search/get API response.
 

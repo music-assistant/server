@@ -18,9 +18,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from .helpers import (
+    _build_st_podcast,
     _make_images,
     _path_segment,
     _segment_id,
+    _series_or_stub_podcast,
     _series_to_podcast,
     _shiur_to_episode,
 )
@@ -111,42 +113,7 @@ class YuTorahBrowseMixin:
         if section == "series" and not p1:
             return await self._browse_all_series()
         if section == "series" and p1 and p2:
-            series_id = _segment_id(p1)
-            teacher_id = _segment_id(p2)
-            episodes, teachers_map, series_list = await asyncio.gather(
-                self._browse_series_teacher_episodes(series_id, teacher_id),
-                self._fetch_teachers_map(),
-                self._fetch_series_list(),
-            )
-            t = teachers_map.get(teacher_id) or {}
-            teacher_name = t.get("fullName") or f"Teacher {teacher_id}"
-            image_url = t.get("imageURL") or ""
-            series_name = next(
-                (
-                    str(s.get("name") or "")
-                    for s in series_list
-                    if str(s.get("ID") or s.get("seriesID") or "") == series_id
-                ),
-                "",
-            )
-            podcast_id = f"st_{series_id}_{teacher_id}"
-            podcast_name = f"{series_name} — {teacher_name}" if series_name else teacher_name
-            st_podcast = Podcast(
-                item_id=podcast_id,
-                provider=self.instance_id,
-                name=podcast_name,
-                metadata=MediaItemMetadata(
-                    images=UniqueList(_make_images(image_url, self.instance_id)) or None,
-                ),
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=podcast_id,
-                        provider_domain="yutorah",
-                        provider_instance=self.instance_id,
-                    )
-                },
-            )
-            return [st_podcast, *episodes]
+            return await self._browse_series_teacher(p1, p2)
         if section == "series" and p1:
             series_id = _segment_id(p1)
             teacher_folders, series_list = await asyncio.gather(
@@ -231,6 +198,22 @@ class YuTorahBrowseMixin:
                 )
             )
         return folders
+
+    async def _browse_series_teacher(
+        self, series_segment: str, teacher_segment: str
+    ) -> list[Podcast | PodcastEpisode]:
+        """Return a subscribable st_ Podcast followed by its episodes."""
+        series_id = _segment_id(series_segment)
+        teacher_id = _segment_id(teacher_segment)
+        episodes, teachers_map, series_list = await asyncio.gather(
+            self._browse_series_teacher_episodes(series_id, teacher_id),
+            self._fetch_teachers_map(),
+            self._fetch_series_list(),
+        )
+        st_podcast = _build_st_podcast(
+            series_id, teacher_id, teachers_map, series_list, self.instance_id
+        )
+        return [st_podcast, *episodes]
 
     async def _browse_series_teacher_episodes(
         self, series_id: str, teacher_id: str
@@ -326,24 +309,9 @@ class YuTorahBrowseMixin:
                 sid = str(raw.get("shiurSeries") or "")
                 if sid and sid not in seen_series:
                     seen_series.add(sid)
-                    if sid in series_by_id:
-                        results.append(_series_to_podcast(series_by_id[sid], self.instance_id))
-                    else:
-                        series_name = raw.get("shiurSeriesName") or sid
-                        results.append(
-                            Podcast(
-                                item_id=sid,
-                                provider=self.instance_id,
-                                name=series_name,
-                                provider_mappings={
-                                    ProviderMapping(
-                                        item_id=sid,
-                                        provider_domain="yutorah",
-                                        provider_instance=self.instance_id,
-                                    )
-                                },
-                            )
-                        )
+                    results.append(
+                        _series_or_stub_podcast(sid, raw, series_by_id, self.instance_id)
+                    )
         return results
 
     async def _browse_recent(self) -> list[PodcastEpisode]:
