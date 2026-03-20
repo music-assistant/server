@@ -58,6 +58,8 @@ CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
 CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
 # Anti burn-in
 CONF_ANTI_BURN_IN = "anti_burn_in"
+# Dashboard display
+CONF_OPEN_IN_NEW_TAB = "open_in_new_tab"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -116,6 +118,8 @@ class PartyConfig(DataClassDictMixin):
     boost_badge_color: str
     # Anti burn-in
     anti_burn_in: bool
+    # Dashboard display
+    open_in_new_tab: bool
 
 
 async def setup(
@@ -210,6 +214,18 @@ async def get_config_entries(
                 "burn-in on OLED or plasma displays. Sides swap every 10 minutes."
             ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_OPEN_IN_NEW_TAB,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Open Party Dashboard in New Tab",
+            description=(
+                "When enabled, the Party dashboard opens in a new browser tab. "
+                "When disabled (default), the dashboard opens within the current window "
+                "in frameless mode."
+            ),
             advanced=True,
         ),
         ConfigEntry(
@@ -547,6 +563,7 @@ class PartyPlugin(PluginProvider):
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
+            open_in_new_tab=cast("bool", self.config.get_value(CONF_OPEN_IN_NEW_TAB)),
         )
 
     # ==================== Guest Action API Commands ====================
