@@ -966,7 +966,8 @@ class SonicAnalysisProvider(PluginProvider):
 
     async def _handle_debug_page(self, request: Any) -> Any:
         """Serve the built-in debug console as an HTML page."""
-        html = _DEBUG_HTML.replace("%%BASE_URL%%", str(request.url).rsplit("/debug", 1)[0])
+        base_url = f"{request.scheme}://{request.host}/api/sonic_analysis"
+        html = _DEBUG_HTML.replace("%%BASE_URL%%", base_url)
         return web.Response(text=html, content_type="text/html")
 
     async def _handle_cors_preflight(self, request: Any) -> Any:
