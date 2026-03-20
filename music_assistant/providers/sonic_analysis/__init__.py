@@ -184,9 +184,7 @@ class SonicAnalysisProvider(PluginProvider):
                 continue
             self._get_or_assign_label(row["item_id"], row["provider"])
 
-        self.logger.info(
-            "Restored %d label mappings from DB", len(self._label_map)
-        )
+        self.logger.info("Restored %d label mappings from DB", len(self._label_map))
 
     async def loaded_in_mass(self) -> None:
         """Subscribe to library and playback events based on configuration."""
