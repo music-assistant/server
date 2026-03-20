@@ -7,7 +7,7 @@
     "icon": "podcast",
     "codeowners": ["@russlevy"],
     "requirements": [],
-    "documentation": "https://github.com/music-assistant/server/discussions/",
+    "documentation": "https://music-assistant.io/music-providers/yutorah",
     "multi_instance": false,
     "config_entries": [
         {
