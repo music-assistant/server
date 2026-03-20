@@ -168,6 +168,10 @@ class GenreController(MediaControllerBase[Genre]):
             self.merge_genres,
             required_role="admin",
         )
+        self.mass.register_api_command(
+            "music/genres/media_counts",
+            self.get_genre_media_counts,
+        )
 
         # Run genre mapping scanner after library sync completes
         self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
@@ -561,6 +565,30 @@ class GenreController(MediaControllerBase[Genre]):
 
         results = await asyncio.gather(*[_fetch_media_type(mt, title) for mt, title in media_rows])
         return [r for r in results if r is not None]
+
+    async def get_genre_media_counts(self, genre_ids: list[str]) -> dict[str, dict[str, int]]:
+        """Return media item counts per media type for each requested genre.
+
+        :param genre_ids: List of genre database IDs to query.
+        :return: Mapping of genre_id -> {media_type -> count}.
+        """
+        if not genre_ids:
+            return {}
+        int_ids = [int(gid) for gid in genre_ids]
+        placeholders = ",".join(str(i) for i in int_ids)
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT genre_id, media_type, COUNT(*) AS cnt "
+            f"FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            f"WHERE genre_id IN ({placeholders}) "
+            "GROUP BY genre_id, media_type",
+            limit=0,
+        )
+        result: dict[str, dict[str, int]] = {gid: {} for gid in genre_ids}
+        for row in rows:
+            gid = str(row["genre_id"])
+            if gid in result:
+                result[gid][row["media_type"]] = row["cnt"]
+        return result
 
     async def match_providers(self, db_item: Genre) -> None:
         """No provider matching for genres at this time."""
