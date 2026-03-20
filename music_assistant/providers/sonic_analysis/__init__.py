@@ -858,43 +858,71 @@ class SonicAnalysisProvider(PluginProvider):
         if genre_weight <= 0 and year_weight <= 0:
             return candidates[:limit]
 
-        # Fetch seed track metadata for re-ranking
+        return await self._rerank_with_metadata(
+            item_id, candidates, limit, genre_weight, year_weight
+        )
+
+    async def _rerank_with_metadata(
+        self,
+        seed_item_id: str,
+        candidates: list[tuple[str, float]],
+        limit: int,
+        genre_weight: float,
+        year_weight: float,
+    ) -> list[tuple[str, float]]:
+        """Re-rank sonic similarity candidates using genre and year metadata.
+
+        :param seed_item_id: library item ID of the seed track.
+        :param candidates: list of (item_id, sonic_distance) from the ANN index.
+        :param limit: max results to return.
+        :param genre_weight: 0.0-1.0 genre influence.
+        :param year_weight: 0.0-1.0 year influence.
+        """
         try:
-            seed_track = await self.mass.music.tracks.get(item_id, "library")
+            seed_track = await self.mass.music.tracks.get(seed_item_id, "library")
             seed_genres = {g.name.lower() for g in getattr(seed_track, "genres", []) or []}
             seed_year = getattr(seed_track, "year", None) or 0
         except Exception:
             return candidates[:limit]
 
-        # Re-rank candidates by blended score
+        async def _safe_get(tid: str) -> Track | None:
+            try:
+                return await self.mass.music.tracks.get(tid, "library")
+            except Exception:
+                return None
+
+        cand_ids = [cid for cid, _ in candidates]
+        cand_tracks = await asyncio.gather(*[_safe_get(cid) for cid in cand_ids])
+        cand_track_map: dict[str, Track] = {
+            cid: t
+            for cid, t in zip(cand_ids, cand_tracks, strict=True)
+            if t is not None
+        }
+
         scored: list[tuple[str, float]] = []
         for cand_id, sonic_dist in candidates:
-            try:
-                cand_track = await self.mass.music.tracks.get(cand_id, "library")
-                cand_genres = {
-                    g.name.lower() for g in getattr(cand_track, "genres", []) or []
-                }
-                cand_year = getattr(cand_track, "year", None) or 0
-            except Exception:
+            cand_track = cand_track_map.get(cand_id)
+            if cand_track is None:
                 scored.append((cand_id, sonic_dist))
                 continue
 
-            # Genre bonus: proportion of shared genres (0=none, 1=identical)
+            cand_genres: set[str] = {
+                g.name.lower() for g in getattr(cand_track, "genres", []) or []
+            }
+            cand_year: int = getattr(cand_track, "year", None) or 0
+
             genre_bonus = 0.0
             if seed_genres and cand_genres and genre_weight > 0:
                 overlap = len(seed_genres & cand_genres)
-                total = len(seed_genres | cand_genres)
-                genre_bonus = (overlap / total) if total > 0 else 0.0
+                union = len(seed_genres | cand_genres)
+                genre_bonus = (overlap / union) if union > 0 else 0.0
 
-            # Year bonus: 1.0 for same year, decays over decades
             year_bonus = 0.0
             if seed_year and cand_year and year_weight > 0:
                 year_diff = abs(seed_year - cand_year)
                 year_bonus = max(0.0, 1.0 - (year_diff / 30.0))
 
-            # Blend: lower score = more similar
-            # sonic_dist is 0-2 (cosine), bonuses are 0-1 (higher = more similar)
-            metadata_boost = (genre_bonus * genre_weight + year_bonus * year_weight)
+            metadata_boost = genre_bonus * genre_weight + year_bonus * year_weight
             blended = sonic_dist - (metadata_boost * 0.5)
             scored.append((cand_id, blended))
 
