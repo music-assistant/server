@@ -1091,27 +1091,30 @@ class SonicAnalysisProvider(PluginProvider):
             self.logger.info("No valid sonic signatures found; skipping index rebuild.")
             return
 
-        means, stds = compute_corpus_stats(all_features)
+        means, stds = await asyncio.to_thread(compute_corpus_stats, all_features)
         await self._save_corpus_stats(means, stds)
 
         if not _USEARCH_AVAILABLE:
             return
 
-        self._search_index = _usearch_index_module.Index(
-            ndim=SIGNATURE_DIMENSIONS,
-            metric=MetricKind.Cos,
-            dtype=ScalarKind.I8,
-        )
-        self._label_map = {}
-        self._reverse_label_map = {}
-        self._next_label = 1
+        def _populate_index() -> None:
+            self._search_index = _usearch_index_module.Index(
+                ndim=SIGNATURE_DIMENSIONS,
+                metric=MetricKind.Cos,
+                dtype=ScalarKind.I8,
+            )
+            self._label_map = {}
+            self._reverse_label_map = {}
+            self._next_label = 1
 
-        for item_id, provider_instance, features in parsed:
-            normalized = normalize_features(features, means, stds)
-            label = self._get_or_assign_label(item_id, provider_instance)
-            self._add_to_index(label, normalized)
+            for item_id, provider_instance, features in parsed:
+                normalized = normalize_features(features, means, stds)
+                label = self._get_or_assign_label(item_id, provider_instance)
+                self._add_to_index(label, normalized)
 
-        await asyncio.to_thread(self._save_search_index)
+            self._save_search_index()
+
+        await asyncio.to_thread(_populate_index)
         self.logger.info("Search index rebuilt with %d entries.", len(parsed))
 
     async def unload(self, is_removed: bool = False) -> None:
