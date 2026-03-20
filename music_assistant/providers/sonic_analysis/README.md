@@ -26,18 +26,38 @@ All time-varying features are collapsed to their mean across the track, producin
 
 Signatures are stored in SQLite and indexed using [USearch](https://github.com/unum-cloud/usearch), a fast approximate nearest neighbor (ANN) library based on the HNSW algorithm. This enables sub-millisecond similarity queries even at 500K+ tracks.
 
-Before comparison, features are z-score normalized across the corpus so that high-range features (tempo: 60-200 BPM) don't dominate over low-range features (spectral flatness: 0-1). Similarity is measured using cosine distance on the normalized vectors.
+Before comparison, features are z-score normalized across the corpus so that high-range features (tempo: 60-200 BPM) don't dominate over low-range features (spectral flatness: 0-1).
 
-### Genre & Year Weighting
+### Feature Group Weighting
 
-By default, similarity is purely sonic — two tracks that *sound* alike will match regardless of their tagged genre or release year. This can surface surprising cross-genre connections but may also produce results that feel mismatched.
+The 38 features are organized into five tunable groups. Each group's influence on the similarity score can be adjusted at query time — no re-indexing required:
 
-To refine results, two optional weights can be applied at query time (no re-indexing required):
+| Group | Features | What It Controls |
+|-------|----------|-----------------|
+| **Timbre** | MFCCs 1-13 | Tone color, warmth, brightness |
+| **Harmony** | Chroma 1-12 | Key, chord feel, tonal character |
+| **Texture** | Spectral contrast 1-7 | Frequency band dynamics, peaks vs valleys |
+| **Rhythm** | Tempo + spectral centroid | BPM and rhythmic feel |
+| **Energy** | Rolloff, flatness, RMS, ZCR | Loudness, percussiveness, dynamics |
 
-- **Genre weight** (0-100%): Boosts tracks that share genre tags with the seed. Uses Jaccard similarity (proportion of shared genres) as the bonus signal.
-- **Year weight** (0-100%): Boosts tracks from a similar release year/decade. Decays linearly — same year = full bonus, 30+ years apart = no bonus.
+Two additional metadata-based weights are available:
 
-The weights re-rank the top candidates from the ANN index by blending the sonic distance with metadata bonuses. At 0% for both, results are identical to pure sonic similarity.
+- **Genre** (0-100%): Boosts tracks sharing genre tags with the seed (Jaccard similarity).
+- **Year** (0-100%): Boosts tracks from a similar release year/decade (linear decay over 30 years).
+
+### Presets
+
+Named presets configure all weights at once for common use cases:
+
+| Preset | Timbre | Harmony | Texture | Rhythm | Energy | Genre | Year | Use Case |
+|--------|--------|---------|---------|--------|--------|-------|------|----------|
+| `balanced` | 100% | 100% | 100% | 100% | 100% | 0% | 0% | Default — pure sonic, all groups equal |
+| `vibe` | 80% | 50% | 60% | 30% | 100% | 0% | 0% | Mood matching — tone + energy, less rhythm |
+| `party` | 30% | 20% | 30% | 100% | 80% | 0% | 0% | DJ mixing — tempo/energy focused |
+| `genre_era` | 50% | 50% | 50% | 50% | 50% | 80% | 60% | Stay in genre + decade |
+| `discover` | 100% | 80% | 70% | 50% | 70% | 0% | 0% | Cross-genre exploration |
+
+Individual weights can override preset values in the same query.
 
 ### Analysis Triggers
 
@@ -53,13 +73,35 @@ All endpoints are served from the MA webserver when the plugin is enabled.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/sonic_analysis/status` | Plugin stats: DB count, index size, config |
-| `GET /api/sonic_analysis/similar?item_id=X&limit=25&genre_weight=0.5&year_weight=0.3` | Find similar tracks (weights optional, 0-1) |
+| `GET /api/sonic_analysis/similar?item_id=X&limit=25` | Find similar tracks |
 | `GET /api/sonic_analysis/signatures?limit=50&offset=0` | Browse stored signatures |
-| `GET /api/sonic_analysis/make_playlist?item_id=X&genre_weight=0.5&year_weight=0.3` | Create a playlist from similar tracks (2 tiers deep, weights optional) |
+| `GET /api/sonic_analysis/make_playlist?item_id=X` | Create a playlist from similar tracks (2 tiers deep) |
 | `GET /api/sonic_analysis/trigger_backfill` | Manually start library analysis |
 | `GET /api/sonic_analysis/rebuild_index` | Rebuild the ANN index from stored signatures |
 | `GET /api/sonic_analysis/clear_all` | Delete all signatures and reset the index |
 | `GET /api/sonic_analysis/debug` | Built-in debug console UI |
+
+### Similarity query parameters
+
+The `/similar` and `/make_playlist` endpoints accept these optional parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `preset` | string | `balanced` | Named preset (balanced, vibe, party, genre_era, discover) |
+| `timbre` | float | — | Override timbre weight (0.0-1.0) |
+| `harmony` | float | — | Override harmony weight (0.0-1.0) |
+| `texture` | float | — | Override texture weight (0.0-1.0) |
+| `rhythm` | float | — | Override rhythm weight (0.0-1.0) |
+| `energy` | float | — | Override energy weight (0.0-1.0) |
+| `genre_weight` | float | — | Override genre weight (0.0-1.0) |
+| `year_weight` | float | — | Override year weight (0.0-1.0) |
+| `candidates` | int | 50 | Number of ANN candidates to fetch before re-ranking (max 500) |
+| `limit` | int | 25 | Max results to return (max 100) |
+
+Example: find tracks with similar tempo and energy, staying in genre:
+```
+/api/sonic_analysis/similar?item_id=8481&preset=party&genre_weight=0.5&candidates=100
+```
 
 ## Dependencies
 
@@ -76,6 +118,7 @@ Navigate to `http://<your-ma-server>:8095/api/sonic_analysis/debug` for a built-
 - View index status and signature counts
 - Browse stored signatures
 - Search for similar tracks by item ID
-- Adjust genre and year weight sliders to tune metadata influence in real time
+- Select presets or adjust individual feature group sliders in real time
+- Set the candidate pool size for re-ranking precision
 - Generate playlists from similar tracks ("Songs like [track name]")
 - Trigger backfill, rebuild index, or clear all data
