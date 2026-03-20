@@ -584,8 +584,7 @@ class SonicAnalysisProvider(PluginProvider):
     async def _handle_similar_tracks(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/similar endpoint.
 
-        Returns tracks whose sonic signatures are nearest to the seed track in the
-        ANN index.  Query parameters:
+        Query parameters: item_id (required), limit, genre_weight, year_weight.
 
         :param request: Incoming aiohttp web request.
         """
@@ -594,60 +593,36 @@ class SonicAnalysisProvider(PluginProvider):
             return _cors_text("Missing required query parameter: item_id", status=400)
 
         try:
-            limit = int(request.query.get("limit", 25))
+            limit = min(int(request.query.get("limit", 25)), 100)
         except (TypeError, ValueError):
             limit = 25
-        limit = min(limit, 100)
 
-        # Look up the seed track's signature in the DB.
-        # We iterate over all providers; the first hit wins.
-        signature = None
-        seed_provider = ""
+        try:
+            genre_weight = max(0.0, min(1.0, float(request.query.get("genre_weight", 0))))
+        except (TypeError, ValueError):
+            genre_weight = 0.0
+
+        try:
+            year_weight = max(0.0, min(1.0, float(request.query.get("year_weight", 0))))
+        except (TypeError, ValueError):
+            year_weight = 0.0
+
+        # Check if seed track has a signature at all
         assert self.mass.music.database is not None
-        rows = await self.mass.music.database.get_rows(
-            DB_TABLE_SONIC_SIGNATURES,
-            {"item_id": item_id},
+        sig_rows = await self.mass.music.database.get_rows(
+            DB_TABLE_SONIC_SIGNATURES, {"item_id": item_id}
         )
-        for row in rows:
-            if row["item_id"] == CORPUS_STATS_ITEM_ID:
-                continue
-            try:
-                features: list[float] = json.loads(row["features"])
-                signature = SonicSignature(features=features, version=int(row["version"]))
-                seed_provider = row["provider"]
-                break
-            except (KeyError, ValueError, TypeError):
-                continue
-
-        if signature is None:
+        has_signature = any(r["item_id"] != CORPUS_STATS_ITEM_ID for r in sig_rows)
+        if not has_signature:
             return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
 
-        if self.corpus_means is None or self.corpus_stds is None:
-            return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
+        results = await self._get_similar_item_ids(
+            item_id, limit=limit, genre_weight=genre_weight, year_weight=year_weight
+        )
 
-        normalized = normalize_features(signature.features, self.corpus_means, self.corpus_stds)
-        # Request one extra result so we can discard the seed itself.
-        raw_results = self._query_index(normalized, k=limit + 1)
-
-        # Compute the seed label using the provider from the DB row so it matches
-        # the hash used at insertion time (fixes hardcoded "local" provider bug).
-        seed_label = abs(hash((seed_provider, item_id))) % (2**31)
-
-        items: list[dict[str, Any]] = []
-        for result_id, distance in raw_results:
-            if result_id == seed_label:
-                continue
-            if len(items) >= limit:
-                break
-            # Resolve the ANN label back to (item_id, provider) via the in-memory map.
-            resolved = self._label_map.get(result_id)
-            if resolved is None:
-                continue
-            resolved_item_id, resolved_provider = resolved
-            items.append(
-                {"item_id": resolved_item_id, "provider": resolved_provider, "distance": distance}
-            )
-
+        items = [
+            {"item_id": rid, "distance": dist} for rid, dist in results
+        ]
         return _cors_json({"analyzed": True, "items": items, "seed_track_id": item_id})
 
     async def _handle_trigger_backfill(self, request: Any) -> Any:
@@ -695,6 +670,15 @@ class SonicAnalysisProvider(PluginProvider):
             if not item_id:
                 return _cors_text("Missing required query parameter: item_id", status=400)
 
+            try:
+                genre_weight = max(0.0, min(1.0, float(request.query.get("genre_weight", 0))))
+            except (TypeError, ValueError):
+                genre_weight = 0.0
+            try:
+                year_weight = max(0.0, min(1.0, float(request.query.get("year_weight", 0))))
+            except (TypeError, ValueError):
+                year_weight = 0.0
+
             # Get the seed track name
             try:
                 seed_track = await self.mass.music.tracks.get(item_id, "library")
@@ -703,7 +687,9 @@ class SonicAnalysisProvider(PluginProvider):
                 seed_name = f"Track {item_id}"
 
             # Get top 10 similar to the seed
-            similar_result = await self._get_similar_item_ids(item_id, limit=10)
+            similar_result = await self._get_similar_item_ids(
+                item_id, limit=10, genre_weight=genre_weight, year_weight=year_weight
+            )
             if not similar_result:
                 return _cors_json({"status": "error", "error": "No similar tracks found"})
 
@@ -721,7 +707,9 @@ class SonicAnalysisProvider(PluginProvider):
 
             # For each tier 1 track, get its top 10 similar (tier 2)
             for t1_id in tier1_ids:
-                tier2_result = await self._get_similar_item_ids(t1_id, limit=10)
+                tier2_result = await self._get_similar_item_ids(
+                    t1_id, limit=10, genre_weight=genre_weight, year_weight=year_weight
+                )
                 for sim_id, _dist in tier2_result:
                     if sim_id not in seen_ids:
                         seen_ids.add(sim_id)
@@ -754,12 +742,18 @@ class SonicAnalysisProvider(PluginProvider):
             return _cors_json({"status": "error", "error": str(exc)})
 
     async def _get_similar_item_ids(
-        self, item_id: str, limit: int = 10
+        self,
+        item_id: str,
+        limit: int = 10,
+        genre_weight: float = 0.0,
+        year_weight: float = 0.0,
     ) -> list[tuple[str, float]]:
-        """Get similar track item_ids from the index.
+        """Get similar track item_ids from the index with optional metadata re-ranking.
 
         :param item_id: library item ID of the seed track.
         :param limit: max results to return.
+        :param genre_weight: 0.0-1.0 how much to boost tracks sharing genres with the seed.
+        :param year_weight: 0.0-1.0 how much to boost tracks from a similar year/decade.
         """
         assert self.mass.music.database is not None
         rows = await self.mass.music.database.get_rows(
@@ -777,20 +771,70 @@ class SonicAnalysisProvider(PluginProvider):
 
         features = json.loads(sig_row["features"])
         normalized = normalize_features(features, self.corpus_means, self.corpus_stds)
-        raw_results = self._query_index(normalized, k=limit + 1)
+
+        # Fetch extra candidates for re-ranking when metadata weights are active
+        fetch_k = limit * 5 if (genre_weight > 0 or year_weight > 0) else limit + 1
+        raw_results = self._query_index(normalized, k=fetch_k)
 
         seed_label = abs(hash((seed_provider, item_id))) % (2**31)
-        results: list[tuple[str, float]] = []
+        candidates: list[tuple[str, float]] = []
         for result_id, distance in raw_results:
             if result_id == seed_label:
                 continue
             resolved = self._label_map.get(result_id)
             if resolved is None:
                 continue
-            results.append((resolved[0], distance))
-            if len(results) >= limit:
-                break
-        return results
+            candidates.append((resolved[0], distance))
+
+        if not candidates:
+            return []
+
+        # If no metadata weighting, return as-is (pure sonic similarity)
+        if genre_weight <= 0 and year_weight <= 0:
+            return candidates[:limit]
+
+        # Fetch seed track metadata for re-ranking
+        try:
+            seed_track = await self.mass.music.tracks.get(item_id, "library")
+            seed_genres = {g.name.lower() for g in getattr(seed_track, "genres", []) or []}
+            seed_year = getattr(seed_track, "year", None) or 0
+        except Exception:
+            return candidates[:limit]
+
+        # Re-rank candidates by blended score
+        scored: list[tuple[str, float]] = []
+        for cand_id, sonic_dist in candidates:
+            try:
+                cand_track = await self.mass.music.tracks.get(cand_id, "library")
+                cand_genres = {
+                    g.name.lower() for g in getattr(cand_track, "genres", []) or []
+                }
+                cand_year = getattr(cand_track, "year", None) or 0
+            except Exception:
+                scored.append((cand_id, sonic_dist))
+                continue
+
+            # Genre bonus: proportion of shared genres (0=none, 1=identical)
+            genre_bonus = 0.0
+            if seed_genres and cand_genres and genre_weight > 0:
+                overlap = len(seed_genres & cand_genres)
+                total = len(seed_genres | cand_genres)
+                genre_bonus = (overlap / total) if total > 0 else 0.0
+
+            # Year bonus: 1.0 for same year, decays over decades
+            year_bonus = 0.0
+            if seed_year and cand_year and year_weight > 0:
+                year_diff = abs(seed_year - cand_year)
+                year_bonus = max(0.0, 1.0 - (year_diff / 30.0))
+
+            # Blend: lower score = more similar
+            # sonic_dist is 0-2 (cosine), bonuses are 0-1 (higher = more similar)
+            metadata_boost = (genre_bonus * genre_weight + year_bonus * year_weight)
+            blended = sonic_dist - (metadata_boost * 0.5)
+            scored.append((cand_id, blended))
+
+        scored.sort(key=lambda x: x[1])
+        return scored[:limit]
 
     async def _handle_rebuild_index(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/rebuild_index — rebuild USearch index from DB."""
@@ -1038,6 +1082,10 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <button onclick="doSearch()">Search</button>
 <button onclick="makePlaylist()" style="border-color:#6bc5ff;color:#6bc5ff">Make Playlist</button>
 </div>
+<div class="row" style="font-size:.75rem;gap:1rem">
+<label style="color:#7a7a8e">Genre: <input id="gw" type="range" min="0" max="100" value="0" style="width:100px;vertical-align:middle"> <span id="gwv">0%</span></label>
+<label style="color:#7a7a8e">Year: <input id="yw" type="range" min="0" max="100" value="0" style="width:100px;vertical-align:middle"> <span id="ywv">0%</span></label>
+</div>
 <div id="sr"></div>
 
 <h2>Raw API</h2>
@@ -1058,6 +1106,10 @@ var pg=0,PS=50;
 var TOKEN=localStorage.getItem('sa_token')||'';
 if(TOKEN)document.getElementById('tk').value=TOKEN;
 function saveToken(){TOKEN=document.getElementById('tk').value.trim();localStorage.setItem('sa_token',TOKEN);fetchStatus();fetchSigs()}
+
+document.getElementById('gw').oninput=function(){document.getElementById('gwv').textContent=this.value+'%'};
+document.getElementById('yw').oninput=function(){document.getElementById('ywv').textContent=this.value+'%'};
+function getWeights(){return{genre_weight:document.getElementById('gw').value/100,year_weight:document.getElementById('yw').value/100}}
 
 function cl(p){while(p.firstChild)p.removeChild(p.firstChild)}
 function tx(t){return document.createTextNode(t)}
@@ -1164,10 +1216,11 @@ function doSearch(){
   var id=document.getElementById('si').value.trim();
   var lim=document.getElementById('sl').value;
   if(!id)return;
+  var wt=getWeights();
   var w=document.getElementById('sr');cl(w);
   w.appendChild(mk('div','','Searching...'));
-  logMsg('Searching similar to '+id+'...');
-  api('similar',{item_id:id,limit:lim}).then(function(d){
+  logMsg('Searching similar to '+id+' (genre='+Math.round(wt.genre_weight*100)+'% year='+Math.round(wt.year_weight*100)+'%)...');
+  api('similar',{item_id:id,limit:lim,genre_weight:wt.genre_weight,year_weight:wt.year_weight}).then(function(d){
     cl(w);
     if(!d.analyzed){w.appendChild(mk('div','','Not analyzed yet'));logMsg('No signature for '+id,false);return}
     if(!d.items.length){w.appendChild(mk('div','','No results'));return}
@@ -1194,7 +1247,8 @@ function makePlaylist(){
   logMsg('Creating playlist from similar tracks...');
   var w=document.getElementById('sr');
   w.appendChild(mk('div','','Creating playlist...'));
-  api('make_playlist',{item_id:id}).then(function(d){
+  var wt=getWeights();
+  api('make_playlist',{item_id:id,genre_weight:wt.genre_weight,year_weight:wt.year_weight}).then(function(d){
     if(d.status==='created'){
       logMsg('Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks!',true);
       w.appendChild(mk('div','','Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks'));
