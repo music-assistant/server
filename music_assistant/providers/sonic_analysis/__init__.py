@@ -294,10 +294,13 @@ class SonicAnalysisProvider(PluginProvider):
         """Background task: analyze all local tracks without signatures."""
         self.logger.info("Starting background sonic analysis backfill...")
 
-        update_current_task_progress_text("Fetching library tracks...")
+        update_current_task_progress_text("Scanning library...")
         page_size = 500
         offset = 0
-        all_tracks: list[Any] = []
+        to_analyze: list[tuple[str, Any]] = []
+        skipped_count = 0
+        total_scanned = 0
+
         try:
             while True:
                 page = await self.mass.music.tracks.library_items(
@@ -305,32 +308,41 @@ class SonicAnalysisProvider(PluginProvider):
                 )
                 if not page:
                     break
-                all_tracks.extend(page)
+
+                page_new, page_skipped = await self._collect_unanalyzed_tracks(page)
+                to_analyze.extend(page_new)
+                skipped_count += page_skipped
+                total_scanned += len(page)
+
                 update_current_task_progress_text(
-                    f"Fetching library tracks... ({len(all_tracks)} so far)"
+                    f"Scanning: {total_scanned} checked, "
+                    f"{len(to_analyze)} to analyze, {skipped_count} skipped"
                 )
+
                 if len(page) < page_size:
                     break
                 offset += page_size
         except Exception:
-            self.logger.warning("Could not fetch library tracks for backfill", exc_info=True)
+            self.logger.warning(
+                "Could not fetch library tracks for backfill", exc_info=True
+            )
             return
 
-        total = len(all_tracks)
-        self.logger.info("Backfill: %d total library tracks to process", total)
-
-        to_analyze, skipped_count = await self._collect_unanalyzed_tracks(all_tracks)
-
+        total = total_scanned
         self.logger.info(
-            "Backfill: %d to analyze, %d already have signatures", len(to_analyze), skipped_count
+            "Backfill: %d to analyze, %d already have signatures",
+            len(to_analyze),
+            skipped_count,
         )
         update_current_task_progress_from_index(
             skipped_count,
             total,
-            f"Checked existing: {skipped_count} skipped, {len(to_analyze)} to analyze",
+            f"Checked: {skipped_count} skipped, {len(to_analyze)} to analyze",
         )
 
-        analyzed_count = await self._run_concurrent_analyses(to_analyze, skipped_count, total)
+        analyzed_count = await self._run_concurrent_analyses(
+            to_analyze, skipped_count, total
+        )
 
         if analyzed_count > 0:
             update_current_task_progress_text("Rebuilding search index...")
