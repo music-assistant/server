@@ -1020,10 +1020,9 @@ class SonicAnalysisProvider(PluginProvider):
 
             signatures = []
             for row in all_rows:
-                feat_str = row.get("features", "")
                 try:
-                    feat_count = len(json.loads(feat_str)) if feat_str else 0
-                except (json.JSONDecodeError, TypeError):
+                    feat_count = len(json.loads(row["features"]))
+                except (KeyError, json.JSONDecodeError, TypeError):
                     feat_count = 0
                 signatures.append(
                     {
@@ -1162,12 +1161,6 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 </style></head><body>
 <h1>sonic_analysis <span>// debug console</span></h1>
 
-<div class="row" style="margin-bottom:1rem">
-<label style="font-size:.7rem;color:#7a7a8e">Token:</label>
-<input id="tk" type="password" placeholder="paste long-lived token" style="flex:1">
-<button onclick="saveToken()">Save</button>
-</div>
-
 <h2>Status</h2>
 <div class="g" id="sg"></div>
 <button onclick="fetchStatus()">Refresh Status</button>
@@ -1226,14 +1219,6 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <script>
 var BASE='%%BASE_URL%%';
 var pg=0,PS=50;
-var TOKEN=localStorage.getItem('sa_token')||'';
-if(TOKEN)document.getElementById('tk').value=TOKEN;
-function saveToken(){
-  TOKEN=document.getElementById('tk').value.trim();
-  localStorage.setItem('sa_token',TOKEN);
-  fetchStatus();fetchSigs()
-}
-
 document.getElementById('gw').oninput=function(){
   document.getElementById('gwv').textContent=this.value+'%'
 };
