@@ -4,10 +4,8 @@
     "name": "YuTorah",
     "description": "Stream over 400,000 Torah shiurim (audio lectures) from YUTorah Online.",
     "stage": "beta",
-    "icon": "podcast",
     "codeowners": ["@russlevy"],
     "requirements": [],
-    "documentation": "https://music-assistant.io/music-providers/yutorah",
     "multi_instance": false,
     "config_entries": [
         {
@@ -16,7 +14,7 @@
             "label": "Login is optional. Without it, only a preview of each series is available. With a free YuTorah account the full episode list and search are unlocked."
         },
         {
-            "key": "email",
+            "key": "username",
             "type": "string",
             "label": "Email address",
             "required": false

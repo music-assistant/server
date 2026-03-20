@@ -27,6 +27,23 @@ Authenticated endpoints (require userToken query param, obtained via login):
   sending only seriesID/teacherID/subcategoryID without searchTerm returns "". The start
   parameter is a 1-based PAGE NUMBER (not an offset), and must be omitted on the first
   request. Page size is 30 results per page.
+
+  search/get response shape (Solr-style):
+    {
+      "response": {"docs": [...shiur objects...], "numFound": N},
+      "facet_counts": {"facet_fields": {"teachers": [...], "series": [...]}}
+    }
+
+Browse path structure:
+  yutorah://                                         → root folders
+  yutorah://series                                   → all series (as folders)
+  yutorah://series/<series_id>                       → teacher sub-folders within a series
+  yutorah://series/<series_id>/teacher/<teacher_id>  → episodes for a teacher within a series
+  yutorah://teachers                                 → all teachers
+  yutorah://teachers/<teacher_id>                    → all episodes by a teacher
+  yutorah://categories                               → topic category tree
+  yutorah://categories/<subcategory_id>              → series in a category
+  yutorah://recent                                   → 50 most recent shiurim
 """
 
 from __future__ import annotations
@@ -47,7 +64,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -66,6 +83,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -96,7 +114,6 @@ API_HEADERS = {
     "User-Agent": "YuTorah/1.3.4 (Android 11)",
 }
 
-
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
@@ -104,8 +121,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_TOPTRACKS,
 }
 
-CONF_EMAIL = "email"
-CONF_PASSWORD = "password"
 # search/get returns 30 results per page; start is a 1-based page number
 PAGE_SIZE = 30
 MAX_EPISODES = 500
@@ -136,7 +151,7 @@ async def get_config_entries(
             "With a free YuTorah account the full episode list and search are unlocked.",
         ),
         ConfigEntry(
-            key=CONF_EMAIL,
+            key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Email address",
             required=False,
@@ -385,7 +400,6 @@ def _parse_duration(s: str) -> int:
     """Convert duration string (HH:MM:SS or MM:SS or seconds) to int seconds."""
     if not s:
         return 0
-    # Strip sub-second precision
     s = s.split(".")[0].strip()
     parts = s.split(":")
     try:
@@ -401,8 +415,8 @@ def _parse_duration(s: str) -> int:
 def _slugify(name: str) -> str:
     """Create a URL-safe slug from a display name.
 
-    Used both for decorative external URLs and for browse path segments so that
-    MA can display a human-readable label in the breadcrumb instead of a raw ID.
+    Used only for building decorative external website URLs (e.g. yutorah.org/series/daf-yomi).
+    Browse paths use numeric IDs instead.
     """
     result = name.lower()
     for ch in ",'\"()[]{}":
@@ -434,10 +448,10 @@ class YuTorahProvider(MusicProvider):
         """Attempt login if credentials are configured."""
         self._user_token: str | None = None
 
-        email = self.config.get_value(CONF_EMAIL)
+        username = self.config.get_value(CONF_USERNAME)
         password = self.config.get_value(CONF_PASSWORD)
-        if email and password:
-            await self._login(str(email), str(password))
+        if username and password:
+            await self._login(str(username), str(password))
         else:
             self.logger.info(
                 "YuTorah running without login — episode lists will be limited. "
@@ -445,7 +459,10 @@ class YuTorahProvider(MusicProvider):
             )
 
     async def _login(self, email: str, password: str) -> None:
-        """Authenticate with YuTorah and store the user token."""
+        """Authenticate with YuTorah and store the user token.
+
+        :raises LoginFailed: if credentials are rejected by the API.
+        """
         try:
             async with self.mass.http_session.post(
                 f"{API_BASE}login/default",
@@ -455,20 +472,14 @@ class YuTorahProvider(MusicProvider):
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json(content_type=None)
-            if data and data.get("loginSuccess") and data.get("userToken"):
-                self._user_token = data["userToken"]
-                self.logger.info("YuTorah login successful — full episode access enabled.")
-            else:
-                self.logger.warning(
-                    "YuTorah login failed (bad credentials?). Running in anonymous mode."
-                )
         except aiohttp.ClientError as exc:
-            self.logger.warning("YuTorah login error: %s. Running in anonymous mode.", exc)
+            raise LoginFailed(f"YuTorah login error: {exc}") from exc
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-        """Yield nothing — library is managed entirely by MA from Browse actions."""
-        return
-        yield  # type: ignore[unreachable]
+        if not (data and data.get("loginSuccess") and data.get("userToken")):
+            raise LoginFailed("YuTorah login failed — check your email and password.")
+
+        self._user_token = data["userToken"]
+        self.logger.info("YuTorah login successful — full episode access enabled.")
 
     # -----------------------------------------------------------------------
     # Podcast — series
@@ -543,19 +554,7 @@ class YuTorahProvider(MusicProvider):
             if sid == str(prov_podcast_id):
                 return _series_to_podcast(series, self.instance_id)
 
-        self.logger.warning("Series %s not found in browse list", prov_podcast_id)
-        return Podcast(
-            item_id=prov_podcast_id,
-            provider=self.instance_id,
-            name=f"YuTorah Series {prov_podcast_id}",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=prov_podcast_id,
-                    provider_domain="yutorah",
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
+        raise MediaNotFoundError(f"YuTorah series {prov_podcast_id} not found")
 
     async def get_podcast_episodes(
         self,
@@ -573,7 +572,6 @@ class YuTorahProvider(MusicProvider):
             return
 
         if self._user_token:
-            # teacher-prefixed IDs come from search results / teacher browse
             if prov_podcast_id.startswith("t_"):
                 teacher_id = prov_podcast_id[2:]
                 for ep in await self._fetch_episodes_paged(teacherID=teacher_id):
@@ -640,7 +638,7 @@ class YuTorahProvider(MusicProvider):
                     item_id=prov_artist_id,
                     provider_domain="yutorah",
                     provider_instance=self.instance_id,
-                    url=f"{YUTORAH_BASE}/teachers/{_slugify(str(prov_artist_id))}/",
+                    url=f"{YUTORAH_BASE}/teachers/{_slugify(name)}/",
                 )
             },
         )
@@ -672,10 +670,7 @@ class YuTorahProvider(MusicProvider):
         return tracks
 
     async def get_track(self, prov_track_id: str) -> Track:
-        """Return a single shiur as a Track by its shiurID.
-
-        Called by MA when resolving a track URI (e.g. yutorah://track/<id>).
-        """
+        """Return a single shiur as a Track by its shiurID."""
         data = await self._api_get("shiur/details", shiurID=prov_track_id)
         if not data or not isinstance(data, dict):
             raise MediaNotFoundError(f"YuTorah: shiur {prov_track_id} not found")
@@ -816,17 +811,6 @@ class YuTorahProvider(MusicProvider):
         """Browse the YuTorah content tree.
 
         :param path: The path to browse (e.g. yutorah://series).
-
-        Path structure:
-          yutorah://                                       → root folders
-          yutorah://series                                 → all series A-Z (as folders)
-          yutorah://series/<name-slug>                     → teacher sub-folders within a series
-          yutorah://series/<name-slug>/teacher/<t-slug>   → episodes for a teacher within a series
-          yutorah://teachers                               → all teachers A-Z
-          yutorah://teachers/<name-slug>                  → all episodes by a teacher
-          yutorah://categories                             → topic category tree
-          yutorah://categories/<name-slug>                → series in a category
-          yutorah://recent                                 → 50 most recent shiurim
         """
         parts = path.split("://", 1)[1].split("/")
 
@@ -850,6 +834,7 @@ class YuTorahProvider(MusicProvider):
                     provider=self.instance_id,
                     path=f"{self.domain}://teachers",
                     name="Browse by Teacher",
+                    translation_key="artists",
                     is_playable=False,
                 ),
                 BrowseFolder(
@@ -871,25 +856,23 @@ class YuTorahProvider(MusicProvider):
         if section == "series" and not p1:
             return await self._browse_all_series()
         if section == "series" and p1 and p2 == "teacher" and p3:
-            series_id = await self._resolve_series_id(p1)
-            teacher_id = await self._resolve_teacher_id(p3)
             episodes, teachers_map, series_list = await asyncio.gather(
-                self._browse_series_teacher_episodes(series_id, teacher_id),
+                self._browse_series_teacher_episodes(p1, p3),
                 self._fetch_teachers_map(),
                 self._fetch_series_list(),
             )
-            t = teachers_map.get(teacher_id) or {}
-            teacher_name = t.get("fullName") or f"Teacher {teacher_id}"
+            t = teachers_map.get(p3) or {}
+            teacher_name = t.get("fullName") or f"Teacher {p3}"
             image_url = t.get("imageURL") or ""
             series_name = next(
                 (
                     str(s.get("name") or "")
                     for s in series_list
-                    if str(s.get("ID") or s.get("seriesID") or "") == series_id
+                    if str(s.get("ID") or s.get("seriesID") or "") == p1
                 ),
                 "",
             )
-            podcast_id = f"st_{series_id}_{teacher_id}"
+            podcast_id = f"st_{p1}_{p3}"
             podcast_name = f"{series_name} — {teacher_name}" if series_name else teacher_name
             st_podcast = Podcast(
                 item_id=podcast_id,
@@ -908,36 +891,32 @@ class YuTorahProvider(MusicProvider):
             )
             return [st_podcast, *episodes]
         if section == "series" and p1:
-            series_id = await self._resolve_series_id(p1)
-            teacher_folders = await self._browse_series_teachers(series_id, series_path_slug=p1)
-            series_list = await self._fetch_series_list()
+            teacher_folders, series_list = await asyncio.gather(
+                self._browse_series_teachers(p1),
+                self._fetch_series_list(),
+            )
             series_item: Podcast | None = next(
                 (
                     _series_to_podcast(s, self.instance_id)
                     for s in series_list
-                    if str(s.get("ID") or s.get("seriesID") or "") == series_id
+                    if str(s.get("ID") or s.get("seriesID") or "") == p1
                 ),
                 None,
             )
-            return ([series_item] if series_item else []) + teacher_folders
+            items: list[Podcast | BrowseFolder] = []
+            if series_item:
+                items.append(series_item)
+            items.extend(teacher_folders)
+            return items
 
         if section == "teachers" and not p1:
             return await self._browse_all_teachers()
         if section == "teachers" and p1:
-            teacher_id = await self._resolve_teacher_id(p1)
-            return await self._browse_teacher_episodes(teacher_id)
-        # Legacy path: keep backward compat for any saved/bookmarked yutorah://teacher/{id} paths
-        if section == "teacher" and p1:
             return await self._browse_teacher_episodes(p1)
 
         if section == "categories" and not p1:
             return await self._browse_category_list()
         if section == "categories" and p1:
-            categories_map = await self._fetch_categories_map()
-            category_id = categories_map.get(p1) or p1
-            return await self._browse_category(category_id)
-        # Legacy path: keep backward compat for yutorah://category/{id}
-        if section == "category" and p1:
             return await self._browse_category(p1)
 
         if section == "recent":
@@ -956,7 +935,7 @@ class YuTorahProvider(MusicProvider):
             BrowseFolder(
                 item_id=str(s.get("ID") or s.get("seriesID") or ""),
                 provider=self.instance_id,
-                path=f"{self.domain}://series/{_slugify(s.get('name') or 'unknown')}",
+                path=f"{self.domain}://series/{s.get('ID') or s.get('seriesID')}",
                 name=s.get("name") or "Unknown Series",
                 is_playable=False,
             )
@@ -966,14 +945,10 @@ class YuTorahProvider(MusicProvider):
         folders.sort(key=lambda f: f.name.lower())
         return folders
 
-    async def _browse_series_teachers(
-        self, series_id: str, series_path_slug: str
-    ) -> list[BrowseFolder]:
+    async def _browse_series_teachers(self, series_id: str) -> list[BrowseFolder]:
         """Return teacher sub-folders for a series, derived from search facets.
 
         :param series_id: Numeric series ID for the API query.
-        :param series_path_slug: Human-readable slug already used in the parent browse path,
-            kept consistent so the back-path resolves correctly.
         """
         if not self._user_token:
             return []
@@ -990,12 +965,11 @@ class YuTorahProvider(MusicProvider):
             count = t.get("Match", 0)
             if not tid or not name or count == 0:
                 continue
-            teacher_slug = _slugify(name)
             folders.append(
                 BrowseFolder(
                     item_id=f"st_{series_id}_{tid}",
                     provider=self.instance_id,
-                    path=f"{self.domain}://series/{series_path_slug}/teacher/{teacher_slug}",
+                    path=f"{self.domain}://series/{series_id}/teacher/{tid}",
                     name=f"{name} ({count})",
                     is_playable=False,
                 )
@@ -1087,7 +1061,7 @@ class YuTorahProvider(MusicProvider):
                     BrowseFolder(
                         item_id=f"sub_{sub_id}",
                         provider=self.instance_id,
-                        path=f"{self.domain}://categories/{_slugify(label)}",
+                        path=f"{self.domain}://categories/{sub_id}",
                         name=label,
                         is_playable=False,
                     )
@@ -1182,7 +1156,10 @@ class YuTorahProvider(MusicProvider):
         return episodes
 
     async def _api_get(self, endpoint: str, **params: Any) -> Any:
-        """Make a GET request to the YuTorah JSON API and return parsed JSON."""
+        """Make a GET request to the YuTorah JSON API and return parsed JSON.
+
+        Returns None for 404 responses. Raises ProviderUnavailableError for other errors.
+        """
         str_params = {
             k: str(v).lower() if isinstance(v, bool) else str(v)
             for k, v in params.items()
@@ -1193,6 +1170,7 @@ class YuTorahProvider(MusicProvider):
         # it only as an HTTP header does not work — the server ignores it.
         if self._user_token:
             str_params["userToken"] = self._user_token
+        safe_params = {k: v for k, v in str_params.items() if k != "userToken"}
         try:
             async with self.mass.http_session.get(
                 f"{API_BASE}{endpoint}",
@@ -1200,19 +1178,23 @@ class YuTorahProvider(MusicProvider):
                 headers=API_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
+                if resp.status == 404:
+                    return None
                 resp.raise_for_status()
                 raw_text = await resp.text()
                 return json.loads(raw_text)
         except aiohttp.ClientResponseError as exc:
-            if exc.status == 404:
-                return None
-            safe_params = {k: v for k, v in str_params.items() if k != "userToken"}
-            self.logger.error("YuTorah API %s failed (params=%s): %s", endpoint, safe_params, exc)
-            return None
-        except (aiohttp.ClientError, json.JSONDecodeError) as exc:
-            safe_params = {k: v for k, v in str_params.items() if k != "userToken"}
-            self.logger.error("YuTorah API %s failed (params=%s): %s", endpoint, safe_params, exc)
-            return None
+            raise ProviderUnavailableError(
+                f"YuTorah API {endpoint} failed (params={safe_params}): {exc}"
+            ) from exc
+        except aiohttp.ClientError as exc:
+            raise ProviderUnavailableError(
+                f"YuTorah API {endpoint} network error (params={safe_params}): {exc}"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise ProviderUnavailableError(
+                f"YuTorah API {endpoint} returned invalid JSON: {exc}"
+            ) from exc
 
     @use_cache(3600)
     async def _fetch_series_list(self) -> list[dict[str, Any]]:
@@ -1222,55 +1204,11 @@ class YuTorahProvider(MusicProvider):
 
     @use_cache(3600)
     async def _fetch_teachers_map(self) -> dict[str, dict[str, Any]]:
-        """Fetch and cache all teachers as a dict keyed by teacher ID string.
-
-        Used to look up teacher names and photo URLs without repeated API calls.
-        """
+        """Fetch and cache all teachers as a dict keyed by teacher ID string."""
         data = await self._api_get("browse/teachers", favoritesOnly=False)
         if not isinstance(data, list):
             return {}
         return {str(t.get("ID") or ""): t for t in data if t.get("ID")}
-
-    @use_cache(3600)
-    async def _fetch_categories_map(self) -> dict[str, str]:
-        """Fetch and cache subcategories as a dict keyed by name slug → subcategory ID.
-
-        Used to resolve a human-readable browse path segment back to a numeric ID.
-        """
-        data = await self._api_get("browse/categories", favoritesOnly=False)
-        if not data or not isinstance(data, list):
-            return {}
-        result: dict[str, str] = {}
-        for cat in data:
-            cat_name = cat.get("name") or ""
-            for sub in cat.get("subCategories") or []:
-                sub_id = str(sub.get("ID") or sub.get("id") or "")
-                sub_name = sub.get("name") or ""
-                if not sub_id or not sub_name:
-                    continue
-                label = f"{cat_name} — {sub_name}" if cat_name else sub_name
-                result[_slugify(label)] = sub_id
-        return result
-
-    async def _resolve_series_id(self, slug_or_id: str) -> str:
-        """Resolve a series browse path segment (slug or numeric ID) to a numeric series ID."""
-        if slug_or_id.isdigit():
-            return slug_or_id
-        series_list = await self._fetch_series_list()
-        for s in series_list:
-            if _slugify(s.get("name") or "") == slug_or_id:
-                return str(s.get("ID") or s.get("seriesID") or slug_or_id)
-        return slug_or_id
-
-    async def _resolve_teacher_id(self, slug_or_id: str) -> str:
-        """Resolve a teacher browse path segment (slug or numeric ID) to a numeric teacher ID."""
-        if slug_or_id.isdigit():
-            return slug_or_id
-        teachers_map = await self._fetch_teachers_map()
-        for tid, t in teachers_map.items():
-            if _slugify(t.get("fullName") or "") == slug_or_id:
-                return tid
-        return slug_or_id
 
 
 # ---------------------------------------------------------------------------
@@ -1281,25 +1219,17 @@ class YuTorahProvider(MusicProvider):
 def _extract_docs(data: Any) -> list[dict[str, Any]]:
     """Extract the list of shiur documents from a search/get API response.
 
-    The wrapper structure is not fully documented; we try common shapes.
+    The search/get endpoint returns a Solr-style response. Documents are under
+    response.docs; the facet data is under facet_counts.facet_fields.
     """
     if not data:
         return []
     if isinstance(data, list):
         return data
-
     if isinstance(data, dict):
-        # Try common wrapper keys
-        for key in ("results", "docs", "shiurim", "items", "data"):
-            val = data.get(key)
-            if isinstance(val, list):
-                return val
-        # Some responses nest under a "response" key
         inner = data.get("response")
         if isinstance(inner, dict):
-            for key in ("results", "docs"):
-                val = inner.get(key)
-                if isinstance(val, list):
-                    return val
-
+            docs = inner.get("docs")
+            if isinstance(docs, list):
+                return docs
     return []

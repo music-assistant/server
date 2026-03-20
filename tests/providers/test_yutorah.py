@@ -1,13 +1,12 @@
 """Tests for the YuTorah provider."""
 
-import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import BrowseFolder, Podcast
 
 from music_assistant.providers.yutorah import YuTorahProvider
@@ -106,10 +105,10 @@ async def test_handle_async_init_no_credentials(provider: YuTorahProvider) -> No
 async def test_handle_async_init_with_credentials_calls_login(
     provider: YuTorahProvider,
 ) -> None:
-    """With email and password configured, _login is called."""
+    """With username and password configured, _login is called."""
 
     def get_value(key: str) -> str | None:
-        return {"email": "user@example.com", "password": "secret"}.get(key)
+        return {"username": "user@example.com", "password": "secret"}.get(key)
 
     provider.config.get_value.side_effect = get_value  # type: ignore[attr-defined]
     with patch.object(provider, "_login", new=AsyncMock()) as mock_login:
@@ -118,14 +117,24 @@ async def test_handle_async_init_with_credentials_calls_login(
 
 
 # ---------------------------------------------------------------------------
-# get_library_podcasts
+# _login
 # ---------------------------------------------------------------------------
 
 
-async def test_get_library_podcasts_yields_nothing(provider: YuTorahProvider) -> None:
-    """Library management is delegated to MA — generator yields nothing."""
-    items = [item async for item in provider.get_library_podcasts()]
-    assert items == []
+async def test_login_raises_on_bad_credentials(provider: YuTorahProvider) -> None:
+    """Failed login raises LoginFailed."""
+    mock_cm = MagicMock()
+    mock_cm.__aenter__ = AsyncMock(
+        return_value=MagicMock(
+            raise_for_status=MagicMock(),
+            json=AsyncMock(return_value={"loginSuccess": False}),
+        )
+    )
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+    provider.mass.http_session.post = MagicMock(return_value=mock_cm)  # type: ignore[method-assign]
+
+    with pytest.raises(LoginFailed):
+        await provider._login("bad@example.com", "wrong")
 
 
 # ---------------------------------------------------------------------------
@@ -141,14 +150,15 @@ async def test_get_podcast_series_found(provider: YuTorahProvider) -> None:
     assert podcast.item_id == "100"
 
 
-async def test_get_podcast_series_not_found_returns_fallback(
+async def test_get_podcast_series_not_found_raises(
     provider: YuTorahProvider,
 ) -> None:
-    """Unknown series ID returns a minimal fallback Podcast instead of raising."""
-    with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=[])):
-        podcast = await provider.get_podcast("999")
-    assert podcast.item_id == "999"
-    assert "999" in podcast.name
+    """Unknown series ID raises MediaNotFoundError."""
+    with (
+        patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=[])),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await provider.get_podcast("999")
 
 
 async def test_get_podcast_teacher_prefix_found(provider: YuTorahProvider) -> None:
@@ -513,21 +523,31 @@ async def test_browse_series_list(provider: YuTorahProvider) -> None:
     assert results[0].name == "Daf Yomi"  # alphabetically first
 
 
-async def test_browse_series_with_slug_unauthenticated_returns_series_item(
-    provider: YuTorahProvider,
-) -> None:
-    """Without auth, browsing a series returns the Podcast item but no teacher folders."""
+async def test_browse_series_list_uses_numeric_id_in_path(provider: YuTorahProvider) -> None:
+    """Series folders use the numeric ID in their browse path."""
     series_list = [{"ID": "100", "name": "Daf Yomi"}]
     with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)):
-        results = await provider.browse("yutorah://series/daf-yomi")
+        results = await provider.browse("yutorah://series")
+    folder = results[0]
+    assert isinstance(folder, BrowseFolder)
+    assert folder.path == "yutorah://series/100"
+
+
+async def test_browse_series_unauthenticated_returns_series_podcast(
+    provider: YuTorahProvider,
+) -> None:
+    """Without auth, browsing a series by ID returns the Podcast item but no teacher folders."""
+    series_list = [{"ID": "100", "name": "Daf Yomi"}]
+    with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)):
+        results = await provider.browse("yutorah://series/100")
     items = list(results)
     assert len(items) == 1
     assert isinstance(items[0], Podcast)
     assert items[0].item_id == "100"
 
 
-async def test_browse_series_with_id_authenticated(auth_provider: YuTorahProvider) -> None:
-    """With a token, drilling into a series by slug returns teacher sub-folders."""
+async def test_browse_series_authenticated(auth_provider: YuTorahProvider) -> None:
+    """With a token, drilling into a series by ID returns the Podcast then teacher sub-folders."""
     series_list = [{"ID": "100", "name": "Daf Yomi"}]
     facets_response = {
         "facet_counts": {
@@ -542,18 +562,17 @@ async def test_browse_series_with_id_authenticated(auth_provider: YuTorahProvide
         patch.object(auth_provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)),
         patch.object(auth_provider, "_api_get", new=AsyncMock(side_effect=api_side)),
     ):
-        results = await auth_provider.browse("yutorah://series/daf-yomi")
-    # first item is the series Podcast, followed by teacher sub-folders
+        results = await auth_provider.browse("yutorah://series/100")
     assert len(results) == 2
     assert isinstance(results[0], Podcast)
     assert results[0].item_id == "100"
     assert "Rabbi C" in results[1].name
     assert isinstance(results[1], BrowseFolder)
-    assert "daf-yomi" in results[1].path
+    assert results[1].path == "yutorah://series/100/teacher/7"
 
 
 async def test_browse_series_teacher_episodes(auth_provider: YuTorahProvider) -> None:
-    """yutorah://series/<slug>/teacher/<slug> resolves both slugs and returns episodes."""
+    """yutorah://series/<id>/teacher/<id> returns a subscribable Podcast then episodes."""
     series_list = [{"ID": "100", "name": "Daf Yomi"}]
     teachers_map = {"7": SAMPLE_TEACHER}
 
@@ -567,8 +586,7 @@ async def test_browse_series_teacher_episodes(auth_provider: YuTorahProvider) ->
         ),
         patch.object(auth_provider, "_api_get", new=AsyncMock(side_effect=api_side)),
     ):
-        results = await auth_provider.browse("yutorah://series/daf-yomi/teacher/rabbi-c")
-    # first item is the series+teacher Podcast, followed by episodes
+        results = await auth_provider.browse("yutorah://series/100/teacher/7")
     assert len(results) == 2
     assert isinstance(results[0], Podcast)
     assert results[0].item_id == "st_100_7"
@@ -612,29 +630,8 @@ async def test_browse_teachers_filters_hidden(provider: YuTorahProvider) -> None
     assert list(results) == []
 
 
-async def test_browse_teacher_episodes_unauthenticated(provider: YuTorahProvider) -> None:
-    """yutorah://teachers/<slug> without auth resolves slug → ID and returns landing episodes."""
-    teachers_map = {"7": SAMPLE_TEACHER}
-    landing_data = {
-        "recentlyAddedShiurim": [SAMPLE_SHIUR],
-        "topShiurim": [],
-        "featuredShiurim": [],
-    }
-
-    async def api_side(endpoint: str, **_kw: Any) -> Any:
-        return landing_data if endpoint == "landingpage/landing" else None
-
-    with (
-        patch.object(provider, "_fetch_teachers_map", new=AsyncMock(return_value=teachers_map)),
-        patch.object(provider, "_api_get", new=AsyncMock(side_effect=api_side)),
-    ):
-        results = await provider.browse("yutorah://teachers/rabbi-c")
-    assert len(results) == 1
-    assert results[0].item_id == "12345"
-
-
-async def test_browse_teacher_episodes_numeric_id(provider: YuTorahProvider) -> None:
-    """yutorah://teachers/<numeric-id> still works as a backward-compat path."""
+async def test_browse_teacher_episodes_by_id(provider: YuTorahProvider) -> None:
+    """yutorah://teachers/<id> returns landing episodes for the teacher."""
     landing_data = {
         "recentlyAddedShiurim": [SAMPLE_SHIUR],
         "topShiurim": [],
@@ -647,33 +644,14 @@ async def test_browse_teacher_episodes_numeric_id(provider: YuTorahProvider) -> 
 
 
 async def test_browse_teacher_episodes_authenticated(auth_provider: YuTorahProvider) -> None:
-    """yutorah://teachers/<slug> with auth resolves slug then uses paginated search."""
-    teachers_map = {"7": SAMPLE_TEACHER}
-    with (
-        patch.object(
-            auth_provider, "_fetch_teachers_map", new=AsyncMock(return_value=teachers_map)
-        ),
-        patch.object(auth_provider, "_api_get", new=AsyncMock(return_value=[SAMPLE_SEARCH_DOC])),
-    ):
-        results = await auth_provider.browse("yutorah://teachers/rabbi-c")
+    """yutorah://teachers/<id> with auth uses paginated search."""
+    with patch.object(auth_provider, "_api_get", new=AsyncMock(return_value=[SAMPLE_SEARCH_DOC])):
+        results = await auth_provider.browse("yutorah://teachers/7")
     assert len(results) == 1
-
-
-async def test_browse_teacher_legacy_path(provider: YuTorahProvider) -> None:
-    """yutorah://teacher/<id> (old singular path) still works for backward compatibility."""
-    landing_data = {
-        "recentlyAddedShiurim": [SAMPLE_SHIUR],
-        "topShiurim": [],
-        "featuredShiurim": [],
-    }
-    with patch.object(provider, "_api_get", new=AsyncMock(return_value=landing_data)):
-        results = await provider.browse("yutorah://teacher/7")
-    assert len(results) == 1
-    assert results[0].item_id == "12345"
 
 
 async def test_browse_categories(provider: YuTorahProvider) -> None:
-    """yutorah://categories returns sub-category folders using name slugs in paths."""
+    """yutorah://categories returns sub-category folders with numeric IDs in paths."""
     cat_data = [
         {
             "name": "Jewish Law",
@@ -687,18 +665,11 @@ async def test_browse_categories(provider: YuTorahProvider) -> None:
     assert isinstance(folder, BrowseFolder)
     assert "Kashrut" in folder.name
     assert "Jewish Law" in folder.name
-    # path uses name slug so breadcrumb shows category name, not a raw numeric ID
-    assert folder.path == "yutorah://categories/jewish-law-kashrut"
+    assert folder.path == "yutorah://categories/50"
 
 
-async def test_browse_category_by_slug(provider: YuTorahProvider) -> None:
-    """yutorah://categories/<slug> resolves to the correct subcategory ID and returns series."""
-    cat_data = [
-        {
-            "name": "Jewish Law",
-            "subCategories": [{"ID": "50", "name": "Kashrut"}],
-        }
-    ]
+async def test_browse_category_by_id(provider: YuTorahProvider) -> None:
+    """yutorah://categories/<id> passes the ID directly to the API and returns series."""
     landing_data = {
         "recentlyAddedShiurim": [{**SAMPLE_SEARCH_DOC, "shiurSeries": "100"}],
         "topShiurim": [],
@@ -706,8 +677,6 @@ async def test_browse_category_by_slug(provider: YuTorahProvider) -> None:
     }
 
     async def api_side(endpoint: str, **_kw: Any) -> Any:
-        if endpoint == "browse/categories":
-            return cat_data
         if endpoint == "landingpage/landing":
             return landing_data
         if endpoint == "browse/series":
@@ -715,28 +684,7 @@ async def test_browse_category_by_slug(provider: YuTorahProvider) -> None:
         return None
 
     with patch.object(provider, "_api_get", new=AsyncMock(side_effect=api_side)):
-        results = await provider.browse("yutorah://categories/jewish-law-kashrut")
-    assert len(results) == 1
-    assert results[0].name == "Daf Yomi"
-
-
-async def test_browse_category_legacy_path(provider: YuTorahProvider) -> None:
-    """yutorah://category/<id> (old path) still works for backward compatibility."""
-    landing_data = {
-        "recentlyAddedShiurim": [{**SAMPLE_SEARCH_DOC, "shiurSeries": "100"}],
-        "topShiurim": [],
-        "featuredShiurim": [],
-    }
-
-    async def api_get_side_effect(endpoint: str, **_kwargs: Any) -> Any:
-        if endpoint == "landingpage/landing":
-            return landing_data
-        if endpoint == "browse/series":
-            return [SAMPLE_SERIES]
-        return None
-
-    with patch.object(provider, "_api_get", new=AsyncMock(side_effect=api_get_side_effect)):
-        results = await provider.browse("yutorah://category/50")
+        results = await provider.browse("yutorah://categories/50")
     assert len(results) == 1
     assert results[0].name == "Daf Yomi"
 
@@ -757,15 +705,14 @@ async def test_browse_unknown_path_returns_empty(provider: YuTorahProvider) -> N
 
 
 # ---------------------------------------------------------------------------
-# Security: auth token must not appear in error logs
+# Security: auth token must not appear in error logs / exceptions
 # ---------------------------------------------------------------------------
 
 
-async def test_api_error_does_not_log_auth_token(
-    auth_provider: YuTorahProvider, caplog: pytest.LogCaptureFixture
+async def test_api_error_raises_provider_unavailable(
+    auth_provider: YuTorahProvider,
 ) -> None:
-    """When an API call fails, the userToken must not appear in the log output."""
-    # session.get() returns a context manager object (not a coroutine)
+    """Non-404 HTTP errors raise ProviderUnavailableError."""
     mock_cm = MagicMock()
     mock_cm.__aenter__ = AsyncMock(
         side_effect=aiohttp.ClientResponseError(
@@ -775,7 +722,21 @@ async def test_api_error_does_not_log_auth_token(
     mock_cm.__aexit__ = AsyncMock(return_value=False)
     auth_provider.mass.http_session.get = MagicMock(return_value=mock_cm)  # type: ignore[method-assign]
 
-    with caplog.at_level(logging.ERROR):
+    with pytest.raises(ProviderUnavailableError) as exc_info:
         await auth_provider._api_get("shiur/details", shiurID="123")
 
-    assert "test_token" not in caplog.text
+    assert "test_token" not in str(exc_info.value)
+
+
+async def test_api_404_returns_none(provider: YuTorahProvider) -> None:
+    """404 responses return None rather than raising."""
+    mock_resp = MagicMock()
+    mock_resp.status = 404
+    mock_resp.raise_for_status = MagicMock()
+    mock_cm = MagicMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+    provider.mass.http_session.get = MagicMock(return_value=mock_cm)  # type: ignore[method-assign]
+
+    result = await provider._api_get("shiur/details", shiurID="123")
+    assert result is None
