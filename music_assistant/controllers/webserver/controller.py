@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import quote
 
 import aiofiles
-from aiohttp import ClientTimeout, web
+from aiohttp import web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
@@ -378,9 +378,6 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        if self.mass.running_as_hass_addon:
-            # (re)announce to HA supervisor to make sure that HA picks it up
-            await self._announce_to_homeassistant()
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
@@ -1063,33 +1060,3 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
-
-    async def _announce_to_homeassistant(self) -> None:
-        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
-        addon_hostname = os.environ["HOSTNAME"]
-        # Get or create auth token for the HA system user
-        ha_integration_token = await self.auth.get_homeassistant_system_user_token()
-        discovery_payload = {
-            "service": "music_assistant",
-            "config": {
-                "host": addon_hostname,
-                "port": INGRESS_SERVER_PORT,
-                "auth_token": ha_integration_token,
-            },
-        }
-        try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
-        except Exception as err:
-            self.logger.warning("Failed to announce to Home Assistant: %s", err)
