@@ -80,12 +80,12 @@ async def get_config_entries(
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
+    """Return Config entries to setup this provider.
 
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
+    :param mass: The MusicAssistant instance.
+    :param instance_id: ID of an existing provider instance (None if new instance setup).
+    :param action: Optional action key called from config entries UI.
+    :param values: Intermediate raw values for config entries sent with the action.
     """
     return (
         ConfigEntry(
