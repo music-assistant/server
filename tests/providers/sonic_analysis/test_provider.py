@@ -735,9 +735,8 @@ class TestFetchAndAnalyzeSemaphore:
             acquire_count += 1
             return await original_acquire()
 
-        provider._analysis_semaphore.acquire = _tracking_acquire
-
-        await provider._fetch_and_analyze("1", "prov")
+        with patch.object(provider._analysis_semaphore, "acquire", side_effect=_tracking_acquire):
+            await provider._fetch_and_analyze("1", "prov")
         assert acquire_count == 1
 
 
@@ -1046,7 +1045,9 @@ class TestRebuildSearchIndex:
 
 
 def _make_mock_track(
-    item_id: str, provider_instance: str, provider_item_id: str = "",
+    item_id: str,
+    provider_instance: str,
+    provider_item_id: str = "",
 ) -> MagicMock:
     """Return a minimal mock Track with item_id and provider_mappings."""
     track = MagicMock()
@@ -1080,9 +1081,7 @@ class TestBackfill:
         with patch(_USEARCH_PATCH, create=True):
             await provider.handle_async_init()
 
-        with patch.object(
-            provider, "_backfill_unanalyzed_tracks", return_value=None
-        ):
+        with patch.object(provider, "_backfill_unanalyzed_tracks", return_value=None):
             await provider.loaded_in_mass()
 
         mass.tasks.create_task.assert_called_once()

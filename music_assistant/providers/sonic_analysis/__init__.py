@@ -191,9 +191,7 @@ class SonicAnalysisProvider(PluginProvider):
             ("/api/sonic_analysis/make_playlist", self._handle_make_playlist),
             ("/api/sonic_analysis/debug", self._handle_debug_page),
         ):
-            self._on_unload.append(
-                self.mass.webserver.register_dynamic_route(path, handler, "GET")
-            )
+            self._on_unload.append(self.mass.webserver.register_dynamic_route(path, handler, "GET"))
             self._on_unload.append(
                 self.mass.webserver.register_dynamic_route(
                     path, self._handle_cors_preflight, "OPTIONS"
@@ -246,6 +244,7 @@ class SonicAnalysisProvider(PluginProvider):
         :param total: Total number of tracks (for progress reporting).
         :returns: Number of successfully analyzed tracks.
         """
+
         async def _analyze_one(item_id: str, track: Any) -> bool:
             for mapping in track.provider_mappings:
                 try:
@@ -268,7 +267,8 @@ class SonicAnalysisProvider(PluginProvider):
             pending.add(task)
             task.add_done_callback(pending.discard)
 
-            if len(pending) >= int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2):
+            max_conc = int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2)  # type: ignore[arg-type]
+            if len(pending) >= max_conc:
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for t in done:
                     if t.result():
@@ -302,9 +302,7 @@ class SonicAnalysisProvider(PluginProvider):
 
         try:
             while True:
-                page = await self.mass.music.tracks.library_items(
-                    limit=page_size, offset=offset
-                )
+                page = await self.mass.music.tracks.library_items(limit=page_size, offset=offset)
                 if not page:
                     break
 
@@ -322,9 +320,7 @@ class SonicAnalysisProvider(PluginProvider):
                     break
                 offset += page_size
         except Exception:
-            self.logger.warning(
-                "Could not fetch library tracks for backfill", exc_info=True
-            )
+            self.logger.warning("Could not fetch library tracks for backfill", exc_info=True)
             return
 
         total = total_scanned
@@ -339,9 +335,7 @@ class SonicAnalysisProvider(PluginProvider):
             f"Checked: {skipped_count} skipped, {len(to_analyze)} to analyze",
         )
 
-        analyzed_count = await self._run_concurrent_analyses(
-            to_analyze, skipped_count, total
-        )
+        analyzed_count = await self._run_concurrent_analyses(to_analyze, skipped_count, total)
 
         if analyzed_count > 0:
             update_current_task_progress_text("Rebuilding search index...")
@@ -464,9 +458,7 @@ class SonicAnalysisProvider(PluginProvider):
                 stream_details: Any = None
                 try:
                     prov_inst: Any = self.mass.get_provider(provider)
-                    if prov_inst is not None and hasattr(
-                        prov_inst, "get_stream_details"
-                    ):
+                    if prov_inst is not None and hasattr(prov_inst, "get_stream_details"):
                         stream_details = await prov_inst.get_stream_details(
                             prov_item_id, MediaType.TRACK
                         )
@@ -479,8 +471,7 @@ class SonicAnalysisProvider(PluginProvider):
 
                 file_path: str | None = (
                     str(stream_details.path)
-                    if stream_details is not None
-                    and getattr(stream_details, "path", None)
+                    if stream_details is not None and getattr(stream_details, "path", None)
                     else None
                 )
                 if file_path is not None:
@@ -498,9 +489,7 @@ class SonicAnalysisProvider(PluginProvider):
 
                 await self._analyze_track(item_id, provider, audio, sample_rate)
             except Exception as exc:
-                self.logger.warning(
-                    "Analysis failed for %s/%s: %s", provider, item_id, exc
-                )
+                self.logger.warning("Analysis failed for %s/%s: %s", provider, item_id, exc)
 
     def _get_or_assign_label(self, item_id: str, provider: str) -> int:
         """Return the integer label for a (item_id, provider) pair, assigning one if new."""
@@ -703,15 +692,10 @@ class SonicAnalysisProvider(PluginProvider):
             item_id, limit=limit, genre_weight=genre_weight, year_weight=year_weight
         )
 
-        if not results and (
-            self.corpus_means is None
-            or not await self._has_signature(item_id)
-        ):
+        if not results and (self.corpus_means is None or not await self._has_signature(item_id)):
             return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
 
-        items = [
-            {"item_id": rid, "distance": dist} for rid, dist in results
-        ]
+        items = [{"item_id": rid, "distance": dist} for rid, dist in results]
         return _cors_json({"analyzed": True, "items": items, "seed_track_id": item_id})
 
     async def _handle_trigger_backfill(self, request: Any) -> Any:
@@ -734,9 +718,7 @@ class SonicAnalysisProvider(PluginProvider):
         """Handle GET /api/sonic_analysis/clear_all — drop all signatures and reset index."""
         try:
             assert self.mass.music.database is not None
-            await self.mass.music.database.execute(
-                f"DELETE FROM {DB_TABLE_SONIC_SIGNATURES}"
-            )
+            await self.mass.music.database.execute(f"DELETE FROM {DB_TABLE_SONIC_SIGNATURES}")
             await self.mass.music.database.commit()
             self._label_map.clear()
             self._reverse_label_map.clear()
@@ -815,19 +797,17 @@ class SonicAnalysisProvider(PluginProvider):
             uris = [f"library://track/{tid}" for tid in ordered_ids]
 
             if uris:
-                await self.mass.music.playlists.add_playlist_tracks(
-                    playlist.item_id, uris
-                )
+                await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
 
-            self.logger.info(
-                "Created playlist '%s' with %d tracks", playlist_name, len(uris)
+            self.logger.info("Created playlist '%s' with %d tracks", playlist_name, len(uris))
+            return _cors_json(
+                {
+                    "status": "created",
+                    "playlist_name": playlist_name,
+                    "track_count": len(uris),
+                    "playlist_id": playlist.item_id,
+                }
             )
-            return _cors_json({
-                "status": "created",
-                "playlist_name": playlist_name,
-                "track_count": len(uris),
-                "playlist_id": playlist.item_id,
-            })
         except Exception as exc:
             self.logger.exception("make_playlist failed")
             return _cors_json({"status": "error", "error": str(exc)})
@@ -919,9 +899,7 @@ class SonicAnalysisProvider(PluginProvider):
         cand_ids = [cid for cid, _ in candidates]
         cand_tracks = await asyncio.gather(*[_safe_get(cid) for cid in cand_ids])
         cand_track_map: dict[str, Track] = {
-            cid: t
-            for cid, t in zip(cand_ids, cand_tracks, strict=True)
-            if t is not None
+            cid: t for cid, t in zip(cand_ids, cand_tracks, strict=True) if t is not None
         }
 
         scored: list[tuple[str, float]] = []
@@ -992,25 +970,26 @@ class SonicAnalysisProvider(PluginProvider):
         if self.mass.music.database is not None:
             try:
                 db_count = await self.mass.music.database.get_count_from_query(
-                    f"SELECT * FROM {DB_TABLE_SONIC_SIGNATURES}"
-                    " WHERE item_id != :skip",
+                    f"SELECT * FROM {DB_TABLE_SONIC_SIGNATURES} WHERE item_id != :skip",
                     {"skip": CORPUS_STATS_ITEM_ID},
                 )
             except Exception as exc:
                 db_count = -1
                 db_error = str(exc)
 
-        return _cors_json({
-            "index_size": index_size,
-            "db_signatures": db_count,
-            "db_error": db_error,
-            "label_map_size": label_map_size,
-            "has_corpus_stats": has_corpus_stats,
-            "signature_version": SIGNATURE_VERSION,
-            "signature_dimensions": SIGNATURE_DIMENSIONS,
-            "analyze_on_play": bool(self.config.get_value(CONF_ANALYZE_ON_PLAY)),
-            "analyze_on_sync": bool(self.config.get_value(CONF_ANALYZE_ON_SYNC)),
-        })
+        return _cors_json(
+            {
+                "index_size": index_size,
+                "db_signatures": db_count,
+                "db_error": db_error,
+                "label_map_size": label_map_size,
+                "has_corpus_stats": has_corpus_stats,
+                "signature_version": SIGNATURE_VERSION,
+                "signature_dimensions": SIGNATURE_DIMENSIONS,
+                "analyze_on_play": bool(self.config.get_value(CONF_ANALYZE_ON_PLAY)),
+                "analyze_on_sync": bool(self.config.get_value(CONF_ANALYZE_ON_SYNC)),
+            }
+        )
 
     async def _handle_signatures(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/signatures — list stored signatures."""
@@ -1023,14 +1002,9 @@ class SonicAnalysisProvider(PluginProvider):
             except (TypeError, ValueError):
                 limit, offset = 50, 0
 
-            if self.mass.music.database is None:
-                return _cors_json({"signatures": [], "total": 0})
-
             db = self.mass.music.database
-            base_query = (
-                f"SELECT * FROM {DB_TABLE_SONIC_SIGNATURES}"
-                " WHERE item_id != :skip"
-            )
+            assert db is not None
+            base_query = f"SELECT * FROM {DB_TABLE_SONIC_SIGNATURES} WHERE item_id != :skip"
             query_params = {"skip": CORPUS_STATS_ITEM_ID}
 
             total = await db.get_count_from_query(base_query, query_params)
@@ -1051,12 +1025,14 @@ class SonicAnalysisProvider(PluginProvider):
                     feat_count = len(json.loads(feat_str)) if feat_str else 0
                 except (json.JSONDecodeError, TypeError):
                     feat_count = 0
-                signatures.append({
-                    "item_id": row["item_id"],
-                    "provider": row["provider"],
-                    "version": row["version"],
-                    "feature_count": feat_count,
-                })
+                signatures.append(
+                    {
+                        "item_id": row["item_id"],
+                        "provider": row["provider"],
+                        "version": row["version"],
+                        "feature_count": feat_count,
+                    }
+                )
 
             return _cors_json({"signatures": signatures, "total": total})
         except Exception as exc:
