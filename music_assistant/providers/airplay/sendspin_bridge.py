@@ -127,6 +127,8 @@ class SendspinAirPlayBridge:
             client_id=self._bridge_client_id,
             name=f"{self.airplay_player.display_name} (AirPlay)",
             version=1,
+            # While the player@v1 role will never be used for bridges, it is required by
+            # aiosendspin to parse the player@v1_support/ClientHelloPlayerSupport object
             supported_roles=[BRIDGE_ROLE_ID, "player@v1"],
             device_info=SendspinDeviceInfo(
                 product_name=self.airplay_player.device_info.model,
