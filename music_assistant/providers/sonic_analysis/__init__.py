@@ -379,10 +379,9 @@ class SonicAnalysisProvider(PluginProvider):
         :param sample_rate: Sample rate of the audio in Hz.
         """
         try:
-            async with self._analysis_semaphore:
-                signature: SonicSignature = await asyncio.to_thread(
-                    extract_signature, audio, sample_rate
-                )
+            signature: SonicSignature = await asyncio.to_thread(
+                extract_signature, audio, sample_rate
+            )
         except Exception:
             self.logger.warning("Feature extraction failed for %s/%s", provider_instance, item_id)
             return None
