@@ -163,6 +163,7 @@ class SendspinPlayer(Player):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
         }
+        # Keep volume/mute features of the first registration as a workaround for Cast.
         if sendspin_client.info.player_support:
             _supported_commands = sendspin_client.info.player_support.supported_commands
             if PlayerCommand.VOLUME in _supported_commands:
@@ -173,6 +174,14 @@ class SendspinPlayer(Player):
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._refresh_client_info(sendspin_client)
         self._subscribe_client_callbacks()
+
+    def preserve_control_features_from(self, other: SendspinPlayer) -> None:
+        """Keep the first registration's volume/mute features as a workaround for Cast."""
+        for feature in (PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE):
+            if feature in other.supported_features:
+                self._attr_supported_features.add(feature)
+            else:
+                self._attr_supported_features.discard(feature)
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""

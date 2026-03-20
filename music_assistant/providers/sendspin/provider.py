@@ -88,7 +88,8 @@ class SendspinProvider(PlayerProvider):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_removed(client_id, event_version))
             case ClientUpdatedEvent(client_id):
-                self.mass.create_task(self._handle_client_updated(client_id))
+                event_version = self._begin_client_event(client_id)
+                self.mass.create_task(self._handle_client_updated(client_id, event_version))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
@@ -155,6 +156,9 @@ class SendspinProvider(PlayerProvider):
                 self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
             existing_player = self.mass.players.get_player(client_id)
+            preserved_identifiers = (
+                dict(existing_player.device_info.identifiers) if existing_player is not None else {}
+            )
             if existing_player is not None:
                 self.logger.debug("Refreshing existing player object for %s", client_id)
                 await self.mass.players.unregister(client_id)
@@ -168,11 +172,15 @@ class SendspinProvider(PlayerProvider):
 
             extra_ids = self._bridge_identifiers.pop(client_id, None)
             player = SendspinPlayer(self, client_id)
+            if isinstance(existing_player, SendspinPlayer):
+                player.preserve_control_features_from(existing_player)
             # Apply any bridge identifiers that were pre-registered by the bridge manager.
             # This enables cross-protocol matching (e.g., Sendspin ↔ Chromecast via CAST_UUID).
             if extra_ids:
                 for id_type, id_value in extra_ids.items():
                     player.device_info.add_identifier(id_type, id_value)
+            for id_type, id_value in preserved_identifiers.items():
+                player.device_info.add_identifier(id_type, id_value)
             self.logger.debug("Client %s connected", client_id)
             await self._apply_hass_name_override(player, client_id)
             if not self._is_current_client_event(client_id, event_version):
@@ -208,22 +216,37 @@ class SendspinProvider(PlayerProvider):
         finally:
             self._finish_client_event(client_id)
 
-    async def _handle_client_updated(self, client_id: str) -> None:
+    async def _handle_client_updated(self, client_id: str, event_version: int) -> None:
         """Handle a client whose hello payload changed on reconnect."""
-        if self._unloading:
-            return
-        sendspin_client = self.server_api.get_client(client_id)
-        if sendspin_client is None:
-            return
-        existing_player = self.mass.players.get_player(client_id)
-        if not isinstance(existing_player, SendspinPlayer):
-            return
-        previous_type = existing_player.type
-        existing_player._refresh_client_info(sendspin_client)
-        await self._apply_hass_name_override(existing_player, client_id)
-        if previous_type == PlayerType.PROTOCOL and existing_player.type != PlayerType.PROTOCOL:
-            existing_player.set_protocol_parent_id(None)
-        await self.mass.players.register_or_update(existing_player)
+        try:
+            if self._unloading:
+                return
+            if pending_event := self._pending_unregisters.get(client_id):
+                self.logger.debug("Waiting for pending unregister of %s before updating", client_id)
+                await pending_event.wait()
+                if not self._is_current_client_event(client_id, event_version):
+                    self.logger.debug("Skipping stale update event for %s after waiting", client_id)
+                    return
+            sendspin_client = self.server_api.get_client(client_id)
+            if sendspin_client is None:
+                return
+            if not self._is_current_client_event(client_id, event_version):
+                self.logger.debug("Skipping stale update event for %s", client_id)
+                return
+            existing_player = self.mass.players.get_player(client_id)
+            if not isinstance(existing_player, SendspinPlayer):
+                return
+            previous_type = existing_player.type
+            existing_player._refresh_client_info(sendspin_client)
+            await self._apply_hass_name_override(existing_player, client_id)
+            if not self._is_current_client_event(client_id, event_version):
+                self.logger.debug("Skipping stale update event for %s after refresh", client_id)
+                return
+            if previous_type == PlayerType.PROTOCOL and existing_player.type != PlayerType.PROTOCOL:
+                existing_player.set_protocol_parent_id(None)
+            await self.mass.players.register_or_update(existing_player)
+        finally:
+            self._finish_client_event(client_id)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
