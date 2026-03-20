@@ -952,7 +952,9 @@ class PlayerQueuesController(CoreController):
         # debounce rapid next button presses using call_later
         self.mass.call_later(
             1,
-            self.play_index(queue_id, next_index),
+            self.play_index,
+            queue_id,
+            next_index,
             task_id=f"queue_play_index_{queue_id}",
         )
 
