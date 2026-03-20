@@ -192,15 +192,28 @@ class SonicAnalysisProvider(PluginProvider):
             )
 
         if self.config.get_value(CONF_ANALYZE_ON_SYNC):
-            self.mass.create_task(self._backfill_unanalyzed_tracks())
+            self.mass.tasks.create_task(
+                task_id="sonic_analysis_backfill",
+                name="Sonic Analysis: library backfill",
+                handler=self._backfill_unanalyzed_tracks,
+                allow_cancel=True,
+                allow_retry=True,
+            )
 
     async def _backfill_unanalyzed_tracks(self) -> None:
         """Background task: analyze all local tracks without signatures."""
+        from music_assistant.controllers.tasks.context import (
+            report_current_task_failure,
+            update_current_task_progress_from_index,
+            update_current_task_progress_text,
+        )
+
         self.logger.info("Starting background sonic analysis backfill...")
         analyzed_count = 0
         skipped_count = 0
 
         # Paginate through ALL library tracks (default limit is 500)
+        update_current_task_progress_text("Fetching library tracks...")
         page_size = 500
         offset = 0
         all_tracks: list[Any] = []
@@ -212,8 +225,8 @@ class SonicAnalysisProvider(PluginProvider):
                 if not page:
                     break
                 all_tracks.extend(page)
-                self.logger.info(
-                    "Backfill: fetched %d tracks so far...", len(all_tracks)
+                update_current_task_progress_text(
+                    f"Fetching library tracks... ({len(all_tracks)} so far)"
                 )
                 if len(page) < page_size:
                     break
@@ -222,9 +235,10 @@ class SonicAnalysisProvider(PluginProvider):
             self.logger.warning("Could not fetch library tracks for backfill", exc_info=True)
             return
 
-        self.logger.info("Backfill: %d total library tracks to process", len(all_tracks))
+        total = len(all_tracks)
+        self.logger.info("Backfill: %d total library tracks to process", total)
 
-        for track in all_tracks:
+        for idx, track in enumerate(all_tracks):
             item_id = str(track.item_id)
 
             has_signature = False
@@ -236,6 +250,10 @@ class SonicAnalysisProvider(PluginProvider):
 
             if has_signature:
                 skipped_count += 1
+                update_current_task_progress_from_index(
+                    idx + 1, total,
+                    f"Analyzed {analyzed_count}, skipped {skipped_count} of {total}",
+                )
                 continue
 
             for mapping in track.provider_mappings:
@@ -245,17 +263,20 @@ class SonicAnalysisProvider(PluginProvider):
                     )
                     analyzed_count += 1
                     break
-                except Exception:
-                    self.logger.debug(
-                        "Backfill: failed to analyze track %s via %s",
-                        item_id,
-                        mapping.provider_instance,
+                except Exception as exc:
+                    report_current_task_failure(
+                        f"Track {item_id} via {mapping.provider_instance}: {exc}"
                     )
                     continue
 
+            update_current_task_progress_from_index(
+                idx + 1, total,
+                f"Analyzed {analyzed_count}, skipped {skipped_count} of {total}",
+            )
             await asyncio.sleep(0)
 
         if analyzed_count > 0:
+            update_current_task_progress_text("Rebuilding search index...")
             await self._rebuild_search_index()
 
         self.logger.info(
@@ -633,7 +654,13 @@ class SonicAnalysisProvider(PluginProvider):
         """Handle GET /api/sonic_analysis/trigger_backfill — manually start backfill."""
         try:
             await self._create_db_table()
-            self.mass.create_task(self._backfill_unanalyzed_tracks())
+            self.mass.tasks.create_task(
+                task_id="sonic_analysis_backfill",
+                name="Sonic Analysis: library backfill",
+                handler=self._backfill_unanalyzed_tracks,
+                allow_cancel=True,
+                allow_retry=True,
+            )
             return _cors_json({"status": "backfill_started"})
         except Exception as exc:
             self.logger.exception("trigger_backfill failed")

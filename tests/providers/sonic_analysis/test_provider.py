@@ -995,9 +995,10 @@ class TestBackfill:
         ) as mock_backfill:
             await provider.loaded_in_mass()
 
-        mass.create_task.assert_called_once()
-        # The argument must be the coroutine returned by _backfill_unanalyzed_tracks
-        assert mock_backfill.called
+        mass.tasks.create_task.assert_called_once()
+        call_kwargs = mass.tasks.create_task.call_args[1]
+        assert call_kwargs["task_id"] == "sonic_analysis_backfill"
+        assert call_kwargs["handler"] == provider._backfill_unanalyzed_tracks
 
     @pytest.mark.asyncio
     async def test_loaded_in_mass_does_not_schedule_backfill_when_analyze_on_sync_disabled(
