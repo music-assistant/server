@@ -260,7 +260,7 @@ class MusicController(CoreController):
                     tasks.append(self.mass.tasks.run_task(task_id))
                 except InvalidDataError:
                     tasks.append(
-                        self.mass.tasks.create_task(
+                        self.mass.tasks.run_background_task(
                             task_id=task_id,
                             name=self._get_sync_task_name(provider, media_type),
                             handler=self._create_provider_sync_handler(provider, media_type),

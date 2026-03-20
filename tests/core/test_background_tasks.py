@@ -79,8 +79,8 @@ async def tasks_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[Tasks
         await controller.close()
 
 
-async def test_create_task_runs_immediately(tasks_controller: TasksController) -> None:
-    """Ad hoc tasks queued immediately should transition to success and capture context."""
+async def test_run_background_task(tasks_controller: TasksController) -> None:
+    """Ad hoc background tasks should transition to success and capture context."""
     handler_started = asyncio.Event()
     seen_task_id: str | None = None
 
@@ -93,7 +93,7 @@ async def test_create_task_runs_immediately(tasks_controller: TasksController) -
         update_current_task_progress_text("Refreshing playlist")
         handler_started.set()
 
-    task = tasks_controller.create_task(
+    task = tasks_controller.run_background_task(
         name="Add tracks to playlist",
         handler=handler,
         user_id="user-123",
@@ -123,7 +123,7 @@ async def test_task_can_report_partial_success(tasks_controller: TasksController
         assert progress == 50
         report_current_task_failure("Skipped duplicate playlist item")
 
-    task = tasks_controller.create_task(
+    task = tasks_controller.run_background_task(
         name="Update playlist",
         handler=handler,
         allow_retry=True,
@@ -147,12 +147,12 @@ async def test_user_scoped_task_visibility(tasks_controller: TasksController) ->
     async def handler() -> None:
         """No-op test handler."""
 
-    user_task = tasks_controller.create_task(
+    user_task = tasks_controller.run_background_task(
         name="Add playlist tracks",
         handler=handler,
         user_id="user-123",
     )
-    system_task = tasks_controller.create_task(
+    system_task = tasks_controller.run_background_task(
         name="Database cleanup",
         handler=handler,
     )
@@ -457,7 +457,7 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
         supported_features={ProviderFeature.LIBRARY_ARTISTS},
     )
 
-    sync_task = tasks_controller.create_task(
+    sync_task = tasks_controller.run_background_task(
         task_id=music._get_sync_task_id(provider, MediaType.ARTIST),
         name=music._get_sync_task_name(provider, MediaType.ARTIST),
         handler=music._create_provider_sync_handler(provider, MediaType.ARTIST),

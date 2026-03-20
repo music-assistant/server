@@ -218,7 +218,7 @@ class TasksController(CoreController):
             self._tasks.pop(task_id, None)
         self._schedule_task_update(force=True)
 
-    def create_task(  # noqa: PLR0913
+    def run_background_task(  # noqa: PLR0913
         self,
         *,
         name: str,
