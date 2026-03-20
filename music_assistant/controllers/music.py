@@ -56,6 +56,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_GENRE_GLOBAL_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -108,7 +109,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 33
+DB_SCHEMA_VERSION: Final[int] = 34
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -2647,6 +2648,24 @@ class MusicController(CoreController):
             )
             await self._database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
 
+        if prev_version <= 33:
+            # create the genre_global_exclusion table (new in schema 34)
+            await self._database.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [name] TEXT NOT NULL,
+                [sort_name] TEXT NOT NULL,
+                [search_name] TEXT NOT NULL,
+                [translation_key] TEXT,
+                UNIQUE(search_name)
+                );"""
+            )
+            await self._database.execute(
+                f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}_search_name_idx "
+                f"on {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(search_name);"
+            )
+
         # save changes
         await self._database.commit()
 
@@ -2865,6 +2884,17 @@ class MusicController(CoreController):
         )
         await self.database.execute(
             f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [search_name] TEXT NOT NULL,
+            [translation_key] TEXT,
+            UNIQUE(search_name)
+            );"""
+        )
+        await self.database.execute(
+            f"""
             CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
             [id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [track_id] INTEGER NOT NULL,
@@ -3067,6 +3097,11 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
             f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
+        )
+        # index on genre_global_exclusion table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}_search_name_idx "
+            f"on {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(search_name);"
         )
         # unique index on playlog table
         await self.database.execute(
