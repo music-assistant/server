@@ -766,7 +766,23 @@ class SonicAnalysisProvider(PluginProvider):
         if not results and (self.corpus_means is None or not await self._has_signature(item_id)):
             return _cors_json({"analyzed": False, "items": [], "seed_track_id": item_id})
 
-        items = [{"item_id": rid, "distance": dist} for rid, dist in results]
+        async def _resolve(tid: str) -> dict[str, Any] | None:
+            try:
+                t = await self.mass.music.tracks.get(tid, "library")
+                artists = ", ".join(a.name for a in getattr(t, "artists", []) or [])
+                return {"name": t.name, "artist": artists}
+            except Exception:
+                return None
+
+        result_ids = [rid for rid, _ in results]
+        resolved = await asyncio.gather(*[_resolve(rid) for rid in result_ids])
+        items: list[dict[str, Any]] = []
+        for (rid, dist), info in zip(results, resolved, strict=True):
+            entry: dict[str, Any] = {"item_id": rid, "distance": dist}
+            if info:
+                entry["name"] = info["name"]
+                entry["artist"] = info["artist"]
+            items.append(entry)
         return _cors_json({"analyzed": True, "items": items, "seed_track_id": item_id})
 
     async def _handle_trigger_backfill(self, request: Any) -> Any:
@@ -1261,10 +1277,13 @@ min-width:60px;text-align:center;font-size:.8rem}
 pre.raw{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;
 padding:.5rem;font-size:.7rem;
 overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#7a7a8e}
-.wg{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+.wg{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
 gap:.5rem;margin-bottom:.75rem}
-.wg label{color:#7a7a8e;font-size:.75rem;display:flex;align-items:center;gap:.4rem}
-.wg label span{min-width:36px;text-align:right;color:#00e5a0}
+.wg label{color:#7a7a8e;font-size:.75rem;display:flex;
+align-items:center;gap:.5rem}
+.wg label input[type=range]{flex:1;min-width:80px}
+.wg label span{min-width:40px;text-align:right;color:#00e5a0;
+font-weight:600;flex-shrink:0}
 </style></head><body>
 <h1>sonic_analysis <span>// debug console</span></h1>
 
@@ -1516,8 +1535,9 @@ function doSearch(){
       var row=mk('div','ri');
       row.appendChild(mk('div','rk','#'+(i+1)));
       var info=mk('div');
-      info.appendChild(mk('div','id',it.item_id));
-      info.appendChild(mk('div','pv',it.provider));
+      var title=it.name?it.name+' ('+it.item_id+')':it.item_id;
+      info.appendChild(mk('div','id',title));
+      info.appendChild(mk('div','pv',it.artist||''));
       info.style.flex='1';
       row.appendChild(info);
       row.appendChild(mk('div','ds '+cls,dist.toFixed(4)));
