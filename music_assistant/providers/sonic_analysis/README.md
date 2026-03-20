@@ -28,6 +28,17 @@ Signatures are stored in SQLite and indexed using [USearch](https://github.com/u
 
 Before comparison, features are z-score normalized across the corpus so that high-range features (tempo: 60-200 BPM) don't dominate over low-range features (spectral flatness: 0-1). Similarity is measured using cosine distance on the normalized vectors.
 
+### Genre & Year Weighting
+
+By default, similarity is purely sonic — two tracks that *sound* alike will match regardless of their tagged genre or release year. This can surface surprising cross-genre connections but may also produce results that feel mismatched.
+
+To refine results, two optional weights can be applied at query time (no re-indexing required):
+
+- **Genre weight** (0-100%): Boosts tracks that share genre tags with the seed. Uses Jaccard similarity (proportion of shared genres) as the bonus signal.
+- **Year weight** (0-100%): Boosts tracks from a similar release year/decade. Decays linearly — same year = full bonus, 30+ years apart = no bonus.
+
+The weights re-rank the top candidates from the ANN index by blending the sonic distance with metadata bonuses. At 0% for both, results are identical to pure sonic similarity.
+
 ### Analysis Triggers
 
 - **On library sync**: Local/NFS tracks are analyzed in the background when added to the library
@@ -42,9 +53,9 @@ All endpoints are served from the MA webserver when the plugin is enabled.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/sonic_analysis/status` | Plugin stats: DB count, index size, config |
-| `GET /api/sonic_analysis/similar?item_id=X&limit=25` | Find similar tracks |
+| `GET /api/sonic_analysis/similar?item_id=X&limit=25&genre_weight=0.5&year_weight=0.3` | Find similar tracks (weights optional, 0-1) |
 | `GET /api/sonic_analysis/signatures?limit=50&offset=0` | Browse stored signatures |
-| `GET /api/sonic_analysis/make_playlist?item_id=X` | Create a playlist from similar tracks (2 tiers deep) |
+| `GET /api/sonic_analysis/make_playlist?item_id=X&genre_weight=0.5&year_weight=0.3` | Create a playlist from similar tracks (2 tiers deep, weights optional) |
 | `GET /api/sonic_analysis/trigger_backfill` | Manually start library analysis |
 | `GET /api/sonic_analysis/rebuild_index` | Rebuild the ANN index from stored signatures |
 | `GET /api/sonic_analysis/clear_all` | Delete all signatures and reset the index |
@@ -65,5 +76,6 @@ Navigate to `http://<your-ma-server>:8095/api/sonic_analysis/debug` for a built-
 - View index status and signature counts
 - Browse stored signatures
 - Search for similar tracks by item ID
-- Generate playlists from similar tracks
+- Adjust genre and year weight sliders to tune metadata influence in real time
+- Generate playlists from similar tracks ("Songs like [track name]")
 - Trigger backfill, rebuild index, or clear all data
