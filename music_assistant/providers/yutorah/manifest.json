@@ -11,19 +11,19 @@
         {
             "key": "label_auth",
             "type": "label",
-            "label": "Login is optional. Without it, only a preview of each series is available. With a free YuTorah account the full episode list and search are unlocked."
+            "label": "A free YuTorah account is required. Sign up at yutorah.org."
         },
         {
             "key": "username",
             "type": "string",
             "label": "Email address",
-            "required": false
+            "required": true
         },
         {
             "key": "password",
             "type": "secure_string",
             "label": "Password",
-            "required": false
+            "required": true
         }
     ]
 }

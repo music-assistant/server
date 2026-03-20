@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import BrowseFolder, Podcast
 
 from music_assistant.providers.yutorah import YuTorahProvider
@@ -70,16 +75,16 @@ def mass_mock() -> AsyncMock:
 
 @pytest.fixture
 def provider(mass_mock: AsyncMock) -> YuTorahProvider:
-    """Return a YuTorahProvider instance with mocked dependencies."""
+    """Return a YuTorahProvider instance with a pre-set auth token."""
     manifest = MagicMock()
     manifest.domain = "yutorah"
     config = MagicMock()
-    config.get_value.return_value = None  # no credentials
+    config.get_value.return_value = None
 
     with patch("music_assistant.models.provider.logging.Logger.setLevel"):
         prov = YuTorahProvider(mass_mock, manifest, config)
 
-    prov._user_token = None
+    prov._user_token = "test_token"
     return prov
 
 
@@ -95,11 +100,11 @@ def auth_provider(provider: YuTorahProvider) -> YuTorahProvider:
 # ---------------------------------------------------------------------------
 
 
-async def test_handle_async_init_no_credentials(provider: YuTorahProvider) -> None:
-    """Without credentials, user token stays None."""
+async def test_handle_async_init_no_credentials_raises(provider: YuTorahProvider) -> None:
+    """Without credentials, SetupFailedError is raised."""
     provider.config.get_value.return_value = None  # type: ignore[attr-defined]
-    await provider.handle_async_init()
-    assert provider._user_token is None
+    with pytest.raises(SetupFailedError):
+        await provider.handle_async_init()
 
 
 async def test_handle_async_init_with_credentials_calls_login(
@@ -199,59 +204,6 @@ async def test_get_podcast_teacher_prefix_not_found_returns_fallback(
 # ---------------------------------------------------------------------------
 
 
-async def test_get_podcast_episodes_unauthenticated(provider: YuTorahProvider) -> None:
-    """Without a token, episodes come from landingpage/landing."""
-    landing_data = {
-        "recentlyAddedShiurim": [SAMPLE_SHIUR],
-        "topShiurim": [],
-        "featuredShiurim": [],
-    }
-    with patch.object(provider, "_api_get", new=AsyncMock(return_value=landing_data)):
-        episodes = [ep async for ep in provider.get_podcast_episodes("100")]
-    assert len(episodes) == 1
-    assert episodes[0].item_id == "12345"
-
-
-async def test_get_podcast_episodes_unauthenticated_deduplicates(
-    provider: YuTorahProvider,
-) -> None:
-    """Shiur IDs appearing in multiple landing sections are deduplicated."""
-    landing_data = {
-        "recentlyAddedShiurim": [SAMPLE_SHIUR],
-        "topShiurim": [SAMPLE_SHIUR],  # same shiur repeated
-        "featuredShiurim": [],
-    }
-    with patch.object(provider, "_api_get", new=AsyncMock(return_value=landing_data)):
-        episodes = [ep async for ep in provider.get_podcast_episodes("100")]
-    assert len(episodes) == 1
-
-
-async def test_get_podcast_episodes_unauthenticated_api_none(
-    provider: YuTorahProvider,
-) -> None:
-    """None response from API yields no episodes without raising."""
-    with patch.object(provider, "_api_get", new=AsyncMock(return_value=None)):
-        episodes = [ep async for ep in provider.get_podcast_episodes("100")]
-    assert episodes == []
-
-
-async def test_get_podcast_episodes_unauthenticated_teacher_prefix(
-    provider: YuTorahProvider,
-) -> None:
-    """Without a token, 't_' IDs call landingpage/landing with type=speaker and bare teacher ID."""
-    landing_data = {
-        "recentlyAddedShiurim": [SAMPLE_SHIUR],
-        "topShiurim": [],
-        "featuredShiurim": [],
-    }
-    with patch.object(provider, "_api_get", new=AsyncMock(return_value=landing_data)) as mock_api:
-        episodes = [ep async for ep in provider.get_podcast_episodes("t_7")]
-    assert len(episodes) == 1
-    call_kwargs = mock_api.call_args.kwargs
-    assert call_kwargs.get("type") == "speaker"
-    assert call_kwargs.get("value") == "7"  # prefix stripped
-
-
 async def test_get_podcast_episodes_authenticated_series(
     auth_provider: YuTorahProvider,
 ) -> None:
@@ -345,14 +297,6 @@ async def test_get_artist_not_in_map_returns_fallback(provider: YuTorahProvider)
 # ---------------------------------------------------------------------------
 
 
-async def test_get_artist_toptracks_no_token_returns_empty(
-    provider: YuTorahProvider,
-) -> None:
-    """Without a token, top tracks cannot be fetched and returns empty list."""
-    tracks = await provider.get_artist_toptracks("7")
-    assert tracks == []
-
-
 async def test_get_artist_toptracks_with_token(auth_provider: YuTorahProvider) -> None:
     """With a token, shiurim are returned as Track objects with correct artist linkage."""
     with patch.object(auth_provider, "_api_get", new=AsyncMock(return_value=[SAMPLE_SEARCH_DOC])):
@@ -441,26 +385,6 @@ async def test_get_stream_details_no_url_raises(provider: YuTorahProvider) -> No
 # ---------------------------------------------------------------------------
 
 
-async def test_search_returns_podcasts_unauthenticated(provider: YuTorahProvider) -> None:
-    """Unauthenticated search filters the cached series list by name."""
-    series_list = [
-        {"ID": "100", "name": "Daf Yomi Shiurim", "imageURL": ""},
-        {"ID": "101", "name": "Unrelated Content", "imageURL": ""},
-    ]
-    with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)):
-        results = await provider.search("daf", [MediaType.PODCAST])
-    assert len(results.podcasts) == 1
-    assert results.podcasts[0].name == "Daf Yomi Shiurim"
-
-
-async def test_search_unauthenticated_no_match(provider: YuTorahProvider) -> None:
-    """No matching series name returns empty results."""
-    series_list = [{"ID": "100", "name": "Daf Yomi", "imageURL": ""}]
-    with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)):
-        results = await provider.search("halacha", [MediaType.PODCAST])
-    assert results.podcasts == []
-
-
 async def test_search_authenticated_returns_podcasts_and_artists(
     auth_provider: YuTorahProvider,
 ) -> None:
@@ -523,27 +447,14 @@ async def test_browse_series_list(provider: YuTorahProvider) -> None:
     assert results[0].name == "Daf Yomi"  # alphabetically first
 
 
-async def test_browse_series_list_uses_numeric_id_in_path(provider: YuTorahProvider) -> None:
-    """Series folders use the numeric ID in their browse path."""
+async def test_browse_series_list_uses_name_id_segment_in_path(provider: YuTorahProvider) -> None:
+    """Series folders encode the name and ID in their browse path as 'name|id'."""
     series_list = [{"ID": "100", "name": "Daf Yomi"}]
     with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)):
         results = await provider.browse("yutorah://series")
     folder = results[0]
     assert isinstance(folder, BrowseFolder)
-    assert folder.path == "yutorah://series/100"
-
-
-async def test_browse_series_unauthenticated_returns_series_podcast(
-    provider: YuTorahProvider,
-) -> None:
-    """Without auth, browsing a series by ID returns the Podcast item but no teacher folders."""
-    series_list = [{"ID": "100", "name": "Daf Yomi"}]
-    with patch.object(provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)):
-        results = await provider.browse("yutorah://series/100")
-    items = list(results)
-    assert len(items) == 1
-    assert isinstance(items[0], Podcast)
-    assert items[0].item_id == "100"
+    assert folder.path == "yutorah://series/Daf Yomi|100"
 
 
 async def test_browse_series_authenticated(auth_provider: YuTorahProvider) -> None:
@@ -562,17 +473,17 @@ async def test_browse_series_authenticated(auth_provider: YuTorahProvider) -> No
         patch.object(auth_provider, "_fetch_series_list", new=AsyncMock(return_value=series_list)),
         patch.object(auth_provider, "_api_get", new=AsyncMock(side_effect=api_side)),
     ):
-        results = await auth_provider.browse("yutorah://series/100")
+        results = await auth_provider.browse("yutorah://series/Daf Yomi|100")
     assert len(results) == 2
     assert isinstance(results[0], Podcast)
     assert results[0].item_id == "100"
     assert "Rabbi C" in results[1].name
     assert isinstance(results[1], BrowseFolder)
-    assert results[1].path == "yutorah://series/100/teacher/7"
+    assert results[1].path == "yutorah://series/Daf Yomi|100/Rabbi C|7"
 
 
 async def test_browse_series_teacher_episodes(auth_provider: YuTorahProvider) -> None:
-    """yutorah://series/<id>/teacher/<id> returns a subscribable Podcast then episodes."""
+    """yutorah://series/<series>/<teacher> returns a subscribable Podcast then episodes."""
     series_list = [{"ID": "100", "name": "Daf Yomi"}]
     teachers_map = {"7": SAMPLE_TEACHER}
 
@@ -586,7 +497,7 @@ async def test_browse_series_teacher_episodes(auth_provider: YuTorahProvider) ->
         ),
         patch.object(auth_provider, "_api_get", new=AsyncMock(side_effect=api_side)),
     ):
-        results = await auth_provider.browse("yutorah://series/100/teacher/7")
+        results = await auth_provider.browse("yutorah://series/Daf Yomi|100/Rabbi C|7")
     assert len(results) == 2
     assert isinstance(results[0], Podcast)
     assert results[0].item_id == "st_100_7"
@@ -630,19 +541,6 @@ async def test_browse_teachers_filters_hidden(provider: YuTorahProvider) -> None
     assert list(results) == []
 
 
-async def test_browse_teacher_episodes_by_id(provider: YuTorahProvider) -> None:
-    """yutorah://teachers/<id> returns landing episodes for the teacher."""
-    landing_data = {
-        "recentlyAddedShiurim": [SAMPLE_SHIUR],
-        "topShiurim": [],
-        "featuredShiurim": [],
-    }
-    with patch.object(provider, "_api_get", new=AsyncMock(return_value=landing_data)):
-        results = await provider.browse("yutorah://teachers/7")
-    assert len(results) == 1
-    assert results[0].item_id == "12345"
-
-
 async def test_browse_teacher_episodes_authenticated(auth_provider: YuTorahProvider) -> None:
     """yutorah://teachers/<id> with auth uses paginated search."""
     with patch.object(auth_provider, "_api_get", new=AsyncMock(return_value=[SAMPLE_SEARCH_DOC])):
@@ -665,7 +563,7 @@ async def test_browse_categories(provider: YuTorahProvider) -> None:
     assert isinstance(folder, BrowseFolder)
     assert "Kashrut" in folder.name
     assert "Jewish Law" in folder.name
-    assert folder.path == "yutorah://categories/50"
+    assert folder.path == "yutorah://categories/Jewish Law — Kashrut|50"
 
 
 async def test_browse_category_by_id(provider: YuTorahProvider) -> None:
