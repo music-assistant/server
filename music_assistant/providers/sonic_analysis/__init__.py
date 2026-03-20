@@ -136,6 +136,8 @@ class SonicAnalysisProvider(PluginProvider):
     _on_unload: list[Callable[[], None]]
     _search_index: Any  # USearchIndex — typed as Any to avoid hard import at class level
     _label_map: dict[int, tuple[str, str]]
+    _reverse_label_map: dict[tuple[str, str], int]
+    _next_label: int
     _analysis_semaphore: asyncio.Semaphore
 
     async def handle_async_init(self) -> None:
@@ -145,6 +147,8 @@ class SonicAnalysisProvider(PluginProvider):
         self.corpus_stds = None
         self._search_index = None
         self._label_map: dict[int, tuple[str, str]] = {}
+        self._reverse_label_map: dict[tuple[str, str], int] = {}
+        self._next_label = 1
 
         max_concurrent = int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2)  # type: ignore[arg-type]
         self._analysis_semaphore = asyncio.Semaphore(max_concurrent)
@@ -390,11 +394,7 @@ class SonicAnalysisProvider(PluginProvider):
 
         if self.corpus_means is not None and self.corpus_stds is not None:
             normalized = normalize_features(signature.features, self.corpus_means, self.corpus_stds)
-            # Use a stable integer label derived from item_id for the ANN index.
-            # Python's built-in hash is deterministic within a process but may vary
-            # across runs; for now this is acceptable as the index is rebuilt on startup.
-            label = abs(hash((provider_instance, item_id))) % (2**31)
-            self._label_map[label] = (item_id, provider_instance)
+            label = self._get_or_assign_label(item_id, provider_instance)
             self._add_to_index(label, normalized)
 
         return signature
@@ -456,6 +456,17 @@ class SonicAnalysisProvider(PluginProvider):
             await self._analyze_track(item_id, provider, audio, sample_rate)
         except Exception as exc:
             self.logger.warning("Analysis failed for %s/%s: %s", provider, item_id, exc)
+
+    def _get_or_assign_label(self, item_id: str, provider: str) -> int:
+        """Return the integer label for a (item_id, provider) pair, assigning one if new."""
+        key = (item_id, provider)
+        if key in self._reverse_label_map:
+            return self._reverse_label_map[key]
+        label = self._next_label
+        self._next_label += 1
+        self._label_map[label] = key
+        self._reverse_label_map[key] = label
+        return label
 
     async def _create_db_table(self) -> None:
         """Create the sonic_signatures table if it does not already exist."""
@@ -678,6 +689,8 @@ class SonicAnalysisProvider(PluginProvider):
             )
             await self.mass.music.database.commit()
             self._label_map.clear()
+            self._reverse_label_map.clear()
+            self._next_label = 1
             self.corpus_means = None
             self.corpus_stds = None
             # Delete the index file before re-init so it creates a fresh empty one
@@ -804,7 +817,7 @@ class SonicAnalysisProvider(PluginProvider):
         fetch_k = limit * 5 if (genre_weight > 0 or year_weight > 0) else limit + 1
         raw_results = self._query_index(normalized, k=fetch_k)
 
-        seed_label = abs(hash((seed_provider, item_id))) % (2**31)
+        seed_label = self._reverse_label_map.get((item_id, seed_provider))
         candidates: list[tuple[str, float]] = []
         for result_id, distance in raw_results:
             if result_id == seed_label:
@@ -1017,11 +1030,12 @@ class SonicAnalysisProvider(PluginProvider):
             dtype=ScalarKind.I8,
         )
         self._label_map = {}
+        self._reverse_label_map = {}
+        self._next_label = 1
 
         for item_id, provider_instance, features in parsed:
             normalized = normalize_features(features, means, stds)
-            label = abs(hash((provider_instance, item_id))) % (2**31)
-            self._label_map[label] = (item_id, provider_instance)
+            label = self._get_or_assign_label(item_id, provider_instance)
             self._add_to_index(label, normalized)
 
         await asyncio.to_thread(self._save_search_index)

@@ -255,6 +255,63 @@ class TestUnload:
 # ---------------------------------------------------------------------------
 
 
+class TestLabelAllocation:
+    """Verify monotonic label assignment with no hash collisions."""
+
+    @pytest.mark.asyncio
+    async def test_labels_are_unique_and_deterministic(self, tmp_path: Any) -> None:
+        """Each (item_id, provider) pair gets a unique label; repeated calls return the same one."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(mass)
+        with patch(_USEARCH_PATCH, create=True):
+            await provider.handle_async_init()
+
+        label_a = provider._get_or_assign_label("100", "prov_x")
+        label_b = provider._get_or_assign_label("200", "prov_x")
+        label_c = provider._get_or_assign_label("100", "prov_y")
+
+        assert label_a != label_b
+        assert label_a != label_c
+        assert label_b != label_c
+
+        assert provider._get_or_assign_label("100", "prov_x") == label_a
+        assert provider._get_or_assign_label("200", "prov_x") == label_b
+
+    @pytest.mark.asyncio
+    async def test_label_maps_are_consistent(self, tmp_path: Any) -> None:
+        """Forward and reverse maps stay in sync."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(mass)
+        with patch(_USEARCH_PATCH, create=True):
+            await provider.handle_async_init()
+
+        label = provider._get_or_assign_label("42", "fs")
+        assert provider._label_map[label] == ("42", "fs")
+        assert provider._reverse_label_map[("42", "fs")] == label
+
+    @pytest.mark.asyncio
+    async def test_clear_all_resets_labels(self, tmp_path: Any) -> None:
+        """After clear_all, label counter and maps restart from scratch."""
+        mass = _make_mock_mass()
+        mass.storage_path = str(tmp_path)
+        provider = _make_provider_with_config(mass)
+        with patch(_USEARCH_PATCH, create=True):
+            await provider.handle_async_init()
+
+        provider._get_or_assign_label("1", "p")
+        provider._get_or_assign_label("2", "p")
+        assert provider._next_label == 3
+
+        request = make_mocked_request("GET", "/api/sonic_analysis/clear_all")
+        await provider._handle_clear_all(request)
+
+        assert provider._next_label == 1
+        assert len(provider._label_map) == 0
+        assert len(provider._reverse_label_map) == 0
+
+
 @_requires_usearch
 class TestUSearchIndex:
     """Tests for USearch ANN index methods."""
