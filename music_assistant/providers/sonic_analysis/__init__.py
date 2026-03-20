@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -25,8 +26,11 @@ from music_assistant.controllers.tasks.context import (
 from music_assistant.helpers.sonic_analysis import (
     SIGNATURE_DIMENSIONS,
     SIGNATURE_VERSION,
+    SIMILARITY_PRESETS,
+    SimilarityWeights,
     SonicSignature,
     compute_corpus_stats,
+    compute_weighted_distance,
     extract_signature,
     normalize_features,
 )
@@ -133,6 +137,46 @@ def _cors_text(text: str, status: int = 200) -> web.Response:
     return resp
 
 
+def _parse_weights(query: Any) -> SimilarityWeights:
+    """Parse similarity weights from request query parameters.
+
+    Applies a named preset first, then overrides individual fields with any
+    explicitly supplied per-group or metadata weight parameters.
+    Backward-compatible: genre_weight / year_weight map to weights.genre / weights.year.
+
+    :param query: aiohttp MultiDictProxy (or any mapping) of query parameters.
+    """
+    preset_name = query.get("preset", "balanced")
+    preset = SIMILARITY_PRESETS.get(preset_name, SIMILARITY_PRESETS["balanced"])
+    # Copy preset values into a mutable dataclass
+    weights = SimilarityWeights(
+        timbre=preset.timbre,
+        harmony=preset.harmony,
+        texture=preset.texture,
+        rhythm=preset.rhythm,
+        energy=preset.energy,
+        genre=preset.genre,
+        year=preset.year,
+    )
+
+    def _clamp(val: str) -> float:
+        return max(0.0, min(1.0, float(val)))
+
+    for field_name in ("timbre", "harmony", "texture", "rhythm", "energy"):
+        raw = query.get(field_name)
+        if raw is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                setattr(weights, field_name, _clamp(raw))
+
+    for param, field_name in (("genre_weight", "genre"), ("year_weight", "year")):
+        raw = query.get(param)
+        if raw is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                setattr(weights, field_name, _clamp(raw))
+
+    return weights
+
+
 class SonicAnalysisProvider(PluginProvider):
     """Plugin provider that extracts sonic signatures and enables similarity-based discovery."""
 
@@ -144,6 +188,7 @@ class SonicAnalysisProvider(PluginProvider):
     _reverse_label_map: dict[tuple[str, str], int]
     _next_label: int
     _analysis_semaphore: asyncio.Semaphore
+    _signature_cache: dict[str, list[float]]
 
     async def handle_async_init(self) -> None:
         """Handle async initialisation: create DB table, load corpus stats, init ANN index."""
@@ -154,6 +199,7 @@ class SonicAnalysisProvider(PluginProvider):
         self._label_map: dict[int, tuple[str, str]] = {}
         self._reverse_label_map: dict[tuple[str, str], int] = {}
         self._next_label = 1
+        self._signature_cache: dict[str, list[float]] = {}
 
         max_concurrent = int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2)  # type: ignore[arg-type]
         self._analysis_semaphore = asyncio.Semaphore(max_concurrent)
@@ -183,6 +229,8 @@ class SonicAnalysisProvider(PluginProvider):
             if row["item_id"] == CORPUS_STATS_ITEM_ID:
                 continue
             self._get_or_assign_label(row["item_id"], row["provider"])
+            with contextlib.suppress(KeyError, ValueError, TypeError):
+                self._signature_cache[row["item_id"]] = json.loads(row["features"])
 
         self.logger.info("Restored %d label mappings from DB", len(self._label_map))
 
@@ -446,6 +494,7 @@ class SonicAnalysisProvider(PluginProvider):
             return None
 
         await self.set_sonic_signature(item_id, provider_instance, signature)
+        self._signature_cache[item_id] = signature.features
 
         if self.corpus_means is not None and self.corpus_stds is not None:
             normalized = normalize_features(signature.features, self.corpus_means, self.corpus_stds)
@@ -689,7 +738,8 @@ class SonicAnalysisProvider(PluginProvider):
     async def _handle_similar_tracks(self, request: Any) -> Any:
         """Handle GET /api/sonic_analysis/similar endpoint.
 
-        Query parameters: item_id (required), limit, genre_weight, year_weight.
+        Query parameters: item_id (required), limit, candidates, preset,
+        timbre, harmony, texture, rhythm, energy, genre_weight, year_weight.
 
         :param request: Incoming aiohttp web request.
         """
@@ -703,17 +753,14 @@ class SonicAnalysisProvider(PluginProvider):
             limit = 25
 
         try:
-            genre_weight = max(0.0, min(1.0, float(request.query.get("genre_weight", 0))))
+            candidates = min(int(request.query.get("candidates", 50)), 500)
         except (TypeError, ValueError):
-            genre_weight = 0.0
+            candidates = 50
 
-        try:
-            year_weight = max(0.0, min(1.0, float(request.query.get("year_weight", 0))))
-        except (TypeError, ValueError):
-            year_weight = 0.0
+        weights = _parse_weights(request.query)
 
         results = await self._get_similar_item_ids(
-            item_id, limit=limit, genre_weight=genre_weight, year_weight=year_weight
+            item_id, limit=limit, candidates=candidates, weights=weights
         )
 
         if not results and (self.corpus_means is None or not await self._has_signature(item_id)):
@@ -768,13 +815,11 @@ class SonicAnalysisProvider(PluginProvider):
                 return _cors_text("Missing required query parameter: item_id", status=400)
 
             try:
-                genre_weight = max(0.0, min(1.0, float(request.query.get("genre_weight", 0))))
+                candidates = min(int(request.query.get("candidates", 50)), 500)
             except (TypeError, ValueError):
-                genre_weight = 0.0
-            try:
-                year_weight = max(0.0, min(1.0, float(request.query.get("year_weight", 0))))
-            except (TypeError, ValueError):
-                year_weight = 0.0
+                candidates = 50
+
+            weights = _parse_weights(request.query)
 
             # Get the seed track name
             try:
@@ -785,7 +830,7 @@ class SonicAnalysisProvider(PluginProvider):
 
             # Get top 10 similar to the seed
             similar_result = await self._get_similar_item_ids(
-                item_id, limit=10, genre_weight=genre_weight, year_weight=year_weight
+                item_id, limit=10, candidates=candidates, weights=weights
             )
             if not similar_result:
                 return _cors_json({"status": "error", "error": "No similar tracks found"})
@@ -805,7 +850,7 @@ class SonicAnalysisProvider(PluginProvider):
             # For each tier 1 track, get its top 10 similar (tier 2)
             for t1_id in tier1_ids:
                 tier2_result = await self._get_similar_item_ids(
-                    t1_id, limit=10, genre_weight=genre_weight, year_weight=year_weight
+                    t1_id, limit=10, candidates=candidates, weights=weights
                 )
                 for sim_id, _dist in tier2_result:
                     if sim_id not in seen_ids:
@@ -840,17 +885,36 @@ class SonicAnalysisProvider(PluginProvider):
         self,
         item_id: str,
         limit: int = 10,
-        genre_weight: float = 0.0,
-        year_weight: float = 0.0,
+        candidates: int = 50,
+        weights: SimilarityWeights | None = None,
     ) -> list[tuple[str, float]]:
-        """Get similar track item_ids from the index with optional metadata re-ranking.
+        """Get similar track item_ids from the index with optional weighted re-ranking.
+
+        When weights are balanced (all sonic groups 1.0, no metadata), ANN results
+        are returned directly without re-ranking (fast path). Otherwise up to
+        *candidates* results are fetched from the ANN index, re-scored using
+        per-group weighted Euclidean distance and metadata bonuses, then the top
+        *limit* are returned.
 
         :param item_id: library item ID of the seed track.
         :param limit: max results to return.
-        :param genre_weight: 0.0-1.0 how much to boost tracks sharing genres with the seed.
-        :param year_weight: 0.0-1.0 how much to boost tracks from a similar year/decade.
+        :param candidates: number of ANN candidates to fetch before re-ranking.
+        :param weights: per-group and metadata weights; defaults to balanced preset.
         """
         assert self.mass.music.database is not None
+
+        if weights is None:
+            weights = SimilarityWeights()
+
+        # Determine whether any non-default weighting is active
+        balanced = SIMILARITY_PRESETS["balanced"]
+        needs_sonic_rerank = any(
+            getattr(weights, g) != getattr(balanced, g)
+            for g in ("timbre", "harmony", "texture", "rhythm", "energy")
+        )
+        needs_metadata = weights.genre > 0 or weights.year > 0
+        needs_rerank = needs_sonic_rerank or needs_metadata
+
         rows = await self.mass.music.database.get_rows(
             DB_TABLE_SONIC_SIGNATURES, {"item_id": item_id}
         )
@@ -864,48 +928,63 @@ class SonicAnalysisProvider(PluginProvider):
         if sig_row is None or self.corpus_means is None or self.corpus_stds is None:
             return []
 
-        features = json.loads(sig_row["features"])
-        normalized = normalize_features(features, self.corpus_means, self.corpus_stds)
+        seed_raw: list[float] = json.loads(sig_row["features"])
+        normalized = normalize_features(seed_raw, self.corpus_means, self.corpus_stds)
 
-        # Fetch extra candidates for re-ranking when metadata weights are active
-        fetch_k = limit * 5 if (genre_weight > 0 or year_weight > 0) else limit + 1
+        fetch_k = candidates if needs_rerank else limit + 1
         raw_results = self._query_index(normalized, k=fetch_k)
 
         seed_label = self._reverse_label_map.get((item_id, seed_provider))
-        candidates: list[tuple[str, float]] = []
+        ann_candidates: list[tuple[str, float]] = []
         for result_id, distance in raw_results:
             if result_id == seed_label:
                 continue
             resolved = self._label_map.get(result_id)
             if resolved is None:
                 continue
-            candidates.append((resolved[0], distance))
+            ann_candidates.append((resolved[0], distance))
 
-        if not candidates:
+        if not ann_candidates:
             return []
 
-        if genre_weight <= 0 and year_weight <= 0:
-            return candidates[:limit]
+        if not needs_rerank:
+            return ann_candidates[:limit]
 
-        return await self._rerank_with_metadata(
-            item_id, candidates, limit, genre_weight, year_weight
-        )
+        if needs_sonic_rerank:
+            # Re-score using per-group weighted distance on normalized features.
+            # Seed normalized features are already computed; candidate normalized
+            # features are derived from the raw cache + corpus stats.
+            seed_norm = normalized
+            rescored: list[tuple[str, float]] = []
+            for cand_id, ann_dist in ann_candidates:
+                cand_raw = self._signature_cache.get(cand_id)
+                if cand_raw is None:
+                    rescored.append((cand_id, ann_dist))
+                    continue
+                cand_norm = normalize_features(cand_raw, self.corpus_means, self.corpus_stds)
+                dist = compute_weighted_distance(seed_norm, cand_norm, weights)
+                rescored.append((cand_id, dist))
+            rescored.sort(key=lambda x: x[1])
+            ann_candidates = rescored
+
+        if not needs_metadata:
+            return ann_candidates[:limit]
+
+        return await self._rerank_with_metadata(item_id, ann_candidates, limit, weights)
 
     async def _rerank_with_metadata(
         self,
         seed_item_id: str,
         candidates: list[tuple[str, float]],
         limit: int,
-        genre_weight: float,
-        year_weight: float,
+        weights: SimilarityWeights,
     ) -> list[tuple[str, float]]:
-        """Re-rank sonic similarity candidates using genre and year metadata.
+        """Re-rank candidates using genre and year metadata bonuses.
 
         :param seed_item_id: library item ID of the seed track.
-        :param candidates: list of (item_id, sonic_distance) from the ANN index.
+        :param candidates: list of (item_id, distance) tuples to re-rank.
         :param limit: max results to return.
-        :param genre_weight: 0.0-1.0 genre influence.
-        :param year_weight: 0.0-1.0 year influence.
+        :param weights: similarity weights; genre and year fields are used here.
         """
         try:
             seed_track = await self.mass.music.tracks.get(seed_item_id, "library")
@@ -939,17 +1018,17 @@ class SonicAnalysisProvider(PluginProvider):
             cand_year: int = getattr(cand_track, "year", None) or 0
 
             genre_bonus = 0.0
-            if seed_genres and cand_genres and genre_weight > 0:
+            if seed_genres and cand_genres and weights.genre > 0:
                 overlap = len(seed_genres & cand_genres)
                 union = len(seed_genres | cand_genres)
                 genre_bonus = (overlap / union) if union > 0 else 0.0
 
             year_bonus = 0.0
-            if seed_year and cand_year and year_weight > 0:
+            if seed_year and cand_year and weights.year > 0:
                 year_diff = abs(seed_year - cand_year)
                 year_bonus = max(0.0, 1.0 - (year_diff / 30.0))
 
-            metadata_boost = genre_bonus * genre_weight + year_bonus * year_weight
+            metadata_boost = genre_bonus * weights.genre + year_bonus * weights.year
             blended = sonic_dist - (metadata_boost * 0.5)
             scored.append((cand_id, blended))
 
@@ -1154,7 +1233,7 @@ gap:.5rem;margin-bottom:1rem}
 input,select{font-family:monospace;font-size:.8rem;padding:.4rem .6rem;
 background:#12121a;border:1px solid #2a2a3a;
 border-radius:4px;color:#e0e0ea;outline:0}
-input:focus{border-color:#00e5a0}
+input:focus,select:focus{border-color:#00e5a0}
 button{font-family:monospace;font-size:.75rem;font-weight:600;
 padding:.4rem 1rem;border:1px solid #00e5a0;
 background:0 0;color:#00e5a0;border-radius:4px;cursor:pointer;text-transform:uppercase}
@@ -1182,6 +1261,10 @@ min-width:60px;text-align:center;font-size:.8rem}
 pre.raw{background:#12121a;border:1px solid #2a2a3a;border-radius:4px;
 padding:.5rem;font-size:.7rem;
 overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#7a7a8e}
+.wg{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+gap:.5rem;margin-bottom:.75rem}
+.wg label{color:#7a7a8e;font-size:.75rem;display:flex;align-items:center;gap:.4rem}
+.wg label span{min-width:36px;text-align:right;color:#00e5a0}
 </style></head><body>
 <h1>sonic_analysis <span>// debug console</span></h1>
 
@@ -1211,20 +1294,39 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <h2>Similarity Search</h2>
 <div class="row">
 <input id="si" placeholder="item_id" style="width:180px">
-<input id="sl" type="number" value="10" min="1" max="100" style="width:60px">
+<input id="sl" type="number" value="10" min="1" max="100" style="width:60px" title="Limit">
+<input id="sc" type="number" value="50" min="1" max="500" style="width:65px" title="Candidates">
 <button onclick="doSearch()">Search</button>
 <button onclick="makePlaylist()"
   style="border-color:#6bc5ff;color:#6bc5ff">Make Playlist</button>
 </div>
-<div class="row" style="font-size:.75rem;gap:1rem">
-<label style="color:#7a7a8e">Genre:
-  <input id="gw" type="range" min="0" max="100" value="0"
-    style="width:100px;vertical-align:middle">
-  <span id="gwv">0%</span></label>
-<label style="color:#7a7a8e">Year:
-  <input id="yw" type="range" min="0" max="100" value="0"
-    style="width:100px;vertical-align:middle">
-  <span id="ywv">0%</span></label>
+<div class="row" style="gap:.75rem;align-items:center">
+<label style="color:#7a7a8e;font-size:.75rem">Preset:
+  <select id="pr" onchange="applyPreset()" style="margin-left:.3rem">
+    <option value="balanced">balanced</option>
+    <option value="vibe">vibe</option>
+    <option value="party">party</option>
+    <option value="genre_era">genre_era</option>
+    <option value="discover">discover</option>
+    <option value="custom">custom</option>
+  </select>
+</label>
+</div>
+<div class="wg">
+<label>Timbre<input id="w_timbre" type="range" min="0" max="100" value="100"
+  oninput="sliderChanged('timbre',this.value)"><span id="v_timbre">100%</span></label>
+<label>Harmony<input id="w_harmony" type="range" min="0" max="100" value="100"
+  oninput="sliderChanged('harmony',this.value)"><span id="v_harmony">100%</span></label>
+<label>Texture<input id="w_texture" type="range" min="0" max="100" value="100"
+  oninput="sliderChanged('texture',this.value)"><span id="v_texture">100%</span></label>
+<label>Rhythm<input id="w_rhythm" type="range" min="0" max="100" value="100"
+  oninput="sliderChanged('rhythm',this.value)"><span id="v_rhythm">100%</span></label>
+<label>Energy<input id="w_energy" type="range" min="0" max="100" value="100"
+  oninput="sliderChanged('energy',this.value)"><span id="v_energy">100%</span></label>
+<label>Genre<input id="w_genre" type="range" min="0" max="100" value="0"
+  oninput="sliderChanged('genre',this.value)"><span id="v_genre">0%</span></label>
+<label>Year<input id="w_year" type="range" min="0" max="100" value="0"
+  oninput="sliderChanged('year',this.value)"><span id="v_year">0%</span></label>
 </div>
 <div id="sr"></div>
 
@@ -1243,17 +1345,39 @@ overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;color:#
 <script>
 var BASE='%%BASE_URL%%';
 var pg=0,PS=50;
-document.getElementById('gw').oninput=function(){
-  document.getElementById('gwv').textContent=this.value+'%'
+
+var PRESETS={
+  balanced:{timbre:100,harmony:100,texture:100,rhythm:100,energy:100,genre:0,year:0},
+  vibe:    {timbre:80, harmony:50, texture:60, rhythm:30, energy:100,genre:0,year:0},
+  party:   {timbre:30, harmony:20, texture:30, rhythm:100,energy:80, genre:0,year:0},
+  genre_era:{timbre:50,harmony:50, texture:50, rhythm:50, energy:50, genre:80,year:60},
+  discover:{timbre:100,harmony:80, texture:70, rhythm:50, energy:70, genre:0,year:0}
 };
-document.getElementById('yw').oninput=function(){
-  document.getElementById('ywv').textContent=this.value+'%'
-};
+
+function applyPreset(){
+  var name=document.getElementById('pr').value;
+  if(name==='custom')return;
+  var p=PRESETS[name];
+  if(!p)return;
+  ['timbre','harmony','texture','rhythm','energy','genre','year'].forEach(function(k){
+    document.getElementById('w_'+k).value=p[k];
+    document.getElementById('v_'+k).textContent=p[k]+'%';
+  });
+}
+
+function sliderChanged(name,val){
+  document.getElementById('v_'+name).textContent=val+'%';
+  document.getElementById('pr').value='custom';
+}
+
 function getWeights(){
-  return{
-    genre_weight:document.getElementById('gw').value/100,
-    year_weight:document.getElementById('yw').value/100
-  }
+  var w={candidates:document.getElementById('sc').value};
+  ['timbre','harmony','texture','rhythm','energy'].forEach(function(k){
+    w[k]=document.getElementById('w_'+k).value/100;
+  });
+  w.genre_weight=document.getElementById('w_genre').value/100;
+  w.year_weight=document.getElementById('w_year').value/100;
+  return w;
 }
 
 function cl(p){while(p.firstChild)p.removeChild(p.firstChild)}
@@ -1376,15 +1500,9 @@ function doSearch(){
   var wt=getWeights();
   var w=document.getElementById('sr');cl(w);
   w.appendChild(mk('div','','Searching...'));
-  logMsg(
-    'Searching similar to '+id
-    +' (genre='+Math.round(wt.genre_weight*100)
-    +'% year='+Math.round(wt.year_weight*100)+'%)...'
-  );
-  api('similar',{
-    item_id:id,limit:lim,
-    genre_weight:wt.genre_weight,year_weight:wt.year_weight
-  }).then(function(d){
+  logMsg('Searching similar to '+id+' (candidates='+wt.candidates+')...');
+  var params=Object.assign({item_id:id,limit:lim},wt);
+  api('similar',params).then(function(d){
     cl(w);
     if(!d.analyzed){
       w.appendChild(mk('div','','Not analyzed yet'));
@@ -1419,9 +1537,8 @@ function makePlaylist(){
   var w=document.getElementById('sr');
   w.appendChild(mk('div','','Creating playlist...'));
   var wt=getWeights();
-  api('make_playlist',{
-    item_id:id,genre_weight:wt.genre_weight,year_weight:wt.year_weight
-  }).then(function(d){
+  var params=Object.assign({item_id:id},wt);
+  api('make_playlist',params).then(function(d){
     if(d.status==='created'){
       logMsg('Playlist "'+d.playlist_name+'" created with '+d.track_count+' tracks!',true);
       w.appendChild(mk('div','',

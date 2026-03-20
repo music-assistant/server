@@ -13,6 +13,44 @@ import numpy as np
 
 SIGNATURE_VERSION: int = 1
 
+# Feature group index ranges (start, end) within the 38-dim signature
+FEATURE_GROUPS: dict[str, tuple[int, int]] = {
+    "timbre": (0, 13),
+    "harmony": (13, 25),
+    "texture": (25, 32),
+    "rhythm": (32, 34),
+    "energy": (34, 38),
+}
+
+
+@dataclass
+class SimilarityWeights:
+    """Weights for each feature group and metadata factor.
+
+    Sonic group weights control how much each audio feature group contributes
+    to the weighted distance calculation. Metadata weights (genre, year) add
+    bonus scoring during re-ranking and do not affect the raw distance.
+    """
+
+    timbre: float = 1.0
+    harmony: float = 1.0
+    texture: float = 1.0
+    rhythm: float = 1.0
+    energy: float = 1.0
+    genre: float = 0.0
+    year: float = 0.0
+
+
+SIMILARITY_PRESETS: dict[str, SimilarityWeights] = {
+    "balanced": SimilarityWeights(),
+    "vibe": SimilarityWeights(timbre=0.8, harmony=0.5, texture=0.6, rhythm=0.3, energy=1.0),
+    "party": SimilarityWeights(timbre=0.3, harmony=0.2, texture=0.3, rhythm=1.0, energy=0.8),
+    "genre_era": SimilarityWeights(
+        timbre=0.5, harmony=0.5, texture=0.5, rhythm=0.5, energy=0.5, genre=0.8, year=0.6
+    ),
+    "discover": SimilarityWeights(timbre=1.0, harmony=0.8, texture=0.7, rhythm=0.5, energy=0.7),
+}
+
 FEATURE_NAMES: list[str] = [
     # MFCCs (13)
     "mfcc_1",
@@ -143,6 +181,37 @@ def normalize_features(
         else:
             result.append(float((value - mean) / std))
     return result
+
+
+def compute_weighted_distance(
+    sig_a: list[float],
+    sig_b: list[float],
+    weights: SimilarityWeights,
+) -> float:
+    """Compute weighted Euclidean distance using per-group weights.
+
+    Each feature group is weighted independently. The result is normalised by
+    the total weighted dimension count so that scores remain comparable across
+    different weight configurations.
+
+    :param sig_a: Raw (or normalized) feature vector for the first track.
+    :param sig_b: Raw (or normalized) feature vector for the second track.
+    :param weights: Per-group weight values to apply.
+    """
+    total = 0.0
+    count = 0.0
+    for group_name, (start, end) in FEATURE_GROUPS.items():
+        w = getattr(weights, group_name)
+        if w <= 0:
+            continue
+        group_a = sig_a[start:end]
+        group_b = sig_b[start:end]
+        group_dist = sum((a - b) ** 2 for a, b in zip(group_a, group_b, strict=True))
+        total += w * group_dist
+        count += w * (end - start)
+    if count <= 0:
+        return 0.0
+    return float((total / count) ** 0.5)
 
 
 def compute_distance(sig_a: SonicSignature, sig_b: SonicSignature) -> float:
