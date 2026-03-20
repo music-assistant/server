@@ -691,7 +691,6 @@ class SonicAnalysisProvider(PluginProvider):
         except (TypeError, ValueError):
             year_weight = 0.0
 
-        # Check if seed track has a signature at all
         assert self.mass.music.database is not None
         sig_rows = await self.mass.music.database.get_rows(
             DB_TABLE_SONIC_SIGNATURES, {"item_id": item_id}
@@ -875,7 +874,6 @@ class SonicAnalysisProvider(PluginProvider):
         if not candidates:
             return []
 
-        # If no metadata weighting, return as-is (pure sonic similarity)
         if genre_weight <= 0 and year_weight <= 0:
             return candidates[:limit]
 
@@ -982,7 +980,6 @@ class SonicAnalysisProvider(PluginProvider):
         has_corpus_stats = self.corpus_means is not None and len(self.corpus_means) > 0
         label_map_size = len(self._label_map)
 
-        # Count signatures in DB
         db_count = 0
         db_error = ""
         if self.mass.music.database is not None:
