@@ -18,13 +18,13 @@ from aioaudiobookshelf.client.items import (
 from aioaudiobookshelf.client.items import PlaybackSessionExpanded as AbsPlaybackSessionExpanded
 from aioaudiobookshelf.client.items import PlaybackSessionParameters as AbsPlaybackSessionParameters
 from aioaudiobookshelf.client.session import SyncOpenSessionParameters
+from aioaudiobookshelf.exceptions import AbsError, RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import (
     LoginError as AbsLoginError,
 )
 from aioaudiobookshelf.exceptions import (
     NotFoundError as AbsNotFoundError,
 )
-from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
 from aioaudiobookshelf.exceptions import (
     SessionSyncError as AbsSessionSyncError,
@@ -399,7 +399,7 @@ for more details.
         try:
             await self._client.logout()
             await self._client_socket.logout()
-        except Exception as err:
+        except AbsError as err:
             self.logger.debug("Ignoring error during logout: %s", err)
         for callback in self._on_unload_callbacks:
             callback()
