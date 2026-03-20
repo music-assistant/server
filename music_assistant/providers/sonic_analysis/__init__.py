@@ -701,7 +701,8 @@ class SonicAnalysisProvider(PluginProvider):
                         ordered_ids.append(sim_id)
 
             # Create the playlist
-            playlist_name = f"Songs like {seed_name}"
+            safe_name = seed_name.replace("/", "-").replace("\\", "-").replace("..", "")
+            playlist_name = f"Songs like {safe_name}"
             playlist = await self.mass.music.playlists.create_playlist(playlist_name)
 
             # Build URIs for all tracks
