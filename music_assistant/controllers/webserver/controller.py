@@ -32,6 +32,7 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
 )
@@ -66,7 +67,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 DEFAULT_SERVER_PORT = 8095
-INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"

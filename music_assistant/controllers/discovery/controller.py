@@ -26,9 +26,9 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZerocon
 from music_assistant.constants import (
     CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_ZEROCONF_INTERFACES,
+    INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.webserver.controller import INGRESS_SERVER_PORT
 from music_assistant.helpers.util import get_ip_pton
 from music_assistant.models.core_controller import CoreController
 
