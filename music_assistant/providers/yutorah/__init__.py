@@ -31,7 +31,7 @@ Browse path structure:
   yutorah://                                         → root folders
   yutorah://series                                   → all series (as folders)
   yutorah://series/<series_id>                       → teacher sub-folders within a series
-  yutorah://series/<series_id>/teacher/<teacher_id>  → episodes for a teacher within a series
+  yutorah://series/<series_id>/<teacher_id>          → episodes for a teacher within a series
   yutorah://teachers                                 → all teachers
   yutorah://teachers/<teacher_id>                    → all episodes by a teacher
   yutorah://categories                               → topic category tree
