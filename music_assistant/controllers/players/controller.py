@@ -75,7 +75,6 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -153,7 +152,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
-        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
+        return ()
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
