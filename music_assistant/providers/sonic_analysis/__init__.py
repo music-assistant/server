@@ -238,42 +238,71 @@ class SonicAnalysisProvider(PluginProvider):
         total = len(all_tracks)
         self.logger.info("Backfill: %d total library tracks to process", total)
 
-        for idx, track in enumerate(all_tracks):
+        # Collect tracks that need analysis
+        to_analyze: list[tuple[str, Any]] = []
+        for track in all_tracks:
             item_id = str(track.item_id)
-
             has_signature = False
             for mapping in track.provider_mappings:
                 existing = await self.get_sonic_signature(item_id, mapping.provider_instance)
                 if existing:
                     has_signature = True
                     break
-
             if has_signature:
                 skipped_count += 1
+            else:
+                to_analyze.append((item_id, track))
+
+        self.logger.info(
+            "Backfill: %d to analyze, %d already have signatures", len(to_analyze), skipped_count
+        )
+        update_current_task_progress_from_index(
+            skipped_count, total, f"Checked existing: {skipped_count} skipped, {len(to_analyze)} to analyze"
+        )
+
+        # Process in concurrent batches using the semaphore
+        async def _analyze_one(item_id: str, track: Any) -> bool:
+            async with self._analysis_semaphore:
+                for mapping in track.provider_mappings:
+                    try:
+                        await self._fetch_and_analyze(
+                            item_id, mapping.provider_instance, mapping.item_id
+                        )
+                        return True
+                    except Exception as exc:
+                        report_current_task_failure(
+                            f"Track {item_id} via {mapping.provider_instance}: {exc}"
+                        )
+                        continue
+            return False
+
+        # Launch all analyses concurrently, semaphore limits parallelism
+        pending: set[asyncio.Task[bool]] = set()
+        processed = 0
+        for item_id, track in to_analyze:
+            task = asyncio.create_task(_analyze_one(item_id, track))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
+
+            # When we hit the concurrency limit, wait for one to finish
+            if len(pending) >= int(self.config.get_value(CONF_MAX_CONCURRENT_ANALYSES) or 2):
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for t in done:
+                    if t.result():
+                        analyzed_count += 1
+                    processed += 1
                 update_current_task_progress_from_index(
-                    idx + 1, total,
-                    f"Analyzed {analyzed_count}, skipped {skipped_count} of {total}",
+                    skipped_count + processed, total,
+                    f"Analyzed {analyzed_count} of {len(to_analyze)} ({processed} processed)",
                 )
-                continue
 
-            for mapping in track.provider_mappings:
-                try:
-                    await self._fetch_and_analyze(
-                        item_id, mapping.provider_instance, mapping.item_id
-                    )
+        # Wait for remaining
+        if pending:
+            done = await asyncio.gather(*pending, return_exceptions=True)
+            for result in done:
+                if result is True:
                     analyzed_count += 1
-                    break
-                except Exception as exc:
-                    report_current_task_failure(
-                        f"Track {item_id} via {mapping.provider_instance}: {exc}"
-                    )
-                    continue
-
-            update_current_task_progress_from_index(
-                idx + 1, total,
-                f"Analyzed {analyzed_count}, skipped {skipped_count} of {total}",
-            )
-            await asyncio.sleep(0)
+                processed += 1
 
         if analyzed_count > 0:
             update_current_task_progress_text("Rebuilding search index...")
