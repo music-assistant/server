@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.models.types import AudioCodec
 from music_assistant_models.enums import EventType, IdentifierType
 
 from music_assistant.helpers.util import is_valid_mac_address
@@ -171,7 +171,7 @@ class SendspinChromecastBridge:
                     )
                 ],
                 buffer_capacity=1_000,
-                supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
+                supported_commands=[],
             ),
         )
 

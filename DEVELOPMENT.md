@@ -112,5 +112,7 @@ The manifest file contains metadata and configuration about a provider. The supp
 | requirements | List of requirements for the provider in pip string format. Supported values are `package==version` and `git+https://gitrepoforpackage` | array[string]
 | documentation | URL to the Github discussion containing the documentation for the provider. | string |
 | multi_instances | Whether multiple instances of the configuration are supported, e.g. multiple user accounts for Spotify | boolean |
+| mdns_discovery | List of Zeroconf service types the provider wants to subscribe to. | array[string] |
+| upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
 
 \* These `config_entries` are used to automatically generate the settings page for the provider in the front-end. The values can be obtained via `self.config.get_value(key)`.

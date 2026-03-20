@@ -1,20 +1,16 @@
 """DLNA Player Provider."""
 
 import asyncio
-import logging
-from ipaddress import IPv4Address
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client import UpnpRequester
 from async_upnp_client.client_factory import UpnpFactory
-from async_upnp_client.search import async_search
 from async_upnp_client.utils import CaseInsensitiveDict
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_PLAYERS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_NETWORK_SCAN
 from .helpers import DLNANotifyServer
 from .player import DLNAPlayer
 
@@ -22,7 +18,6 @@ from .player import DLNAPlayer
 class DLNAPlayerProvider(PlayerProvider):
     """DLNA Player provider."""
 
-    _discovery_running: bool = False
     _ignored_udns: set[str]
 
     lock: asyncio.Lock
@@ -34,11 +29,6 @@ class DLNAPlayerProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self.lock = asyncio.Lock()
         self._ignored_udns = set()
-        # silence the async_upnp_client logger
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
         self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
@@ -52,60 +42,30 @@ class DLNAPlayerProvider(PlayerProvider):
         self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
         self._ignored_udns = set()
 
-    async def discover_players(self, use_multicast: bool = False) -> None:
-        """Discover DLNA players on the network."""
-        if self._discovery_running:
+    async def on_upnp_service_discovered(
+        self, search_target: str, discovery_info: CaseInsensitiveDict
+    ) -> None:
+        """Handle SSDP discovery callbacks."""
+        del search_target
+        ssdp_st: str | None = discovery_info.get("st", discovery_info.get("nt"))
+        if not ssdp_st or "MediaRenderer" not in ssdp_st:
             return
-        try:
-            self._discovery_running = True
-            self.logger.debug("DLNA discovery started...")
-            allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
-            discovered_devices: set[str] = set()
 
-            async def on_response(discovery_info: CaseInsensitiveDict) -> None:
-                """Process discovered device from ssdp search."""
-                ssdp_st: str = discovery_info.get("st", discovery_info.get("nt"))
-                if not ssdp_st:
-                    return
+        ssdp_usn: str | None = discovery_info.get("usn")
+        if not ssdp_usn:
+            return
 
-                if "MediaRenderer" not in ssdp_st:
-                    # we're only interested in MediaRenderer devices
-                    return
+        ssdp_udn: str | None = discovery_info.get("_udn")
+        if not ssdp_udn and ssdp_usn.startswith("uuid:"):
+            ssdp_udn = ssdp_usn.split("::")[0]
+        if not ssdp_udn:
+            return
 
-                ssdp_usn: str = discovery_info["usn"]
-                ssdp_udn: str | None = discovery_info.get("_udn")
-                if not ssdp_udn and ssdp_usn.startswith("uuid:"):
-                    ssdp_udn = ssdp_usn.split("::")[0]
+        description_url: str | None = discovery_info.get("location")
+        if not description_url:
+            return
 
-                if ssdp_udn in discovered_devices:
-                    # already processed this device
-                    return
-
-                assert ssdp_udn is not None  # for type checking
-
-                discovered_devices.add(ssdp_udn)
-
-                await self._device_discovered(ssdp_udn, discovery_info["location"])
-
-            # we iterate between using a regular and multicast search (if enabled)
-            try:
-                if allow_network_scan and use_multicast:
-                    await async_search(
-                        on_response, target=(str(IPv4Address("255.255.255.255")), 1900)
-                    )
-                else:
-                    await async_search(on_response)
-            except OSError as err:
-                self.logger.warning("DLNA SSDP discovery failed: %s", err)
-
-        finally:
-            self._discovery_running = False
-
-            def reschedule() -> None:
-                self.mass.create_task(self.discover_players(use_multicast=not use_multicast))
-
-            # reschedule self once finished
-            self.mass.loop.call_later(300, reschedule)
+        await self._device_discovered(ssdp_udn, description_url)
 
     async def _device_discovered(self, udn: str, description_url: str) -> None:
         """Handle discovered DLNA player."""

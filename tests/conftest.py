@@ -11,6 +11,7 @@ from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.mass import MusicAssistant
 
 
@@ -66,8 +67,14 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
     mock_browser = NonCallableMagicMock()  # Use NonCallable to avoid api_cmd issues
 
     with (
-        patch("music_assistant.mass.AsyncZeroconf", return_value=mock_zc),
-        patch("music_assistant.mass.AsyncServiceBrowser", return_value=mock_browser),
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncZeroconf",
+            return_value=mock_zc,
+        ),
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
+            return_value=mock_browser,
+        ),
     ):
         await mass_instance.start()
 
@@ -104,6 +111,7 @@ async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant,
 
     mass_instance.config = ConfigController(mass_instance)
     await mass_instance.config.setup()
+    mass_instance.discovery = DiscoveryController(mass_instance)
 
     mass_instance.cache = CacheController(mass_instance)
 

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from copy import copy
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
 
@@ -54,6 +55,9 @@ class HeosPlayer(Player):
         super().__init__(provider, str(device.player_id))
 
         self._device: PyHeosPlayer = device
+        self._ma_controls_playback = False
+        self._queue_cleanup_lock = asyncio.Lock()
+        self._queue_cleanup_pending = False
 
         if self._device.heos is None:
             raise SetupFailedError("HEOS device has no controller assigned")
@@ -145,10 +149,24 @@ class HeosPlayer(Player):
         match event:
             case const.EVENT_PLAYER_STATE_CHANGED:
                 self._update_player_state()
+                if (
+                    self._ma_controls_playback
+                    and self._attr_playback_state == PlaybackState.PLAYING
+                    and self._queue_cleanup_pending
+                ):
+                    self._debounce_queue_cleanup()
 
             case const.EVENT_PLAYER_NOW_PLAYING_CHANGED:
                 self._update_player_current_media()
                 self._update_player_playing_progress()
+
+            case const.EVENT_PLAYER_QUEUE_CHANGED:
+                self._queue_cleanup_pending = self._ma_controls_playback
+                if (
+                    self._ma_controls_playback
+                    and self._attr_playback_state == PlaybackState.PLAYING
+                ):
+                    self._debounce_queue_cleanup()
 
             case const.EVENT_PLAYER_NOW_PLAYING_PROGRESS:
                 self._update_player_playing_progress()
@@ -190,6 +208,8 @@ class HeosPlayer(Player):
         if (now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC) or (
             self._attr_active_source != self.player_id
         ):
+            self._ma_controls_playback = False
+            self._queue_cleanup_pending = False
             self.logger.debug(
                 "[%s] Now playing changed externally: %s", self._device.name, now_playing
             )
@@ -283,25 +303,87 @@ class HeosPlayer(Player):
             media.uri,
         )
 
-        try:
-            queue_items = await self._device.get_queue(range_start=0, range_end=1)
-
-            if queue_items:
-                await self._device.clear_queue()
-        except HeosError as err:
-            self.logger.warning(
-                "[%s] Failed to fetch HEOS queue before play_media, continuing: %s",
-                self._device.name,
-                err,
-            )
-
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        await self._device.play_url(url)
+        self._ma_controls_playback = True
+        try:
+            await self._device.play_url(url)
+        except HeosError as err:
+            self._ma_controls_playback = False
+            self._queue_cleanup_pending = False
+            raise PlayerCommandFailed("Failed to start playback.") from err
 
         self._attr_current_media = media
         self._attr_active_source = self.player_id
 
         self.update_state()
+
+    def _debounce_queue_cleanup(self) -> None:
+        """Debounce queue cleanup so rapid queue changes only trigger one follow-up."""
+        if not self._ma_controls_playback:
+            return
+        self.mass.call_later(
+            1,
+            self._start_queue_cleanup_task,
+            task_id=f"heos_queue_cleanup_timer_{self.player_id}",
+        )
+
+    def _start_queue_cleanup_task(self) -> None:
+        """Start the queue cleanup task if not already running."""
+        if (
+            not self._ma_controls_playback
+            or not self._queue_cleanup_pending
+            or self._queue_cleanup_lock.locked()
+        ):
+            return
+
+        self.mass.create_task(
+            self._cleanup_heos_queue(),
+            task_id=f"heos_queue_cleanup_task_{self.player_id}",
+        )
+
+    async def _cleanup_heos_queue(self) -> None:
+        async with self._queue_cleanup_lock:
+            if not self._ma_controls_playback:
+                self._queue_cleanup_pending = False
+                return
+            if self._attr_playback_state != PlaybackState.PLAYING:
+                self.logger.debug(
+                    "[%s] Queue cleanup postponed (state=%s)",
+                    self._device.name,
+                    self._attr_playback_state,
+                )
+                return
+            try:
+                self.logger.debug("[%s] Queue cleanup started", self._device.name)
+                queue_items = await self._device.get_queue()
+                current_queue_id = self._device.now_playing_media.queue_id
+                if current_queue_id is None:
+                    self.logger.debug(
+                        "[%s] Queue cleanup postponed (no current qid yet)",
+                        self._device.name,
+                    )
+                    self._debounce_queue_cleanup()
+                    return
+
+                queue_ids_to_remove = [
+                    item.queue_id for item in queue_items if item.queue_id != current_queue_id
+                ]
+                self.logger.debug(
+                    "[%s] Queue cleanup removing %s (current qid=%s)",
+                    self._device.name,
+                    queue_ids_to_remove,
+                    current_queue_id,
+                )
+                if queue_ids_to_remove:
+                    await self._device.remove_from_queue(queue_ids_to_remove)
+                self._queue_cleanup_pending = False
+
+            except HeosError as err:
+                self.logger.warning(
+                    "[%s] Failed to handle HEOS queue after queue change: %s",
+                    self._device.name,
+                    err,
+                )
 
     async def set_members(
         self,
@@ -333,6 +415,8 @@ class HeosPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player."""
         self.logger.debug("[%s] Selecting source %s", self._device.name, source)
+        self._ma_controls_playback = False
+        self._queue_cleanup_pending = False
         await self._device.play_input_source(source)
 
     async def get_config_entries(
