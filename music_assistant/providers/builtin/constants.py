@@ -13,9 +13,6 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
 )
 
 
@@ -101,30 +98,6 @@ CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
         **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),
         "hidden": True,
         "default_value": True,
-    }
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS.to_dict(),
-        "default_value": 180,
-        "label": "Playlists refresh interval",
-        "description": "The interval at which the builtin generated playlists are refreshed.",
-    }
-)
-
-
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS.to_dict(),
-        "hidden": True,
-        "default_value": 180,
-    }
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS.to_dict(),
-        "hidden": True,
-        "default_value": 180,
     }
 )
 CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN = ConfigEntry.from_dict(
