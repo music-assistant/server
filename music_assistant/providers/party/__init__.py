@@ -24,7 +24,10 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import DEFAULT_PORT
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_token,
+    get_current_user,
+)
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -78,9 +81,8 @@ BADGE_COLOR_OPTIONS = [
     ("Yellow", "#FFEB3B"),
 ]
 
-# Guest user configuration
-PARTY_GUEST_USER = "party_guest"
-PARTY_GUEST_DISPLAY_NAME = "Party Guest"
+# Shared guest user for all party instances (JWT claims differentiate instances)
+PARTY_GUEST_USERNAME = "party_guest"
 
 # Extra attribute keys for tracking guest items in the queue
 ATTR_PARTY_GUEST = "party_guest"
@@ -93,6 +95,9 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 class PartyConfig(DataClassDictMixin):
     """Configuration data returned to the party guest frontend."""
 
+    # Instance identification
+    instance_id: str
+    name: str
     # Feature toggles
     enable_rate_limiting: bool
     enable_add_queue: bool
@@ -127,7 +132,7 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
@@ -138,6 +143,29 @@ async def get_config_entries(
     :param action: Optional action key called from config entries UI.
     :param values: The (intermediate) raw values for config entries sent with the action.
     """
+    # Find players already assigned to other party instances so we can
+    # mark them in the player selection dropdown
+    used_players: dict[str, str] = {}
+    for other in mass.get_provider_instances("party"):
+        if other.instance_id == instance_id:
+            continue
+        other_player = mass.config.get_raw_provider_config_value(
+            other.instance_id, CONF_PARTY_PLAYER
+        )
+        if other_player:
+            other_name = other.name or "Party"
+            used_players[str(other_player)] = other_name
+
+    player_options: list[ConfigValueOption] = []
+    for player in sorted(
+        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
+    ):
+        if player.player_id in used_players:
+            label = f"{player.display_name} (used by {used_players[player.player_id]})"
+        else:
+            label = player.display_name
+        player_options.append(ConfigValueOption(label, player.player_id))
+
     return (
         ConfigEntry(
             key=CONF_ENABLE_GUEST_ACCESS,
@@ -155,12 +183,7 @@ async def get_config_entries(
             required=True,
             label="Party Player",
             description="Select which player/queue guests will add songs to.",
-            options=[
-                ConfigValueOption(player.display_name, player.player_id)
-                for player in sorted(
-                    mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                )
-            ],
+            options=player_options,
         ),
         ConfigEntry(
             key=CONF_PARTY_DISPLAY_LYRICS,
@@ -390,27 +413,35 @@ class PartyPlugin(PluginProvider):
         self._unregister_handles: list[Callable[[], None]] = []
         self._queue_lock = asyncio.Lock()
 
+    @property
+    def _guest_username(self) -> str:
+        """Return the shared party guest username."""
+        return PARTY_GUEST_USERNAME
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        # Register API commands and store unregister handles
+        iid = self.instance_id
+        # Register instance-namespaced API commands
         self._unregister_handles.append(
-            self.mass.register_api_command("party/url", self.get_party_url, required_role="user")
+            self.mass.register_api_command(
+                f"party/{iid}/url", self.get_party_url, required_role="user"
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/player", self.get_party_player)
+            self.mass.register_api_command(f"party/{iid}/player", self.get_party_player)
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/config", self.get_party_config)
+            self.mass.register_api_command(f"party/{iid}/config", self.get_party_config)
         )
         # Guest action commands - these are called by the guest frontend
         self._unregister_handles.append(
-            self.mass.register_api_command("party/add_to_queue", self.add_to_queue)
+            self.mass.register_api_command(f"party/{iid}/add_to_queue", self.add_to_queue)
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/boost_queue_item", self.boost_queue_item)
+            self.mass.register_api_command(f"party/{iid}/boost_queue_item", self.boost_queue_item)
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/skip", self.skip_current)
+            self.mass.register_api_command(f"party/{iid}/skip", self.skip_current)
         )
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -435,29 +466,31 @@ class PartyPlugin(PluginProvider):
         )
         if is_removed or not guest_access_enabled:
             self.logger.debug("Revoking guest tokens...")
-            await self._revoke_guest_tokens()
+            await self._revoke_guest_tokens(is_removed=is_removed)
 
         await super().unload(is_removed)
 
     # ==================== Configuration API Commands ====================
 
     async def _get_or_create_party_guest_user(self) -> User:
-        """Get or create the party guest user.
+        """Get or create the shared party guest user.
 
-        :returns: The party guest User.
+        All party instances share a single guest user account.
+        The JWT extra_claims differentiate which instance a guest belongs to.
+
+        :returns: The shared party guest User.
         """
         auth = self.mass.webserver.auth
-        user = await auth.get_user_by_username(PARTY_GUEST_USER)
+        user = await auth.get_user_by_username(self._guest_username)
         if user:
             return user
 
-        # Create the party guest user
         user = await auth.create_user(
-            username=PARTY_GUEST_USER,
+            username=self._guest_username,
             role=UserRole.GUEST,
-            display_name=PARTY_GUEST_DISPLAY_NAME,
+            display_name="Party Guest",
         )
-        self.logger.info("Created party guest user account")
+        self.logger.info("Created shared party guest user account")
         return user
 
     async def _get_join_code(self) -> str:
@@ -472,7 +505,7 @@ class PartyPlugin(PluginProvider):
         guest_user = await self._get_or_create_party_guest_user()
 
         # Check for an existing active join code
-        existing_code = await auth.get_active_join_code(guest_user)
+        existing_code = await auth.get_active_join_code(guest_user, instance_id=self.instance_id)
         if existing_code:
             return existing_code
 
@@ -482,6 +515,7 @@ class PartyPlugin(PluginProvider):
             expires_in_hours=8,
             max_uses=0,
             device_name="Party Guest",
+            instance_id=self.instance_id,
         )
         return code
 
@@ -525,6 +559,8 @@ class PartyPlugin(PluginProvider):
         :returns: PartyConfig with feature toggles, token limits, refill rates, and colors.
         """
         return PartyConfig(
+            instance_id=self.instance_id,
+            name=self.name,
             enable_rate_limiting=cast("bool", self.config.get_value(CONF_ENABLE_RATE_LIMITING)),
             enable_add_queue=cast("bool", self.config.get_value(CONF_ENABLE_ADD_QUEUE)),
             add_queue_limit=cast("int", self.config.get_value(CONF_PARTY_ADD_QUEUE_LIMIT)),
@@ -798,14 +834,27 @@ class PartyPlugin(PluginProvider):
                 shuffle=False,
             )
 
-    @staticmethod
-    def _validate_guest_access() -> None:
-        """Validate the current user is an authenticated party guest.
+    def _validate_guest_access(self) -> None:
+        """Validate the current user is an authenticated party guest for this instance.
 
-        :raises InvalidDataError: If the user is not a party guest.
+        Checks that the user is the shared party guest and that the JWT
+        extra_claims.party_instance matches this provider's instance_id.
+
+        :raises InvalidDataError: If the user is not a party guest for this instance.
         """
         user = get_current_user()
-        if not user or user.username != PARTY_GUEST_USER:
+        if not user or user.username != self._guest_username:
+            raise InvalidDataError("This endpoint is only available to party guests")
+        # Verify the JWT claim matches this specific instance
+        token = get_current_token()
+        if not token:
+            raise InvalidDataError("No authentication token found")
+        try:
+            payload = self.mass.webserver.auth.jwt_helper.decode_token(token)
+        except Exception as err:
+            raise InvalidDataError("Invalid authentication token") from err
+        extra_claims = payload.get("extra_claims", {})
+        if extra_claims.get("party_instance") != self.instance_id:
             raise InvalidDataError("This endpoint is only available to party guests")
 
     @staticmethod
@@ -872,31 +921,43 @@ class PartyPlugin(PluginProvider):
 
     # ==================== Helper Methods ====================
 
-    async def _revoke_guest_tokens(self) -> None:
-        """Revoke all guest access tokens and codes for party.
+    def _is_last_party_instance(self) -> bool:
+        """Check if this is the last remaining party provider instance.
 
-        This is called when guest access is disabled or the plugin is removed.
-        We disconnect WebSocket connections to force the frontend to redirect to login,
-        revoke tokens so they can't reconnect, and invalidate pending join codes.
+        :returns: True if no other party instances exist.
+        """
+        other_instances = [
+            p
+            for p in self.mass.get_provider_instances("party")
+            if p.instance_id != self.instance_id
+        ]
+        return len(other_instances) == 0
+
+    async def _revoke_guest_tokens(self, is_removed: bool = False) -> None:
+        """Revoke guest access tokens and codes for this party instance.
+
+        When this instance is being removed and it's the last one, the shared
+        guest user is deleted entirely. Otherwise, only join codes for this
+        instance are revoked.
+
+        :param is_removed: Whether the provider is being permanently removed.
         """
         auth = self.mass.webserver.auth
 
-        # Find the party guest user
-        guest_user = await auth.get_user_by_username(PARTY_GUEST_USER)
+        guest_user = await auth.get_user_by_username(self._guest_username)
         if not guest_user:
             self.logger.debug("No party guest user found, nothing to revoke")
             return
 
-        # Revoke pending join codes for the guest user
-        codes_revoked = await auth.revoke_join_codes(guest_user)
+        # Revoke join codes scoped to this instance
+        codes_revoked = await auth.revoke_join_codes_for_instance(self.instance_id)
         if codes_revoked > 0:
-            self.logger.info("Revoked %d pending join codes", codes_revoked)
+            self.logger.info("Revoked %d pending join codes for instance", codes_revoked)
 
-        # Revoke all tokens and disconnect WebSocket connections for the guest user
-        revoked_count = await auth.revoke_tokens_for_user(guest_user)
-        if revoked_count > 0:
-            self.logger.info(
-                "Revoked %d guest access tokens for user '%s'",
-                revoked_count,
-                guest_user.username,
-            )
+        if is_removed and self._is_last_party_instance():
+            # Last instance being removed — revoke all tokens and delete the guest user
+            revoked_count = await auth.revoke_tokens_for_user(guest_user)
+            if revoked_count > 0:
+                self.logger.info("Revoked %d guest access tokens", revoked_count)
+            await auth.delete_user_internal(guest_user.user_id)
+            self.logger.info("Deleted shared party guest user (last instance removed)")

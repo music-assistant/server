@@ -43,6 +43,7 @@ class JWTHelper:
         token_name: str,
         expires_at: datetime,
         is_long_lived: bool = False,
+        extra_claims: dict[str, Any] | None = None,
     ) -> str:
         """Encode a JWT token for a user.
 
@@ -51,10 +52,11 @@ class JWTHelper:
         :param token_name: Human-readable token name.
         :param expires_at: Token expiration datetime.
         :param is_long_lived: Whether this is a long-lived token.
+        :param extra_claims: Optional extra claims to include in the JWT payload.
         :return: Encoded JWT token string.
         """
         now = utc()
-        payload = {
+        payload: dict[str, Any] = {
             "sub": user.user_id,
             "jti": token_id,
             "iat": int(now.timestamp()),
@@ -64,6 +66,8 @@ class JWTHelper:
             "token_name": token_name,
             "is_long_lived": is_long_lived,
         }
+        if extra_claims:
+            payload["extra_claims"] = extra_claims
 
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
 

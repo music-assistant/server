@@ -7,7 +7,7 @@
   "codeowners": ["@apophisnow"],
   "requirements": [],
   "documentation": "https://music-assistant.io/plugins/party",
-  "multi_instance": false,
+  "multi_instance": true,
   "builtin": false,
   "icon": "party-popper"
 }

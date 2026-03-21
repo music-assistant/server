@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 # Database schema version
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -219,6 +219,7 @@ class AuthenticationManager:
                 use_count INTEGER DEFAULT 0,
                 last_used_at TEXT,
                 device_name TEXT,
+                instance_id TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
             """
@@ -299,6 +300,12 @@ class AuthenticationManager:
                 )
                 """
             )
+            await self.database.commit()
+
+        # Migration to version 6: Add instance_id column to join_codes
+        if from_version < 6:
+            with contextlib.suppress(OperationalError):
+                await self.database.execute("ALTER TABLE join_codes ADD COLUMN instance_id TEXT")
             await self.database.commit()
 
     async def _get_or_create_jwt_secret(self) -> str:
@@ -872,15 +879,21 @@ class AuthenticationManager:
             # Create new link
             await self.link_user_to_provider(user, provider_type, provider_user_id)
 
-    async def create_token(self, user: User, name: str, is_long_lived: bool = False) -> str:
-        """
-        Create a new JWT access token for a user.
+    async def create_token(
+        self,
+        user: User,
+        name: str,
+        is_long_lived: bool = False,
+        extra_claims: dict[str, Any] | None = None,
+    ) -> str:
+        """Create a new JWT access token for a user.
 
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
         :param is_long_lived: Whether this is a long-lived token (default: False).
             Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
             Long-lived tokens (True): No auto-renewal, expire after 10 years.
+        :param extra_claims: Optional extra claims to embed in the JWT.
         :return: JWT token string.
         """
         # Generate unique token ID
@@ -902,6 +915,7 @@ class AuthenticationManager:
             token_name=name,
             expires_at=expires_at,
             is_long_lived=is_long_lived,
+            extra_claims=extra_claims,
         )
 
         # Store token hash in database for revocation checking
@@ -1391,6 +1405,22 @@ class AuthenticationManager:
             admin_user.username,
         )
 
+    async def delete_user_internal(self, user_id: str) -> None:
+        """Delete a user account programmatically (no auth context required).
+
+        Used internally by providers to clean up system-managed users (e.g., party guests).
+
+        :param user_id: The user ID to delete.
+        """
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            return
+
+        await self.database.delete("users", {"user_id": user_id})
+        await self.database.commit()
+        self.webserver.disconnect_websockets_for_user(user_id)
+        self.logger.info("Internally deleted user '%s'", user_row["username"])
+
     @api_command("auth/me")
     async def get_current_user_info(self) -> User:
         """Get current authenticated user information."""
@@ -1612,6 +1642,7 @@ class AuthenticationManager:
         expires_in_hours: int = JOIN_CODE_DEFAULT_EXPIRY_HOURS,
         max_uses: int = 1,
         device_name: str = "Short Code Login",
+        instance_id: str | None = None,
     ) -> tuple[str, datetime]:
         """Generate a short join code for link/QR-based login.
 
@@ -1623,6 +1654,7 @@ class AuthenticationManager:
         :param expires_in_hours: Hours until code expires (default: 8).
         :param max_uses: Maximum number of uses (0 = unlimited).
         :param device_name: Device name for tokens created with this code.
+        :param instance_id: Optional provider instance ID to embed in the resulting JWT.
         :return: Tuple of (code, expires_at datetime).
         """
         if expires_in_hours <= 0:
@@ -1646,6 +1678,7 @@ class AuthenticationManager:
                 "max_uses": max_uses,
                 "use_count": 0,
                 "device_name": device_name,
+                "instance_id": instance_id,
             }
             try:
                 await self.database.insert("join_codes", code_data)
@@ -1681,7 +1714,7 @@ class AuthenticationManager:
             WHERE code = :code
             AND expires_at > :now
             AND (max_uses = 0 OR use_count < max_uses)
-            RETURNING user_id, device_name
+            RETURNING user_id, device_name, instance_id
             """,
             {"now": now.isoformat(), "code": code.upper()},
         )
@@ -1700,10 +1733,14 @@ class AuthenticationManager:
             return None
 
         device_name = row["device_name"] or "Short Code Login"
+        extra_claims: dict[str, Any] | None = None
+        if row["instance_id"]:
+            extra_claims = {"party_instance": row["instance_id"]}
         token = await self.create_token(
             user,
             device_name,
             is_long_lived=False,
+            extra_claims=extra_claims,
         )
 
         self.logger.info(
@@ -1729,24 +1766,60 @@ class AuthenticationManager:
             self.logger.info("Revoked %d join code(s) for user %s", count, user.username)
         return count
 
-    async def get_active_join_code(self, user: User) -> str | None:
+    async def revoke_join_codes_for_instance(self, instance_id: str) -> int:
+        """Revoke all join codes associated with a specific provider instance.
+
+        :param instance_id: The provider instance ID.
+        :return: Number of codes revoked.
+        """
+        cursor = await self.database.execute(
+            "DELETE FROM join_codes WHERE instance_id = :instance_id",
+            {"instance_id": instance_id},
+        )
+        await self.database.commit()
+
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.info("Revoked %d join code(s) for instance %s", count, instance_id)
+        return count
+
+    async def get_active_join_code(self, user: User, instance_id: str | None = None) -> str | None:
         """Get the most recently created, non-expired join code for a user.
 
         :param user: The user to look up codes for.
+        :param instance_id: Optional instance ID to filter by.
         :return: The join code string if found, None otherwise.
         """
         now = utc()
-        cursor = await self.database.execute(
-            """
-            SELECT code FROM join_codes
-            WHERE user_id = :user_id
-            AND expires_at > :now
-            AND (max_uses = 0 OR use_count < max_uses)
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            {"user_id": user.user_id, "now": now.isoformat()},
-        )
+        if instance_id:
+            cursor = await self.database.execute(
+                """
+                SELECT code FROM join_codes
+                WHERE user_id = :user_id
+                AND instance_id = :instance_id
+                AND expires_at > :now
+                AND (max_uses = 0 OR use_count < max_uses)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                {
+                    "user_id": user.user_id,
+                    "instance_id": instance_id,
+                    "now": now.isoformat(),
+                },
+            )
+        else:
+            cursor = await self.database.execute(
+                """
+                SELECT code FROM join_codes
+                WHERE user_id = :user_id
+                AND expires_at > :now
+                AND (max_uses = 0 OR use_count < max_uses)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                {"user_id": user.user_id, "now": now.isoformat()},
+            )
         row = await cursor.fetchone()
         return str(row["code"]) if row else None
 
