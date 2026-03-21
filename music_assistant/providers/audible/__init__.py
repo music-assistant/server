@@ -575,6 +575,9 @@ class Audibleprovider(MusicProvider):
 
         media_item is the full media item details of the played/playing track.
         """
+        if media_type == MediaType.PODCAST:
+            # We only care about position updates for AUDIOBOOK & PODCAST_EPISODE
+            return
         await self.helper.set_last_position(prov_item_id, position, media_type)
 
     async def unload(self, is_removed: bool = False) -> None:
