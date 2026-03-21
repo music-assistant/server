@@ -1351,7 +1351,7 @@ class ConfigController:
 
         # Remove corrupt player configurations that are missing the required 'player_id' key
         # This can happen when _clear_protocol_parent_id is called on an already-deleted player
-        # TODO: remove after 2.9 release
+        # TODO: remove after 2.8 release
         for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
             if "player_id" not in player_config:
                 self._data[CONF_PLAYERS].pop(player_id, None)
