@@ -701,11 +701,15 @@ class MusicMeProvider(MusicProvider):
         encoded = urllib.parse.quote_plus(search_query)
         url = f"{WEB_BASE}/search.php?ambsearch={encoded}&mmz=all"
 
-        async with self.mass.http_session.get(url, allow_redirects=True) as resp:
-            if resp.status != 200:
-                return None
-            raw_bytes = await resp.read()
-            content = raw_bytes.decode("latin-1", errors="replace")
+        try:
+            async with self.mass.http_session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None
+                raw_bytes = await resp.read()
+                content = raw_bytes.decode("latin-1", errors="replace")
+        except (ClientConnectionError, ClientResponseError) as err:
+            self.logger.debug("Web search fallback failed: %s", err)
+            return None
 
         result = SearchResults()
 
@@ -763,8 +767,8 @@ class MusicMeProvider(MusicProvider):
                 allow_redirects=True,
             ) as resp:
                 resp.raise_for_status()
-        except ClientResponseError as err:
-            msg = f"MusicMe login request failed: HTTP {err.status}"
+        except (ClientResponseError, ClientConnectionError) as err:
+            msg = f"MusicMe login request failed: {err}"
             raise LoginFailed(msg) from err
 
         try:
@@ -772,8 +776,8 @@ class MusicMeProvider(MusicProvider):
                 resp.raise_for_status()
                 raw_bytes = await resp.read()
                 content = raw_bytes.decode("latin-1", errors="replace")
-        except ClientResponseError as err:
-            msg = f"MusicMe page load failed: HTTP {err.status}"
+        except (ClientResponseError, ClientConnectionError) as err:
+            msg = f"MusicMe page load failed: {err}"
             raise LoginFailed(msg) from err
 
         match = re.search(r"window\.playerInit\s*=\s*(\{.*?\});", content, re.DOTALL)
@@ -819,7 +823,9 @@ class MusicMeProvider(MusicProvider):
                         backoff = 10
                     raise ResourceTemporarilyUnavailable("Rate limited", backoff_time=backoff)
                 if response.status in (502, 503):
-                    raise ResourceTemporarilyUnavailable(backoff_time=30)
+                    raise ResourceTemporarilyUnavailable(
+                        "Server temporarily unavailable", backoff_time=30
+                    )
                 if response.status == 404:
                     return None
                 response.raise_for_status()

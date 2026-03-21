@@ -35,10 +35,10 @@ def decrypt(encrypted: str) -> str:
     for j in range(sec_length):
         chars[j] = test[first_length + j]
 
-    deencrypted_chars: list[int] = []
+    decrypted_chars: list[int] = []
     for i in range(len(chars) // 2):
         hex_str = chars[2 * i] + chars[2 * i + 1]
         b = int(hex_str, 16)
-        deencrypted_chars.append(b ^ 0xAA)
+        decrypted_chars.append(b ^ 0xAA)
 
-    return "".join(chr(b) for b in deencrypted_chars)
+    return "".join(chr(b) for b in decrypted_chars)
