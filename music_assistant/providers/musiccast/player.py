@@ -132,6 +132,7 @@ class MusicCastPlayer(Player):
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
         await self.set_static_attributes()
+        await self.set_dynamic_attributes(update_state=False)
 
     async def set_static_attributes(self) -> None:
         """Set static properties."""
@@ -221,7 +222,7 @@ class MusicCastPlayer(Player):
                 PlayerSoundMode(id=source_id, name=friendly_name, passive=False)
             )
 
-    async def set_dynamic_attributes(self) -> None:
+    async def set_dynamic_attributes(self, update_state: bool = True) -> None:
         """Update Player attributes."""
         # ruff: noqa: PLR0915
         self._attr_available = True
@@ -472,7 +473,8 @@ class MusicCastPlayer(Player):
                     )
                 )
 
-        self.update_state()
+        if update_state:
+            self.update_state()
 
     @property
     def synced_to(self) -> str | None:

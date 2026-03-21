@@ -75,7 +75,6 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -153,7 +152,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
-        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
+        return ()
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -803,7 +802,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(player.state.volume_control):
+        if protocol_player := self.get_player(player.mute_control):
             self.logger.debug(
                 "Redirecting mute command to protocol player %s",
                 protocol_player.provider.manifest.name,
@@ -1504,14 +1503,22 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # to prevent spamming the eventbus on small changes (e.g. elapsed time),
-        # we check if there are only changes in the elapsed time
-        clean_changed_keys = set(changed_values.keys()) - {"current_media.elapsed_time"}
+        # we check if there are only changes in the elapsed time and send
+        # a lightweight event.
+        clean_changed_keys = set(changed_values.keys()) - {
+            "current_media.elapsed_time",
+            "elapsed_time_last_updated",
+        }
         if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
-            # ignore small changes in elapsed time
-            prev_value = changed_values[ATTR_ELAPSED_TIME][0] or 0
-            new_value = changed_values[ATTR_ELAPSED_TIME][1] or 0
-            if abs(prev_value - new_value) > 1.0:
+            now = time.time()
+            prev_elapsed, new_elapsed = changed_values[ATTR_ELAPSED_TIME]
+            prev_updated, new_updated = changed_values.get("elapsed_time_last_updated", (now, now))
+            prev_corrected = (prev_elapsed or 0) + (now - (prev_updated or now))
+            new_corrected = (new_elapsed or 0) + (now - (new_updated or now))
+            if abs(prev_corrected - new_corrected) > 1.0:
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
+                if player.protocol_parent_id:
+                    self.trigger_player_update(player.protocol_parent_id)
             return
 
         # signal update to the playerqueue

@@ -8,11 +8,19 @@ that arbitrary strings from API input are never resolved to types.
 from __future__ import annotations
 
 import inspect
-from typing import get_type_hints
+from typing import TYPE_CHECKING, get_type_hints
 
 import pytest
 
-from music_assistant.helpers.api import parse_arguments, parse_value
+import music_assistant.helpers.api as api_helpers
+from music_assistant.helpers.api import APICommandHandler, parse_arguments, parse_value
+
+if TYPE_CHECKING:
+    from music_assistant_models.background_task import BackgroundTask
+
+
+async def _api_method_returning_background_task() -> BackgroundTask:
+    raise NotImplementedError  # pragma: no cover
 
 
 def _example_with_type_param(
@@ -55,3 +63,30 @@ class TestParseValueTypeRejected:
         """Direct calls to parse_value with type[X] should raise ValueError."""
         with pytest.raises(ValueError, match="Cannot resolve type from string"):
             parse_value("return_type", value, type[object])
+
+
+def test_api_command_handler_resolves_type_checking_model_return_type() -> None:
+    """API command parser should resolve TYPE_CHECKING-only model classes."""
+    handler = APICommandHandler.parse("test/return_task", _api_method_returning_background_task)
+    assert handler.type_hints["return"] is not None
+    assert handler.type_hints["return"].__name__ == "BackgroundTask"
+
+
+def test_get_type_hints_for_api_command_has_retry_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated resolution failures should stop after a bounded number of retries."""
+    attempts = 0
+
+    def fake_get_type_hints(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        raise NameError("name 'BackgroundTask' is not defined")
+
+    monkeypatch.setattr(api_helpers, "get_type_hints", fake_get_type_hints)
+    monkeypatch.setattr(api_helpers, "_resolve_model_type", lambda _name: object)
+
+    with pytest.raises(RuntimeError, match="Exceeded type hint resolution attempts"):
+        api_helpers._get_type_hints_for_api_command(_api_method_returning_background_task)
+
+    assert attempts == api_helpers._MAX_TYPE_HINT_RESOLVE_ATTEMPTS

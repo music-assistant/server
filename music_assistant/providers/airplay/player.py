@@ -657,7 +657,7 @@ class AirPlayPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        if self.stream and self.stream.running:
+        if self.stream and self.stream.running and self.volume_muted is not True:
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
         self._attr_volume_level = volume_level
         self.update_state()
@@ -665,6 +665,14 @@ class AirPlayPlayer(Player):
         self.mass.config.set_raw_player_config_value(
             self.player_id, CONF_STORED_VOLUME, volume_level
         )
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Handle VOLUME_MUTE command on the player."""
+        self._attr_volume_muted = muted
+        if self.stream and self.stream.running:
+            volume = 0 if muted else (self.volume_level or 0)
+            await self.stream.send_cli_command(f"VOLUME={volume}")
+        self.update_state()
 
     async def set_members(
         self,
@@ -849,9 +857,9 @@ class AirPlayPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         if self.stream:
-            # stop the stream session if it is running
+            # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
-                self.mass.create_task(self.stream.session.stop())
+                await self.stream.session.remove_client(self)
             self.stream = None
         if self._active_pairing:
             await self._active_pairing.close()

@@ -87,6 +87,7 @@ from music_assistant.models.player import Player, PlayerMedia
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from music_assistant_models import BackgroundTask
     from music_assistant_models.auth import User
     from music_assistant_models.media_items.metadata import MediaItemImage
 
@@ -780,7 +781,7 @@ class PlayerQueuesController(CoreController):
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
-    async def save_as_playlist(self, queue_id: str, name: str) -> Playlist:
+    async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
         """Save the current queue items as a new playlist.
 
         :param queue_id: The queue_id of the queue to save.
@@ -799,8 +800,7 @@ class PlayerQueuesController(CoreController):
         if not uris:
             raise InvalidDataError("No valid items in queue to save as playlist.")
         playlist = await self.mass.music.playlists.create_playlist(name)
-        await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
-        return playlist
+        return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
 
     @api_command("player_queues/stop")
     @handle_play_action
@@ -1330,11 +1330,14 @@ class PlayerQueuesController(CoreController):
         if player_elapsed is None:
             return
         now = time.time()
-        # Significant drift detected — correct the queue's timing base
-        elapsed_time = player_elapsed
-        if not queue.flow_mode and queue.current_item and queue.current_item.streamdetails:
-            if seek_pos := queue.current_item.streamdetails.seek_position:
-                elapsed_time += seek_pos
+        if queue.flow_mode:
+            # in flow mode the player reports cumulative stream elapsed time,
+            _, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+        else:
+            elapsed_time = player_elapsed
+            if queue.current_item and queue.current_item.streamdetails:
+                if seek_pos := queue.current_item.streamdetails.seek_position:
+                    elapsed_time += seek_pos
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         self.mass.signal_event(
