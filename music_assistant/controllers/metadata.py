@@ -246,11 +246,8 @@ class MetaDataController(CoreController):
     # TODO: After radio-artist-artwork PR is merged, update get_track_metadata_by_name()
     # to sort providers by METADATA_IMAGE_PROVIDER_PRIORITY when querying for images.
     # This ensures Fanart.tv is queried first for radio stream artwork, falling back
-    # to TheAudioDB only if no images found. Use:
-    #   sorted(self.providers, key=lambda p: (
-    #       METADATA_IMAGE_PROVIDER_PRIORITY.index(p.domain)
-    #       if p.domain in METADATA_IMAGE_PROVIDER_PRIORITY else 999
-    #   ))
+    # to other providers only if no images found. Use:
+    #   sorted(self.providers, key=lambda p: METADATA_IMAGE_PROVIDER_PRIORITY.get(p.domain, 999))
 
     def _sort_images_by_priority(
         self, images: UniqueList[MediaItemImage] | None
@@ -267,10 +264,7 @@ class MetaDataController(CoreController):
             return images
 
         def get_priority(img: MediaItemImage) -> int:
-            try:
-                return METADATA_IMAGE_PROVIDER_PRIORITY.index(img.provider)
-            except ValueError:
-                return 999
+            return METADATA_IMAGE_PROVIDER_PRIORITY.get(img.provider, 999)
 
         return UniqueList(sorted(images, key=get_priority))
 

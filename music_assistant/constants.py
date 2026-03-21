@@ -1035,6 +1035,8 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "external",
 }
 
-# Metadata image provider priority - providers listed first are preferred for images.
-# Used to sort images so higher quality sources appear first in the UI.
-METADATA_IMAGE_PROVIDER_PRIORITY: Final[tuple[str, ...]] = ("fanarttv", "theaudiodb")
+# Metadata image provider priority (lower = more preferred)
+METADATA_IMAGE_PROVIDER_PRIORITY: Final[dict[str, int]] = {
+    "fanarttv": 10,
+    "theaudiodb": 20,
+}
