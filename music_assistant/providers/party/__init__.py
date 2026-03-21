@@ -143,9 +143,8 @@ async def get_config_entries(
     :param action: Optional action key called from config entries UI.
     :param values: The (intermediate) raw values for config entries sent with the action.
     """
-    # Find players already assigned to other party instances so we can
-    # mark them in the player selection dropdown
-    used_players: dict[str, str] = {}
+    # Filter out players already assigned to other party instances
+    used_players: set[str] = set()
     for other in mass.get_provider_instances("party"):
         if other.instance_id == instance_id:
             continue
@@ -153,18 +152,15 @@ async def get_config_entries(
             other.instance_id, CONF_PARTY_PLAYER
         )
         if other_player:
-            other_name = other.name or "Party"
-            used_players[str(other_player)] = other_name
+            used_players.add(str(other_player))
 
     player_options: list[ConfigValueOption] = []
     for player in sorted(
         mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
     ):
         if player.player_id in used_players:
-            label = f"{player.display_name} (used by {used_players[player.player_id]})"
-        else:
-            label = player.display_name
-        player_options.append(ConfigValueOption(label, player.player_id))
+            continue
+        player_options.append(ConfigValueOption(player.display_name, player.player_id))
 
     return (
         ConfigEntry(
