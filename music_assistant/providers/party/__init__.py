@@ -121,6 +121,8 @@ class PartyConfig(DataClassDictMixin):
     boost_badge_color: str
     # Anti burn-in
     anti_burn_in: bool
+    # Multi-instance context
+    instance_count: int
 
 
 async def setup(
@@ -579,6 +581,7 @@ class PartyPlugin(PluginProvider):
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
+            instance_count=len(self.mass.get_provider_instances("party")),
         )
 
     # ==================== Guest Action API Commands ====================
