@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     Radio,
     Track,
     UniqueList,
+    media_from_dict,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -382,40 +383,8 @@ class BuiltinProvider(MusicProvider):
     ) -> list[PlaylistPlayableItem]:
         """Get playlist tracks (paginated, 500 items per page)."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            # System-generated playlists (favorites, random, etc.) only contain tracks
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
-        # User-created playlists - parse M3U file and paginate
-        async with self._get_playlist_lock(prov_playlist_id):
-            m3u_data = await self._read_m3u_file(prov_playlist_id)
-        all_items = parse_m3u(m3u_data)
-        page_size = 500
-        start = page * page_size
-        if start >= len(all_items):
-            return []
-        page_items = all_items[start : start + page_size]
-
-        # resolve all items on this page in parallel
-        async def _resolve(index: int, item: PlaylistItem) -> PlaylistPlayableItem | None:
-            try:
-                media_item = await self._resolve_playlist_item(item)
-                if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
-                    playlist_item = cast("PlaylistPlayableItem", media_item)
-                    playlist_item.position = index
-                    return playlist_item
-                self.logger.warning(
-                    "Unsupported media type in playlist %s: %s",
-                    prov_playlist_id,
-                    type(media_item),
-                )
-            except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
-                self.logger.warning(
-                    "Skipping %s in playlist %s: %s", item.path, prov_playlist_id, str(err)
-                )
-            return None
-
-        tasks = [_resolve(start + idx + 1, item) for idx, item in enumerate(page_items)]
-        resolved = await asyncio.gather(*tasks)
-        return [item for item in resolved if item is not None]
+        return await self._get_user_playlist_tracks(prov_playlist_id, page)
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist with full metadata and deduplication."""
@@ -752,6 +721,76 @@ class BuiltinProvider(MusicProvider):
                 continue
         # return with unavailable mappings so the item still shows in the playlist
         return media_item
+
+    async def _get_user_playlist_tracks(
+        self, prov_playlist_id: str, page: int
+    ) -> list[PlaylistPlayableItem]:
+        """Get user-created playlist tracks with caching and parallel resolution."""
+        playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
+        # use file mtime as cache checksum so edits invalidate the cache
+        try:
+            stat = await asyncio.to_thread(os.stat, playlist_file)
+            cache_checksum = str(int(stat.st_mtime))
+        except OSError:
+            cache_checksum = "0"
+
+        cache_key = f"playlist_tracks.{prov_playlist_id}.{page}"
+        cached = await self.mass.cache.get(
+            cache_key,
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=CACHE_CATEGORY_PLAYLISTS,
+        )
+        if cached is not None:
+            # cached data is a list of dicts, deserialize back to media items
+            return [
+                cast("PlaylistPlayableItem", media_from_dict(item_dict))
+                if isinstance(item_dict, dict)
+                else item_dict
+                for item_dict in cached
+            ]
+
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+        all_items = parse_m3u(m3u_data)
+        page_size = 500
+        start = page * page_size
+        if start >= len(all_items):
+            return []
+        page_items = all_items[start : start + page_size]
+
+        # resolve all items on this page in parallel
+        async def _resolve(index: int, item: PlaylistItem) -> PlaylistPlayableItem | None:
+            try:
+                media_item = await self._resolve_playlist_item(item)
+                if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
+                    playlist_item = cast("PlaylistPlayableItem", media_item)
+                    playlist_item.position = index
+                    return playlist_item
+                self.logger.warning(
+                    "Unsupported media type in playlist %s: %s",
+                    prov_playlist_id,
+                    type(media_item),
+                )
+            except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
+                self.logger.warning(
+                    "Skipping %s in playlist %s: %s", item.path, prov_playlist_id, str(err)
+                )
+            return None
+
+        tasks = [_resolve(start + idx + 1, item) for idx, item in enumerate(page_items)]
+        resolved = await asyncio.gather(*tasks)
+        result = [item for item in resolved if item is not None]
+
+        await self.mass.cache.set(
+            key=cache_key,
+            data=result,
+            expiration=3600 * 24,
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=CACHE_CATEGORY_PLAYLISTS,
+        )
+        return result
 
     async def _build_m3u_entry_from_uri(self, uri: str) -> PlaylistItem:
         """Fetch a media item by URI and convert it to a PlaylistItem with full metadata."""
