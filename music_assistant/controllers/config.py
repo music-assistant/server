@@ -1354,9 +1354,6 @@ class ConfigController:
         # TODO: remove after 2.9 release
         for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
             if "player_id" not in player_config:
-                LOGGER.warning(
-                    "Removing corrupt player configuration (missing player_id): %s", player_id
-                )
                 self._data[CONF_PLAYERS].pop(player_id, None)
                 # Also remove any DSP config for this player
                 if CONF_PLAYER_DSP in self._data:
