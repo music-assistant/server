@@ -23,6 +23,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -427,8 +428,35 @@ class BuiltinProvider(MusicProvider):
         """Add track(s) to playlist."""
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         for uri in prov_track_ids:
-            if uri not in playlist_items:
-                playlist_items.append(uri)
+            if uri in playlist_items:
+                continue
+            # Get the full item from library to access all provider mappings
+            full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
+            if not hasattr(full_item, "provider_mappings"):
+                self.logger.warning(
+                    "Can't add %s to playlist - unsupported media type",
+                    uri,
+                )
+                continue
+            # Sort by quality (highest first) for deterministic selection
+            provider_mappings = full_item.provider_mappings
+            provider_mappings = sorted(provider_mappings, key=lambda x: x.quality, reverse=True)
+            # Add first available provider mapping
+            for prov_mapping in provider_mappings:
+                if not prov_mapping.available:
+                    continue
+                item_prov = self.mass.get_provider(prov_mapping.provider_instance)
+                if not item_prov:
+                    continue
+                # Create provider URI from the mapping
+                provider_uri = create_uri(
+                    full_item.media_type,
+                    item_prov.instance_id,
+                    prov_mapping.item_id,
+                )
+                if provider_uri not in playlist_items:
+                    playlist_items.append(provider_uri)
+                break
         # store playlist file
         await self._write_playlist_file_items(prov_playlist_id, playlist_items)
         # mark last_updated on playlist object
