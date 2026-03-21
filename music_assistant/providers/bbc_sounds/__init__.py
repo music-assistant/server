@@ -803,7 +803,7 @@ class BBCSoundsProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """Handle callback when a (playable) media item has been played."""
-        if media_type not in (MediaType.RADIO, MediaType.PODCAST):
+        if media_type != MediaType.RADIO:
             # Handle Sounds API play status updates
             action = None
 
