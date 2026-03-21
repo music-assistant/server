@@ -19,5 +19,8 @@ STREAM_BASE = "https://stream.hosting-media.net/musicme"
 WEB_BASE = "https://www.musicme.com"
 LOGIN_URL = "https://www.musicme.com/mon-musicme/connexion/"
 PARTNER_ID = "22876"
-CLIENT_JSON = json.dumps({"type": "desktop-web", "context": "www.musicme.com", "app": "mmplayer"})
+CLIENT_JSON = json.dumps(
+    {"type": "desktop-web", "context": "www.musicme.com", "app": "mmplayer"},
+    separators=(",", ":"),
+)
 VALID_ID_RE = re.compile(r"^[\w.-]+$")

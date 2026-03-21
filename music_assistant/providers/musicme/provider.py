@@ -456,6 +456,8 @@ class MusicMeProvider(MusicProvider):
     @use_cache(3600 * 3)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
+        if page > 0:
+            return []
         data = await self._api_get(f"/playlist/{prov_playlist_id}?resources=tracks")
         if not data:
             return []
