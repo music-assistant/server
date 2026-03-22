@@ -173,11 +173,20 @@ async def get_config_entries(
     is_authenticated = bool(values.get(CONF_ACCESS_TOKEN))
 
     return (
+        # Setup instructions
+        ConfigEntry(
+            key="setup_info",
+            type=ConfigEntryType.LABEL,
+            label="Register a Twitch application at dev.twitch.tv/console/apps. "
+            f"Use {CALLBACK_REDIRECT_URL} as the OAuth Redirect URL.",
+            hidden=is_authenticated,
+        ),
         # Credentials
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
             label="Twitch Client ID",
+            description="From your Twitch application at dev.twitch.tv/console/apps.",
             required=True,
             value=values.get(CONF_CLIENT_ID),
         ),
