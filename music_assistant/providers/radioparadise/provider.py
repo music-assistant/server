@@ -14,6 +14,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     Radio,
+    SearchResults,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -38,6 +39,29 @@ class RadioParadiseProvider(MusicProvider):
             raise MediaNotFoundError("Station not found")
 
         return self._parse_radio(prov_radio_id)
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform search on Radio Paradise channels."""
+        results = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return results
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+        radios: list[Radio] = []
+        for channel_id, channel_info in RADIO_PARADISE_CHANNELS.items():
+            channel_name = channel_info.get("name", "").lower()
+            if search_query_lower in channel_name:
+                radios.append(self._parse_radio(channel_id))
+                if len(radios) >= limit:
+                    break
+        results.radio = radios
+        return results
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
