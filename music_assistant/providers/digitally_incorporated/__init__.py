@@ -65,6 +65,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.LIBRARY_RADIOS_EDIT,
 }
 
 # API Configuration
@@ -73,6 +74,7 @@ API_TIMEOUT = 30
 CACHE_CHANNELS = 86400  # 24 hours
 CACHE_GENRES = 86400  # 24 hours
 CACHE_STREAM_URL = 3600  # 1 hour
+CACHE_FAVORITES = 300  # 5 minutes
 
 # Rate limiting
 RATE_LIMIT = 2  # requests per period
@@ -272,13 +274,21 @@ class DigitallyIncorporatedProvider(MusicProvider):
         return results
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve all radio stations from active networks."""
+        """Retrieve user's favorite radio stations from active networks."""
         for network_key in self._get_active_networks():
             try:
-                channels = await self._get_channels(network_key)
+                favorites = await self._get_user_favorites(network_key)
+                if not favorites:
+                    continue
 
-                for channel_data in channels:
-                    yield self._channel_to_radio(channel_data, network_key)
+                # Build a map of channel_id -> channel_data for quick lookup
+                channels = await self._get_channels(network_key)
+                channels_by_id = {ch["id"]: ch for ch in channels if "id" in ch}
+
+                for favorite in favorites:
+                    channel_id = favorite.get("channel_id")
+                    if channel_id and channel_id in channels_by_id:
+                        yield self._channel_to_radio(channels_by_id[channel_id], network_key)
 
             except (
                 ProviderUnavailableError,
@@ -288,9 +298,73 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 KeyError,
             ) as err:
                 self.logger.debug(
-                    "%s: Failed to get channels for network %s: %s", self.domain, network_key, err
+                    "%s: Failed to get favorites for network %s: %s",
+                    self.domain,
+                    network_key,
+                    err,
                 )
                 continue
+
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Add radio station to user's favorites."""
+        if item.media_type != MediaType.RADIO:
+            return True
+
+        network_key, channel_key = self._validate_item_id(item.item_id)
+
+        channel_id = await self._get_channel_id(network_key, channel_key)
+        if channel_id is None:
+            self.logger.warning("%s: Could not find channel ID for %s", self.domain, item.item_id)
+            return False
+
+        listen_key = self.config.get_value("listen_key")
+        await self._api_request(
+            network_key,
+            "members/me/favorites",
+            method="POST",
+            json_body={"channel_id": channel_id},
+            api_key=listen_key,
+        )
+
+        await self._invalidate_favorites_cache(network_key)
+        return True
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove radio station from user's favorites."""
+        if media_type != MediaType.RADIO:
+            return True
+
+        network_key, channel_key = self._validate_item_id(prov_item_id)
+
+        channel_id = await self._get_channel_id(network_key, channel_key)
+        if channel_id is None:
+            self.logger.warning("%s: Could not find channel ID for %s", self.domain, prov_item_id)
+            return False
+
+        # Find the favorite record ID so we can delete it
+        favorites = await self._get_user_favorites(network_key)
+        favorite_id: int | None = None
+        for fav in favorites:
+            if fav.get("channel_id") == channel_id:
+                favorite_id = fav.get("id")
+                break
+
+        if favorite_id is None:
+            self.logger.warning(
+                "%s: Could not find favorite entry for channel %s", self.domain, prov_item_id
+            )
+            return False
+
+        listen_key = self.config.get_value("listen_key")
+        await self._api_request(
+            network_key,
+            f"members/me/favorites/{favorite_id}",
+            method="DELETE",
+            api_key=listen_key,
+        )
+
+        await self._invalidate_favorites_cache(network_key)
+        return True
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
@@ -454,11 +528,29 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
         return valid_networks
 
+    async def _get_channel_id(self, network_key: str, channel_key: str) -> int | None:
+        """Look up the numeric channel ID for a given channel key in a network."""
+        channels = await self._get_channels(network_key)
+        for ch in channels:
+            if ch.get("key") == channel_key:
+                return ch.get("id")
+        return None
+
+    async def _invalidate_favorites_cache(self, network_key: str) -> None:
+        """Invalidate the cached favorites list for a network."""
+        await self.mass.cache.delete(
+            key=f"_get_user_favorites.{network_key}",
+            category=0,
+            provider=self.instance_id,
+        )
+
     async def _api_request(
         self,
         network_key: str,
         endpoint: str,
+        method: str = "GET",
         use_https: bool = True,
+        json_body: dict[str, Any] | None = None,
         **params: Any,
     ) -> Any:
         """Make a generic API request to Digitally Incorporated."""
@@ -470,7 +562,9 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
         async with (
             self._throttler,
-            self.mass.http_session.get(url, params=params, timeout=timeout) as resp,
+            self.mass.http_session.request(
+                method, url, params=params, json=json_body, timeout=timeout
+            ) as resp,
         ):
             if resp.status == 403:
                 msg = f"{self.domain}: Access denied - check your listen key and subscription"
@@ -483,7 +577,39 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 raise ProviderUnavailableError(msg)
 
             resp.raise_for_status()
+
+            if resp.status == 204:
+                return None
             return await resp.json()
+
+    @use_cache(CACHE_FAVORITES)
+    async def _get_user_favorites(self, network_key: str) -> list[dict[str, Any]]:
+        """Get user's favorite channels for a network from the AudioAddict API."""
+        listen_key = self.config.get_value("listen_key")
+        try:
+            response = await self._api_request(
+                network_key, "members/me/favorites", api_key=listen_key
+            )
+            if not response or not isinstance(response, list):
+                self.logger.debug(
+                    "%s: No favorites returned for network %s", self.domain, network_key
+                )
+                return []
+            self.logger.debug(
+                "%s: Retrieved %d favorites for network %s",
+                self.domain,
+                len(response),
+                network_key,
+            )
+            return response
+        except (ProviderUnavailableError, MediaNotFoundError, aiohttp.ClientError) as err:
+            self.logger.debug(
+                "%s: Failed to get user favorites for network %s: %s",
+                self.domain,
+                network_key,
+                err,
+            )
+            return []
 
     @use_cache(CACHE_CHANNELS)
     async def _get_channels(self, network_key: str) -> list[dict[str, Any]]:
