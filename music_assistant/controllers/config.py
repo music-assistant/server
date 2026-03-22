@@ -1349,6 +1349,17 @@ class ConfigController:
                 LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
                 changed = True
 
+        # Remove corrupt player configurations that are missing the required 'player_id' key
+        # This can happen when _clear_protocol_parent_id is called on an already-deleted player
+        # TODO: remove after 2.8 release
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if "player_id" not in player_config:
+                self._data[CONF_PLAYERS].pop(player_id, None)
+                # Also remove any DSP config for this player
+                if CONF_PLAYER_DSP in self._data:
+                    self._data[CONF_PLAYER_DSP].pop(player_id, None)
+                changed = True
+
         # The background tasks controller originally persisted runtime state directly under
         # core/tasks, which could create a CoreConfig object without the required domain field.
         # Repair that single known corruption case on load.

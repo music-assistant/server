@@ -5814,7 +5814,7 @@ class TestProtocolParentIdPersistence:
     def test_parent_id_cleared_for_universal_parent(self, mock_mass: MagicMock) -> None:
         """protocol_parent_id should be cleared when unlinking from a universal player."""
         controller = PlayerController(mock_mass)
-        mock_mass.config.get = MagicMock(return_value=[])
+        mock_mass.config.get = MagicMock(return_value={"enabled": True})
 
         universal_provider = create_mock_universal_provider(mock_mass)
         parent = UniversalPlayer(
@@ -5871,7 +5871,7 @@ class TestCleanupProtocolLinks:
     def test_cleanup_clears_config_parent_id(self, mock_mass: MagicMock) -> None:
         """When a universal player is removed, protocol parent_ids are cleared in config."""
         controller = PlayerController(mock_mass)
-        mock_mass.config.get = MagicMock(return_value=[])
+        mock_mass.config.get = MagicMock(return_value={"enabled": True})
 
         universal_provider = create_mock_universal_provider(mock_mass)
         parent = UniversalPlayer(
