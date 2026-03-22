@@ -48,7 +48,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
         """Rebuild internal maps entirely from the current reality of all physical players."""
         self.states.clear()
         self._child_to_leader.clear()
-        for player in self.players.values():
+        for player in self.players:
             synced_to = getattr(player, "synced_to_internal", None)
             if synced_to:
                 self.states.setdefault(synced_to, set()).add(player.player_id)
@@ -61,7 +61,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
         """
         self._update_player_membership(player.player_id, player.synced_to)
         if player.synced_to:
-            if leader_player := self.players.get(player.synced_to):
+            if leader_player := self.provider.get_player(player.synced_to):
                 leader_player.update_state()
 
     def unregister_player(self, player: WamPlayer) -> None:
@@ -118,14 +118,16 @@ class GroupingCoordinator(WamProviderFeatureBase):
         :param target_children: The complete, desired set of child members.
         """
         async with self._lock:
-            leader = self.players.get(leader_id)
+            leader = self.provider.get_player(leader_id)
             if not leader:
                 return
 
             children_before = [
-                p for pid in self.states.get(leader_id, set()) if (p := self.players.get(pid))
+                p
+                for pid in self.states.get(leader_id, set())
+                if (p := self.provider.get_player(pid))
             ]
-            children_after = [p for pid in target_children if (p := self.players.get(pid))]
+            children_after = [p for pid in target_children if (p := self.provider.get_player(pid))]
             children_to_remove = set(children_before) - set(children_after)
 
             ungroup_tasks = [child.grouping.leave_group() for child in children_to_remove]
@@ -158,7 +160,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
 
         for pid in affected_leader_ids:
             if pid and pid != player.player_id:
-                if p := self.players.get(pid):
+                if p := self.provider.get_player(pid):
                     p.update_state()
 
     # --- Internal Helpers ---

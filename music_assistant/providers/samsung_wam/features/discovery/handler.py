@@ -190,7 +190,6 @@ class DiscoveryHandler(WamProviderFeatureBase):
             player.state_sync.apply_initial_state(attrs)
 
             await self.mass.players.register_or_update(player)
-            self.players[player.player_id] = player
             self.provider.groups.register_player(player)
 
         except PlayerDisabledError:
@@ -206,4 +205,4 @@ class DiscoveryHandler(WamProviderFeatureBase):
         :param udn: The Universal Device Name to search for.
         :return: The matching WamPlayer instance or None.
         """
-        return next((p for p in self.players.values() if p.udn == udn), None)
+        return next((p for p in self.players if p.udn == udn), None)

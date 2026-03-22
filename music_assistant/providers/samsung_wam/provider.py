@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ProviderFeature
 from pywam.device import SPEAKER_MODELS
@@ -25,7 +25,6 @@ class SamsungWamProvider(PlayerProvider):
     """Samsung WAM player provider."""
 
     supported_models: dict[str, dict[str, Any]]
-    wam_players: dict[str, WamPlayer]
     groups: GroupingCoordinator
     discovery: DiscoveryHandler
 
@@ -34,10 +33,21 @@ class SamsungWamProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return {ProviderFeature.SYNC_PLAYERS}
 
+    def get_players(self) -> list[WamPlayer]:
+        """Return all registered WAM players."""
+        return cast("list[WamPlayer]", self.players)
+
+    def get_player(self, player_id: str) -> WamPlayer | None:
+        """Return a WAM player by ID.
+
+        :param player_id: The player ID to look up.
+        :return: The matching WamPlayer, or None if not found.
+        """
+        return cast("WamPlayer | None", self.mass.players.get_player(player_id))
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider and its feature handlers."""
         self.supported_models = SPEAKER_MODELS
-        self.wam_players = {}
 
         # Wire up provider-level feature handlers
         self.groups = GroupingCoordinator(self)
@@ -55,7 +65,9 @@ class SamsungWamProvider(PlayerProvider):
         """
         await self.discovery.stop()
         self.groups.stop_sync_task()
-        self.wam_players.clear()
+        for player in list(self.get_players()):
+            self.logger.debug("Unloading player %s", player.log_name)
+            await self.mass.players.unregister(player.player_id, is_removed)
         self.groups.states.clear()
 
 

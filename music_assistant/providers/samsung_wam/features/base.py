@@ -45,9 +45,9 @@ class WamProviderFeatureBase:
         return self.provider.logger
 
     @property
-    def players(self) -> dict[str, WamPlayer]:
-        """Return a shortcut to the provider's collection of WamPlayer instances."""
-        return self.provider.wam_players
+    def players(self) -> list[WamPlayer]:
+        """Return all registered WAM players."""
+        return self.provider.get_players()
 
 
 class WamPlayerFeatureBase:
