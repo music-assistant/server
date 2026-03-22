@@ -348,7 +348,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # e.g. the item is being played or opened in the UI
             if allow_update_metadata:
                 assert library_item.uri is not None
-                self.mass.metadata.schedule_update_metadata(library_item.uri)
+                self.mass.metadata.schedule_update_metadata(library_item)
             return library_item
         # grab full details from the provider
         return await self.get_provider_item(
