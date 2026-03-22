@@ -340,7 +340,7 @@ class MetaDataController(CoreController):
             update_current_task_progress_text(f"Refreshing metadata for {item_name}")
             await self.update_metadata(cast("MediaItemType", item))
 
-        self.mass.tasks.create_task(
+        self.mass.tasks.run_background_task(
             task_id=task_id,
             name="Update metadata",
             handler=handle_lookup,
