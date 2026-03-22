@@ -24,6 +24,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    SearchResults,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
 }
 
 CONF_QUALITY = "quality"
@@ -92,6 +94,32 @@ class SomaFMProvider(MusicProvider):
         if stations:
             return [self._parse_channel(channel_info) for channel_info in stations.values()]
         return []
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform search on SomaFM channels."""
+        results = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return results
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+        stations = await self._get_stations()
+        if not stations:
+            return results
+        radios: list[Radio] = []
+        for channel_info in stations.values():
+            channel_name = str(channel_info.get("title", "")).lower()
+            if search_query_lower in channel_name:
+                radios.append(self._parse_channel(channel_info))
+                if len(radios) >= limit:
+                    break
+        results.radio = radios
+        return results
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
