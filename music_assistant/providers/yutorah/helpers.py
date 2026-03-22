@@ -172,7 +172,7 @@ def _shiur_to_track(
         shiur_len = shiur.get("shiurLength") or shiur.get("durationformatted") or ""
         duration_sec = _parse_duration(shiur_len)
 
-    _, _teacher_name, image_url = _extract_teacher_info(shiur)
+    image_url = _extract_teacher_info(shiur)[2]
 
     images = _make_images(image_url, instance_id)
     return Track(
