@@ -14,7 +14,6 @@ The provider requires a premium account and listen key for authentication.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -64,8 +63,6 @@ else:
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    # TODO: consider removing LIBRARY_RADIOS - may only need browse
-    ProviderFeature.LIBRARY_RADIOS,
 }
 
 # API Configuration
@@ -272,32 +269,6 @@ class DigitallyIncorporatedProvider(MusicProvider):
         results.radio = radios
         return results
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve all radio stations from active networks.
-
-        TODO: review - this returns the full catalog (same data as browse but flat),
-        which causes all stations to sync to the library. Consider removing
-        LIBRARY_RADIOS and relying on browse() only. Should also be cached if kept.
-        """
-        for network_key in self._get_active_networks():
-            try:
-                channels = await self._get_channels(network_key)
-
-                for channel_data in channels:
-                    yield self._channel_to_radio(channel_data, network_key)
-
-            except (
-                ProviderUnavailableError,
-                MediaNotFoundError,
-                aiohttp.ClientError,
-                ValueError,
-                KeyError,
-            ) as err:
-                self.logger.debug(
-                    "%s: Failed to get channels for network %s: %s", self.domain, network_key, err
-                )
-                continue
-
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         # Validate and parse the provider ID
@@ -357,10 +328,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
-        """Browse Digitally Incorporated radio services and channels.
-
-        TODO: add 24 hour cache
-        """
+        """Browse Digitally Incorporated radio services and channels."""
         self.logger.debug("%s: Browse called with path: %s", self.domain, path)
 
         # Extract meaningful path component
