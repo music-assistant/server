@@ -1,0 +1,15 @@
+{
+  "data": [
+    {
+      "id": "123",
+      "login": "streamer_a",
+      "display_name": "Streamer A",
+      "type": "",
+      "broadcaster_type": "partner",
+      "description": "A test streamer",
+      "profile_image_url": "https://static-cdn.jtvnw.net/jtv_user_pictures/streamer_a-profile.png",
+      "offline_image_url": "",
+      "created_at": "2020-01-01T00:00:00Z"
+    }
+  ]
+}

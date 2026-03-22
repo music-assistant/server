@@ -1,0 +1,28 @@
+{
+  "data": [
+    {
+      "broadcaster_language": "en",
+      "broadcaster_login": "streamer_a",
+      "display_name": "Streamer A",
+      "game_id": "12345",
+      "game_name": "Just Chatting",
+      "id": "123",
+      "is_live": true,
+      "thumbnail_url": "https://static-cdn.jtvnw.net/jtv_user_pictures/streamer_a-profile.png",
+      "title": "Hello World Stream",
+      "started_at": "2023-06-01T12:00:00Z"
+    },
+    {
+      "broadcaster_language": "en",
+      "broadcaster_login": "streamer_d",
+      "display_name": "Streamer D",
+      "game_id": "67890",
+      "game_name": "Music",
+      "id": "999",
+      "is_live": false,
+      "thumbnail_url": "https://static-cdn.jtvnw.net/jtv_user_pictures/streamer_d-profile.png",
+      "title": "",
+      "started_at": ""
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "page1": {
+    "data": [
+      {
+        "broadcaster_id": "123",
+        "broadcaster_login": "streamer_a",
+        "broadcaster_name": "Streamer A",
+        "followed_at": "2023-01-01T00:00:00Z"
+      },
+      {
+        "broadcaster_id": "456",
+        "broadcaster_login": "streamer_b",
+        "broadcaster_name": "Streamer B",
+        "followed_at": "2023-02-01T00:00:00Z"
+      }
+    ],
+    "pagination": {
+      "cursor": "abc123"
+    }
+  },
+  "page2": {
+    "data": [
+      {
+        "broadcaster_id": "789",
+        "broadcaster_login": "streamer_c",
+        "broadcaster_name": "Streamer C",
+        "followed_at": "2023-03-01T00:00:00Z"
+      }
+    ],
+    "pagination": {}
+  }
+}
