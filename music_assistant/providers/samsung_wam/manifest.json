@@ -8,6 +8,6 @@
     "pywam==0.1.0rc6",
     "async-upnp-client==0.46.2"
   ],
-  "documentation": "URL_TO_DOCUMENTATION",
+  "documentation": "https://music-assistant.io/player-support/samsung_wam/",
   "multi_instance": false
 }
