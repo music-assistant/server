@@ -72,6 +72,7 @@ TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_REVOKE_URL = "https://id.twitch.tv/oauth2/revoke"
 TWITCH_SCOPES = ("user:read:follows",)
+CALLBACK_REDIRECT_URL = "https://music-assistant.io/callback"
 
 
 async def _handle_auth_action(
@@ -90,9 +91,10 @@ async def _handle_auth_action(
     async with AuthenticationHelper(mass, session_id) as auth_helper:
         params = {
             "client_id": client_id,
-            "redirect_uri": auth_helper.callback_url,
+            "redirect_uri": CALLBACK_REDIRECT_URL,
             "response_type": "code",
             "scope": " ".join(TWITCH_SCOPES),
+            "state": auth_helper.callback_url,
         }
         auth_url = f"{TWITCH_AUTH_URL}?{urlencode(params)}"
         result = await auth_helper.authenticate(auth_url)
@@ -108,7 +110,7 @@ async def _handle_auth_action(
         "client_secret": client_secret,
         "code": code,
         "grant_type": "authorization_code",
-        "redirect_uri": auth_helper.callback_url,
+        "redirect_uri": CALLBACK_REDIRECT_URL,
     }
     async with mass.http_session.post(TWITCH_TOKEN_URL, data=token_params) as response:
         if response.status != 200:
