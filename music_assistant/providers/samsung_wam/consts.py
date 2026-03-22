@@ -1,9 +1,9 @@
 """Global constants and configurations for the Samsung WAM provider."""
 
-from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import PlayerFeature
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE, CONF_ENTRY_SAMPLE_RATES
+from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE, create_sample_rates_config_entry
 
 # --- Global Provider Settings ---
 
@@ -24,24 +24,9 @@ PLAYER_FEATURES_BASE = {
 
 # --- Configuration Entries ---
 
-CONF_ENTRY_SAMPLE_RATES_WAM = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_value": [
-            f"44100{MULTI_VALUE_SPLITTER}16",
-            f"44100{MULTI_VALUE_SPLITTER}24",
-            f"48000{MULTI_VALUE_SPLITTER}16",
-            f"48000{MULTI_VALUE_SPLITTER}24",
-            f"88200{MULTI_VALUE_SPLITTER}16",
-            f"88200{MULTI_VALUE_SPLITTER}24",
-            f"96000{MULTI_VALUE_SPLITTER}16",
-            f"96000{MULTI_VALUE_SPLITTER}24",
-            f"176400{MULTI_VALUE_SPLITTER}16",
-            f"176400{MULTI_VALUE_SPLITTER}24",
-            f"192000{MULTI_VALUE_SPLITTER}16",
-            f"192000{MULTI_VALUE_SPLITTER}24",
-        ],
-    }
+CONF_ENTRY_SAMPLE_RATES_WAM = create_sample_rates_config_entry(
+    supported_sample_rates=[44100, 48000, 88200, 96000, 176400, 192000],
+    supported_bit_depths=[16, 24],
 )
 
 CONF_ENTRY_HTTP_PROFILE_WAM = ConfigEntry.from_dict(
