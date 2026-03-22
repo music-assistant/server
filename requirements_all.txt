@@ -70,6 +70,7 @@ snapcast==2.3.7
 soco==0.30.14
 soundcloudpy==0.1.4
 srptools>=1.0.0
+streamlink>=8.0,<9
 sxm==0.2.8
 unidecode==1.4.0
 uv>=0.8.0
