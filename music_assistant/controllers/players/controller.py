@@ -99,7 +99,7 @@ from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
-from .helpers import AnnounceData, handle_player_command
+from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
 if TYPE_CHECKING:
@@ -2734,6 +2734,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
+            if powered:
+                await wait_for_power_on(self.logger, player)
         elif player_state.power_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
@@ -2757,6 +2759,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if powered:
                 assert player_control.power_on is not None  # for type checking
                 await player_control.power_on()
+                await wait_for_power_on(self.logger, player, player_control)
             else:
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
