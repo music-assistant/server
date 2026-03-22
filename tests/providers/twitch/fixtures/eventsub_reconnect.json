@@ -1,0 +1,14 @@
+{
+  "metadata": {
+    "message_id": "reconnect-1",
+    "message_type": "session_reconnect",
+    "message_timestamp": "2023-06-01T12:15:00Z"
+  },
+  "payload": {
+    "session": {
+      "id": "test_session_123",
+      "status": "reconnecting",
+      "reconnect_url": "wss://eventsub.wss.twitch.tv/ws?reconnect=true"
+    }
+  }
+}

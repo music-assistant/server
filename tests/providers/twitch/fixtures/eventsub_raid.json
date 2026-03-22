@@ -1,0 +1,28 @@
+{
+  "metadata": {
+    "message_id": "raid-1",
+    "message_type": "notification",
+    "message_timestamp": "2023-06-01T12:30:00Z",
+    "subscription_type": "channel.raid"
+  },
+  "payload": {
+    "subscription": {
+      "id": "sub_123",
+      "type": "channel.raid",
+      "version": "1",
+      "status": "enabled",
+      "condition": {
+        "from_broadcaster_user_id": "123"
+      }
+    },
+    "event": {
+      "from_broadcaster_user_id": "123",
+      "from_broadcaster_user_login": "streamer_a",
+      "from_broadcaster_user_name": "Streamer A",
+      "to_broadcaster_user_id": "789",
+      "to_broadcaster_user_login": "streamer_c",
+      "to_broadcaster_user_name": "Streamer C",
+      "viewers": 1500
+    }
+  }
+}

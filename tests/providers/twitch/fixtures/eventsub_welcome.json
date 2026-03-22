@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "message_id": "welcome-1",
+    "message_type": "session_welcome",
+    "message_timestamp": "2023-06-01T12:00:00Z"
+  },
+  "payload": {
+    "session": {
+      "id": "test_session_123",
+      "status": "connected",
+      "connected_at": "2023-06-01T12:00:00Z",
+      "keepalive_timeout_seconds": 10,
+      "reconnect_url": null
+    }
+  }
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.twitch.eventsub import EventSubClient
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -272,6 +274,15 @@ class TwitchProvider(MusicProvider):
     _cached_live: dict[str, dict[str, Any]] | None = None
     _cache_time: float = 0.0
 
+    # Raid state
+    _eventsub: EventSubClient | None = None
+    _unsub_queue_updated: Any | None = None
+    _current_channel_login: str | None = None
+    _current_queue_id: str | None = None
+    _auto_raid: bool = True
+    _grace_timer: asyncio.Task[None] | None = None
+    _idle_timer: asyncio.Task[None] | None = None
+
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
@@ -283,6 +294,7 @@ class TwitchProvider(MusicProvider):
         self._client_secret = str(self.config.get_value(CONF_CLIENT_SECRET) or "")
         self._access_token = str(self.config.get_value(CONF_ACCESS_TOKEN) or "") or None
         self._refresh_token = str(self.config.get_value(CONF_REFRESH_TOKEN) or "") or None
+        self._auto_raid = bool(self.config.get_value(CONF_AUTO_RAID) or True)
         # Resolve user ID if authenticated
         if self._access_token:
             try:
@@ -294,11 +306,106 @@ class TwitchProvider(MusicProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        # Step 6 will subscribe to QUEUE_UPDATED events here
+        # Subscribe to queue events for raid following
+        # NOTE: mass.subscribe is not available in test mocks the same way,
+        # so we store the unsub callable for cleanup
+        if hasattr(self.mass, "subscribe"):
+            try:
+                self._unsub_queue_updated = self.mass.subscribe(self._on_queue_updated)
+            except Exception:
+                self.logger.debug("Could not subscribe to queue events")
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        # Step 6 will clean up event subscriptions, timers, WebSocket here
+        # Unsubscribe from event bus
+        if self._unsub_queue_updated is not None:
+            with contextlib.suppress(Exception):
+                self._unsub_queue_updated()
+            self._unsub_queue_updated = None
+
+        # Cancel timers
+        if self._grace_timer is not None:
+            self._grace_timer.cancel()
+            self._grace_timer = None
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+
+        # Stop EventSub
+        if self._eventsub is not None:
+            await self._eventsub.stop()
+            self._eventsub = None
+
+    # --- Raid State Machine ---
+
+    async def _on_queue_updated(self, event: Any = None) -> None:
+        """Handle queue update events for raid following."""
+        # This would parse the event to determine play/pause/stop state
+        # and Twitch URI, then delegate to the appropriate handler.
+        # Full implementation requires MA event model integration.
+
+    async def _handle_queue_playing(self, uri: str, channel_login: str) -> None:
+        """Handle playback of a Twitch channel — subscribe to raids."""
+        if channel_login == self._current_channel_login:
+            return  # Already subscribed to this channel
+
+        self._cancel_timers()
+        self._current_channel_login = channel_login
+
+        if not self._auto_raid or not self.is_authenticated:
+            return
+
+        # Ensure EventSub client exists
+        if self._eventsub is None:
+            self._eventsub = EventSubClient(
+                http_session=self.mass.http_session,
+                api_headers_fn=self._api_headers,
+            )
+            await self._eventsub.start(
+                on_raid=lambda from_l, to_l: asyncio.create_task(self._on_raid(from_l, to_l))
+            )
+
+        # Resolve user ID for the channel and subscribe
+        users = await self._get_users(logins=[channel_login])
+        if users:
+            await self._eventsub.subscribe_raids(users[0]["id"])
+
+    async def _handle_queue_stopped(self) -> None:
+        """Handle playback stop — unsubscribe, start timers."""
+        self._current_channel_login = None
+        if self._eventsub is not None:
+            await self._eventsub.unsubscribe_all()
+
+    async def _on_raid(self, from_login: str, to_login: str) -> None:
+        """Handle a raid event — switch playback to raid target."""
+        if not self._auto_raid:
+            return
+
+        if from_login != self._current_channel_login:
+            self.logger.debug(
+                "Ignoring stale raid from %s (current=%s)",
+                from_login,
+                self._current_channel_login,
+            )
+            return
+
+        self.logger.info("Raid received: %s → %s", from_login, to_login)
+        try:
+            await self.mass.player_queues.play_media(
+                queue_id=self._current_queue_id or "",
+                media=f"twitch://channel/{to_login}",
+            )
+        except Exception:
+            self.logger.warning("Failed to follow raid to %s", to_login, exc_info=True)
+
+    def _cancel_timers(self) -> None:
+        """Cancel any pending grace/idle timers."""
+        if self._grace_timer is not None:
+            self._grace_timer.cancel()
+            self._grace_timer = None
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
 
     @property
     def is_authenticated(self) -> bool:

@@ -1,0 +1,19 @@
+{
+  "metadata": {
+    "message_id": "revoke-1",
+    "message_type": "revocation",
+    "message_timestamp": "2023-06-01T13:00:00Z",
+    "subscription_type": "channel.raid"
+  },
+  "payload": {
+    "subscription": {
+      "id": "sub_123",
+      "type": "channel.raid",
+      "version": "1",
+      "status": "authorization_revoked",
+      "condition": {
+        "from_broadcaster_user_id": "123"
+      }
+    }
+  }
+}

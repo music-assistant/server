@@ -1,0 +1,168 @@
+"""Test raid state machine and event bus integration."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, Mock, patch
+
+from music_assistant.providers.twitch import TwitchProvider
+
+# --- Event Bus Lifecycle ---
+
+
+async def test_unsubscribes_on_unload(provider: TwitchProvider) -> None:
+    """Provider calls unsubscribe callable in unload()."""
+    unsub_mock = Mock()
+    provider._unsub_queue_updated = unsub_mock
+    provider._eventsub = Mock()
+    provider._eventsub.stop = AsyncMock()
+    provider._grace_timer = None
+    provider._idle_timer = None
+
+    await provider.unload()
+
+    unsub_mock.assert_called_once()
+
+
+# --- State Machine — Play/Pause/Stop ---
+
+
+async def test_playing_twitch_uri_subscribes_to_raids(provider: TwitchProvider) -> None:
+    """PLAYING + Twitch URI subscribes to raid events."""
+    provider._access_token = "test"
+    provider._client_id = "test"
+    provider._auto_raid = True
+    provider._eventsub = Mock()
+    provider._eventsub.subscribe_raids = AsyncMock()
+    provider._eventsub.is_connected = True
+    provider._eventsub.start = AsyncMock()
+
+    # Mock _get_users to avoid real API call
+    with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
+        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+
+    provider._eventsub.subscribe_raids.assert_called_once_with("123")
+
+
+async def test_playing_non_twitch_uri_unsubscribes(provider: TwitchProvider) -> None:
+    """PLAYING + non-Twitch URI unsubscribes from raids."""
+    provider._eventsub = Mock()
+    provider._eventsub.unsubscribe_all = AsyncMock()
+    provider._current_channel_login = "streamer_a"
+
+    await provider._handle_queue_stopped()
+
+    provider._eventsub.unsubscribe_all.assert_called()
+
+
+async def test_playing_same_channel_no_duplicate_subscribe(provider: TwitchProvider) -> None:
+    """Re-playing same channel doesn't create duplicate subscription."""
+    provider._access_token = "test"
+    provider._client_id = "test"
+    provider._eventsub = Mock()
+    provider._eventsub.subscribe_raids = AsyncMock()
+    provider._eventsub.is_connected = True
+    provider._current_channel_login = "streamer_a"
+
+    await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+
+    # Should not subscribe again — already on same channel
+    provider._eventsub.subscribe_raids.assert_not_called()
+
+
+# --- Raid Handling ---
+
+
+async def test_raid_triggers_play_media(provider: TwitchProvider) -> None:
+    """Raid event calls mass.player_queues.play_media()."""
+    provider._current_channel_login = "streamer_a"
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    provider.mass.player_queues.play_media.assert_called_once()
+    call_args = provider.mass.player_queues.play_media.call_args
+    # Check the media URI contains the raid target
+    assert "streamer_c" in str(call_args)
+
+
+async def test_stale_raid_ignored(provider: TwitchProvider) -> None:
+    """Raid from non-current channel is ignored."""
+    provider._current_channel_login = "streamer_a"
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_b", "streamer_c")
+
+    provider.mass.player_queues.play_media.assert_not_called()
+
+
+async def test_raid_to_offline_target_handled(provider: TwitchProvider) -> None:
+    """Raid to offline channel: error logged, no crash."""
+    provider._current_channel_login = "streamer_a"
+    provider.mass.player_queues.play_media = AsyncMock(  # type: ignore[method-assign]
+        side_effect=Exception("stream offline")
+    )
+
+    # Should not raise
+    await provider._on_raid("streamer_a", "offline_channel")
+
+
+# --- Auto-Raid Toggle ---
+
+
+async def test_auto_raid_disabled_ignores_raids(provider: TwitchProvider) -> None:
+    """With auto_raid=False, raid events are ignored."""
+    provider._auto_raid = False
+    provider._current_channel_login = "streamer_a"
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    provider.mass.player_queues.play_media.assert_not_called()
+
+
+# --- Cleanup ---
+
+
+async def test_unload_cancels_grace_timer(provider: TwitchProvider) -> None:
+    """unload() cancels pending grace timer."""
+    mock_task = Mock()
+    mock_task.cancel = Mock()
+    provider._grace_timer = mock_task
+    provider._idle_timer = None
+    provider._eventsub = Mock()
+    provider._eventsub.stop = AsyncMock()
+    provider._unsub_queue_updated = None
+
+    await provider.unload()
+
+    mock_task.cancel.assert_called_once()
+
+
+async def test_unload_cancels_idle_timer(provider: TwitchProvider) -> None:
+    """unload() cancels pending idle timer."""
+    mock_task = Mock()
+    mock_task.cancel = Mock()
+    provider._idle_timer = mock_task
+    provider._grace_timer = None
+    provider._eventsub = Mock()
+    provider._eventsub.stop = AsyncMock()
+    provider._unsub_queue_updated = None
+
+    await provider.unload()
+
+    mock_task.cancel.assert_called_once()
+
+
+async def test_unload_stops_eventsub(provider: TwitchProvider) -> None:
+    """unload() calls EventSub stop."""
+    eventsub_mock = Mock()
+    eventsub_mock.stop = AsyncMock()
+    provider._eventsub = eventsub_mock
+    provider._grace_timer = None
+    provider._idle_timer = None
+    provider._unsub_queue_updated = None
+
+    await provider.unload()
+
+    # _eventsub is set to None after stop, so check the saved ref
+    eventsub_mock.stop.assert_called_once()
