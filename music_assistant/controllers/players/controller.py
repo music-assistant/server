@@ -78,7 +78,6 @@ from music_assistant.constants import (
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_PLAYER_DSP,
@@ -1499,6 +1498,67 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for key in (conf_key, dsp_conf_key):
             self.mass.config.remove(key)
 
+    def _enforce_volume_limits(self, player: Player) -> None:
+        """Enforce min/max volume limits when volume changes externally."""
+        if player.state.volume_level is None:
+            return
+        player_id = player.player_id
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        clamped = max(min_volume, min(max_volume, player.state.volume_level))
+        if clamped != player.state.volume_level:
+            self.mass.create_task(self.cmd_volume_set(player_id, clamped))
+
+    def _forward_state_updates_to_related_players(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Forward state updates to group members, parent players, and related players."""
+        # update/signal group player(s) child's when group updates
+        for child_player in self.iter_group_members(player, exclude_self=True):
+            self.trigger_player_update(child_player.player_id)
+        # update/signal group player(s) when child updates
+        for group_player in self._get_player_groups(player, powered_only=False):
+            self.trigger_player_update(group_player.player_id)
+        # update/signal manually synced to player when child updates
+        if (synced_to := player.state.synced_to) and (
+            synced_to_player := self.get_player(synced_to)
+        ):
+            self.trigger_player_update(synced_to_player.player_id)
+        # update/signal active groups when a group member updates
+        if (active_group := player.state.active_group) and (
+            active_group_player := self.get_player(active_group)
+        ):
+            self.trigger_player_update(active_group_player.player_id)
+        # If this is a protocol player, forward the state update to the parent player
+        if player.protocol_parent_id and (
+            parent_player := self.mass.players.get_player(player.protocol_parent_id)
+        ):
+            self.trigger_player_update(parent_player.player_id)
+        # If this is a parent player with linked protocols, forward state updates
+        # to linked protocol players so their state reflects parent dependencies
+        if player.state.type != PlayerType.PROTOCOL and player.linked_output_protocols:
+            for linked in player.linked_output_protocols:
+                if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
+                    self.mass.players.trigger_player_update(protocol_player.player_id)
+        # trigger update of all players in a provider if group related fields changed
+        if any(key in changed_values for key in ("group_members", "synced_to", "available")):
+            for prov_player in player.provider.players:
+                self.trigger_player_update(prov_player.player_id)
+
     def signal_player_state_update(
         self,
         player: Player,
@@ -1581,26 +1641,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
         # enforce volume limits when volume changes externally
-        if "volume_level" in changed_values and player.state.volume_level is not None:
-            min_volume = int(
-                cast(
-                    "int",
-                    self.mass.config.get_raw_player_config_value(
-                        player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
-                    ),
-                )
-            )
-            max_volume = int(
-                cast(
-                    "int",
-                    self.mass.config.get_raw_player_config_value(
-                        player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
-                    ),
-                )
-            )
-            clamped = max(min_volume, min(max_volume, player.state.volume_level))
-            if clamped != player.state.volume_level:
-                self.mass.create_task(self.cmd_volume_set(player_id, clamped))
+        if "volume_level" in changed_values:
+            self._enforce_volume_limits(player)
 
         # signal player update on the eventbus
         if player.state.type != PlayerType.PROTOCOL:
@@ -1629,37 +1671,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if skip_forward and not force_update:
             return
 
-        # update/signal group player(s) child's when group updates
-        for child_player in self.iter_group_members(player, exclude_self=True):
-            self.trigger_player_update(child_player.player_id)
-        # update/signal group player(s) when child updates
-        for group_player in self._get_player_groups(player, powered_only=False):
-            self.trigger_player_update(group_player.player_id)
-        # update/signal manually synced to player when child updates
-        if (synced_to := player.state.synced_to) and (
-            synced_to_player := self.get_player(synced_to)
-        ):
-            self.trigger_player_update(synced_to_player.player_id)
-        # update/signal active groups when a group member updates
-        if (active_group := player.state.active_group) and (
-            active_group_player := self.get_player(active_group)
-        ):
-            self.trigger_player_update(active_group_player.player_id)
-        # If this is a protocol player, forward the state update to the parent player
-        if player.protocol_parent_id and (
-            parent_player := self.mass.players.get_player(player.protocol_parent_id)
-        ):
-            self.trigger_player_update(parent_player.player_id)
-        # If this is a parent player with linked protocols, forward state updates
-        # to linked protocol players so their state reflects parent dependencies
-        if player.state.type != PlayerType.PROTOCOL and player.linked_output_protocols:
-            for linked in player.linked_output_protocols:
-                if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
-                    self.mass.players.trigger_player_update(protocol_player.player_id)
-        # trigger update of all players in a provider if group related fields changed
-        if any(key in changed_values for key in ("group_members", "synced_to", "available")):
-            for prov_player in player.provider.players:
-                self.trigger_player_update(prov_player.player_id)
+        self._forward_state_updates_to_related_players(player, changed_values)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
