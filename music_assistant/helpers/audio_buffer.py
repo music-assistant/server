@@ -186,6 +186,8 @@ class AudioBuffer:
             # Check if producer had an error - raise immediately
             if self._producer_error:
                 raise self._producer_error
+            if self.cancelled:
+                raise AudioError("Audio buffer has been cancelled")
 
             # Check if the chunk was already discarded
             if chunk_number < self._discarded_chunks:
@@ -201,6 +203,8 @@ class AudioBuffer:
                 # Check if producer had an error - raise immediately
                 if self._producer_error:
                     raise self._producer_error
+                if self.cancelled:
+                    raise AudioError("Audio buffer has been cancelled")
                 if self._eof_received:
                     raise AudioBufferEOF
                 await self._data_available.wait()
