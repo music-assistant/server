@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
+import re
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Final, cast
 
 import aiofiles
-import shortuuid
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import (
     ContentType,
+    ExternalID,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -23,6 +23,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -34,6 +35,7 @@ from music_assistant_models.media_items import (
     Radio,
     Track,
     UniqueList,
+    media_from_dict,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -44,8 +46,16 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.playlists import (
+    ImageInfo,
+    PlaylistItem,
+    ProviderMappingInfo,
+    construct_media_item_from_playlist_item,
+    generate_m3u,
+    parse_m3u,
+    parse_m3u_playlist_name,
+)
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
-from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -132,15 +142,20 @@ class BuiltinProvider(MusicProvider):
 
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
+    _playlist_locks: dict[str, asyncio.Lock]
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         self._playlist_lock = asyncio.Lock()
-        # make sure that our directory with collage images exists
+        self._playlist_locks = {}
         self._playlists_dir = os.path.join(self.mass.storage_path, "playlists")
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
+        # migrate old-style playlists in the background to avoid blocking startup
+        # TODO: remove after MA 2.9
+        if self.mass.config.get(CONF_KEY_PLAYLISTS, []):
+            self.mass.create_task(self._migrate_playlists())
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -229,15 +244,17 @@ class BuiltinProvider(MusicProvider):
                     else UniqueList([DEFAULT_THUMB, DEFAULT_FANART]),
                 ),
             )
-        # user created universal playlist
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        stored_item = next((x for x in stored_items if x["item_id"] == prov_playlist_id), None)
-        if not stored_item:
-            raise MediaNotFoundError
-        playlist = Playlist(
+        # user created playlist - read from M3U file on disk
+        playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
+        if not await asyncio.to_thread(os.path.isfile, playlist_file):
+            raise MediaNotFoundError(f"Playlist file not found: {prov_playlist_id}")
+        # read playlist name from M3U #PLAYLIST directive, fall back to filename
+        m3u_data = await self._read_m3u_file(prov_playlist_id)
+        playlist_name = parse_m3u_playlist_name(m3u_data) or prov_playlist_id
+        return Playlist(
             item_id=prov_playlist_id,
             provider=self.instance_id,
-            name=stored_item["name"],
+            name=playlist_name,
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_playlist_id,
@@ -254,16 +271,6 @@ class BuiltinProvider(MusicProvider):
             },
             is_editable=True,
         )
-        if image_url := stored_item.get("image_url"):
-            playlist.metadata.add_image(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image_url,
-                    provider=self.domain,
-                    remotely_accessible=image_url.startswith("http"),
-                )
-            )
-        return playlist
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
@@ -290,10 +297,15 @@ class BuiltinProvider(MusicProvider):
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library/subscribed playlists from the provider."""
-        # return user stored playlists
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        for item in stored_items:
-            yield await self.get_playlist(item["item_id"])
+        # return user stored playlists from M3U files on disk
+        for filename in await asyncio.to_thread(os.listdir, self._playlists_dir):
+            if not filename.endswith(".m3u"):
+                continue
+            playlist_id = filename[:-4]  # strip .m3u extension
+            try:
+                yield await self.get_playlist(playlist_id)
+            except MediaNotFoundError:
+                self.logger.warning("Playlist file %s not found", filename)
         # return builtin playlists
         for item_id in BUILTIN_PLAYLISTS:
             if self.config.get_value(item_id) is False:
@@ -354,13 +366,12 @@ class BuiltinProvider(MusicProvider):
             # regular manual radio URL/path
             key = CONF_KEY_RADIOS
         elif media_type == MediaType.PLAYLIST:
-            # manually added (multi provider) playlist removal
-            key = CONF_KEY_PLAYLISTS
-            # also delete the playlist file if it exists
-            playlist_file = os.path.join(self._playlists_dir, prov_item_id)
+            # user-created playlist removal - delete the M3U file
+            playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
             if await asyncio.to_thread(os.path.isfile, playlist_file):
                 async with self._playlist_lock:
                     await asyncio.to_thread(os.remove, playlist_file)
+            return True
         else:
             return False
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
@@ -371,98 +382,73 @@ class BuiltinProvider(MusicProvider):
     async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
     ) -> list[PlaylistPlayableItem]:
-        """Get playlist tracks.
-
-        Builtin provider supports Track, Radio, PodcastEpisode, and Audiobook items in playlists.
-        Overrides base class to return extended union type instead of list[Track].
-        """
-        if page > 0:
-            # paging not supported, we always return the whole list at once
-            return []
+        """Get playlist tracks (paginated, 500 items per page)."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            # System-generated playlists (favorites, random, etc.) only contain tracks
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
-        # User-created playlists can contain Track, Radio, PodcastEpisode, and Audiobook items
-        result: list[PlaylistPlayableItem] = []
-        playlist_items = await self._read_playlist_file_items(prov_playlist_id)
-        for index, uri in enumerate(playlist_items, 1):
-            try:
-                media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
-                media_controller = self.mass.music.get_controller(media_type)
-                # prefer item already in the db
-                media_item: (
-                    MediaItemType | None
-                ) = await media_controller.get_library_item_by_prov_id(
-                    item_id, provider_instance_id_or_domain
-                )
-                if media_item is None:
-                    # Call provider.get_item directly with the correct media_type.
-                    # Using media_controller.get_provider_item would pass the
-                    # controller's own media_type, which is wrong for podcast
-                    # episodes (controller has PODCAST, not PODCAST_EPISODE).
-                    item_prov = self.mass.get_provider(provider_instance_id_or_domain)
-                    if not item_prov:
-                        raise ProviderUnavailableError(
-                            f"{provider_instance_id_or_domain} is not available"
-                        )
-                    item_prov = cast("MusicProvider", item_prov)
-                    media_item = await item_prov.get_item(media_type, item_id)
-                if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
-                    playlist_item = cast("PlaylistPlayableItem", media_item)
-                    playlist_item.position = index
-                    result.append(playlist_item)
-                else:
-                    self.logger.warning(
-                        "Unsupported media type in playlist %s: %s",
-                        prov_playlist_id,
-                        type(media_item),
-                    )
-            except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
-                self.logger.warning(
-                    "Skipping %s in playlist %s: %s", uri, prov_playlist_id, str(err)
-                )
-        return result
+        return await self._get_user_playlist_tracks(prov_playlist_id, page)
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist."""
-        playlist_items = await self._read_playlist_file_items(prov_playlist_id)
-        for uri in prov_track_ids:
-            if uri not in playlist_items:
-                playlist_items.append(uri)
-        # store playlist file
-        await self._write_playlist_file_items(prov_playlist_id, playlist_items)
-        # mark last_updated on playlist object
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        stored_item = next((x for x in stored_items if x["item_id"] == prov_playlist_id), None)
-        if stored_item:
-            stored_item["last_updated"] = int(time.time())
-            self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
+        """Add track(s) to playlist with full metadata and deduplication."""
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            existing_items = parse_m3u(m3u_data)
+            # build dedup set from existing URIs and provider item_ids
+            existing_item_ids: set[str] = set()
+            for item in existing_items:
+                existing_item_ids.add(item.path)
+                for prov in item.providers:
+                    existing_item_ids.add(f"{prov.domain}:{prov.item_id}")
+            entries: list[PlaylistItem] = list(existing_items)
+            for uri in prov_track_ids:
+                if uri in existing_item_ids:
+                    continue
+                try:
+                    entry = await self._build_m3u_entry_from_uri(uri)
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
+                    self.logger.warning("Can't add %s to playlist - item not found", uri)
+                    continue
+                # check dedup against the newly built entry's providers too
+                new_ids = {entry.path}
+                if entry.providers:
+                    new_ids.update(f"{p.domain}:{p.item_id}" for p in entry.providers)
+                if new_ids & existing_item_ids:
+                    continue
+                existing_item_ids.update(new_ids)
+                entries.append(entry)
+            # write updated M3U file
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(prov_playlist_id, playlist.name, entries)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        playlist_items = await self._read_playlist_file_items(prov_playlist_id)
-        # remove items by index
-        for i in sorted(positions_to_remove, reverse=True):
-            del playlist_items[i - 1]
-        # store playlist file
-        await self._write_playlist_file_items(prov_playlist_id, playlist_items)
-        # mark last_updated on playlist object
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        stored_item = next((x for x in stored_items if x["item_id"] == prov_playlist_id), None)
-        if stored_item:
-            stored_item["last_updated"] = int(time.time())
-            self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            existing_items = parse_m3u(m3u_data)
+            # remove items by position (1-indexed)
+            for i in sorted(positions_to_remove, reverse=True):
+                del existing_items[i - 1]
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(prov_playlist_id, playlist.name, list(existing_items))
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a new playlist on provider with given name."""
-        item_id = shortuuid.random(8)
-        stored_item = StoredItem(item_id=item_id, name=name)
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        stored_items.append(stored_item)
-        self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
-        return await self.get_playlist(item_id)
+        """Create a new playlist on provider with given name.
+
+        The playlist name is used as the filename (sanitized for filesystem safety).
+        """
+        playlist_id = self._sanitize_playlist_id(name)
+        # ensure uniqueness
+        counter = 1
+        base_id = playlist_id
+        while await asyncio.to_thread(
+            os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        ):
+            playlist_id = f"{base_id} ({counter})"
+            counter += 1
+        # create empty M3U file with header
+        await self._write_m3u_file(playlist_id, name, [])
+        return await self.get_playlist(playlist_id)
 
     async def parse_item(
         self,
@@ -678,23 +664,282 @@ class BuiltinProvider(MusicProvider):
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")
 
-    async def _read_playlist_file_items(self, playlist_id: str) -> list[str]:
-        """Return lines of a playlist file."""
-        playlist_file = os.path.join(self._playlists_dir, playlist_id)
+    async def _read_m3u_file(self, playlist_id: str) -> str:
+        """Read the raw M3U file content for a playlist."""
+        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
-            return []
+            return ""
         async with (
             self._playlist_lock,
             aiofiles.open(playlist_file, encoding="utf-8") as _file,
         ):
-            lines = await _file.readlines()
-            return [x.strip() for x in lines]
+            result: str = await _file.read()
+            return result
 
-    async def _write_playlist_file_items(self, playlist_id: str, lines: list[str]) -> None:
-        """Return lines of a playlist file."""
-        playlist_file = os.path.join(self._playlists_dir, playlist_id)
+    async def _write_m3u_file(
+        self,
+        playlist_id: str,
+        playlist_name: str,
+        entries: list[PlaylistItem],
+    ) -> None:
+        """Write an M3U playlist file to disk."""
+        m3u_content = generate_m3u(playlist_name, entries)
+        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
         async with (
             self._playlist_lock,
             aiofiles.open(playlist_file, "w", encoding="utf-8") as _file,
         ):
-            await _file.write("\n".join(lines))
+            await _file.write(m3u_content)
+
+    def _get_playlist_lock(self, playlist_id: str) -> asyncio.Lock:
+        """Get or create a per-playlist lock for concurrent access protection."""
+        if playlist_id not in self._playlist_locks:
+            self._playlist_locks[playlist_id] = asyncio.Lock()
+        return self._playlist_locks[playlist_id]
+
+    async def _resolve_playlist_item(self, item: PlaylistItem) -> MediaItemType | None:
+        """
+        Resolve a PlaylistItem to a MediaItem.
+
+        Constructs from stored metadata first. If no providers are available,
+        falls back to a library lookup by domain.
+        """
+        media_item = construct_media_item_from_playlist_item(item, self.mass)
+        # if at least one provider mapping is available, we're done
+        if any(pm.available for pm in media_item.provider_mappings):
+            return media_item
+        # all stored provider instances are unavailable - try library lookup by domain
+        media_type = MediaType((item.metadata or {}).get("media_type", "track"))
+        media_controller = self.mass.music.get_controller(media_type)
+        for prov_info in item.providers:
+            try:
+                library_item = await media_controller.get_library_item_by_prov_id(
+                    prov_info.item_id, prov_info.domain
+                )
+                if library_item is not None:
+                    return library_item
+            except (InvalidDataError, KeyError):
+                continue
+        # return with unavailable mappings so the item still shows in the playlist
+        return media_item
+
+    async def _get_user_playlist_tracks(
+        self, prov_playlist_id: str, page: int
+    ) -> list[PlaylistPlayableItem]:
+        """Get user-created playlist tracks with caching and parallel resolution."""
+        playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
+        # use file mtime as cache checksum so edits invalidate the cache
+        try:
+            stat = await asyncio.to_thread(os.stat, playlist_file)
+            cache_checksum = str(int(stat.st_mtime))
+        except OSError:
+            cache_checksum = "0"
+
+        cache_key = f"playlist_tracks.{prov_playlist_id}.{page}"
+        cached = await self.mass.cache.get(
+            cache_key,
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=CACHE_CATEGORY_PLAYLISTS,
+        )
+        if cached is not None:
+            # cached data is a list of dicts, deserialize back to media items
+            return [
+                cast("PlaylistPlayableItem", media_from_dict(item_dict))
+                if isinstance(item_dict, dict)
+                else item_dict
+                for item_dict in cached
+            ]
+
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+        all_items = parse_m3u(m3u_data)
+        page_size = 500
+        start = page * page_size
+        if start >= len(all_items):
+            return []
+        page_items = all_items[start : start + page_size]
+
+        # resolve items in parallel with bounded concurrency
+        semaphore = asyncio.Semaphore(50)
+
+        async def _resolve(index: int, item: PlaylistItem) -> PlaylistPlayableItem | None:
+            async with semaphore:
+                try:
+                    media_item = await self._resolve_playlist_item(item)
+                    if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
+                        playlist_item = cast("PlaylistPlayableItem", media_item)
+                        playlist_item.position = index
+                        return playlist_item
+                    self.logger.warning(
+                        "Unsupported media type in playlist %s: %s",
+                        prov_playlist_id,
+                        type(media_item),
+                    )
+                except (
+                    MediaNotFoundError,
+                    InvalidDataError,
+                    ProviderUnavailableError,
+                ) as err:
+                    self.logger.warning(
+                        "Skipping %s in playlist %s: %s",
+                        item.path,
+                        prov_playlist_id,
+                        str(err),
+                    )
+                return None
+
+        tasks = [_resolve(start + idx + 1, item) for idx, item in enumerate(page_items)]
+        resolved = await asyncio.gather(*tasks)
+        result = [item for item in resolved if item is not None]
+
+        await self.mass.cache.set(
+            key=cache_key,
+            data=result,
+            expiration=3600 * 24,
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=CACHE_CATEGORY_PLAYLISTS,
+        )
+        return result
+
+    async def _build_m3u_entry_from_uri(self, uri: str) -> PlaylistItem:
+        """Fetch a media item by URI and convert it to a PlaylistItem with full metadata."""
+        full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
+        if not hasattr(full_item, "provider_mappings"):
+            msg = f"Unsupported media type for playlist: {uri}"
+            raise InvalidDataError(msg)
+
+        # build EXTINF title
+        title = full_item.name
+        if hasattr(full_item, "artists") and full_item.artists:
+            artist_names = ", ".join(a.name for a in full_item.artists)
+            title = f"{artist_names} - {title}"
+
+        duration = getattr(full_item, "duration", None) or 0
+
+        # build EXTMA metadata
+        metadata: dict[str, str] = {"media_type": full_item.media_type.value}
+        if hasattr(full_item, "album") and full_item.album:
+            metadata["album"] = full_item.album.name
+        if hasattr(full_item, "podcast") and full_item.podcast:
+            metadata["podcast"] = full_item.podcast.name
+        if hasattr(full_item, "authors") and full_item.authors:
+            metadata["authors"] = "; ".join(full_item.authors)
+        if hasattr(full_item, "narrators") and full_item.narrators:
+            metadata["narrators"] = "; ".join(full_item.narrators)
+        if full_item.version:
+            metadata["version"] = full_item.version
+        if isrc := full_item.get_external_id(ExternalID.ISRC):
+            metadata["isrc"] = isrc
+        if mbid := full_item.get_external_id(ExternalID.MB_RECORDING):
+            metadata["mbid"] = mbid
+
+        # collect one provider mapping per domain (highest quality)
+        prov_infos: list[ProviderMappingInfo] = []
+        seen_domains: set[str] = set()
+        sorted_mappings = sorted(full_item.provider_mappings, key=lambda x: x.quality, reverse=True)
+        for prov_mapping in sorted_mappings:
+            if not prov_mapping.available:
+                continue
+            item_prov = self.mass.get_provider(prov_mapping.provider_instance)
+            if not item_prov:
+                continue
+            domain = item_prov.domain
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+            prov_infos.append(
+                ProviderMappingInfo(
+                    domain=domain,
+                    item_id=prov_mapping.item_id,
+                    instance_id=item_prov.instance_id,
+                    content_type=prov_mapping.audio_format.content_type.value,
+                    sample_rate=prov_mapping.audio_format.sample_rate,
+                    bit_depth=prov_mapping.audio_format.bit_depth,
+                    bit_rate=prov_mapping.audio_format.bit_rate or 0,
+                )
+            )
+
+        if not prov_infos:
+            msg = f"No available provider for: {uri}"
+            raise ProviderUnavailableError(msg)
+
+        # primary URI = highest quality provider
+        primary = prov_infos[0]
+        primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
+
+        # collect images
+        images: list[ImageInfo] = []
+        if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
+            for img in full_item.metadata.images:
+                images.append(
+                    ImageInfo(
+                        type=img.type.value,
+                        path=img.path,
+                        provider=img.provider,
+                        remotely_accessible=img.remotely_accessible,
+                    )
+                )
+
+        return PlaylistItem(
+            path=primary_uri,
+            title=title,
+            length=str(duration),
+            metadata=metadata,
+            providers=prov_infos,
+            images=images,
+        )
+
+    @staticmethod
+    def _sanitize_playlist_id(name: str) -> str:
+        """Sanitize a playlist name for use as a filename (without extension)."""
+        # replace invalid filename characters
+        sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
+        # remove leading/trailing spaces and dots
+        sanitized = sanitized.strip(" .")
+        return sanitized or "untitled"
+
+    async def _migrate_playlists(self) -> None:
+        """Migrate old-style playlists (config + plain URI files) to M3U files."""
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
+        if not stored_items:
+            return
+        self.logger.info("Migrating %d playlist(s) to M3U format...", len(stored_items))
+        for stored_item in stored_items:
+            # keep the original item_id as filename so library DB references stay valid
+            playlist_id = stored_item["item_id"]
+            playlist_name = stored_item["name"]
+            old_file = os.path.join(self._playlists_dir, playlist_id)
+            # read old URI file and enrich each entry with full metadata
+            uris: list[str] = []
+            if await asyncio.to_thread(os.path.isfile, old_file):
+                async with aiofiles.open(old_file, encoding="utf-8") as _file:
+                    lines = await _file.readlines()
+                    uris = [line.strip() for line in lines if line.strip()]
+            entries: list[PlaylistItem] = []
+            for uri in uris:
+                try:
+                    entries.append(await self._build_m3u_entry_from_uri(uri))
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
+                    # parse URI for minimal provider info so the entry is resolvable later
+                    entry = PlaylistItem(path=uri)
+                    if "://" in uri:
+                        try:
+                            domain, rest = uri.split("://", 1)
+                            media_type_str, item_id = rest.split("/", 1)
+                            entry.metadata = {"media_type": media_type_str}
+                            entry.providers = [ProviderMappingInfo(domain=domain, item_id=item_id)]
+                        except ValueError:
+                            pass
+                    entries.append(entry)
+                    self.logger.debug("Could not enrich migrated entry: %s", uri)
+            # write as {item_id}.m3u with the display name in #PLAYLIST
+            await self._write_m3u_file(playlist_id, playlist_name, entries)
+            # clean up old file (without .m3u extension)
+            if await asyncio.to_thread(os.path.isfile, old_file):
+                await asyncio.to_thread(os.remove, old_file)
+            self.logger.debug("Migrated playlist '%s' -> %s.m3u", playlist_name, playlist_id)
+        # clear old config entries
+        self.mass.config.set(CONF_KEY_PLAYLISTS, [])
+        self.logger.info("Playlist migration complete")
