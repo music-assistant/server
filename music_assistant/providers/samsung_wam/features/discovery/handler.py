@@ -174,7 +174,11 @@ class DiscoveryHandler(WamProviderFeatureBase):
         self.logger.debug("Pre-flight connection to new player at %s", info.ip_address)
 
         temp_speaker = Speaker(info.ip_address)
-        await temp_speaker.connect()
+        try:
+            await temp_speaker.connect()
+        except Exception as err:
+            self.logger.warning("Failed to connect to player at %s: %s", info.ip_address, err)
+            return
 
         try:
             await temp_speaker.update()
