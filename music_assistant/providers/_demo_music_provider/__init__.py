@@ -422,7 +422,7 @@ class MyDemoMusicprovider(MusicProvider):
         # Remove track(s) from a playlist.
         # This is only called if the provider supports the PLAYLIST_TRACKS_EDIT feature.
 
-    async def create_playlist(self, name: str) -> Playlist:  # type: ignore[empty-body]
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:  # type: ignore[empty-body]
         """Create a new playlist on provider with given name."""
         # Create a new playlist on the provider.
         # This is only called if the provider supports the PLAYLIST_CREATE feature.

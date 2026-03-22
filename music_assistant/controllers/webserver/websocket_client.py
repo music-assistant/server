@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
@@ -22,17 +23,22 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidCommand,
     InvalidToken,
+    MusicAssistantError,
 )
+from music_assistant_models.event import MassEvent
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
-from .helpers.auth_middleware import is_request_from_ingress, set_current_token, set_current_user
+from .helpers.auth_middleware import (
+    is_request_from_ingress,
+    set_current_token,
+    set_current_user,
+    set_sendspin_player_id,
+)
 from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
-    from music_assistant_models.event import MassEvent
-
     from music_assistant.controllers.webserver import WebserverController
 
 MAX_PENDING_MSG = 512
@@ -57,8 +63,11 @@ class WebsocketClientHandler:
         )
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
+        self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # Track WebRTC session ID if this is a WebRTC gateway connection
+        self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -194,9 +203,10 @@ class WebsocketClientHandler:
                 )
                 return
 
-            # Set user and token in context for API methods
+            # Set user, token, and sendspin player in context for API methods
             set_current_user(self._authenticated_user)
             set_current_token(self._current_token)
+            set_sendspin_player_id(self._sendspin_player_id)
 
             # Check role if required
             if handler.required_role == "admin":
@@ -229,9 +239,15 @@ class WebsocketClientHandler:
                         )
                         items = []
                 result = items
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             await self._send_message(SuccessResultMessage(msg.message_id, result))
+        except MusicAssistantError as err:
+            # Expected operational errors (player unavailable, queue empty, etc.)
+            # Log at warning level since these are normal error responses, not crashes.
+            self._logger.warning("%s: %s", msg.command, err)
+            err_msg = str(err) or err.__class__.__name__
+            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
@@ -432,7 +448,21 @@ class WebsocketClientHandler:
                 )
                 and event.object_id
                 and event.object_id not in self._authenticated_user.player_filter
+                and event.object_id != self._sendspin_player_id
             ):
+                return
+
+            if event.event == EventType.TASKS_UPDATED:
+                if self._authenticated_user is None:
+                    return
+                task_data = self.mass.tasks.list_tasks_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=task_data,
+                    )
+                )
                 return
 
             self._send_message_sync(event)

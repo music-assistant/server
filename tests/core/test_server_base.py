@@ -12,7 +12,16 @@ async def test_start_and_stop_server(mass: MusicAssistant) -> None:
     """Test that music assistant starts and stops cleanly."""
     domains = frozenset(p.domain for p in mass.get_provider_manifests())
     core_providers = frozenset(
-        ("builtin", "cache", "metadata", "music", "player_queues", "players", "streams")
+        (
+            "builtin",
+            "cache",
+            "discovery",
+            "metadata",
+            "music",
+            "player_queues",
+            "players",
+            "streams",
+        )
     )
     assert domains.issuperset(core_providers)
 

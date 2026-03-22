@@ -133,7 +133,7 @@ async def get_config_entries(
                 "Privates use explicit URLs from bundle.json."
             ),
             value=values.get(CONF_STREAM_PROTO),
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_STREAM_QUALITY,
@@ -143,7 +143,7 @@ async def get_config_entries(
             default_value="qxa",
             description="For ORF HLS: q1a/q2a/q3a/q4a/qxa. For shoutcast: q1a/q2a.",
             value=values.get(CONF_STREAM_QUALITY),
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_INCLUDE_HIDDEN,
@@ -153,7 +153,7 @@ async def get_config_entries(
             default_value=False,
             description="Include stations with hideFromStations=true.",
             value=values.get(CONF_INCLUDE_HIDDEN),
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_CATCHUP_PROTO,

@@ -1,0 +1,198 @@
+"""Unit tests for AirPlay player."""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from music_assistant.providers.airplay.constants import StreamingProtocol
+from music_assistant.providers.airplay.player import AirPlayPlayer
+
+
+@pytest.fixture
+def airplay_player() -> AirPlayPlayer:
+    """Create a basic AirPlayPlayer with mock defaults."""
+    return AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("aiplay_properties", "raop_properties", "expected"),
+    [
+        ({b"flags": b"0x200"}, None, True),
+        ({b"sf": b"0x201"}, None, True),
+        ({b"flags": b"0x4"}, None, False),
+        ({b"sf": b"0x8"}, None, True),
+        ({b"flags": b"0x9"}, None, True),
+        (None, {b"flags": "0x200"}, True),
+        (None, {b"sf": b"0x201"}, True),
+        (None, {b"flags": b"0x4"}, False),
+        (None, {b"sf": b"0x8"}, True),
+        (None, {b"flags": b"0x9"}, True),
+        ({}, {}, False),
+    ],
+)
+def test_requires_pin_pairing(
+    airplay_player: AirPlayPlayer,
+    aiplay_properties: dict[bytes, bytes] | None,
+    raop_properties: dict[bytes, bytes] | None,
+    expected: bool,
+) -> None:
+    """Test the _requires_pairing method of AirPlayPlayer."""
+    if aiplay_properties is not None:
+        aiplay_discovery_info = MagicMock()
+        aiplay_discovery_info.properties = aiplay_properties
+        airplay_player.airplay_discovery_info = aiplay_discovery_info
+    if raop_properties is not None:
+        raop_discovery_info = MagicMock()
+        raop_discovery_info.properties = raop_properties
+        airplay_player.raop_discovery_info = raop_discovery_info
+    assert airplay_player._requires_pin_pairing() == expected
+
+
+@pytest.mark.parametrize(
+    ("aiplay_properties", "raop_properties", "expected"),
+    [
+        ({b"flags": b"0x80"}, None, True),
+        ({b"sf": b"0x81"}, None, True),
+        ({b"flags": b"0x4"}, None, False),
+        ({b"sf": b"0x80"}, None, True),
+        ({b"flags": b"0x90"}, None, True),
+        (None, {b"flags": "0x80"}, True),
+        (None, {b"sf": b"0x81"}, True),
+        (None, {b"flags": b"0x4"}, False),
+        (None, {b"sf": b"0x80"}, True),
+        (None, {b"flags": b"0x90"}, True),
+        ({}, {}, False),
+    ],
+)
+def test_requires_password_pairing(
+    airplay_player: AirPlayPlayer,
+    aiplay_properties: dict[bytes, bytes] | None,
+    raop_properties: dict[bytes, bytes] | None,
+    expected: bool,
+) -> None:
+    """Test the _requires_pairing method of AirPlayPlayer."""
+    if aiplay_properties is not None:
+        aiplay_discovery_info = MagicMock()
+        aiplay_discovery_info.properties = aiplay_properties
+        airplay_player.airplay_discovery_info = aiplay_discovery_info
+    if raop_properties is not None:
+        raop_discovery_info = MagicMock()
+        raop_discovery_info.properties = raop_properties
+        airplay_player.raop_discovery_info = raop_discovery_info
+    assert airplay_player._requires_password_pairing() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flags", "pin_call_expected"),
+    [
+        (b"0x8", True),
+        (b"0x80", False),
+    ],
+)
+async def test_start_pairing__pin_decision(flags: bytes, pin_call_expected: bool) -> None:
+    """Ensure _start_pairing skips the PIN request when only password pairing is required."""
+    provider = MagicMock()
+    provider.dacp_id = "test_dacp"
+
+    aiplay_info = MagicMock()
+    aiplay_info.properties = {b"flags": flags}
+    aiplay_info.port = 7000
+
+    player = AirPlayPlayer(
+        provider=provider,
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=aiplay_info,
+    )
+
+    pairing_instance = AsyncMock()
+    pairing_instance.start_pairing_session = AsyncMock()
+    pairing_instance.start_pin_pairing = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.airplay.pairing.AirPlayPairing",
+        return_value=pairing_instance,
+    ):
+        await player._start_pairing(StreamingProtocol.AIRPLAY2, "AirPlay2")
+
+    pairing_instance.start_pairing_session.assert_called_once()
+    if pin_call_expected:
+        pairing_instance.start_pin_pairing.assert_called_once()
+    else:
+        pairing_instance.start_pin_pairing.assert_not_called()
+
+
+# --- Volume and Mute tests ---
+
+
+def _setup_running_stream(player: AirPlayPlayer) -> AsyncMock:
+    """Attach a mock running stream to the player and return the send_cli_command mock."""
+    stream = MagicMock()
+    stream.running = True
+    send_cmd = AsyncMock()
+    stream.send_cli_command = send_cmd
+    player.stream = stream
+    return send_cmd
+
+
+@pytest.mark.asyncio
+async def test_volume_mute_sends_zero(airplay_player: AirPlayPlayer) -> None:
+    """Muting with a running stream should send VOLUME=0."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_level = 75
+
+    await airplay_player.volume_mute(True)
+
+    send_cmd.assert_called_once_with("VOLUME=0")
+    assert airplay_player._attr_volume_muted is True
+
+
+@pytest.mark.asyncio
+async def test_volume_set_skipped_while_muted(airplay_player: AirPlayPlayer) -> None:
+    """Volume changes while muted should NOT send a CLI command."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_muted = True
+
+    await airplay_player.volume_set(60)
+
+    send_cmd.assert_not_called()
+    assert airplay_player._attr_volume_level == 60
+
+
+@pytest.mark.asyncio
+async def test_volume_unmute_restores_volume(airplay_player: AirPlayPlayer) -> None:
+    """Unmuting with a running stream should send VOLUME={current_volume}."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_level = 42
+    airplay_player._attr_volume_muted = True
+
+    await airplay_player.volume_mute(False)
+
+    send_cmd.assert_called_once_with("VOLUME=42")
+    assert airplay_player._attr_volume_muted is False
+
+
+@pytest.mark.asyncio
+async def test_volume_mute_no_stream(airplay_player: AirPlayPlayer) -> None:
+    """Muting without a running stream should update state without CLI commands."""
+    airplay_player.stream = None
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        await airplay_player.volume_mute(True)
+
+        assert airplay_player._attr_volume_muted is True
+        mock_update.assert_called_once()

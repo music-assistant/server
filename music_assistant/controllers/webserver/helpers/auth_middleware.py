@@ -24,6 +24,8 @@ USER_CONTEXT_KEY = "authenticated_user"
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
 current_token: ContextVar[str | None] = ContextVar("current_token", default=None)
+# ContextVar for tracking the sendspin player associated with the current connection
+sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:
@@ -188,6 +190,22 @@ def set_current_token(token: str | None) -> None:
     :param token: The token to set as current.
     """
     current_token.set(token)
+
+
+def get_sendspin_player_id() -> str | None:
+    """Get the sendspin player ID associated with the current connection.
+
+    :return: The sendspin player ID or None if not a sendspin connection.
+    """
+    return sendspin_player_id.get()
+
+
+def set_sendspin_player_id(player_id: str | None) -> None:
+    """Set the sendspin player ID for the current connection.
+
+    :param player_id: The sendspin player ID to set.
+    """
+    sendspin_player_id.set(player_id)
 
 
 def is_request_from_ingress(request: web.Request) -> bool:

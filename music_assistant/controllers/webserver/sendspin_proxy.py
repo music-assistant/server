@@ -13,7 +13,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientConnectorError, WSMsgType, web
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -45,7 +45,12 @@ class SendspinProxyHandler:
     @property
     def internal_sendspin_url(self) -> str:
         """Return the internal sendspin URL for connecting to the internal Sendspin server."""
-        return f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
+        # Connect via localhost since the proxy and Sendspin server run in the same process
+        # If the server binds to 0.0.0.0 (all interfaces), use localhost for efficiency
+        # Otherwise use the actual bind IP in case it's configured to a specific interface
+        bind_ip = self.mass.streams.bind_ip
+        connect_ip = "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
+        return f"ws://{connect_ip}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
         """
@@ -89,13 +94,30 @@ class SendspinProxyHandler:
                 await wsock.close(code=4001, message=b"Authentication error")
                 return wsock
 
+        # The internal Sendspin server may not be ready yet during startup
+        # (it starts in the provider load phase, after the webserver).
+        # Retry a few times with backoff to handle this race condition.
         try:
-            internal_ws = await self.mass.http_session.ws_connect(self.internal_sendspin_url)
+            internal_ws = None
+            for attempt in range(5):
+                try:
+                    internal_ws = await self.mass.http_session.ws_connect(
+                        self.internal_sendspin_url
+                    )
+                    break
+                except ClientConnectorError:
+                    if attempt < 4:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    self.logger.exception("Failed to connect to internal Sendspin server")
+                    await wsock.close(code=1011, message=b"Internal server error")
+                    return wsock
+            if internal_ws is None:
+                raise RuntimeError("Retry loop exited without connecting or returning")
         except Exception:
             self.logger.exception("Failed to connect to internal Sendspin server")
             await wsock.close(code=1011, message=b"Internal server error")
             return wsock
-
         self.logger.debug("Sendspin proxy authenticated and connected for %s", request.remote)
 
         try:
@@ -141,16 +163,13 @@ class SendspinProxyHandler:
             await wsock.close(code=4001, message=b"Invalid or expired token")
             return None
 
-        # Auto-whitelist player for users with player filters
+        # Set the sendspin player_id on the user's websocket client(s)
+        # This allows the player controller to auto-whitelist this (web)player
+        # without modifying the user's player_filter list
         client_id = auth_data.get("client_id")
-        if client_id and user.player_filter and client_id not in user.player_filter:
-            self.logger.debug(
-                "Auto-whitelisting Sendspin player %s for user %s", client_id, user.username
-            )
-            new_filter = [*user.player_filter, client_id]
-            await self.webserver.auth.update_user_filters(
-                user, player_filter=new_filter, provider_filter=None
-            )
+        if client_id:
+            self.webserver.set_sendspin_player_for_user(user.user_id, client_id)
+            self.logger.debug("Registered sendspin player %s for user %s", client_id, user.username)
 
         self.logger.debug("Sendspin proxy authenticated user: %s", user.username)
         await wsock.send_str('{"type": "auth_ok"}')

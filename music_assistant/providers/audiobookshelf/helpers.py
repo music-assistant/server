@@ -19,11 +19,21 @@ class LibraryHelper(DataClassDictMixin):
 class LibrariesHelper(DataClassDictMixin):
     """Helper class to store ABSLibrary name, id and the uuids of its media items.
 
-    Dictionary is lib_id:AbsLibraryWithItemIDs.
+    Dictionary is lib_id:LibraryHelper or lib_id:set[playlist_ids].
     """
 
     audiobooks: dict[str, LibraryHelper] = field(default_factory=dict)
     podcasts: dict[str, LibraryHelper] = field(default_factory=dict)
+    playlists_audiobooks: dict[str, set[str]] = field(default_factory=dict)
+    playlists_podcasts: dict[str, set[str]] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
+class SessionHelper:
+    """Helper class to store some session information."""
+
+    abs_session_id: str
+    last_sync_time: float
 
 
 @dataclass(kw_only=True)
@@ -46,9 +56,9 @@ class ProgressGuard:
         """Init."""
         self._progresses: list[_ProgressHelper] = []
         self._max_progresses = 100
-        # 12s have to have passed before we accept an external progress update
-        # abs updates every 15 s
-        self._min_time_between_updates_ms = 12000
+        # 8s have to have passed before we accept an external progress update
+        # abs updates every 10 s
+        self._min_time_between_updates_ms = 8000
 
     def _get_progress(self, item_id: str, episode_id: str | None = None) -> _ProgressHelper | None:
         """Get a helper progress."""
@@ -86,15 +96,7 @@ class ProgressGuard:
         mass external updates. Here, we compare this property against a potential
         stored one.
         """
-        item_id = abs_progress.library_item_id
-        episode_id = abs_progress.episode_id
-        stored_progress = self._get_progress(item_id=item_id, episode_id=episode_id)
-        if stored_progress is None:
-            return True
-        return bool(
-            abs_progress.last_update - stored_progress.last_update_ms
-            >= self._min_time_between_updates_ms
-        )
+        return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
 
     def guard_ok_mass(self, item_id: str, episode_id: str | None = None) -> bool:
         """Check, if we may update against a mass internal item.

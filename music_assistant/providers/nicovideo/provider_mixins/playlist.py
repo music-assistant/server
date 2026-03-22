@@ -7,7 +7,7 @@ In this section, "Mylist" on niconico is treated as a playlist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Playlist, Track  # noqa: TC002 - used in @use_cache
@@ -16,6 +16,9 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
+
+if TYPE_CHECKING:
+    from music_assistant_models.enums import MediaType
 
 
 class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
@@ -112,7 +115,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
             self.logger.warning("Failed to remove tracks from playlist %s", prov_playlist_id)
 
     @override
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         # Create a new mylist using niconico.py
         create_result = await self.service_manager.mylist.create_mylist(

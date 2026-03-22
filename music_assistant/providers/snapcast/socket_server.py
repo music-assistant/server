@@ -7,6 +7,7 @@ and Music Assistant, avoiding the need to expose the WebSocket API to the contro
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from contextlib import suppress
@@ -91,6 +92,8 @@ class SnapcastSocketServer:
             self._unsub_callback = None
 
         if self._client_writer:
+            with suppress(Exception):
+                await self.notify_shutdown()
             self._client_writer.close()
             with suppress(Exception):
                 await self._client_writer.wait_closed()
@@ -104,6 +107,15 @@ class SnapcastSocketServer:
         # Clean up socket file
         Path(self.socket_path).unlink(missing_ok=True)
         self._logger.debug("Stopped Unix socket server")
+
+    async def notify_shutdown(self) -> None:
+        """Tell the control script to exit."""
+        await self._send_message(
+            {
+                "event": "shutdown",
+                "object_id": self.queue_id,
+            }
+        )
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -169,7 +181,7 @@ class SnapcastSocketServer:
 
         # Execute the handler
         result = handler.target(**args)
-        if asyncio.iscoroutine(result):
+        if inspect.iscoroutine(result):
             result = await result
         return result
 

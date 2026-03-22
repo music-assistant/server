@@ -72,7 +72,7 @@ async def get_config_entries(
             label="Household ID",
             default_value=household_ids[0] if household_ids else None,
             description="Household ID for the Sonos (S1) system. Will be auto detected if empty.",
-            category="advanced",
+            advanced=True,
             required=False,
         ),
     )

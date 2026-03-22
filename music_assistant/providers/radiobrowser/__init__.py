@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -33,7 +34,6 @@ from radios import FilterBy, Order, RadioBrowser, RadioBrowserError, Station
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
@@ -59,13 +59,6 @@ CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
         **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),
         "hidden": True,
         "default_value": "import_only",
-    }
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS.to_dict(),
-        "hidden": True,
-        "default_value": 180,
     }
 )
 CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN = ConfigEntry.from_dict(
@@ -112,13 +105,16 @@ async def get_config_entries(
         ),
         # hide some of the default (dynamic) entries for library management
         CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
-        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
         CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
     )
 
 
 class RadioBrowserProvider(MusicProvider):
     """Provider implementation for RadioBrowser."""
+
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the default recurring schedule for RadioBrowser sync tasks."""
+        return TaskSchedule.hourly(every=3)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -129,15 +125,6 @@ class RadioBrowserProvider(MusicProvider):
             await self.radios.stats()
         except RadioBrowserError as err:
             raise ProviderUnavailableError(f"RadioBrowser API unavailable: {err}") from err
-
-        # copy the radiobrowser items that were added to the library
-        # TODO: remove this logic after version 2.3.0 or later
-        if not self.config.get_value(CONF_STORED_RADIOS) and self.mass.music.database:
-            async for db_row in self.mass.music.database.iter_items(
-                "provider_mappings",
-                {"media_type": "radio", "provider_domain": "radiobrowser"},
-            ):
-                await self.library_add(await self.get_radio(db_row["provider_item_id"]))
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def search(
@@ -270,7 +257,7 @@ class RadioBrowserProvider(MusicProvider):
             return False
         self.logger.debug("Adding radio %s to stored radios", item.item_id)
         stored_radios = [*stored_radios, item.item_id]
-        self.update_config_value(CONF_STORED_RADIOS, stored_radios)
+        self._update_config_value(CONF_STORED_RADIOS, stored_radios)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -282,7 +269,7 @@ class RadioBrowserProvider(MusicProvider):
             return False
         self.logger.debug("Removing radio %s from stored radios", prov_item_id)
         stored_radios = [x for x in stored_radios if x != prov_item_id]
-        self.update_config_value(CONF_STORED_RADIOS, stored_radios)
+        self._update_config_value(CONF_STORED_RADIOS, stored_radios)
         return True
 
     @use_cache(3600 * 6)  # Cache for 6 hours
@@ -492,6 +479,7 @@ class RadioBrowserProvider(MusicProvider):
                 item_id=item_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.try_parse(stream.codec),
+                    bit_rate=stream.bitrate or None,
                 ),
                 media_type=MediaType.RADIO,
                 stream_type=StreamType.HTTP,
