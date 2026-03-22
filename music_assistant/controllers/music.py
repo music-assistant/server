@@ -260,7 +260,7 @@ class MusicController(CoreController):
                     tasks.append(self.mass.tasks.run_task(task_id))
                 except InvalidDataError:
                     tasks.append(
-                        self.mass.tasks.create_task(
+                        self.mass.tasks.run_background_task(
                             task_id=task_id,
                             name=self._get_sync_task_name(provider, media_type),
                             handler=self._create_provider_sync_handler(provider, media_type),
@@ -269,6 +269,7 @@ class MusicController(CoreController):
                             user_id=get_current_user().user_id if get_current_user() else None,
                             metadata=self._get_sync_task_metadata(provider, media_type),
                             allow_retry=True,
+                            priority=True,
                         )
                     )
         return tasks
@@ -775,13 +776,16 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/item_by_uri")
-    async def get_item_by_uri(self, uri: str) -> MediaItemType | BrowseFolder:
+    async def get_item_by_uri(
+        self, uri: str, allow_update_metadata: bool = False
+    ) -> MediaItemType | BrowseFolder:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
+            allow_update_metadata=allow_update_metadata,
         )
 
     @api_command("music/recommendations")
@@ -807,6 +811,7 @@ class MusicController(CoreController):
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
+        allow_update_metadata: bool = True,
     ) -> MediaItemType | BrowseFolder:
         """Get single music item by id and media type."""
         if provider_instance_id_or_domain == "database":
@@ -829,6 +834,7 @@ class MusicController(CoreController):
         return await ctrl.get(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
+            allow_update_metadata=allow_update_metadata,
         )
 
     @api_command("music/get_library_item")
