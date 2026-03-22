@@ -1278,10 +1278,7 @@ class GenreController(MediaControllerBase[Genre]):
         for row in rows:
             entry: dict[str, object] = dict(row)
             icon_metadata = self._get_genre_icon_metadata(row["translation_key"])
-            if icon_metadata and icon_metadata.images:
-                entry["image_url"] = self.mass.metadata.get_image_url(icon_metadata.images[0])
-            else:
-                entry["image_url"] = None
+            entry["metadata"] = icon_metadata.to_dict() if icon_metadata else {}
             result.append(entry)
         return result
 
