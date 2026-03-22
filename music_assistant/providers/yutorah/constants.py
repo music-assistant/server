@@ -17,7 +17,6 @@ API_HEADERS = {
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    ProviderFeature.ARTIST_TOPTRACKS,
 }
 
 # search/get returns 30 results per page; start is a 1-based page number

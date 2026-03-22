@@ -20,7 +20,6 @@ from music_assistant_models.errors import (
     SetupFailedError,
 )
 from music_assistant_models.media_items import (
-    Artist,
     AudioFormat,
     MediaItemMetadata,
     Podcast,
@@ -37,7 +36,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .browse import YuTorahBrowseMixin
-from .constants import API_BASE, API_HEADERS, MAX_EPISODES, PAGE_SIZE, YUTORAH_BASE
+from .constants import API_BASE, API_HEADERS, MAX_EPISODES, PAGE_SIZE
 from .helpers import (
     _build_st_podcast,
     _extract_docs,
@@ -45,7 +44,6 @@ from .helpers import (
     _series_to_podcast,
     _shiur_to_episode,
     _shiur_to_track,
-    _slugify,
 )
 
 if TYPE_CHECKING:
@@ -183,42 +181,12 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
             raise MediaNotFoundError(f"YuTorah shiur {prov_episode_id} has no playable audio")
         return episode
 
-    # -----------------------------------------------------------------------
-    # Artist — teachers
-    # -----------------------------------------------------------------------
-
-    async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Return a teacher as an Artist by their numeric ID."""
-        teachers_map = await self._fetch_teachers_map()
-        t = teachers_map.get(prov_artist_id) or {}
-        name = t.get("fullName") or f"Teacher {prov_artist_id}"
-        image_url = t.get("imageURL") or ""
-        return Artist(
-            item_id=prov_artist_id,
-            provider=self.instance_id,
-            name=name,
-            metadata=MediaItemMetadata(
-                images=UniqueList(_make_images(image_url, self.instance_id)) or None,
-            ),
-            provider_mappings={
-                ProviderMapping(
-                    item_id=prov_artist_id,
-                    provider_domain="yutorah",
-                    provider_instance=self.instance_id,
-                    url=f"{YUTORAH_BASE}/teachers/{_slugify(name)}/",
-                )
-            },
-        )
-
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Return the most recent shiurim by a teacher as Track objects."""
-        return await self._paginate_search(
-            lambda raw, i: _shiur_to_track(raw, i, self.instance_id),
-            teacherID=prov_artist_id,
-        )
-
     async def get_track(self, prov_track_id: str) -> Track:
-        """Return a single shiur as a Track by its shiurID."""
+        """Return a single shiur as a Track by its shiurID.
+
+        Required because SearchResults has no podcast_episodes field, so search
+        returns shiurim as Track objects; MA calls get_track when the user opens one.
+        """
         data = await self._api_get("shiur/details", shiurID=prov_track_id)
         if not data or not isinstance(data, dict):
             raise MediaNotFoundError(f"YuTorah: shiur {prov_track_id} not found")
@@ -263,10 +231,11 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
         media_types: list[MediaType],
         limit: int = 25,
     ) -> SearchResults:
-        """Search YuTorah for shiurim (tracks), series (podcasts) and teachers (artists).
+        """Search YuTorah for shiurim and series/teacher podcasts.
 
-        Uses search/get for full-text search. Individual shiurim are returned as Tracks;
-        series as Podcasts; teachers as Artists.
+        Uses search/get for full-text search. Individual shiurim are returned as Tracks
+        (SearchResults has no podcast_episodes field). Series and teachers are returned
+        as Podcasts — teachers use the ``t_`` virtual podcast prefix.
         """
         results = SearchResults()
 
@@ -306,11 +275,7 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
                         },
                     )
                 )
-            results.podcasts = podcasts
-
-        if MediaType.ARTIST in media_types:
             teachers_map = await self._fetch_teachers_map()
-            artists: list[Artist] = []
             for facet in (facet_fields.get("teachers") or [])[:limit]:
                 tid = str(facet.get("TeacherId") or "")
                 name = facet.get("TeacherName") or ""
@@ -319,24 +284,25 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
                 teacher_data = teachers_map.get(tid) or {}
                 image_url = teacher_data.get("imageURL") or ""
                 images = _make_images(image_url, self.instance_id)
-                artists.append(
-                    Artist(
-                        item_id=tid,
+                podcasts.append(
+                    Podcast(
+                        item_id=f"t_{tid}",
                         provider=self.instance_id,
                         name=name,
+                        publisher=name,
                         metadata=MediaItemMetadata(
                             images=UniqueList(images) if images else None,
                         ),
                         provider_mappings={
                             ProviderMapping(
-                                item_id=tid,
+                                item_id=f"t_{tid}",
                                 provider_domain="yutorah",
                                 provider_instance=self.instance_id,
                             )
                         },
                     )
                 )
-            results.artists = artists
+            results.podcasts = podcasts
 
         return results
 

@@ -6,7 +6,6 @@ from typing import Any
 
 from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.media_items import (
-    Artist,
     AudioFormat,
     ItemMapping,
     MediaItemImage,
@@ -73,13 +72,14 @@ def _shiur_to_episode(
     if not shiur_id:
         return None
 
-    mp3_url = shiur.get("shiurFileURL") or shiur.get("shiurdownloadurl") or ""
     media_type = shiur.get("shiurMediaType") or shiur.get("mediatypename") or ""
 
-    # Only handle audio (MP3); skip video/PDF/HTML. Empty string is for legacy content,
-    # predating the shiurMediaType attribute being set.
-    if media_type.upper() not in ("MP3", "AUDIO", "") and not mp3_url:
+    # Only handle audio (MP3); skip video/PDF/HTML unconditionally.
+    # Empty string is for legacy content predating the shiurMediaType attribute.
+    if media_type.upper() not in ("MP3", "AUDIO", ""):
         return None
+
+    mp3_url = shiur.get("shiurFileURL") or shiur.get("shiurdownloadurl") or ""
     if not mp3_url:
         return None
 
@@ -156,10 +156,11 @@ def _shiur_to_track(
     if not shiur_id:
         return None
 
-    mp3_url = shiur.get("shiurFileURL") or shiur.get("shiurdownloadurl") or ""
     media_type_str = shiur.get("shiurMediaType") or shiur.get("mediatypename") or ""
-    if media_type_str.upper() not in ("MP3", "AUDIO", "") and not mp3_url:
+    if media_type_str.upper() not in ("MP3", "AUDIO", ""):
         return None
+
+    mp3_url = shiur.get("shiurFileURL") or shiur.get("shiurdownloadurl") or ""
     if not mp3_url:
         return None
 
@@ -171,18 +172,7 @@ def _shiur_to_track(
         shiur_len = shiur.get("shiurLength") or shiur.get("durationformatted") or ""
         duration_sec = _parse_duration(shiur_len)
 
-    teacher_id, teacher_name, image_url = _extract_teacher_info(shiur)
-
-    artists: UniqueList[Artist | ItemMapping] = UniqueList()
-    if teacher_id:
-        artists.append(
-            ItemMapping(
-                item_id=teacher_id,
-                provider=instance_id,
-                name=teacher_name or f"Teacher {teacher_id}",
-                media_type=MediaType.ARTIST,
-            )
-        )
+    _, _teacher_name, image_url = _extract_teacher_info(shiur)
 
     images = _make_images(image_url, instance_id)
     return Track(
@@ -191,7 +181,6 @@ def _shiur_to_track(
         name=title,
         duration=duration_sec,
         track_number=position + 1,
-        artists=artists,
         provider_mappings={
             ProviderMapping(
                 item_id=shiur_id,
