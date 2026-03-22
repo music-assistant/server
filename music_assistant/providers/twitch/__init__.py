@@ -523,7 +523,12 @@ class TwitchProvider(MusicProvider):
         """Resolve Streamlink streams for a channel. Blocking — call via to_thread."""
         from streamlink import Streamlink  # noqa: PLC0415
 
+        from music_assistant.providers.twitch.ad_handling import patch_ad_handling  # noqa: PLC0415
+
         try:
+            ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or "silence")
+            patch_ad_handling(ad_mode)
+
             session = Streamlink()
             streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
             if streamlink_token:
