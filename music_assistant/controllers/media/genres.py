@@ -1094,7 +1094,6 @@ class GenreController(MediaControllerBase[Genre]):
                     "translation_key": db_row["translation_key"],
                 },
             )
-            await self.mass.music.database.commit()
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, {"genre_id": db_id}
         )
@@ -1301,7 +1300,6 @@ class GenreController(MediaControllerBase[Genre]):
         if not row:
             msg = f"Global genre exclusion with id {exclusion_id} not found"
             raise KeyError(msg)
-        await self.mass.music.database.delete(DB_TABLE_GENRE_GLOBAL_EXCLUSION, {"id": exclusion_id})
         if row["translation_key"]:
             tk = row["translation_key"]
             entry = next(
@@ -1329,6 +1327,9 @@ class GenreController(MediaControllerBase[Genre]):
                 {"item_id": int(restored.item_id)},
                 {"translation_key": tk},
             )
+            await self.mass.music.database.delete(
+                DB_TABLE_GENRE_GLOBAL_EXCLUSION, {"id": exclusion_id}
+            )
             return await self.get_library_item(int(restored.item_id))
         genre = Genre(
             item_id="0",
@@ -1339,7 +1340,9 @@ class GenreController(MediaControllerBase[Genre]):
             provider_mappings=set(),
             favorite=False,
         )
-        return await self.add_item_to_library(genre)
+        restored = await self.add_item_to_library(genre)
+        await self.mass.music.database.delete(DB_TABLE_GENRE_GLOBAL_EXCLUSION, {"id": exclusion_id})
+        return restored
 
     async def promote_alias_to_genre(self, genre_id: str | int, alias: str) -> Genre:
         """Promote an alias to become a standalone genre.
