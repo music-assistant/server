@@ -242,8 +242,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_STREAMLINK_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Streamlink Auth Token",
-            description="Optional: Twitch Turbo or subscriber token to reduce ads.",
+            label="Streamlink Auth Token (optional)",
+            description="Your Twitch OAuth token for Streamlink. If you have Twitch Turbo "
+            "or are subscribed to a channel, this reduces ad frequency. "
+            "Extract from your browser cookies (auth-token cookie on twitch.tv) "
+            "or use the Twitch CLI: twitch token.",
             required=False,
             value=values.get(CONF_STREAMLINK_TOKEN),
         ),
