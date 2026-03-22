@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     MediaType,
     ProviderFeature,
     StreamType,
 )
+from music_assistant_models.errors import LoginFailed
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -21,14 +25,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-        ConfigEntry,
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -46,6 +47,92 @@ MAX_CONSECUTIVE_RECONNECTS = 5
 RECONNECT_DELAY = 0.5  # seconds
 PREFERRED_QUALITIES = ("audio_only", "worst")
 
+# OAuth / Config constants
+CONF_CLIENT_ID = "client_id"
+CONF_CLIENT_SECRET = "client_secret"
+CONF_STREAMLINK_TOKEN = "streamlink_token"
+CONF_ACCESS_TOKEN = "access_token"
+CONF_REFRESH_TOKEN = "refresh_token"
+CONF_AD_HANDLING = "ad_handling"
+CONF_AUTO_RAID = "auto_raid"
+CONF_ACTION_AUTH = "auth"
+CONF_ACTION_REVOKE = "revoke"
+
+TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
+TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+TWITCH_REVOKE_URL = "https://id.twitch.tv/oauth2/revoke"
+TWITCH_SCOPES = ("user:read:follows",)
+
+
+async def _handle_auth_action(
+    mass: MusicAssistant,
+    values: dict[str, ConfigValueType],
+) -> None:
+    """Handle OAuth authentication action."""
+    client_id = str(values.get(CONF_CLIENT_ID, "")).strip()
+    client_secret = str(values.get(CONF_CLIENT_SECRET, "")).strip()
+    if not client_id or not client_secret:
+        msg = "Client ID and Client Secret are required to authenticate."
+        raise LoginFailed(msg)
+
+    session_id = str(values.get("session_id", ""))
+
+    async with AuthenticationHelper(mass, session_id) as auth_helper:
+        params = {
+            "client_id": client_id,
+            "redirect_uri": auth_helper.callback_url,
+            "response_type": "code",
+            "scope": " ".join(TWITCH_SCOPES),
+        }
+        auth_url = f"{TWITCH_AUTH_URL}?{urlencode(params)}"
+        result = await auth_helper.authenticate(auth_url)
+        code = result.get("code", "")
+
+    if not code:
+        msg = "No authorization code received from Twitch."
+        raise LoginFailed(msg)
+
+    # Exchange code for tokens
+    token_params = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": auth_helper.callback_url,
+    }
+    async with mass.http_session.post(TWITCH_TOKEN_URL, data=token_params) as response:
+        if response.status != 200:
+            error_text = await response.text()
+            msg = f"Failed to exchange authorization code: {error_text}"
+            raise LoginFailed(msg)
+        token_data = await response.json()
+
+    values[CONF_ACCESS_TOKEN] = token_data["access_token"]
+    values[CONF_REFRESH_TOKEN] = token_data.get("refresh_token", "")
+
+
+async def _handle_revoke_action(
+    mass: MusicAssistant,
+    values: dict[str, ConfigValueType],
+) -> None:
+    """Handle credential revocation action."""
+    access_token = str(values.get(CONF_ACCESS_TOKEN, ""))
+    client_id = str(values.get(CONF_CLIENT_ID, ""))
+
+    # Best-effort revoke — clear local state even if revoke fails
+    if access_token:
+        try:
+            async with mass.http_session.post(
+                TWITCH_REVOKE_URL,
+                data={"client_id": client_id, "token": access_token},
+            ):
+                pass
+        except Exception:  # noqa: S110
+            pass
+
+    values[CONF_ACCESS_TOKEN] = ""
+    values[CONF_REFRESH_TOKEN] = ""
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -56,23 +143,132 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,
+    instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    # Step 3 will add OAuth config entries here
-    return ()
+    if values is None:
+        values = {}
+
+    # Handle actions
+    if action == CONF_ACTION_AUTH:
+        await _handle_auth_action(mass, values)
+    elif action == CONF_ACTION_REVOKE:
+        await _handle_revoke_action(mass, values)
+
+    # Determine auth state
+    is_authenticated = bool(values.get(CONF_ACCESS_TOKEN))
+
+    return (
+        # Credentials
+        ConfigEntry(
+            key=CONF_CLIENT_ID,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Twitch Client ID",
+            required=True,
+            value=values.get(CONF_CLIENT_ID),
+        ),
+        ConfigEntry(
+            key=CONF_CLIENT_SECRET,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Twitch Client Secret",
+            required=True,
+            value=values.get(CONF_CLIENT_SECRET),
+        ),
+        # Auth status
+        ConfigEntry(
+            key="auth_status",
+            type=ConfigEntryType.LABEL,
+            label="Authenticated" if is_authenticated else "Not authenticated",
+        ),
+        # Auth action (hidden when authenticated)
+        ConfigEntry(
+            key=CONF_ACTION_AUTH,
+            type=ConfigEntryType.ACTION,
+            label="Authenticate with Twitch",
+            action=CONF_ACTION_AUTH,
+            action_label="Authenticate",
+            hidden=is_authenticated,
+        ),
+        # Revoke action (hidden when not authenticated)
+        ConfigEntry(
+            key=CONF_ACTION_REVOKE,
+            type=ConfigEntryType.ACTION,
+            label="Revoke credentials",
+            action=CONF_ACTION_REVOKE,
+            action_label="Revoke",
+            hidden=not is_authenticated,
+        ),
+        # Token storage (hidden)
+        ConfigEntry(
+            key=CONF_ACCESS_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Access Token",
+            hidden=True,
+            required=False,
+            value=values.get(CONF_ACCESS_TOKEN, ""),
+        ),
+        ConfigEntry(
+            key=CONF_REFRESH_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Refresh Token",
+            hidden=True,
+            required=False,
+            value=values.get(CONF_REFRESH_TOKEN, ""),
+        ),
+        # Optional streamlink token
+        ConfigEntry(
+            key=CONF_STREAMLINK_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Streamlink Auth Token",
+            description="Optional: Twitch Turbo or subscriber token to reduce ads.",
+            required=False,
+            value=values.get(CONF_STREAMLINK_TOKEN),
+        ),
+        # Ad handling mode
+        ConfigEntry(
+            key=CONF_AD_HANDLING,
+            type=ConfigEntryType.STRING,
+            label="Ad Handling",
+            options=[
+                ConfigValueOption("Silence (replace ads with silence)", "silence"),
+                ConfigValueOption("Passthrough (play ad audio)", "passthrough"),
+            ],
+            default_value="silence",
+            value=values.get(CONF_AD_HANDLING),
+        ),
+        # Auto-raid toggle
+        ConfigEntry(
+            key=CONF_AUTO_RAID,
+            type=ConfigEntryType.BOOLEAN,
+            label="Auto-follow raids",
+            description="Automatically switch to raid target when a streamer raids.",
+            default_value=True,
+            value=values.get(CONF_AUTO_RAID),
+        ),
+    )
 
 
 class TwitchProvider(MusicProvider):
     """Provider implementation for Twitch audio streaming."""
 
+    _access_token: str | None = None
+    _refresh_token: str | None = None
+    _client_id: str | None = None
+    _client_secret: str | None = None
+
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return True
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        self._client_id = str(self.config.get_value(CONF_CLIENT_ID) or "")
+        self._client_secret = str(self.config.get_value(CONF_CLIENT_SECRET) or "")
+        self._access_token = str(self.config.get_value(CONF_ACCESS_TOKEN) or "") or None
+        self._refresh_token = str(self.config.get_value(CONF_REFRESH_TOKEN) or "") or None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -81,6 +277,68 @@ class TwitchProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         # Step 6 will clean up event subscriptions, timers, WebSocket here
+
+    @property
+    def is_authenticated(self) -> bool:
+        """Return whether the provider has valid credentials."""
+        return bool(self._access_token)
+
+    def _api_headers(self) -> dict[str, str]:
+        """Return headers for Twitch API calls."""
+        return {
+            "Authorization": f"Bearer {self._access_token}",
+            "Client-Id": self._client_id or "",
+        }
+
+    async def _refresh_access_token(self) -> None:
+        """Refresh the Twitch access token using the refresh token."""
+        if not self._refresh_token:
+            self._access_token = None
+            msg = "No refresh token available. Re-authenticate."
+            raise LoginFailed(msg)
+
+        params = {
+            "client_id": self._client_id or "",
+            "client_secret": self._client_secret or "",
+            "grant_type": "refresh_token",
+            "refresh_token": self._refresh_token,
+        }
+        async with self.mass.http_session.post(TWITCH_TOKEN_URL, data=params) as response:
+            if response.status != 200:
+                self._access_token = None
+                self._refresh_token = None
+                error_text = await response.text()
+                msg = f"Token refresh failed: {error_text}"
+                raise LoginFailed(msg)
+            data = await response.json()
+
+        self._access_token = data["access_token"]
+        # Twitch may rotate the refresh token
+        self._refresh_token = data.get("refresh_token", self._refresh_token)
+
+    async def _api_get(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Make authenticated GET request to Twitch API, with auto-refresh on 401."""
+        async with self.mass.http_session.get(
+            url if url.startswith("http") else f"https://api.twitch.tv{url}",
+            headers=self._api_headers(),
+            params=params,
+        ) as response:
+            if response.status == 401:
+                await self._refresh_access_token()
+                # Retry with new token
+                async with self.mass.http_session.get(
+                    url if url.startswith("http") else f"https://api.twitch.tv{url}",
+                    headers=self._api_headers(),
+                    params=params,
+                ) as retry_response:
+                    if retry_response.status != 200:
+                        msg = f"Twitch API error {retry_response.status}"
+                        raise Exception(msg)
+                    return await retry_response.json()  # type: ignore[no-any-return]
+            if response.status != 200:
+                msg = f"Twitch API error {response.status}"
+                raise Exception(msg)
+            return await response.json()  # type: ignore[no-any-return]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a Twitch channel."""
@@ -136,7 +394,9 @@ class TwitchProvider(MusicProvider):
 
         try:
             session = Streamlink()
-            # Step 3 will add streamlink_token auth header here
+            streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
+            if streamlink_token:
+                session.set_option("http-headers", {"Authorization": f"OAuth {streamlink_token}"})
             streams = session.streams(f"https://twitch.tv/{channel}")
             return dict(streams) if streams else None
         except Exception:
