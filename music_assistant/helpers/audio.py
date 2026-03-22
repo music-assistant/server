@@ -435,6 +435,13 @@ async def get_buffered_media_stream(
     # checksum based on filter_params
     checksum = f"{filter_params}"
 
+    async def clear_abandoned_buffer(audio_buffer: AudioBuffer) -> None:
+        """Tear down a buffer that lost its active consumer."""
+        await audio_buffer.clear()
+        # Guard against clearing a newer buffer that replaced this one mid-cleanup.
+        if streamdetails.buffer is audio_buffer:
+            streamdetails.buffer = None
+
     async def fill_buffer_task() -> None:
         """Background task to fill the audio buffer."""
         chunk_count = 0
@@ -531,21 +538,31 @@ async def get_buffered_media_stream(
             audio_buffer.pcm_format,
             pcm_format,
         )
-        async for chunk in get_ffmpeg_stream(
-            audio_input=audio_buffer.iter(seek_position=seek_position),
-            input_format=audio_buffer.pcm_format,
-            output_format=pcm_format,
-        ):
-            yield chunk
+        completed = False
+        try:
+            async for chunk in get_ffmpeg_stream(
+                audio_input=audio_buffer.iter(seek_position=seek_position),
+                input_format=audio_buffer.pcm_format,
+                output_format=pcm_format,
+            ):
+                yield chunk
+            completed = True
+        finally:
+            if not completed:
+                await clear_abandoned_buffer(audio_buffer)
         return
 
     # yield data from the buffer
     chunk_count = 0
+    completed = False
     try:
         async for chunk in audio_buffer.iter(seek_position=seek_position):
             chunk_count += 1
             yield chunk
+        completed = True
     finally:
+        if not completed:
+            await clear_abandoned_buffer(audio_buffer)
         LOGGER.log(
             VERBOSE_LOG_LEVEL,
             "buffered_media_stream: Completed, yielded %s chunks",
