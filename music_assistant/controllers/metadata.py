@@ -345,7 +345,6 @@ class MetaDataController(CoreController):
                 "task_domain": "metadata_lookup",
                 "item_uri": item.uri,
             },
-            remove_on_finish=True,
         )
 
     async def get_image_data_for_item(
