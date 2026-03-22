@@ -153,10 +153,13 @@ async def test_live_status_cached_within_ttl(provider: TwitchProvider) -> None:
     fixture_channels = load_fixture("followed_channels.json")
     fixture_streams = load_fixture("live_streams.json")
 
+    fixture_users = load_fixture("user_lookup.json")
+
     provider.mass.http_session.get = make_mock_session_method(  # type: ignore[method-assign]
         [
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            MockResponse(status=200, json_data=fixture_users),
         ]
     )
 
@@ -177,15 +180,18 @@ async def test_live_status_refreshed_after_ttl(provider: TwitchProvider) -> None
 
     fixture_channels = load_fixture("followed_channels.json")
     fixture_streams = load_fixture("live_streams.json")
+    fixture_users = load_fixture("user_lookup.json")
 
     provider.mass.http_session.get = make_mock_session_method(  # type: ignore[method-assign]
         [
             # First fetch
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            MockResponse(status=200, json_data=fixture_users),
             # Second fetch after TTL
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            MockResponse(status=200, json_data=fixture_users),
         ]
     )
 

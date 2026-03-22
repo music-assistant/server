@@ -286,6 +286,7 @@ class TwitchProvider(MusicProvider):
     # Live status cache
     _cached_channels: list[dict[str, Any]] | None = None
     _cached_live: dict[str, dict[str, Any]] | None = None
+    _cached_profiles: dict[str, dict[str, Any]] | None = None
     _cache_time: float = 0.0
 
     # Raid state
@@ -512,27 +513,43 @@ class TwitchProvider(MusicProvider):
             all_streams.extend(data.get("data", []))
         return all_streams
 
+    async def _get_user_profiles(self, user_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Get user profiles by ID (batched, max 100 per request)."""
+        if not user_ids:
+            return {}
+        profiles: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(user_ids), 100):
+            batch = user_ids[i : i + 100]
+            params = [("id", uid) for uid in batch]
+            data = await self._api_get("/helix/users", params=params)
+            for user in data.get("data", []):
+                profiles[user["login"]] = user
+        return profiles
+
     async def _get_followed_live_status(
         self,
-    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        """Get followed channels and their live status (cached 5 min)."""
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        """Get followed channels, live status, and profiles (cached 5 min)."""
         if (
             self._cached_channels is not None
             and self._cached_live is not None
+            and self._cached_profiles is not None
             and (time.monotonic() - self._cache_time) < LIVE_STATUS_TTL
         ):
-            return self._cached_channels, self._cached_live
+            return self._cached_channels, self._cached_live, self._cached_profiles
 
         channels = await self._get_followed_channels()
         user_ids = [ch["broadcaster_id"] for ch in channels]
         streams = await self._get_live_streams(user_ids)
         live_by_login = {s["user_login"]: s for s in streams}
+        profiles = await self._get_user_profiles(user_ids)
 
         self._cached_channels = channels
         self._cached_live = live_by_login
+        self._cached_profiles = profiles
         self._cache_time = time.monotonic()
 
-        return channels, live_by_login
+        return channels, live_by_login, profiles
 
     async def _get_users(self, logins: list[str] | None = None) -> list[dict[str, Any]]:
         """Get user info by login names."""
@@ -546,6 +563,7 @@ class TwitchProvider(MusicProvider):
         """Clear the live status cache."""
         self._cached_channels = None
         self._cached_live = None
+        self._cached_profiles = None
         self._cache_time = 0.0
 
     # --- Radio Model Helpers ---
@@ -554,8 +572,9 @@ class TwitchProvider(MusicProvider):
         self,
         channel: dict[str, Any],
         stream: dict[str, Any] | None = None,
+        profile: dict[str, Any] | None = None,
     ) -> Radio:
-        """Convert a Twitch channel + optional stream data to a Radio model."""
+        """Convert a Twitch channel + optional stream/profile data to a Radio model."""
         login = channel.get("broadcaster_login", channel.get("user_login", ""))
         display_name = channel.get("broadcaster_name", channel.get("display_name", login))
         name = display_name
@@ -563,9 +582,12 @@ class TwitchProvider(MusicProvider):
             viewer_count = stream.get("viewer_count", 0)
             name = f"{display_name} ({viewer_count} viewers)"
 
+        # Prefer stream thumbnail (live preview), fall back to profile image
         thumbnail = ""
         if stream and stream.get("thumbnail_url"):
             thumbnail = stream["thumbnail_url"].replace("{width}", "320").replace("{height}", "180")
+        elif profile and profile.get("profile_image_url"):
+            thumbnail = profile["profile_image_url"]
 
         radio = Radio(
             item_id=login,
@@ -694,11 +716,15 @@ class TwitchProvider(MusicProvider):
         if not self.is_authenticated or not self._user_id:
             return []
 
-        channels, live_by_login = await self._get_followed_live_status()
+        channels, live_by_login, profiles = await self._get_followed_live_status()
 
         if subpath == "live":
             return [
-                self._channel_to_radio(ch, live_by_login.get(ch["broadcaster_login"]))
+                self._channel_to_radio(
+                    ch,
+                    live_by_login.get(ch["broadcaster_login"]),
+                    profiles.get(ch["broadcaster_login"]),
+                )
                 for ch in channels
                 if ch["broadcaster_login"] in live_by_login
             ]
@@ -708,7 +734,7 @@ class TwitchProvider(MusicProvider):
             for ch in sorted(channels, key=lambda c: c["broadcaster_name"].lower()):
                 login = ch["broadcaster_login"]
                 stream = live_by_login.get(login)
-                radio = self._channel_to_radio(ch, stream)
+                radio = self._channel_to_radio(ch, stream, profiles.get(login))
                 if not stream:
                     radio.name = f"{ch['broadcaster_name']} (offline)"
                 result.append(radio)
@@ -721,11 +747,11 @@ class TwitchProvider(MusicProvider):
         if not self.is_authenticated or not self._user_id:
             return
 
-        channels, live_by_login = await self._get_followed_live_status()
+        channels, live_by_login, profiles = await self._get_followed_live_status()
         for ch in channels:
             login = ch["broadcaster_login"]
             if login in live_by_login:
-                yield self._channel_to_radio(ch, live_by_login[login])
+                yield self._channel_to_radio(ch, live_by_login[login], profiles.get(login))
 
     async def search(
         self,

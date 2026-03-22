@@ -21,6 +21,11 @@ def load_fixture(name: str) -> dict[str, Any]:
         return json.load(f)  # type: ignore[no-any-return]
 
 
+def _users_response() -> MockResponse:
+    """Return a mock users API response."""
+    return MockResponse(status=200, json_data=load_fixture("user_lookup.json"))
+
+
 def _setup_authenticated_provider(provider: TwitchProvider) -> None:
     """Configure provider with test credentials and cached data."""
     provider._access_token = "test_token"
@@ -42,6 +47,7 @@ async def test_library_radios_yields_radio_items(provider: TwitchProvider) -> No
         [
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            _users_response(),
         ]
     )
 
@@ -65,6 +71,7 @@ async def test_library_radios_only_live(provider: TwitchProvider) -> None:
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             # Only streamer_a and streamer_c are live
             MockResponse(status=200, json_data=fixture_streams),
+            _users_response(),
         ]
     )
 
@@ -86,6 +93,7 @@ async def test_library_radios_item_fields(provider: TwitchProvider) -> None:
         [
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            _users_response(),
         ]
     )
 
@@ -107,6 +115,7 @@ async def test_library_radios_empty_when_none_live(provider: TwitchProvider) -> 
         [
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data={"data": []}),  # nobody live
+            _users_response(),
         ]
     )
 
@@ -147,6 +156,7 @@ async def test_browse_live_returns_only_live_channels(provider: TwitchProvider) 
             MockResponse(status=200, json_data=fixture_channels["page1"]),
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            _users_response(),
         ]
     )
 
@@ -172,6 +182,7 @@ async def test_browse_following_returns_all_channels(
             MockResponse(status=200, json_data=fixture_channels["page1"]),
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            _users_response(),
         ]
     )
 
@@ -194,6 +205,7 @@ async def test_browse_following_marks_offline(provider: TwitchProvider) -> None:
             MockResponse(status=200, json_data=fixture_channels["page1"]),
             MockResponse(status=200, json_data=fixture_channels["page2"]),
             MockResponse(status=200, json_data=fixture_streams),
+            _users_response(),
         ]
     )
 
