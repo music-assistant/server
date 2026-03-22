@@ -244,7 +244,7 @@ class GenreController(MediaControllerBase[Genre]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "translation_key": item.translation_key,
+                "translation_key": None,
                 "description": item.metadata.description if item.metadata else None,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
@@ -593,7 +593,8 @@ class GenreController(MediaControllerBase[Genre]):
             "GROUP BY genre_id, media_type",
             limit=0,
         )
-        result: dict[str, dict[str, int]] = {gid: {} for gid in genre_ids}
+        empty: dict[str, int] = {mt.value: 0 for _, mt in MEDIA_TABLES}
+        result: dict[str, dict[str, int]] = {gid: dict(empty) for gid in genre_ids}
         for row in rows:
             gid = str(row["genre_id"])
             if gid in result:
@@ -1270,11 +1271,20 @@ class GenreController(MediaControllerBase[Genre]):
     async def get_global_genre_exclusions(self) -> list[dict[str, object]]:
         """Return all globally excluded genres."""
         rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT id, name, sort_name, search_name FROM {DB_TABLE_GENRE_GLOBAL_EXCLUSION} "
-            "ORDER BY sort_name",
+            f"SELECT id, name, sort_name, search_name, translation_key "
+            f"FROM {DB_TABLE_GENRE_GLOBAL_EXCLUSION} ORDER BY sort_name",
             limit=0,
         )
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            entry: dict[str, object] = dict(row)
+            icon_metadata = self._get_genre_icon_metadata(row["translation_key"])
+            if icon_metadata and icon_metadata.images:
+                entry["image_url"] = self.mass.metadata.get_image_url(icon_metadata.images[0])
+            else:
+                entry["image_url"] = None
+            result.append(entry)
+        return result
 
     async def remove_global_genre_exclusion(self, exclusion_id: int) -> Genre:
         """Lift a global genre exclusion and recreate the genre.
@@ -1293,10 +1303,33 @@ class GenreController(MediaControllerBase[Genre]):
             raise KeyError(msg)
         await self.mass.music.database.delete(DB_TABLE_GENRE_GLOBAL_EXCLUSION, {"id": exclusion_id})
         if row["translation_key"]:
-            # Default genre — restore via the standard defaults path so translation_key
-            # and icon metadata are properly re-applied.
-            restored = await self.restore_default_genres(full_restore=False)
-            return next(g for g in restored if g.translation_key == row["translation_key"])
+            tk = row["translation_key"]
+            entry = next(
+                (e for e in DEFAULT_GENRE_MAPPING if e.get("translation_key") == tk),
+                None,
+            )
+            if not entry:
+                msg = f"No default genre entry found for translation_key '{tk}'"
+                raise RuntimeError(msg)
+            icon_metadata = self._get_genre_icon_metadata(tk) or MediaItemMetadata()
+            aliases = [entry["genre"], *entry.get("aliases", [])]
+            genre = Genre(
+                item_id="0",
+                provider="library",
+                name=entry["genre"],
+                sort_name=entry["genre"],
+                metadata=icon_metadata,
+                provider_mappings=set(),
+                favorite=False,
+                genre_aliases=set(aliases),
+            )
+            restored = await self.add_item_to_library(genre)
+            await self.mass.music.database.update(
+                DB_TABLE_GENRES,
+                {"item_id": int(restored.item_id)},
+                {"translation_key": tk},
+            )
+            return await self.get_library_item(int(restored.item_id))
         genre = Genre(
             item_id="0",
             provider="library",
