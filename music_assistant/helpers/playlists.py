@@ -304,10 +304,16 @@ def construct_media_item_from_playlist_item(
     :param mass: MusicAssistant instance for provider resolution.
     """
     metadata = item.metadata or {}
-    media_type = MediaType(metadata.get("media_type", "track"))
+    try:
+        media_type = MediaType(metadata.get("media_type", "track"))
+    except ValueError:
+        media_type = MediaType.TRACK
     artist_name, track_name = parse_extinf_title(item.title)
     name = track_name or item.path
-    duration = int(item.length) if item.length else 0
+    try:
+        duration = int(item.length) if item.length else 0
+    except ValueError:
+        duration = 0
 
     # resolve provider mappings: try instance_id, fall back to domain
     # always include the mapping; mark available=False if provider is not loaded
@@ -419,9 +425,13 @@ def construct_media_item_from_playlist_item(
         )
 
     for img in item.images:
+        try:
+            image_type = ImageType(img.type)
+        except ValueError:
+            continue
         media_item.metadata.add_image(
             MediaItemImage(
-                type=ImageType(img.type),
+                type=image_type,
                 path=img.path,
                 provider=img.provider,
                 remotely_accessible=img.remotely_accessible,

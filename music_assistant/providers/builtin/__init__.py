@@ -151,10 +151,11 @@ class BuiltinProvider(MusicProvider):
         self._playlists_dir = os.path.join(self.mass.storage_path, "playlists")
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
-        # migrate old-style playlists (config + plain URI files) to M3U files
-        # TODO: remove after MA 2.9
-        await self._migrate_playlists()
         await super().loaded_in_mass()
+        # migrate old-style playlists in the background to avoid blocking startup
+        # TODO: remove after MA 2.9
+        if self.mass.config.get(CONF_KEY_PLAYLISTS, []):
+            self.mass.create_task(self._migrate_playlists())
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -759,24 +760,34 @@ class BuiltinProvider(MusicProvider):
             return []
         page_items = all_items[start : start + page_size]
 
-        # resolve all items on this page in parallel
+        # resolve items in parallel with bounded concurrency
+        semaphore = asyncio.Semaphore(50)
+
         async def _resolve(index: int, item: PlaylistItem) -> PlaylistPlayableItem | None:
-            try:
-                media_item = await self._resolve_playlist_item(item)
-                if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
-                    playlist_item = cast("PlaylistPlayableItem", media_item)
-                    playlist_item.position = index
-                    return playlist_item
-                self.logger.warning(
-                    "Unsupported media type in playlist %s: %s",
-                    prov_playlist_id,
-                    type(media_item),
-                )
-            except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
-                self.logger.warning(
-                    "Skipping %s in playlist %s: %s", item.path, prov_playlist_id, str(err)
-                )
-            return None
+            async with semaphore:
+                try:
+                    media_item = await self._resolve_playlist_item(item)
+                    if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
+                        playlist_item = cast("PlaylistPlayableItem", media_item)
+                        playlist_item.position = index
+                        return playlist_item
+                    self.logger.warning(
+                        "Unsupported media type in playlist %s: %s",
+                        prov_playlist_id,
+                        type(media_item),
+                    )
+                except (
+                    MediaNotFoundError,
+                    InvalidDataError,
+                    ProviderUnavailableError,
+                ) as err:
+                    self.logger.warning(
+                        "Skipping %s in playlist %s: %s",
+                        item.path,
+                        prov_playlist_id,
+                        str(err),
+                    )
+                return None
 
         tasks = [_resolve(start + idx + 1, item) for idx, item in enumerate(page_items)]
         resolved = await asyncio.gather(*tasks)
@@ -911,8 +922,17 @@ class BuiltinProvider(MusicProvider):
                 try:
                     entries.append(await self._build_m3u_entry_from_uri(uri))
                 except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
-                    # keep unresolvable URIs as bare entries so they're not lost
-                    entries.append(PlaylistItem(path=uri))
+                    # parse URI for minimal provider info so the entry is resolvable later
+                    entry = PlaylistItem(path=uri)
+                    if "://" in uri:
+                        try:
+                            domain, rest = uri.split("://", 1)
+                            media_type_str, item_id = rest.split("/", 1)
+                            entry.metadata = {"media_type": media_type_str}
+                            entry.providers = [ProviderMappingInfo(domain=domain, item_id=item_id)]
+                        except ValueError:
+                            pass
+                    entries.append(entry)
                     self.logger.debug("Could not enrich migrated entry: %s", uri)
             # write as {item_id}.m3u with the display name in #PLAYLIST
             await self._write_m3u_file(playlist_id, playlist_name, entries)

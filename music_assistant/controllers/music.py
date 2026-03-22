@@ -811,7 +811,7 @@ class MusicController(CoreController):
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
-        allow_update_metadata: bool = False,
+        allow_update_metadata: bool = True,
     ) -> MediaItemType | BrowseFolder:
         """Get single music item by id and media type."""
         if provider_instance_id_or_domain == "database":
