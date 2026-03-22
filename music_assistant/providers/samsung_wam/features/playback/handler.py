@@ -74,7 +74,7 @@ class PlaybackHandler(WamPlayerFeatureBase):
 
         :param media: The details of the media stream to play.
         """
-        if getattr(self.player, "synced_to_internal", None):
+        if self.player.synced_to:
             raise PlayerCommandFailed(f"Player {self.player.log_name} is a group child.")
 
         if self.player.active_source != WamSource.WIFI:

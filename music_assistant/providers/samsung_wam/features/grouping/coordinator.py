@@ -49,7 +49,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
         self.states.clear()
         self._child_to_leader.clear()
         for player in self.players:
-            synced_to = getattr(player, "synced_to_internal", None)
+            synced_to = player.synced_to
             if synced_to:
                 self.states.setdefault(synced_to, set()).add(player.player_id)
                 self._child_to_leader[player.player_id] = synced_to
@@ -150,7 +150,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
         :param player: The WamPlayer whose state changed.
         """
         old_leader_id = self._child_to_leader.get(player.player_id)
-        new_leader_id = getattr(player, "synced_to_internal", None)
+        new_leader_id = player.synced_to
 
         if old_leader_id == new_leader_id:
             return
