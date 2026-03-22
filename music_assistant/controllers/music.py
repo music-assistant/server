@@ -2661,11 +2661,6 @@ class MusicController(CoreController):
                 UNIQUE(search_name)
                 );"""
             )
-            await self._database.execute(
-                f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}_search_name_idx "
-                f"on {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(search_name);"
-            )
-
         # save changes
         await self._database.commit()
 
@@ -3097,11 +3092,6 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
             f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
-        )
-        # index on genre_global_exclusion table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}_search_name_idx "
-            f"on {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(search_name);"
         )
         # unique index on playlog table
         await self.database.execute(

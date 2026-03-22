@@ -2114,6 +2114,10 @@ class TestGetGenreMediaCounts:
 
 # Pick two distinct default entries with a translation_key for the tests below.
 _DEFAULT_ENTRIES_WITH_TK = [e for e in DEFAULT_GENRE_MAPPING if e.get("translation_key")]
+assert len(_DEFAULT_ENTRIES_WITH_TK) >= 2, (
+    "DEFAULT_GENRE_MAPPING must contain at least two entries with a translation_key "
+    "for global genre exclusion tests"
+)
 _DEFAULT_ENTRY_A = _DEFAULT_ENTRIES_WITH_TK[0]
 _DEFAULT_ENTRY_B = _DEFAULT_ENTRIES_WITH_TK[1]
 
