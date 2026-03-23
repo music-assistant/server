@@ -60,6 +60,10 @@ def patch_ad_handling(mode: str) -> None:
         class SilenceInjectingTwitchWriter(TwitchHLSStreamWriter):
             """Writer that replaces ad segments with silence."""
 
+            def should_filter_segment(self, segment: TwitchHLSSegment) -> bool:  # type: ignore[override]
+                """Never filter — we handle ad segments in write() with silence injection."""
+                return False
+
             def write(  # type: ignore[override]
                 self,
                 segment: TwitchHLSSegment,
