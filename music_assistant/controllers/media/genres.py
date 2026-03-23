@@ -595,8 +595,12 @@ class GenreController(MediaControllerBase[Genre]):
         """
         if not genre_ids:
             return {}
-        int_ids = [int(gid) for gid in genre_ids]
-        placeholders = ",".join(str(i) for i in int_ids)
+        try:
+            int_ids = [int(gid) for gid in genre_ids]
+        except (TypeError, ValueError) as err:
+            raise InvalidDataError(f"Invalid genre_id value: {err}") from err
+        norm_ids = [str(i) for i in int_ids]
+        placeholders = ",".join(norm_ids)
         rows = await self.mass.music.database.get_rows_from_query(
             f"SELECT genre_id, media_type, COUNT(*) AS cnt "
             f"FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
@@ -605,7 +609,7 @@ class GenreController(MediaControllerBase[Genre]):
             limit=0,
         )
         empty: dict[str, int] = {mt.value: 0 for _, mt in MEDIA_TABLES}
-        result: dict[str, dict[str, int]] = {gid: dict(empty) for gid in genre_ids}
+        result: dict[str, dict[str, int]] = {nid: dict(empty) for nid in norm_ids}
         for row in rows:
             gid = str(row["genre_id"])
             if gid in result:

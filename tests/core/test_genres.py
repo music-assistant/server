@@ -2113,6 +2113,10 @@ class TestGetGenreMediaCounts:
 
 # Two distinct default entries with a translation_key for the tests below.
 _tk_entries = [e for e in DEFAULT_GENRE_MAPPING if e.get("translation_key")]
+assert len(_tk_entries) >= 2, (
+    "DEFAULT_GENRE_MAPPING must contain at least two entries with a translation_key "
+    "for global genre exclusion tests"
+)
 _DEFAULT_ENTRY_A = _tk_entries[0]  # used for deletion-only test
 _DEFAULT_ENTRY_B = _tk_entries[1]  # used for delete-then-restore test
 
