@@ -6,6 +6,7 @@ from typing import Any
 
 from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.media_items import (
+    Artist,
     AudioFormat,
     ItemMapping,
     MediaItemImage,
@@ -172,15 +173,30 @@ def _shiur_to_track(
         shiur_len = shiur.get("shiurLength") or shiur.get("durationformatted") or ""
         duration_sec = _parse_duration(shiur_len)
 
-    image_url = _extract_teacher_info(shiur)[2]
+    teacher_id, teacher_name, image_url = _extract_teacher_info(shiur)
 
     images = _make_images(image_url, instance_id)
+    artists: UniqueList[Artist | ItemMapping] = (
+        UniqueList(
+            [
+                ItemMapping(
+                    item_id=teacher_id,
+                    provider=instance_id,
+                    name=teacher_name,
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        )
+        if teacher_id
+        else UniqueList()
+    )
     return Track(
         item_id=shiur_id,
         provider=instance_id,
         name=title,
         duration=duration_sec,
         track_number=position + 1,
+        artists=artists,
         provider_mappings={
             ProviderMapping(
                 item_id=shiur_id,

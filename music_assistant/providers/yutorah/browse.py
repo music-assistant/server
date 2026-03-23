@@ -36,9 +36,10 @@ class YuTorahBrowseMixin:
     """
 
     # ------------------------------------------------------------------
-    # Interface required from the host class (YuTorahProvider)
-    # Declared under TYPE_CHECKING so they are visible to mypy but do not
-    # override the final attributes declared in the MusicProvider base class.
+    # Interface required from the host class (YuTorahProvider).
+    # domain and instance_id are declared under TYPE_CHECKING so mypy can
+    # see them without overriding the real attributes on MusicProvider.
+    # The async methods below are stubs that YuTorahProvider overrides.
     # ------------------------------------------------------------------
 
     if TYPE_CHECKING:
@@ -60,7 +61,7 @@ class YuTorahBrowseMixin:
     async def _fetch_episodes_paged(
         self,
         parent_series_id: str | None = None,
-        **filter_params: Any,
+        **filter_params: str,
     ) -> list[PodcastEpisode]:
         """Fetch episodes from search/get with automatic pagination."""
         raise NotImplementedError
@@ -99,8 +100,8 @@ class YuTorahBrowseMixin:
     def _browse_root(self) -> list[BrowseFolder]:
         """Return the four top-level browse folders."""
         sections = [
-            ("series", "Browse by Series", "podcasts", False),
-            ("teachers", "Browse by Teacher", "artists", False),
+            ("series", "Browse by Series", None, False),
+            ("teachers", "Browse by Teacher", None, False),
             ("categories", "Browse by Topic", None, False),
             ("recent", "Recent Shiurim", None, True),
         ]

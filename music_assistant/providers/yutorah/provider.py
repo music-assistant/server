@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
     SetupFailedError,
 )
 from music_assistant_models.media_items import (
+    Artist,
     AudioFormat,
     MediaItemMetadata,
     Podcast,
@@ -195,6 +196,35 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
             raise MediaNotFoundError(f"YuTorah: shiur {prov_track_id} has no playable MP3")
         return track
 
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """Return a teacher as an Artist by their teacher ID."""
+        teachers_map = await self._fetch_teachers_map()
+        t = teachers_map.get(prov_artist_id) or {}
+        name = t.get("fullName") or f"Teacher {prov_artist_id}"
+        image_url = t.get("imageURL") or ""
+        return Artist(
+            item_id=prov_artist_id,
+            provider=self.instance_id,
+            name=name,
+            metadata=MediaItemMetadata(
+                images=UniqueList(_make_images(image_url, self.instance_id)) or None,
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_artist_id,
+                    provider_domain="yutorah",
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Return shiurim by a teacher as Tracks."""
+        return await self._paginate_search(
+            lambda raw, i: _shiur_to_track(raw, i, self.instance_id),
+            teacherID=prov_artist_id,
+        )
+
     # -----------------------------------------------------------------------
     # Streaming
     # -----------------------------------------------------------------------
@@ -275,7 +305,11 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
                         },
                     )
                 )
+            results.podcasts = podcasts
+
+        if MediaType.ARTIST in media_types:
             teachers_map = await self._fetch_teachers_map()
+            artists: list[Artist] = []
             for facet in (facet_fields.get("teachers") or [])[:limit]:
                 tid = str(facet.get("TeacherId") or "")
                 name = facet.get("TeacherName") or ""
@@ -284,25 +318,24 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
                 teacher_data = teachers_map.get(tid) or {}
                 image_url = teacher_data.get("imageURL") or ""
                 images = _make_images(image_url, self.instance_id)
-                podcasts.append(
-                    Podcast(
-                        item_id=f"t_{tid}",
+                artists.append(
+                    Artist(
+                        item_id=tid,
                         provider=self.instance_id,
                         name=name,
-                        publisher=name,
                         metadata=MediaItemMetadata(
                             images=UniqueList(images) if images else None,
                         ),
                         provider_mappings={
                             ProviderMapping(
-                                item_id=f"t_{tid}",
+                                item_id=tid,
                                 provider_domain="yutorah",
                                 provider_instance=self.instance_id,
                             )
                         },
                     )
                 )
-            results.podcasts = podcasts
+            results.artists = artists
 
         return results
 
@@ -313,7 +346,7 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
     async def _fetch_episodes_paged(
         self,
         parent_series_id: str | None = None,
-        **filter_params: Any,
+        **filter_params: str,
     ) -> list[PodcastEpisode]:
         """Fetch episodes from search/get with automatic pagination.
 
@@ -327,7 +360,7 @@ class YuTorahProvider(YuTorahBrowseMixin, MusicProvider):  # type: ignore[misc]
     async def _paginate_search(
         self,
         converter: Callable[[dict[str, Any], int], _T | None],
-        **filter_params: Any,
+        **filter_params: str,
     ) -> list[_T]:
         """Paginate search/get results, applying converter to each doc.
 
