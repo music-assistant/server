@@ -578,7 +578,8 @@ async def get_media_stream(
         )
         seek_position = 0 if streamdetails.can_seek else seek_position
     elif stream_type == StreamType.ICY:
-        assert isinstance(streamdetails.path, str)  # for type checking
+        assert streamdetails.path is not None
+        assert isinstance(streamdetails.path, str | list)
         audio_source = get_reconnecting_icy_radio_stream(mass, streamdetails.path, streamdetails)
         seek_position = 0  # seeking not possible on radio streams
     elif stream_type == StreamType.IN_BAND:
@@ -1764,7 +1765,8 @@ async def analyze_loudness(
             assert isinstance(music_prov, MusicProvider)
         audio_source = music_prov.get_audio_stream(streamdetails)
     elif stream_type == StreamType.ICY:
-        assert isinstance(streamdetails.path, str)  # for type checking
+        assert streamdetails.path is not None
+        assert isinstance(streamdetails.path, str | list)
         audio_source = get_reconnecting_icy_radio_stream(mass, streamdetails.path, streamdetails)
     elif stream_type == StreamType.IN_BAND:
         assert isinstance(streamdetails.path, str)  # for type checking
