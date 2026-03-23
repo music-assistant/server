@@ -150,8 +150,7 @@ class DashiePlayer(Player):
         artist = media.artist or ""
         if artist and title.startswith(f"{artist} - "):
             title = title[len(f"{artist} - ") :]
-        # Send MA streams server URL so the device can call unauthenticated REST endpoints
-        # (player_state, recently_played, command) directly
+        # Send MA server URL so the device can query the MA API for display/control
         ma_server_url = self._get_ma_server_url()
         self.logger.debug("Pushing media info: %s", title)
         try:
