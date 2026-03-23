@@ -754,7 +754,11 @@ def get_zeroconf_args(
             if ip_config.is_IPv6:
                 ip_tuple = cast("tuple[str, int, int]", ip_config.ip)
                 addr = ip_address(ip_tuple[0])
-                if isinstance(addr, IPv6Address) and not addr.is_loopback:
+                if (
+                    isinstance(addr, IPv6Address)
+                    and not addr.is_loopback
+                    and not addr.is_link_local
+                ):
                     has_ipv6 = True
                     if not addr.is_global:
                         interface_ips.append(f"{ip_tuple[0]}%{ip_tuple[2]}")
