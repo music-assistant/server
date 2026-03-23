@@ -1,5 +1,6 @@
 """Test raid state machine and event bus integration."""
 
+# mypy: disable-error-code="unreachable"
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock, patch
@@ -67,6 +68,107 @@ async def test_playing_same_channel_no_duplicate_subscribe(provider: TwitchProvi
 
     # Should not subscribe again — already on same channel
     provider._eventsub.subscribe_raids.assert_not_called()
+
+
+# --- Pause / Stop / Resume ---
+
+
+async def test_pause_unsubscribes_keeps_ws_warm(provider: TwitchProvider) -> None:
+    """Pause unsubscribes EventSub but keeps WebSocket connected."""
+    provider._eventsub = Mock()
+    provider._eventsub.unsubscribe_all = AsyncMock()
+    provider._eventsub.stop = AsyncMock()
+
+    await provider._handle_queue_paused()
+
+    provider._eventsub.unsubscribe_all.assert_called_once()
+    provider._eventsub.stop.assert_not_called()  # WS stays warm
+
+
+async def test_stop_starts_grace_period(provider: TwitchProvider) -> None:
+    """Stop/idle creates a grace timer task."""
+    provider._eventsub = Mock()
+    provider._eventsub.unsubscribe_all = AsyncMock()
+    provider._grace_timer = None
+
+    await provider._handle_queue_idle()
+
+    assert provider._grace_timer is not None
+    # Cancel so it doesn't run in background
+    provider._grace_timer.cancel()
+
+
+async def test_grace_period_then_idle_timer(provider: TwitchProvider) -> None:
+    """After grace period, EventSub unsubscribes and idle timer starts."""
+    provider._eventsub = Mock()
+    provider._eventsub.unsubscribe_all = AsyncMock()
+    provider._idle_timer = None
+
+    with patch("music_assistant.providers.twitch.asyncio.sleep", new_callable=AsyncMock):
+        await provider._grace_period()
+
+    provider._eventsub.unsubscribe_all.assert_called_once()
+    assert provider._idle_timer is not None
+    provider._idle_timer.cancel()
+
+
+async def test_idle_timer_disconnects_websocket(provider: TwitchProvider) -> None:
+    """After idle timer, EventSub WebSocket is disconnected."""
+    eventsub_mock = Mock()
+    eventsub_mock.stop = AsyncMock()
+    provider._eventsub = eventsub_mock
+
+    with patch("music_assistant.providers.twitch.asyncio.sleep", new_callable=AsyncMock):
+        await provider._idle_disconnect()
+
+    eventsub_mock.stop.assert_called_once()
+    assert provider._eventsub is None
+
+
+async def test_resume_resubscribes(provider: TwitchProvider) -> None:
+    """Resume from pause cancels timers and resubscribes."""
+    provider._access_token = "test"
+    provider._client_id = "test"
+    provider._auto_raid = True
+    provider._current_channel_login = None  # Was paused, now playing new
+    provider._eventsub = Mock()
+    provider._eventsub.subscribe_raids = AsyncMock()
+    provider._eventsub.is_connected = True
+    provider._eventsub.start = AsyncMock()
+
+    # Simulate a pending idle timer
+    mock_timer = Mock()
+    mock_timer.cancel = Mock()
+    provider._idle_timer = mock_timer
+
+    with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
+        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+
+    # Timer should have been cancelled
+    mock_timer.cancel.assert_called_once()
+    # Should have subscribed
+    provider._eventsub.subscribe_raids.assert_called_once()
+
+
+async def test_resume_cancels_idle_timer(provider: TwitchProvider) -> None:
+    """Resume cancels any pending idle disconnect timer."""
+    provider._access_token = "test"
+    provider._client_id = "test"
+    provider._auto_raid = True
+    provider._current_channel_login = None
+
+    mock_timer = Mock()
+    mock_timer.cancel = Mock()
+    provider._idle_timer = mock_timer
+    provider._eventsub = Mock()
+    provider._eventsub.subscribe_raids = AsyncMock()
+    provider._eventsub.start = AsyncMock()
+
+    with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
+        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+
+    mock_timer.cancel.assert_called_once()
+    assert provider._idle_timer is None
 
 
 # --- Raid Handling ---

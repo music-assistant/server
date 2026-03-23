@@ -397,7 +397,6 @@ class TwitchProvider(MusicProvider):
         if state == PlaybackState.PLAYING and current_item:
             uri = getattr(current_item, "uri", "") or ""
             if uri.startswith("twitch://"):
-                # Extract channel login from URI: twitch://radio/{login}
                 parts = uri.split("/")
                 channel_login = parts[-1] if len(parts) >= 3 else ""
                 if channel_login:
@@ -406,8 +405,10 @@ class TwitchProvider(MusicProvider):
                     return
             # Non-Twitch content playing — stop tracking
             await self._handle_queue_stopped()
-        elif state in (PlaybackState.IDLE, PlaybackState.PAUSED):
-            await self._handle_queue_stopped()
+        elif state == PlaybackState.PAUSED:
+            await self._handle_queue_paused()
+        elif state == PlaybackState.IDLE:
+            await self._handle_queue_idle()
 
     async def _handle_queue_playing(self, uri: str, channel_login: str) -> None:
         """Handle playback of a Twitch channel — subscribe to raids."""
@@ -435,11 +436,37 @@ class TwitchProvider(MusicProvider):
         if users:
             await self._eventsub.subscribe_raids(users[0]["id"])
 
+    async def _handle_queue_paused(self) -> None:
+        """Handle pause — unsubscribe EventSub, keep WebSocket warm."""
+        self._cancel_timers()
+        if self._eventsub is not None:
+            await self._eventsub.unsubscribe_all()
+
+    async def _handle_queue_idle(self) -> None:
+        """Handle stop/idle — start grace period before disconnecting."""
+        self._cancel_timers()
+        self._grace_timer = asyncio.create_task(self._grace_period())
+
     async def _handle_queue_stopped(self) -> None:
-        """Handle playback stop — unsubscribe, start timers."""
+        """Handle non-Twitch content — immediate cleanup."""
+        self._cancel_timers()
         self._current_channel_login = None
         if self._eventsub is not None:
             await self._eventsub.unsubscribe_all()
+
+    async def _grace_period(self) -> None:
+        """Wait 15s grace period, then unsubscribe and start idle timer."""
+        await asyncio.sleep(15)
+        if self._eventsub is not None:
+            await self._eventsub.unsubscribe_all()
+        self._idle_timer = asyncio.create_task(self._idle_disconnect())
+
+    async def _idle_disconnect(self) -> None:
+        """Wait 5 minutes, then disconnect EventSub WebSocket."""
+        await asyncio.sleep(300)
+        if self._eventsub is not None:
+            await self._eventsub.stop()
+            self._eventsub = None
 
     async def _on_raid(self, from_login: str, to_login: str) -> None:
         """Handle a raid event — switch playback to raid target."""
