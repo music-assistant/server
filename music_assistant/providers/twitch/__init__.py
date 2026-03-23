@@ -644,6 +644,8 @@ class TwitchProvider(MusicProvider):
             if not stream:
                 return
 
+            import music_assistant.providers.twitch.ad_handling as _ah  # noqa: PLC0415
+
             fd = await asyncio.to_thread(stream.open)
             prev_ad_state = False
             try:
@@ -652,13 +654,9 @@ class TwitchProvider(MusicProvider):
                     if chunk:
                         reconnects = 0
                         # Update stream title based on ad break state
-                        from music_assistant.providers.twitch.ad_handling import (  # noqa: PLC0415
-                            ad_break_active,
-                        )
-
-                        if ad_break_active != prev_ad_state:
-                            prev_ad_state = ad_break_active
-                            if ad_break_active:
+                        if _ah.ad_break_active != prev_ad_state:
+                            prev_ad_state = _ah.ad_break_active
+                            if _ah.ad_break_active:
                                 streamdetails.stream_title = f"{item_id} - Ad Break (silenced)"
                             else:
                                 streamdetails.stream_title = ""
