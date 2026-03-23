@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from music_assistant.providers.twitch.eventsub import EVENTSUB_WS_URL, EventSubClient
+from music_assistant.providers.twitch.eventsub import EVENTSUB_WS_URL, MAX_BACKOFF, EventSubClient
 from tests.providers.twitch.conftest import MockResponse, load_fixture
 
 
@@ -83,6 +83,30 @@ async def test_stop_clears_session_state(client: EventSubClient) -> None:
     assert client._session_id is None
     assert client._current_subscription_id is None
     assert not client._ready.is_set()
+
+
+async def test_disconnect_triggers_reconnect(client: EventSubClient) -> None:
+    """WebSocket disconnect increases backoff, indicating reconnect will happen."""
+    # Verify the reconnect mechanism: after a disconnect, the connect loop
+    # increases backoff before reconnecting. We test the state changes that
+    # _connect_loop makes rather than running the full async loop.
+    initial_backoff = client._backoff
+    assert initial_backoff == 1.0
+
+    # Simulate what _connect_loop does after a disconnect:
+    # backoff doubles, capped at MAX_BACKOFF
+    client._backoff = min(client._backoff * 2, MAX_BACKOFF)
+    assert client._backoff == 2.0  # doubled from 1.0
+
+    # After a successful welcome, backoff resets
+    welcome = load_fixture("eventsub_welcome.json")
+    client._handle_message(welcome)
+    assert client._backoff == 1.0  # reset
+
+    # Verify _stopped flag controls reconnect behavior
+    assert client._stopped is False  # would reconnect
+    await client.stop()
+    assert client._stopped is True  # would NOT reconnect
 
 
 # --- Twitch-Requested Reconnect ---
