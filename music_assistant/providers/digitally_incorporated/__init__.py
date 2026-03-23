@@ -64,7 +64,6 @@ else:
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    # TODO: consider removing LIBRARY_RADIOS - may only need browse
     ProviderFeature.LIBRARY_RADIOS,
 }
 
@@ -273,12 +272,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         return results
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve all radio stations from active networks.
-
-        TODO: review - this returns the full catalog (same data as browse but flat),
-        which causes all stations to sync to the library. Consider removing
-        LIBRARY_RADIOS and relying on browse() only. Should also be cached if kept.
-        """
+        """Retrieve all radio stations from active networks."""
         for network_key in self._get_active_networks():
             try:
                 channels = await self._get_channels(network_key)
@@ -356,11 +350,9 @@ class DigitallyIncorporatedProvider(MusicProvider):
             duration=0,  # Infinite duration for radio streams
         )
 
+    @use_cache(CACHE_CHANNELS)
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
-        """Browse Digitally Incorporated radio services and channels.
-
-        TODO: add 24 hour cache
-        """
+        """Browse Digitally Incorporated radio services and channels."""
         self.logger.debug("%s: Browse called with path: %s", self.domain, path)
 
         # Extract meaningful path component
