@@ -819,12 +819,13 @@ class DigitallyIncorporatedProvider(MusicProvider):
             )
 
             # Use the first stream URL from the playlist
-            self.logger.debug(
-                "%s: Digitally Incorporated playlist returned %d URLs", self.domain, len(playlist)
-            )
             if not playlist or not isinstance(playlist, list):
                 msg = f"{self.domain}: No stream URLs returned from Digitally Incorporated API"
                 raise MediaNotFoundError(msg)
+
+            self.logger.debug(
+                "%s: Digitally Incorporated playlist returned %d URLs", self.domain, len(playlist)
+            )
 
             # Log all available URLs for debugging
             for i, url in enumerate(playlist):
