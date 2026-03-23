@@ -123,14 +123,33 @@ def make_queue_event(
     state: Any,
     uri: str | None = None,
     queue_id: str = "queue_1",
+    provider_domain: str | None = None,
+    provider_item_id: str | None = None,
 ) -> Mock:
-    """Create a mock queue update event for _on_queue_updated dispatch tests."""
+    """Create a mock queue update event for _on_queue_updated dispatch tests.
+
+    Args:
+        state: PlaybackState value
+        uri: QueueItem.uri value (e.g., "twitch://radio/x" or "library://radio/8")
+        queue_id: Queue identifier
+        provider_domain: If set, creates a media_item with a provider_mapping
+            matching this domain. Used to test library URI resolution.
+        provider_item_id: The item_id in the provider mapping (e.g., channel login)
+    """
     event = Mock()
     event.data = Mock()
     event.data.state = state
     if uri is not None:
         event.data.current_item = Mock()
         event.data.current_item.uri = uri
+        if provider_domain and provider_item_id:
+            pm = Mock()
+            pm.provider_domain = provider_domain
+            pm.item_id = provider_item_id
+            event.data.current_item.media_item = Mock()
+            event.data.current_item.media_item.provider_mappings = [pm]
+        else:
+            event.data.current_item.media_item = None
     else:
         event.data.current_item = None
     event.data.queue_id = queue_id

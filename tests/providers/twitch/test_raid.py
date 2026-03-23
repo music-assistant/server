@@ -16,12 +16,29 @@ from tests.providers.twitch.conftest import make_queue_event
 
 async def test_on_queue_updated_dispatches_playing_twitch(provider: TwitchProvider) -> None:
     """Mock event with state=PLAYING + Twitch URI dispatches to _handle_queue_playing."""
-    event = make_queue_event(PlaybackState.PLAYING, uri="twitch://channel/streamer_a")
+    event = make_queue_event(PlaybackState.PLAYING, uri="twitch://radio/streamer_a")
 
     with patch.object(provider, "_handle_queue_playing", new_callable=AsyncMock) as mock_handler:
         await provider._on_queue_updated(event)
 
-    mock_handler.assert_called_once_with("twitch://channel/streamer_a", "streamer_a")
+    mock_handler.assert_called_once_with("twitch://radio/streamer_a", "streamer_a")
+
+
+async def test_on_queue_updated_dispatches_playing_library_uri(
+    provider: TwitchProvider,
+) -> None:
+    """Library URI (library://radio/8) with Twitch provider mapping dispatches correctly."""
+    event = make_queue_event(
+        PlaybackState.PLAYING,
+        uri="library://radio/8",
+        provider_domain="twitch",
+        provider_item_id="streamer_a",
+    )
+
+    with patch.object(provider, "_handle_queue_playing", new_callable=AsyncMock) as mock_handler:
+        await provider._on_queue_updated(event)
+
+    mock_handler.assert_called_once_with("twitch://radio/streamer_a", "streamer_a")
 
 
 async def test_on_queue_updated_dispatches_playing_non_twitch(

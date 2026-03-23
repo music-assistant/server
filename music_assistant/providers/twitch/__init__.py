@@ -393,6 +393,31 @@ class TwitchProvider(MusicProvider):
 
     # --- Raid State Machine ---
 
+    def _extract_twitch_login(self, queue_item: Any) -> str | None:
+        """Extract Twitch channel login from a QueueItem, handling both URI schemes.
+
+        When played from Browse, URI is 'twitch://radio/channel_login'.
+        When played from Library, URI is 'library://radio/N' and the channel
+        login must be extracted from the media_item's provider mapping.
+        """
+        uri = getattr(queue_item, "uri", "") or ""
+
+        # Direct Twitch URI (from browse or play_media)
+        if uri.startswith("twitch://"):
+            parts = uri.split("/")
+            return parts[-1] if len(parts) >= 3 and parts[-1] else None
+
+        # Library URI — check media_item for Twitch provider mapping
+        media_item = getattr(queue_item, "media_item", None)
+        if media_item is not None:
+            for pm in getattr(media_item, "provider_mappings", []):
+                if getattr(pm, "provider_domain", "") == self.domain:
+                    item_id = getattr(pm, "item_id", "")
+                    if item_id:
+                        return item_id
+
+        return None
+
     async def _on_queue_updated(self, event: Any = None) -> None:
         """Handle queue update events for raid following."""
         if event is None or not hasattr(event, "data"):
@@ -411,16 +436,16 @@ class TwitchProvider(MusicProvider):
         )
 
         if state == PlaybackState.PLAYING and current_item:
-            uri = getattr(current_item, "uri", "") or ""
-            if uri.startswith("twitch://"):
-                parts = uri.split("/")
-                channel_login = parts[-1] if len(parts) >= 3 else ""
-                if channel_login:
-                    self._current_queue_id = queue_id
-                    await self._handle_queue_playing(uri, channel_login)
-                    return
+            channel_login = self._extract_twitch_login(current_item)
+            if channel_login:
+                self._current_queue_id = queue_id
+                await self._handle_queue_playing(f"twitch://radio/{channel_login}", channel_login)
+                return
             # Non-Twitch content playing — stop tracking
-            self.logger.debug("Non-Twitch URI playing: %s — stopping raid tracking", uri)
+            self.logger.debug(
+                "Non-Twitch content playing: %s — stopping raid tracking",
+                getattr(current_item, "uri", "?"),
+            )
             await self._handle_queue_stopped()
         elif state == PlaybackState.PAUSED:
             await self._handle_queue_paused()
