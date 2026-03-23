@@ -81,7 +81,7 @@ async def test_not_authenticated_label(mass_mock: Mock) -> None:
 
 
 async def test_authenticated_label(mass_mock: Mock) -> None:
-    """After auth, label shows username."""
+    """After auth, label shows 'Authenticated' (not 'Not authenticated')."""
     values: dict[str, Any] = {
         CONF_ACCESS_TOKEN: "test_access_token",
         CONF_REFRESH_TOKEN: "test_refresh_token",
@@ -89,6 +89,7 @@ async def test_authenticated_label(mass_mock: Mock) -> None:
     entries = await get_config_entries(mass_mock, values=values)
     label_entries = [e for e in entries if e.type == ConfigEntryType.LABEL]
     label_text = " ".join(e.label for e in label_entries).lower()
+    assert "authenticated" in label_text
     assert "not authenticated" not in label_text
 
 
@@ -157,6 +158,45 @@ async def test_auth_action_with_empty_client_secret(mass_mock: Mock) -> None:
     }
     with pytest.raises(LoginFailed, match=r"(?i)client"):
         await get_config_entries(mass_mock, action=CONF_ACTION_AUTH, values=values)
+
+
+async def test_auth_callback_exchanges_code_for_tokens(mass_mock: Mock) -> None:
+    """Happy-path OAuth: code exchanged for tokens, provider becomes authenticated."""
+    values: dict[str, Any] = {
+        "session_id": "test_session",
+        CONF_CLIENT_ID: "test_client",
+        CONF_CLIENT_SECRET: "test_secret",
+    }
+
+    mock_auth = AsyncMock()
+    mock_auth.__aenter__ = AsyncMock(return_value=mock_auth)
+    mock_auth.__aexit__ = AsyncMock(return_value=None)
+    mock_auth.callback_url = "http://localhost:8095/callback/test"
+    mock_auth.authenticate = AsyncMock(return_value={"code": "valid_code"})
+
+    # Token exchange succeeds
+    mass_mock.http_session.post = make_mock_session_method(
+        MockResponse(
+            status=200,
+            json_data={
+                "access_token": "new_access_token",
+                "refresh_token": "new_refresh_token",
+                "expires_in": 14400,
+            },
+        )
+    )
+
+    with patch("music_assistant.providers.twitch.AuthenticationHelper", return_value=mock_auth):
+        entries = await get_config_entries(mass_mock, action=CONF_ACTION_AUTH, values=values)
+
+    # Tokens should be stored in values
+    assert values[CONF_ACCESS_TOKEN] == "new_access_token"
+    assert values[CONF_REFRESH_TOKEN] == "new_refresh_token"
+
+    # Config entries should show authenticated state
+    label_entries = [e for e in entries if e.type == ConfigEntryType.LABEL]
+    label_text = " ".join(e.label for e in label_entries).lower()
+    assert "not authenticated" not in label_text
 
 
 async def test_auth_scope_includes_user_read_follows() -> None:

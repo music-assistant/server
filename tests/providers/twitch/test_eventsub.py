@@ -155,6 +155,21 @@ def test_welcome_does_not_resubscribe_if_no_active(
 # --- Subscription Management ---
 
 
+async def test_post_includes_auth_headers(client: EventSubClient, http_session: Mock) -> None:
+    """POST to EventSub includes Authorization and Client-Id headers."""
+    client._session_id = "test_session"
+    client._ready.set()
+
+    await client.subscribe_raids("123")
+
+    call_kwargs = http_session.post.call_args
+    headers = call_kwargs.kwargs.get("headers", {})
+    assert "Authorization" in headers
+    assert headers["Authorization"] == "Bearer test"
+    assert "Client-Id" in headers
+    assert headers["Client-Id"] == "test_client"
+
+
 async def test_subscribe_creates_raid_subscription(
     client: EventSubClient, http_session: Mock
 ) -> None:
