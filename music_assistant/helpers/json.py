@@ -2,17 +2,13 @@
 
 import asyncio
 import base64
-import logging
 from _collections_abc import dict_keys, dict_values
-from dataclasses import asdict, is_dataclass
 from types import MethodType
 from typing import Any, TypeVar
 
 import aiofiles
 import orjson
 from mashumaro.mixins.orjson import DataClassORJSONMixin
-
-LOGGER = logging.getLogger(__name__)
 
 JSON_ENCODE_EXCEPTIONS = (TypeError, ValueError)
 JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
@@ -21,44 +17,16 @@ DO_NOT_SERIALIZE_TYPES = (MethodType, asyncio.Task)
 
 
 def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
-    """Parse the value to its serializable equivalent.
-
-    This function will convert dataclasses, dicts and iterable containers into
-    JSON-serializable primitives. It intentionally returns primitives (lists,
-    dicts, strings, numbers) for any complex object that cannot be serialized
-    directly by orjson to avoid infinite recursion in the default serializer.
-    """
+    """Parse the value to its serializable equivalent."""
     if getattr(obj, "do_not_serialize", None):
         return None
-
-    # Convert dataclass *instances* to dicts so nested dataclasses get handled recursively.
-    # `is_dataclass` can also return True for dataclass *types*, so ensure we only
-    # pass instances to `asdict` to avoid type errors (mypy).
-    if is_dataclass(obj) and not isinstance(obj, type):
-        return get_serializable_value(asdict(obj))
-
-    # Handle plain dicts
-    if isinstance(obj, dict):
-        return {k: get_serializable_value(v) for k, v in obj.items()}
-
-    # Handle iterable containers
     if (
-        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys)
-        or type(obj).__name__ == "dict_valueiterator"
+        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys | dict_values)
+        or obj.__class__ == "dict_valueiterator"
     ):
         return [get_serializable_value(x) for x in obj]
-
-    # If an object provides an explicit to_dict use that
     if hasattr(obj, "to_dict"):
         return obj.to_dict()
-
-    # Fallback to to_json if available
-    if hasattr(obj, "to_json"):
-        try:
-            return obj.to_json()
-        except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.debug("Failed to use to_json() for %s: %s", type(obj), exc)
-
     if isinstance(obj, bytes):
         return base64.b64encode(obj).decode("ascii")
     if isinstance(obj, DO_NOT_SERIALIZE_TYPES):
