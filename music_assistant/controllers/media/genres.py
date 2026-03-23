@@ -255,7 +255,7 @@ class GenreController(MediaControllerBase[Genre]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "translation_key": item.translation_key,
+                "translation_key": None,
                 "description": item.metadata.description if item.metadata else None,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
