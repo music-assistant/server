@@ -8,7 +8,7 @@ import os
 import re
 import struct
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from io import BytesIO
@@ -579,7 +579,7 @@ async def get_media_stream(
         seek_position = 0 if streamdetails.can_seek else seek_position
     elif stream_type == StreamType.ICY:
         assert isinstance(streamdetails.path, str)  # for type checking
-        audio_source = get_icy_radio_stream(mass, streamdetails.path, streamdetails)
+        audio_source = get_reconnecting_icy_radio_stream(mass, streamdetails.path, streamdetails)
         seek_position = 0  # seeking not possible on radio streams
     elif stream_type == StreamType.IN_BAND:
         assert isinstance(streamdetails.path, str)  # for type checking
@@ -634,33 +634,9 @@ async def get_media_stream(
             assert streamdetails.decryption_key is not None  # for type checking
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
         if isinstance(streamdetails.path, list):
-            logger.debug(
-                "media_stream path list len=%s first_type=%s",
-                len(streamdetails.path),
-                type(streamdetails.path[0]).__name__ if streamdetails.path else None,
-            )
-            if all(isinstance(part, MultiPartPath) for part in streamdetails.path):
-                # multi part stream
-                audio_source = get_multi_file_stream(mass, streamdetails, seek_position)
-                seek_position = 0  # handled by get_multi_file_stream
-            elif all(isinstance(part, StreamMirror) for part in streamdetails.path):
-                # mirror URLs
-                LOGGER.debug(
-                    "Using mirror stream list (count=%s) for %s",
-                    len(streamdetails.path),
-                    streamdetails.uri,
-                )
-                audio_source = get_mirror_stream(mass, streamdetails)
-                seek_position = 0  # no seeking in a radio stream
-            else:
-                logger.error(
-                    "Unsupported path list contents for %s: %s",
-                    streamdetails.uri,
-                    [type(p).__name__ for p in streamdetails.path],
-                )
-                raise InvalidDataError(
-                    "Streamdetails.path must be list of MultiPartPath or StreamMirror"
-                )
+            # multi part stream
+            audio_source = get_multi_file_stream(mass, streamdetails, seek_position)
+            seek_position = 0  # handled by get_multi_file_stream
         else:
             # regular single file/url stream
             assert isinstance(streamdetails.path, str)  # for type checking
@@ -980,69 +956,146 @@ async def get_icy_radio_stream(
                 streamdetails.stream_title = cleaned_stream_title
 
 
-async def get_reconnecting_radio_stream(
-    mass: MusicAssistant, url: str
+def _normalize_reconnecting_urls(url: str | list[MultiPartPath]) -> list[str]:
+    """Normalize a single URL or a sequence into a non-empty list."""
+    if isinstance(url, str):
+        return [url]
+    if not url:
+        msg = "Radio stream requires at least one URL"
+        raise InvalidDataError(msg)
+    return [part.path for part in url]
+
+
+async def get_reconnecting_stream(
+    mass: MusicAssistant,
+    url: str | list[MultiPartPath],
+    stream_chunks: Callable[[MusicAssistant, str], AsyncIterator[bytes]],
+    *,
+    stream_label: str = "Radio stream",
 ) -> AsyncGenerator[bytes, None]:
-    """Yield continuous radio stream data, automatically reconnecting on disconnect.
+    """Yield bytes from a live stream, reconnecting on disconnect or transient errors.
+
+    ``stream_chunks`` is invoked per attempt with ``(mass, current_url)`` and must
+    async-iterate the audio (or wrapper) bytes for that connection until it ends or
+    raises. On clean end or selected aiohttp errors, the outer loop reconnects; when
+    multiple URLs are given, each reconnect advances to the next URL, wrapping.
 
     :param mass: MusicAssistant instance.
-    :param url: URL of the radio stream.
+    :param url: One stream URL, or a sequence of URLs to rotate through on reconnect.
+    :param stream_chunks: Callable returning an async iterator of chunks for one URL.
+    :param stream_label: Prefix for log messages.
     """
-    timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
+    urls = _normalize_reconnecting_urls(url)
     reconnect_count = 0
     max_reconnects = 1000  # Allow many reconnects for long-running radio
+    url_index = 0
 
     while reconnect_count <= max_reconnects:
+        current_url = urls[url_index % len(urls)]
         try:
-            async with _connect_radio_stream(
-                mass, url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
-            ) as resp:
-                chunk_count = 0
-                async for chunk in resp.content.iter_any():
-                    chunk_count += 1
-                    yield chunk
+            chunk_count = 0
+            async for chunk in stream_chunks(mass, current_url):
+                chunk_count += 1
+                yield chunk
 
-                # Connection closed normally - reconnect
-                LOGGER.debug(
-                    "Radio stream connection closed after %d chunks, reconnecting... "
-                    "(reconnect #%d)",
-                    chunk_count,
-                    reconnect_count,
-                )
-                reconnect_count += 1
-                await asyncio.sleep(0.1)  # Brief delay before reconnect
+            LOGGER.debug(
+                "%s ended after %d chunks, reconnecting... (reconnect #%d, next url index %d)",
+                stream_label,
+                chunk_count,
+                reconnect_count,
+                (url_index + 1) % len(urls),
+            )
+            reconnect_count += 1
+            url_index += 1
+            await asyncio.sleep(0.1)  # Brief delay before reconnect
 
         except asyncio.CancelledError:
-            LOGGER.debug("Radio stream cancelled for %s", url)
+            LOGGER.debug("%s cancelled for %s", stream_label, current_url)
             raise
         except (
             aiohttp.ClientConnectionError,
             aiohttp.ClientPayloadError,
             aiohttp.ServerDisconnectedError,
         ) as err:
-            # Transient network errors - retry
             LOGGER.warning(
-                "Radio stream error (reconnect #%d): %s",
+                "%s error for %s (reconnect #%d): %s",
+                stream_label,
+                current_url,
                 reconnect_count,
                 err,
             )
             reconnect_count += 1
+            url_index += 1
             if reconnect_count > max_reconnects:
                 raise RetriesExhausted(
-                    f"Radio stream failed after {max_reconnects} reconnects: {err}"
+                    f"{stream_label} failed after {max_reconnects} reconnects: {err}"
                 ) from err
             await asyncio.sleep(0.5)
         except aiohttp.ClientResponseError as err:
             if err.status == 404:
-                raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+                raise MediaNotFoundError(f"Radio stream not found: {current_url}") from err
             if err.status == 403:
-                raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
-            # Other HTTP errors (5xx etc) - could be temporary
+                raise ProviderPermissionDenied(
+                    f"Radio stream access denied: {current_url}"
+                ) from err
             raise ProviderUnavailableError(
                 f"Radio stream returned HTTP {err.status}: {err}"
             ) from err
 
-    LOGGER.warning("Radio stream reached max reconnects (%d) for %s", max_reconnects, url)
+    LOGGER.warning(
+        "%s reached max reconnects (%d) for urls=%s",
+        stream_label,
+        max_reconnects,
+        urls,
+    )
+
+
+async def get_reconnecting_icy_radio_stream(
+    mass: MusicAssistant,
+    url: str | list[MultiPartPath],
+    streamdetails: StreamDetails,
+) -> AsyncGenerator[bytes, None]:
+    """Yield ICY radio audio with metadata, reconnecting on disconnect.
+
+    When multiple URLs are given, each reconnect advances to the next URL in order,
+    wrapping to the first after the last.
+
+    :param mass: MusicAssistant instance.
+    :param url: One stream URL, or a sequence of URLs to rotate through on reconnect.
+    :param streamdetails: Stream details; ``stream_title`` is updated from ICY metadata.
+    """
+
+    async def icy_chunks(m: MusicAssistant, stream_url: str) -> AsyncGenerator[bytes, None]:
+        async for chunk in get_icy_radio_stream(m, stream_url, streamdetails):
+            yield chunk
+
+    async for chunk in get_reconnecting_stream(
+        mass, url, icy_chunks, stream_label="ICY radio stream"
+    ):
+        yield chunk
+
+
+async def get_reconnecting_radio_stream(
+    mass: MusicAssistant, url: str | list[MultiPartPath]
+) -> AsyncGenerator[bytes, None]:
+    """Yield continuous radio stream data, automatically reconnecting on disconnect.
+
+    :param mass: MusicAssistant instance.
+    :param url: URL of the radio stream, or a list of MultiPartPath objects.
+    """
+
+    async def http_chunks(m: MusicAssistant, stream_url: str) -> AsyncGenerator[bytes, None]:
+        timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
+        async with _connect_radio_stream(
+            m, stream_url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
+        ) as resp:
+            async for chunk in resp.content.iter_any():
+                yield chunk
+
+    async for chunk in get_reconnecting_stream(
+        mass, url, http_chunks, stream_label="HTTP radio stream"
+    ):
+        yield chunk
 
 
 def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
@@ -1361,10 +1414,7 @@ async def get_multi_file_stream(
     """
     if not isinstance(streamdetails.path, list):
         raise InvalidDataError("Multi-file streamdetails requires a list of MultiPartPath")
-    # type narrowing: we already validated path is a list of MultiPartPath
-    parts, seek_position = _get_parts_from_position(
-        cast("list[MultiPartPath]", streamdetails.path), seek_position
-    )
+    parts, seek_position = _get_parts_from_position(streamdetails.path, seek_position)
     files_list = [part.path for part in parts]
 
     # concat input files
@@ -1397,74 +1447,6 @@ async def get_multi_file_stream(
             yield chunk
     finally:
         await remove_file(temp_file)
-
-
-async def get_mirror_stream(
-    mass: MusicAssistant,
-    streamdetails: StreamDetails,
-) -> AsyncGenerator[bytes, None]:
-    """Return audio stream from mirrored URLs.
-
-    Tries each mirror (ordered by priority, highest first) until one works.
-    """
-    if not isinstance(streamdetails.path, list):
-        raise InvalidDataError("Mirror streamdetails requires a list of StreamMirror")
-
-    # Validate and normalize mirrors
-    mirrors: list[StreamMirror] = []
-    for m in streamdetails.path:
-        if not isinstance(m, StreamMirror):
-            raise InvalidDataError("Mirror streamdetails requires a list of StreamMirror")
-        if not isinstance(m.path, str):
-            raise InvalidDataError("StreamMirror.path must be a URL string")
-        mirrors.append(m)
-
-    # Try mirrors sorted by priority (higher priority first). Sort is stable so
-    # mirrors with equal priority keep their original order.
-    mirrors.sort(key=lambda x: x.priority or 0, reverse=True)
-
-    LOGGER.debug(
-        "Mirror stream start for %s with %s mirror(s)",
-        streamdetails.uri,
-        len(mirrors),
-    )
-
-    last_exception: Exception | None = None
-    for mirror in mirrors:
-        LOGGER.debug(
-            "Trying mirror %s (priority=%s) for %s",
-            mirror.path,
-            mirror.priority,
-            streamdetails.uri,
-        )
-        try:
-            async for chunk in get_http_stream(
-                mass,
-                mirror.path,
-                streamdetails,
-                # There's no verify_ssl on StreamMirror; default to True.
-                verify_ssl=True,
-            ):
-                yield chunk
-            return
-        except Exception as err:
-            LOGGER.warning(
-                "Error streaming from mirror %s (priority=%s) for %s: %s",
-                mirror.path,
-                mirror.priority,
-                streamdetails.uri,
-                err,
-                exc_info=err,
-            )
-            last_exception = err
-
-    LOGGER.error(
-        "All mirror streams failed for %s (attempted %s)",
-        streamdetails.uri,
-        [m.path for m in mirrors],
-        exc_info=last_exception,
-    )
-    raise AudioError("All mirror streams failed") from last_exception
 
 
 async def get_preview_stream(
@@ -1783,7 +1765,7 @@ async def analyze_loudness(
         audio_source = music_prov.get_audio_stream(streamdetails)
     elif stream_type == StreamType.ICY:
         assert isinstance(streamdetails.path, str)  # for type checking
-        audio_source = get_icy_radio_stream(mass, streamdetails.path, streamdetails)
+        audio_source = get_reconnecting_icy_radio_stream(mass, streamdetails.path, streamdetails)
     elif stream_type == StreamType.IN_BAND:
         assert isinstance(streamdetails.path, str)  # for type checking
         # Use chained OGG handler for seamless playback across logical bitstreams

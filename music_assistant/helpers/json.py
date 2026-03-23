@@ -43,8 +43,8 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
 
     # Handle iterable containers
     if (
-        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys | dict_values)
-        or obj.__class__ == "dict_valueiterator"
+        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys)
+        or type(obj).__name__ == "dict_valueiterator"
     ):
         return [get_serializable_value(x) for x in obj]
 
