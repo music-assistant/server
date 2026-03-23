@@ -79,6 +79,14 @@ CONF_AUTO_RAID = "auto_raid"
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_REVOKE = "revoke"
 
+# Ad handling modes
+AD_MODE_SILENCE = "silence"
+AD_MODE_PASSTHROUGH = "passthrough"
+
+# Browse paths
+BROWSE_LIVE = "live"
+BROWSE_FOLLOWING = "following"
+
 TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/authorize"
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_REVOKE_URL = "https://id.twitch.tv/oauth2/revoke"
@@ -270,10 +278,10 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Ad Handling",
             options=[
-                ConfigValueOption("Silence (replace ads with silence)", "silence"),
-                ConfigValueOption("Passthrough (play ad audio)", "passthrough"),
+                ConfigValueOption("Silence (replace ads with silence)", AD_MODE_SILENCE),
+                ConfigValueOption("Passthrough (play ad audio)", AD_MODE_PASSTHROUGH),
             ],
-            default_value="silence",
+            default_value=AD_MODE_SILENCE,
             value=values.get(CONF_AD_HANDLING),
         ),
         # Auto-raid toggle
@@ -331,7 +339,7 @@ class TwitchProvider(MusicProvider):
                 patch_ad_handling,
             )
 
-            ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or "silence")
+            ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or AD_MODE_SILENCE)
             patch_ad_handling(ad_mode)
         except Exception:
             self.logger.warning("Failed to apply ad handling patch", exc_info=True)
@@ -763,20 +771,20 @@ class TwitchProvider(MusicProvider):
         if not subpath:
             return [
                 BrowseFolder(
-                    item_id="live",
+                    item_id=BROWSE_LIVE,
                     provider=self.domain,
-                    path=f"{self.instance_id}://live",
+                    path=f"{self.instance_id}://{BROWSE_LIVE}",
                     name="Live",
                 ),
                 BrowseFolder(
-                    item_id="following",
+                    item_id=BROWSE_FOLLOWING,
                     provider=self.domain,
-                    path=f"{self.instance_id}://following",
+                    path=f"{self.instance_id}://{BROWSE_FOLLOWING}",
                     name="Following",
                 ),
             ]
 
-        if subpath not in ("live", "following"):
+        if subpath not in (BROWSE_LIVE, BROWSE_FOLLOWING):
             return []
 
         if not self.is_authenticated or not self._user_id:
@@ -784,7 +792,7 @@ class TwitchProvider(MusicProvider):
 
         channels, live_by_login, profiles = await self._get_followed_live_status()
 
-        if subpath == "live":
+        if subpath == BROWSE_LIVE:
             return [
                 self._channel_to_radio(
                     ch,
@@ -795,7 +803,7 @@ class TwitchProvider(MusicProvider):
                 if ch["broadcaster_login"] in live_by_login
             ]
 
-        if subpath == "following":
+        if subpath == BROWSE_FOLLOWING:
             result: list[MediaItemType | BrowseFolder] = []
             for ch in sorted(channels, key=lambda c: c["broadcaster_name"].lower()):
                 login = ch["broadcaster_login"]
