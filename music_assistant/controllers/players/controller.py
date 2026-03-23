@@ -163,6 +163,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             task_id="fix_group_member_configs",
             name="Fix sync group member configurations",
             handler=self._fix_group_member_configs,
+            delay=300,
         )
 
     async def close(self) -> None:
@@ -2182,8 +2183,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         When a sync group references a protocol player ID instead of
         the parent player ID, correct it using the cached protocol parent mapping.
         """
-        # wait until all players have their protocols linked
-        await asyncio.sleep(300)
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         total_fixes = 0
         fixed_groups: list[str] = []
