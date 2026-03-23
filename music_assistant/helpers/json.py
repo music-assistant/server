@@ -31,10 +31,16 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
     if getattr(obj, "do_not_serialize", None):
         return None
 
-    # Convert dataclass *instances* to dicts so nested dataclasses get handled recursively.
+    # Convert plain dataclass *instances* (without custom to_dict / mashumaro mixin)
+    # to dicts so nested dataclasses get handled recursively.
     # `is_dataclass` can also return True for dataclass *types*, so ensure we only
     # pass instances to `asdict` to avoid type errors (mypy).
-    if is_dataclass(obj) and not isinstance(obj, type):
+    if (
+        is_dataclass(obj)
+        and not isinstance(obj, type)
+        and not hasattr(obj, "to_dict")
+        and not isinstance(obj, DataClassORJSONMixin)
+    ):
         return get_serializable_value(asdict(obj))
 
     # Handle plain dicts
