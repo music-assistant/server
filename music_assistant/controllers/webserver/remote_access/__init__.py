@@ -118,16 +118,21 @@ class RemoteAccessManager:
         mode = "optimized" if self._using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
+        sendspin_url = f"ws://{self.mass.streams.publish_ip}:8927/sendspin"
+
         self.gateway = WebRTCGateway(
             http_session=self.mass.http_session,
             remote_id=self._remote_id,
             certificate=self._certificate,
             signaling_url=SIGNALING_SERVER_URL,
             local_ws_url=local_ws_url,
+            sendspin_url=sendspin_url,
             ice_servers=ice_servers,
             # Pass callback to get fresh ICE servers for each client connection
             # This ensures TURN credentials are always valid
             ice_servers_callback=self.get_ice_servers if ha_cloud_available else None,
+            # Pass callback to set sendspin player on websocket client
+            set_sendspin_player_callback=self.webserver.set_sendspin_player_for_webrtc_session,
         )
 
         await self.gateway.start()
@@ -254,12 +259,17 @@ class RemoteAccessManager:
 
             :param enabled: Enable or disable remote access.
             """
+            changed = self._enabled != enabled
             self._enabled = enabled
             self.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", enabled)
             if self._enabled and not self.is_running:
                 await self._start_gateway()
             elif not self._enabled and self.is_running:
                 await self.stop()
+            if changed:
+                self.mass.signal_event(
+                    EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info()
+                )
             return await get_remote_access_info()
 
         self._on_unload_callbacks.append(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
@@ -80,7 +81,7 @@ async def get_config_entries(
     """
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH and values:
-        hass_url = values[CONF_URL]
+        hass_url = str(values[CONF_URL]).strip()
         async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
             client_id = base_url(auth_helper.callback_url)
             auth_url = get_auth_url(
@@ -167,7 +168,7 @@ async def get_config_entries(
                 "'authenticate' button to generate a token for you with logging in.",
                 depends_on=CONF_URL,
                 value=cast("str", values.get(CONF_AUTH_TOKEN)) if values else None,
-                category="advanced",
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_VERIFY_SSL,
@@ -175,7 +176,7 @@ async def get_config_entries(
                 label="Verify SSL",
                 required=False,
                 description="Whether or not to verify the certificate of SSL/TLS connections.",
-                category="advanced",
+                advanced=True,
                 default_value=True,
             ),
         )
@@ -584,3 +585,21 @@ class HomeAssistantProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
+
+    async def resolve_image(self, path: str) -> bytes:
+        """Resolve an image from an image path."""
+        ha_url = cast("str", self.config.get_value(CONF_URL)).rstrip("/")
+        if ha_url.endswith("/api") and path.startswith("/api/"):
+            url = f"{ha_url}{path[4:]}"
+        else:
+            url = f"{ha_url}{path}"
+
+        # Use HASSIO_TOKEN when running as addon (token config is None)
+        token = self.config.get_value(CONF_AUTH_TOKEN) or os.environ.get("HASSIO_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
+        async with http_session.get(url, headers=headers) as response:
+            response.raise_for_status()
+            return await response.read()

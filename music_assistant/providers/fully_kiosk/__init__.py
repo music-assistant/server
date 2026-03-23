@@ -70,14 +70,14 @@ async def get_config_entries(
             default_value="2323",
             label="Port to use to connect to the Fully Kiosk API (default is 2323).",
             required=True,
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_USE_SSL,
             type=ConfigEntryType.BOOLEAN,
             label="Use HTTPS when connecting to the Fully Kiosk API.",
             default_value=False,
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
@@ -85,7 +85,7 @@ async def get_config_entries(
             label="Verify HTTPS certificates (recommended).",
             default_value=True,
             description="Disabling verification trusts any certificate (no validation).",
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_SSL_FINGERPRINT,
@@ -96,6 +96,6 @@ async def get_config_entries(
                 "match the device certificate and overrides the verify setting."
             ),
             required=False,
-            category="advanced",
+            advanced=True,
         ),
     )

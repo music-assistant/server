@@ -11,14 +11,21 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator, MutableMapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, get_type_hints
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
+from music_assistant.controllers.tasks.context import (
+    update_current_task_progress_from_index,
+    update_current_task_progress_text,
+)
 from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import async_json_loads, json_dumps
 from music_assistant.models.core_controller import CoreController
 
@@ -31,7 +38,9 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
 DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 7
+MAX_CACHE_DB_SIZE_MB = 2048
+CACHE_DATABASE_CLEANUP_TASK_ID = "cache_database_cleanup"
 
 BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
 
@@ -80,7 +89,10 @@ class CacheController(CoreController):
         """Async initialize of cache module."""
         self.logger.info("Initializing cache controller...")
         await self._setup_database()
-        self.__schedule_cleanup_task()
+
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
+        self._register_cleanup_task()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -119,10 +131,14 @@ class CacheController(CoreController):
             return cache_data[0]
         # fall back to db cache
         if (
-            db_row := await self.database.get_row(
-                DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
+            (
+                db_row := await self.database.get_row(
+                    DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
+                )
             )
-        ) and (not checksum or (db_row["checksum"] == checksum and db_row["expires"] >= cur_time)):
+            and db_row["expires"] >= cur_time
+            and (not checksum or db_row["checksum"] == checksum)
+        ):
             try:
                 data = await async_json_loads(db_row["data"])
             except Exception as exc:
@@ -234,16 +250,24 @@ class CacheController(CoreController):
         """Run scheduled auto cleanup task."""
         assert self.database is not None
         self.logger.debug("Running automatic cleanup...")
+        update_current_task_progress_text("Loading cache records")
         # simply reset the memory cache
         self._mem_cache.clear()
         cur_timestamp = int(time.time())
         cleaned_records = 0
-        for db_row in await self.database.get_rows(DB_TABLE_CACHE):
+        db_rows = await self.database.get_rows(DB_TABLE_CACHE)
+        for index, db_row in enumerate(db_rows, 1):
+            update_current_task_progress_from_index(
+                index,
+                len(db_rows),
+                f"Scanning cache record {index}/{len(db_rows)}",
+            )
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
+        update_current_task_progress_text(f"Cleaned up {cleaned_records} expired cache record(s)")
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     @asynccontextmanager
@@ -255,35 +279,66 @@ class CacheController(CoreController):
         finally:
             BYPASS_CACHE.reset(token)
 
+    async def _check_and_reset_oversized_cache(self) -> bool:
+        """Check cache database size and remove it if it exceeds the max size.
+
+        Returns True if the cache database was removed.
+        """
+        db_path = os.path.join(self.mass.cache_path, "cache.db")
+        # also include the write ahead log and shared memory db files
+        db_files = [db_path + suffix for suffix in ("", "-wal", "-shm")]
+
+        def _get_db_size() -> float:
+            total = 0
+            for path in db_files:
+                if os.path.exists(path):
+                    total += Path(path).stat().st_size
+            return total / (1024 * 1024)
+
+        db_size_mb = await asyncio.to_thread(_get_db_size)
+        if db_size_mb <= MAX_CACHE_DB_SIZE_MB:
+            return False
+        self.logger.warning(
+            "Cache database size %.2f MB exceeds maximum of %d MB, removing cache database",
+            db_size_mb,
+            MAX_CACHE_DB_SIZE_MB,
+        )
+        for path in db_files:
+            if await asyncio.to_thread(os.path.exists, path):
+                await asyncio.to_thread(os.remove, path)
+        return True
+
     async def _setup_database(self) -> None:
         """Initialize database."""
+        cache_was_reset = await self._check_and_reset_oversized_cache()
         db_path = os.path.join(self.mass.cache_path, "cache.db")
         self.database = DatabaseConnection(db_path)
         await self.database.setup()
 
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
-        try:
-            if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
-                prev_version = int(db_row["value"])
-            else:
+
+        if not cache_was_reset:
+            try:
+                if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
+                    prev_version = int(db_row["value"])
+                else:
+                    prev_version = 0
+            except (KeyError, ValueError):
                 prev_version = 0
-        except (KeyError, ValueError):
-            prev_version = 0
 
-        if prev_version not in (0, DB_SCHEMA_VERSION):
-            LOGGER.warning(
-                "Performing database migration from %s to %s",
-                prev_version,
-                DB_SCHEMA_VERSION,
-            )
-
-            if prev_version < DB_SCHEMA_VERSION:
-                # for now just keep it simple and just recreate the table(s)
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
-
-                # recreate missing table(s)
-                await self.__create_database_tables()
+            if prev_version not in (0, DB_SCHEMA_VERSION):
+                LOGGER.warning(
+                    "Performing database migration from %s to %s",
+                    prev_version,
+                    DB_SCHEMA_VERSION,
+                )
+                try:
+                    await self.__migrate_database(prev_version)
+                except Exception as err:
+                    LOGGER.warning("Cache database migration failed: %s, resetting cache", err)
+                    await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
+                    await self.__create_database_tables()
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -291,14 +346,16 @@ class CacheController(CoreController):
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
         await self.__create_database_indexes()
-        # compact db (vacuum) at startup
-        self.logger.debug("Compacting database...")
-        try:
-            await self.database.vacuum()
-        except Exception as err:
-            self.logger.warning("Database vacuum failed: %s", str(err))
-        else:
-            self.logger.debug("Compacting database done")
+
+        if not cache_was_reset:
+            # compact db (vacuum) at startup
+            self.logger.debug("Compacting database...")
+            try:
+                await self.database.vacuum()
+            except Exception as err:
+                self.logger.warning("Database vacuum failed: %s", str(err))
+            else:
+                self.logger.debug("Compacting database done")
 
     async def __create_database_tables(self) -> None:
         """Create database table(s)."""
@@ -358,11 +415,27 @@ class CacheController(CoreController):
         )
         await self.database.commit()
 
-    def __schedule_cleanup_task(self) -> None:
-        """Schedule the cleanup task."""
-        self.mass.create_task(self.auto_cleanup())
-        # reschedule self
-        self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
+    async def __migrate_database(self, prev_version: int) -> None:
+        """Perform a database migration."""
+        assert self.database is not None
+        if prev_version <= 6:
+            # clear spotify cache entries to fix bloated cache from playlist pagination bug
+            await self.database.delete(DB_TABLE_CACHE, query="WHERE provider LIKE '%spotify%'")
+        await self.database.commit()
+
+    def _register_cleanup_task(self) -> None:
+        """Register the recurring cache database cleanup task."""
+        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
+        self.mass.tasks.register_scheduled_task(
+            task_id=CACHE_DATABASE_CLEANUP_TASK_ID,
+            name="Cache database cleanup",
+            handler=self.auto_cleanup,
+            schedule=desired_schedule,
+            translation_key="background_task.cache_database_cleanup",
+            metadata={"task_domain": "cache_database_cleanup"},
+            allow_retry=True,
+        )
 
 
 Param = ParamSpec("Param")

@@ -7,63 +7,67 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
-from propcache import under_cached_property as cached_property
-
-from music_assistant.constants import (
-    CONF_ENTRY_DEPRECATED_EQ_BASS,
-    CONF_ENTRY_DEPRECATED_EQ_MID,
-    CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    CONF_ENTRY_SYNC_ADJUST,
-    create_sample_rates_config_entry,
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
 )
+
+from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, create_sample_rates_config_entry
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AIRPLAY2_CONNECT_TIME_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
-    CACHE_CATEGORY_PREV_VOLUME,
+    AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
+    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
+    BASE_PLAYER_FEATURES,
+    BROKEN_AIRPLAY_WARN,
     CONF_ACTION_FINISH_PAIRING,
+    CONF_ACTION_RESET_PAIRING,
     CONF_ACTION_START_PAIRING,
+    CONF_AIRPLAY_CREDENTIALS,
+    CONF_AIRPLAY_LATENCY,
     CONF_AIRPLAY_PROTOCOL,
     CONF_ALAC_ENCODE,
-    CONF_AP_CREDENTIALS,
+    CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
+    CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
+    CONF_RAOP_CREDENTIALS,
+    CONF_STORED_VOLUME,
     FALLBACK_VOLUME,
+    LEGACY_PAIRING_BIT,
+    PASSWORD_BIT,
+    PIN_REQUIRED,
+    RAOP_CONNECT_TIME_MS,
     RAOP_DISCOVERY_TYPE,
     StreamingProtocol,
 )
 from .helpers import (
     get_primary_ip_address_from_zeroconf,
     is_airplay2_preferred_model,
+    is_apple_device,
     is_broken_airplay_model,
+    player_id_to_mac_address,
 )
 from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from .pairing import AirPlayPairing
+    from .protocols._protocol import AirPlayProtocol
     from .protocols.airplay2 import AirPlay2Stream
     from .protocols.raop import RaopStream
     from .provider import AirPlayProvider
-
-
-BROKEN_AIRPLAY_WARN = ConfigEntry(
-    key="BROKEN_AIRPLAY",
-    type=ConfigEntryType.ALERT,
-    default_value=None,
-    required=False,
-    label="This player is known to have broken AirPlay support. "
-    "Playback may fail or simply be silent. "
-    "There is no workaround for this issue at the moment. \n"
-    "If you already enforced AirPlay 2 on the player and it remains silent, "
-    "this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
-)
 
 
 class AirPlayPlayer(Player):
@@ -82,62 +86,90 @@ class AirPlayPlayer(Player):
         initial_volume: int = FALLBACK_VOLUME,
     ) -> None:
         """Initialize AirPlayPlayer."""
-        super().__init__(provider, player_id)
         self.raop_discovery_info = raop_discovery_info
         self.airplay_discovery_info = airplay_discovery_info
+        super().__init__(provider, player_id)
         self.address = address
         self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
+        self._active_pairing: AirPlayPairing | None = None
+        self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         # Set (static) player attributes
-        self._attr_type = PlayerType.PLAYER
         self._attr_name = display_name
         self._attr_available = True
+        mac_address = player_id_to_mac_address(player_id)
         self._attr_device_info = DeviceInfo(
             model=model,
             manufacturer=manufacturer,
-            ip_address=address,
         )
-        self._attr_supported_features = {
-            PlayerFeature.PAUSE,
-            PlayerFeature.SET_MEMBERS,
-            PlayerFeature.MULTI_DEVICE_DSP,
-            PlayerFeature.VOLUME_SET,
-        }
+        # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+        if is_valid_mac_address(mac_address):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
+        self._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, player_id)
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
 
-    @cached_property
+        # Set player type based on manufacturer/model:
+        # - Apple devices (HomePod, Apple TV) have native AirPlay support -> PLAYER
+        # - Non-Apple devices are generic AirPlay receivers -> PROTOCOL (wrapped in UniversalPlayer)
+        if is_apple_device(manufacturer, model):
+            self._attr_type = PlayerType.PLAYER
+        else:
+            self._attr_type = PlayerType.PROTOCOL
+
+    @property
     def protocol(self) -> StreamingProtocol:
-        """Get the streaming protocol to use for this player."""
-        protocol_value = self.config.get_value(CONF_AIRPLAY_PROTOCOL)
-        # Convert integer value to StreamingProtocol enum
-        if protocol_value == 2:
-            return StreamingProtocol.AIRPLAY2
-        return StreamingProtocol.RAOP
+        """Get the streaming protocol to use/prefer for this player."""
+        preferred_option = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL, 0))
+        return self._get_protocol_for_config_value(preferred_option)
 
     @property
-    def available(self) -> bool:
-        """Return if the player is currently available."""
-        if self._requires_pairing():
-            # check if we have credentials stored
-            credentials = self.config.get_value(CONF_AP_CREDENTIALS)
-            if not credentials:
-                return False
-        return super().available
+    def needs_setup(self) -> bool:
+        """Return if the player needs setup."""
+        if self._requires_pin_pairing() or (
+            self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
+        ):
+            # check if we have credentials stored for the current protocol
+            creds_key = self._get_credentials_key(self.protocol)
+            if not self.config.get_value(creds_key):
+                return True
+        return False
 
     @property
-    def corrected_elapsed_time(self) -> float:
-        """Return the corrected elapsed time accounting for stream session restarts."""
-        if not self.stream or not self.stream.session:
-            return super().corrected_elapsed_time or 0.0
-        session = self.stream.session
-        elapsed = time.time() - session.last_stream_started - session.total_pause_time
-        if session.last_paused is not None:
-            current_pause = time.time() - session.last_paused
-            elapsed -= current_pause
-        return max(0.0, elapsed)
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
+
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of this player."""
+        features = set(BASE_PLAYER_FEATURES)
+        if not (self.group_members or self.synced_to):
+            # we only support pause when the player is not synced,
+            # because we don't want to deal with the complexity of pausing a group of players
+            # so in this case stop will be used to pause the stream instead of pausing it,
+            # which is a common approach for AirPlay players
+            features.add(PlayerFeature.PAUSE)
+        return features
+
+    @property
+    def output_buffer_duration_ms(self) -> int:
+        """Get the configured output buffer duration in milliseconds."""
+        return cast(
+            "int",
+            self.config.get_value(CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
+        )
+
+    @property
+    def wait_start(self) -> int:
+        """Get the time in ms to allow device to connect before starting stream."""
+        # TODO: make this value configurable ?
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            return AIRPLAY2_CONNECT_TIME_MS
+        return RAOP_CONNECT_TIME_MS
 
     async def get_config_entries(
         self,
@@ -145,44 +177,40 @@ class AirPlayPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries()
-
-        require_pairing = self._requires_pairing()
+        base_entries: list[ConfigEntry] = []
+        require_authentication = self._requires_pin_pairing() or self._requires_password_pairing()
+        self.logger.debug(f"Player requires authentication: {require_authentication}")
 
         # Handle pairing actions
-        if action and require_pairing:
+        if action and require_authentication:
             await self._handle_pairing_action(action=action, values=values)
 
         # Add pairing config entries for Apple TV and macOS devices
-        if require_pairing:
-            base_entries = [*self._get_pairing_config_entries(values), *base_entries]
+        if require_authentication:
+            base_entries = [*self._get_pairing_config_entries(values)]
 
         # Regular AirPlay config entries
         base_entries += [
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_DEPRECATED_EQ_BASS,
-            CONF_ENTRY_DEPRECATED_EQ_MID,
-            CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
             ConfigEntry(
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,
                 required=False,
-                label="AirPlay version to use for streaming",
+                label="AirPlay protocol version to use for streaming",
                 description="AirPlay version 1 protocol uses RAOP.\n"
                 "AirPlay version 2 is an extension of RAOP.\n"
                 "Some newer devices do not fully support RAOP and "
-                "will only work with AirPlay version 2.",
-                category="airplay",
+                "will only work with AirPlay version 2, "
+                "while older devices may only support RAOP.\n\n"
+                "In most cases the default automatic selection will work fine.",
                 options=[
-                    ConfigValueOption("AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
-                    ConfigValueOption("AirPlay 2", StreamingProtocol.AIRPLAY2.value),
+                    # TODO: only show options that are actually available for a player
+                    # based on the mdns service info
+                    ConfigValueOption("Automatically select", 0),
+                    ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
+                    ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value),
                 ],
-                default_value=StreamingProtocol.AIRPLAY2.value
-                if is_airplay2_preferred_model(
-                    self.device_info.manufacturer, self.device_info.model
-                )
-                else StreamingProtocol.RAOP.value,
+                default_value=0,
+                category="protocol_generic",
             ),
             ConfigEntry(
                 key=CONF_ENCRYPTION,
@@ -191,9 +219,11 @@ class AirPlayPlayer(Player):
                 label="Enable encryption",
                 description="Enable encrypted communication with the player, "
                 "some (3rd party) players require this to be disabled.",
-                category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=self.protocol != StreamingProtocol.RAOP,
+                category="protocol_generic",
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_ALAC_ENCODE,
@@ -202,9 +232,11 @@ class AirPlayPlayer(Player):
                 label="Enable compression",
                 description="Save some network bandwidth by sending the audio as "
                 "(lossless) ALAC at the cost of a bit of CPU.",
-                category="airplay",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=self.protocol != StreamingProtocol.RAOP,
+                category="protocol_generic",
+                advanced=True,
             ),
             CONF_ENTRY_SYNC_ADJUST,
             ConfigEntry(
@@ -214,27 +246,34 @@ class AirPlayPlayer(Player):
                 required=False,
                 label="Device password",
                 description="Some devices require a password to connect/play.",
-                category="airplay",
+                depends_on=CONF_AIRPLAY_PROTOCOL,
+                depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=self.protocol != StreamingProtocol.RAOP,
+                category="protocol_generic",
+                advanced=True,
             ),
             # airplay has fixed sample rate/bit depth so make this config entry static and hidden
             create_sample_rates_config_entry(
                 supported_sample_rates=[44100], supported_bit_depths=[16], hidden=True
             ),
             ConfigEntry(
-                key=CONF_IGNORE_VOLUME,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                label="Ignore volume reports sent by the device itself",
-                description=(
-                    "The AirPlay protocol allows devices to report their own volume "
-                    "level. \n"
-                    "For some devices this is not reliable and can cause unexpected "
-                    "volume changes. \n"
-                    "Enable this option to ignore these reports."
+                key=CONF_AIRPLAY_LATENCY,
+                type=ConfigEntryType.INTEGER,
+                default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+                range=(
+                    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
+                    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
                 ),
-                category="airplay",
+                label="Milliseconds of data to buffer",
+                description=(
+                    "The number of milliseconds of data to buffer\n"
+                    "NOTE: This adds to the latency experienced for commencement "
+                    "of playback. \n"
+                    "Try increasing value if playback is unreliable."
+                ),
+                category="protocol_generic",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
-                depends_on_value=StreamingProtocol.RAOP.value,
+                advanced=True,
             ),
         ]
 
@@ -243,170 +282,331 @@ class AirPlayPlayer(Player):
 
         return base_entries
 
-    def _requires_pairing(self) -> bool:
-        """Check if this device requires pairing (Apple TV or macOS)."""
-        if self.device_info.manufacturer.lower() != "apple":
-            return False
+    def _get_flags(self) -> int:
+        # Flags are either present via "sf" or "flags. Taken from pyatv.protocols.airplay.utils"
+        if self.airplay_discovery_info:
+            properties = self.airplay_discovery_info.properties
+        elif self.raop_discovery_info:
+            properties = self.raop_discovery_info.properties
+        else:
+            return 0
 
-        model = self.device_info.model
-        # Apple TV devices
-        if "appletv" in model.lower() or "apple tv" in model.lower():
-            return True
-        # Mac devices (including iMac, MacBook, Mac mini, Mac Pro, Mac Studio)
-        return model.startswith(("Mac", "iMac"))
+        flags = properties.get(b"sf") or properties.get(b"flags") or "0x0"
+        return int(flags, 16)
+
+    def _requires_pin_pairing(self) -> bool:
+        """Check if this device requires pairing.
+
+        Adapted from pyatv.protocols.airplay.utils.get_pairing_requirement.
+        """
+        return bool(self._get_flags() & (LEGACY_PAIRING_BIT | PIN_REQUIRED))
+
+    def _requires_password_pairing(self) -> bool:
+        """Check if this device requires password authentication.
+
+        Password can be used for pairing instead of interactive PIN entry.
+        """
+        return bool(self._get_flags() & PASSWORD_BIT)
+
+    def _get_credentials_key(self, protocol: StreamingProtocol) -> str:
+        """Get the config key for credentials for given protocol."""
+        if protocol == StreamingProtocol.RAOP:
+            return CONF_RAOP_CREDENTIALS
+        return CONF_AIRPLAY_CREDENTIALS
+
+    def _get_protocol_for_config_value(self, config_option: int) -> StreamingProtocol:
+        if config_option == StreamingProtocol.AIRPLAY2:
+            return StreamingProtocol.AIRPLAY2
+        if config_option == StreamingProtocol.RAOP:
+            return StreamingProtocol.RAOP
+        # automatic selection
+        if self.airplay_discovery_info and is_airplay2_preferred_model(
+            self.device_info.manufacturer, self.device_info.model
+        ):
+            return StreamingProtocol.AIRPLAY2
+        return StreamingProtocol.RAOP
 
     def _get_pairing_config_entries(
         self, values: dict[str, ConfigValueType] | None
     ) -> list[ConfigEntry]:
-        """Return pairing config entries for Apple TV and macOS devices.
-
-        Uses cliraop for AirPlay/RAOP pairing.
         """
+        Return pairing config entries for Apple TV and macOS devices.
+
+        Uses native pairing for both AirPlay 2 (HAP) and RAOP protocols.
+        """
+        self.logger.debug(f"_get_pairing_config_entries with values: {values}")
         entries: list[ConfigEntry] = []
 
-        # Check if we have credentials stored
-        if values and (creds := values.get(CONF_AP_CREDENTIALS)):
-            credentials = str(creds)
+        # Determine protocol name for UI
+        conf_protocol: int = 0
+        if values and (val := values.get(CONF_AIRPLAY_PROTOCOL)):
+            conf_protocol = cast("int", val)
         else:
-            credentials = str(self.config.get_value(CONF_AP_CREDENTIALS) or "")
-        has_credentials = bool(credentials)
+            conf_protocol = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL, 0) or 0)
+        protocol = self._get_protocol_for_config_value(conf_protocol)
+        protocol_name = "RAOP" if protocol == StreamingProtocol.RAOP else "AirPlay"
+        protocol_key = (
+            CONF_RAOP_CREDENTIALS
+            if protocol == StreamingProtocol.RAOP
+            else CONF_AIRPLAY_CREDENTIALS
+        )
+        has_creds_for_current_protocol = (
+            values.get(protocol_key) if values else self.config.get_value(protocol_key)
+        )
+        self.logger.debug(
+            f"Has credentials for {protocol_name}: {has_creds_for_current_protocol!s}"
+        )
 
-        if not has_credentials:
-            # Show pairing instructions and start button
-            if not self.stream and self.protocol == StreamingProtocol.RAOP:
-                # ensure we have a stream instance to track pairing state
-                from .protocols.raop import RaopStream  # noqa: PLC0415
-
-                self.stream = RaopStream(self)
-            elif not self.stream and self.protocol == StreamingProtocol.AIRPLAY2:
-                # ensure we have a stream instance to track pairing state
-                from .protocols.airplay2 import AirPlay2Stream  # noqa: PLC0415
-
-                self.stream = AirPlay2Stream(self)
-            if self.stream and not self.stream.supports_pairing:
-                # TEMP until ap2 pairing is implemented
-                return [
-                    ConfigEntry(
-                        key="pairing_unsupported",
-                        type=ConfigEntryType.ALERT,
-                        label=(
-                            "This device requires pairing but it is not supported "
-                            "by the current Music Assistant AirPlay implementation."
-                        ),
+        if not has_creds_for_current_protocol:
+            # If pairing was started, show PIN or password entry (depending on device configuration)
+            if self._active_pairing and self._active_pairing.is_pairing:
+                if self._requires_pin_pairing():
+                    self.logger.debug(f"Device requires PIN pairing for {protocol_name}")
+                    entries.append(
+                        ConfigEntry(
+                            key=CONF_PAIRING_PIN,
+                            type=ConfigEntryType.STRING,
+                            label="Enter the 4-digit PIN shown on the device",
+                            required=True,
+                            category="protocol_generic",
+                        )
                     )
-                ]
-
-            # If pairing was started, show PIN entry
-            if self.stream and self.stream.is_pairing:
-                entries.append(
-                    ConfigEntry(
-                        key=CONF_PAIRING_PIN,
-                        type=ConfigEntryType.STRING,
-                        label="Enter the 4-digit PIN shown on the device",
-                        required=True,
+                    entries.append(
+                        ConfigEntry(
+                            key=CONF_ACTION_FINISH_PAIRING,
+                            type=ConfigEntryType.ACTION,
+                            label=f"Complete {protocol_name} pairing with the PIN",
+                            action=CONF_ACTION_FINISH_PAIRING,
+                            category="protocol_generic",
+                        )
                     )
-                )
-                entries.append(
-                    ConfigEntry(
-                        key=CONF_ACTION_FINISH_PAIRING,
-                        type=ConfigEntryType.ACTION,
-                        label="Complete the pairing process with the PIN",
-                        action=CONF_ACTION_FINISH_PAIRING,
+                elif self._requires_password_pairing():
+                    self.logger.debug(f"Device requires password pairing for {protocol_name}")
+                    entries.append(
+                        ConfigEntry(
+                            key=CONF_PAIRING_PASSWORD,
+                            type=ConfigEntryType.SECURE_STRING,
+                            required=True,
+                            label="Enter the device password",
+                            category="protocol_generic",
+                        )
                     )
-                )
+                    entries.append(
+                        ConfigEntry(
+                            key=CONF_ACTION_FINISH_PAIRING,
+                            type=ConfigEntryType.ACTION,
+                            label=f"Complete {protocol_name} pairing with the password",
+                            action=CONF_ACTION_FINISH_PAIRING,
+                            category="protocol_generic",
+                        )
+                    )
             else:
+                # Show pairing instructions and start button
+                self.logger.debug(
+                    f"Device requires pairing for {protocol_name}, but no active pairing session"
+                )
                 entries.append(
                     ConfigEntry(
                         key="pairing_instructions",
                         type=ConfigEntryType.LABEL,
                         label=(
-                            "This device requires pairing before it can be used. "
+                            f"This device requires {protocol_name} pairing before it can be used. "
                             "Click the button below to start the pairing process."
                         ),
+                        category="protocol_generic",
                     )
                 )
                 entries.append(
                     ConfigEntry(
                         key=CONF_ACTION_START_PAIRING,
                         type=ConfigEntryType.ACTION,
-                        label="Start the AirPlay pairing process",
+                        label=f"Start {protocol_name} pairing",
                         action=CONF_ACTION_START_PAIRING,
+                        category="protocol_generic",
                     )
                 )
         else:
+            self.logger.debug(f"Device is already paired for {protocol_name}, showing reset option")
             # Show paired status
             entries.append(
                 ConfigEntry(
                     key="pairing_status",
                     type=ConfigEntryType.LABEL,
-                    label="Device is paired and ready to use.",
+                    label=f"Device is paired ({protocol_name}) and ready to use.",
+                    category="protocol_generic",
+                )
+            )
+            # Add reset pairing button
+            entries.append(
+                ConfigEntry(
+                    key=CONF_ACTION_RESET_PAIRING,
+                    type=ConfigEntryType.ACTION,
+                    label=f"Reset {protocol_name} pairing",
+                    action=CONF_ACTION_RESET_PAIRING,
+                    category="protocol_generic",
                 )
             )
 
         # Store credentials (hidden from UI)
-        entries.append(
-            ConfigEntry(
-                key=CONF_AP_CREDENTIALS,
-                type=ConfigEntryType.SECURE_STRING,
-                label="AirPlay Credentials",
-                default_value=credentials,
-                value=credentials,
-                required=False,
-                hidden=True,
+        for protocol in (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2):
+            conf_key = self._get_credentials_key(protocol)
+            entries.append(
+                ConfigEntry(
+                    key=conf_key,
+                    type=ConfigEntryType.SECURE_STRING,
+                    label=conf_key,
+                    default_value=None,
+                    value=values.get(conf_key) if values else None,
+                    required=False,
+                    hidden=True,
+                    category="protocol_generic",
+                )
             )
-        )
-
+            if protocol is StreamingProtocol.AIRPLAY2:
+                entries.append(
+                    ConfigEntry(
+                        key=CONF_AP2PASSWORD,
+                        type=ConfigEntryType.SECURE_STRING,
+                        label=CONF_AP2PASSWORD,
+                        default_value=None,
+                        value=values.get(CONF_PAIRING_PASSWORD) if values else None,
+                        required=False,
+                        hidden=True,
+                        category="protocol_generic",
+                    )
+                )
         return entries
 
     async def _handle_pairing_action(
         self, action: str, values: dict[str, ConfigValueType] | None
     ) -> None:
-        """Handle pairing actions using the configured protocol."""
-        if not self.stream and self.protocol == StreamingProtocol.RAOP:
-            # ensure we have a stream instance to track pairing state
-            from .protocols.raop import RaopStream  # noqa: PLC0415
+        """
+        Handle pairing actions.
 
-            self.stream = RaopStream(self)
-        elif not self.stream and self.protocol == StreamingProtocol.AIRPLAY2:
-            # ensure we have a stream instance to track pairing state
-            from .protocols.airplay2 import AirPlay2Stream  # noqa: PLC0415
+        Uses native pairing for both AirPlay 2 (HAP) and RAOP protocols.
+        Both produce credentials compatible with cliap2/cliraop respectively.
+        """
+        self.logger.debug(f"_handle_pairing_action with action: {action} and values: {values}")
+        conf_protocol: int = 0
+        if values and (val := values.get(CONF_AIRPLAY_PROTOCOL)):
+            conf_protocol = cast("int", val)
+        else:
+            conf_protocol = cast("int", self.config.get_value(CONF_AIRPLAY_PROTOCOL, 0) or 0)
+        protocol = self._get_protocol_for_config_value(conf_protocol)
+        protocol_name = "RAOP" if protocol == StreamingProtocol.RAOP else "AirPlay"
 
-            self.stream = AirPlay2Stream(self)
         if action == CONF_ACTION_START_PAIRING:
-            if self.stream and self.stream.is_pairing:
-                self.logger.warning("Pairing process already in progress for %s", self.display_name)
-                return
-            self.logger.info("Started AirPlay pairing for %s", self.display_name)
-            if self.stream:
-                await self.stream.start_pairing()
-
+            await self._reset_pairing(values, protocol, protocol_name)
+            await self._start_pairing(protocol, protocol_name)
         elif action == CONF_ACTION_FINISH_PAIRING:
-            if not values:
-                # guard
-                return
+            await self._finish_pairing(values, protocol, protocol_name)
+        elif action == CONF_ACTION_RESET_PAIRING:
+            await self._reset_pairing(values, protocol, protocol_name)
 
+    async def _start_pairing(self, protocol: StreamingProtocol, protocol_name: str) -> None:
+        """Begin a new pairing session for the given protocol."""
+        self.logger.debug(f"_start_pairing for protocol: {protocol_name}")
+        if self._active_pairing and self._active_pairing.is_pairing:
+            self.logger.warning("Pairing process already in progress for %s", self.display_name)
+            return
+
+        self.logger.info("Starting %s pairing for %s", protocol_name, self.display_name)
+
+        from .pairing import AirPlayPairing  # noqa: PLC0415
+
+        # Determine port based on protocol
+        # Note: For Apple devices, pairing always happens on the AirPlay port (7000)
+        # even when streaming will use RAOP. The RAOP port (5000) is only for streaming.
+        port: int | None = None
+        if self.airplay_discovery_info:
+            port = self.airplay_discovery_info.port or 7000
+        elif self.raop_discovery_info:
+            # Fallback for devices without AirPlay service
+            port = self.raop_discovery_info.port or 5000
+        # Get the DACP ID from the provider - must match what cliap2 uses
+        provider = cast("AirPlayProvider", self.provider)
+        device_id = provider.dacp_id
+
+        self._active_pairing = AirPlayPairing(
+            address=self.address,
+            name=self.display_name,
+            protocol=protocol,
+            logger=self.logger,
+            port=port,
+            device_id=device_id,
+        )
+        await self._active_pairing.start_pairing_session()
+
+        if self._requires_pin_pairing():
+            await self._active_pairing.start_pin_pairing()
+
+    async def _finish_pairing(
+        self,
+        values: dict[str, ConfigValueType] | None,
+        protocol: StreamingProtocol,
+        protocol_name: str,
+    ) -> None:
+        """Complete an in-progress pairing session.
+
+        ``values`` may contain a PIN or a password supplied by the user when required.
+        """
+        self.logger.debug(f"_finish_pairing for protocol: {protocol_name} with values: {values}")
+        if not values:
+            return
+        pin = None
+        if self._requires_pin_pairing():
             pin = values.get(CONF_PAIRING_PIN)
             if not pin:
                 self.logger.warning("No PIN provided for pairing")
                 return
-
-            if self.stream:
-                credentials = await self.stream.finish_pairing(pin=str(pin))
-            else:
+        elif self._requires_password_pairing():
+            pin = values.get(CONF_PAIRING_PASSWORD)
+            if not pin:
+                self.logger.warning("No password configured for pairing")
                 return
 
-            values[CONF_AP_CREDENTIALS] = credentials
+        if not self._active_pairing:
+            self.logger.warning(f"No active pairing session for {self.display_name}")
+            return
+        if not pin:
+            self.logger.warning("No authentication method provided (PIN or password)")
+            return
+        credentials = await self._active_pairing.finish_pairing(pin=str(pin))
+        self._active_pairing = None
 
-            self.logger.info(
-                "Finished AirPlay pairing for %s",
-                self.display_name,
-            )
+        # Store credentials with the protocol-specific key
+        cred_key = self._get_credentials_key(protocol)
+        values[cred_key] = credentials
+
+        self.logger.info(f"Finished {protocol_name} pairing for {self.display_name}")
+
+    async def _reset_pairing(
+        self,
+        values: dict[str, ConfigValueType] | None,
+        protocol: StreamingProtocol,
+        protocol_name: str,
+    ) -> None:
+        """Clear stored credentials for the given protocol."""
+        cred_key = self._get_credentials_key(protocol)
+        self.logger.info(f"Resetting {protocol_name} pairing for {self.display_name}")
+        if values is not None:
+            values[cred_key] = None
+            values[CONF_AP2PASSWORD] = None
+        self.config.update({cred_key: None, CONF_AP2PASSWORD: None})
 
     async def stop(self) -> None:
         """Send STOP command to player."""
         if self.stream and self.stream.session:
             # forward stop to the entire stream session
             await self.stream.session.stop()
+        elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(self.player_id):
+            # Sendspin bridge active: trigger full bridge cleanup
+            # which stops streaming, kills the CLI, and cancels writer tasks
+            pass
+        elif self.stream and self.stream.running:
+            # Fallback: stop protocol directly
+            await self.stream.stop(force=True)
+            self.stream = None
         self._attr_current_media = None
         self.update_state()
 
@@ -414,7 +614,7 @@ class AirPlayPlayer(Player):
         """Send PLAY (unpause) command to player."""
         async with self._lock:
             if self.stream and self.stream.running:
-                await self.stream.send_cli_command("ACTION=PLAY\n")
+                await self.stream.send_cli_command("ACTION=PLAY")
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -427,7 +627,7 @@ class AirPlayPlayer(Player):
         async with self._lock:
             if not self.stream or not self.stream.running:
                 return
-            await self.stream.send_cli_command("ACTION=PAUSE\n")
+            await self.stream.send_cli_command("ACTION=PAUSE")
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -436,38 +636,43 @@ class AirPlayPlayer(Player):
             raise RuntimeError("Player is synced")
         self._attr_current_media = media
 
-        # select audio source
-        audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT)
+        # Always stop any existing stream
+        if self.stream and self.stream.running and self.stream.session:
+            # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
+            self._transitioning = True
+            await self.stream.session.stop()
+            self.stream = None
 
-        # if an existing stream session is running, we could replace it with the new stream
-        if self.stream and self.stream.running:
-            # check if we need to replace the stream
-            if self.stream.prevent_playback:
-                # player is in prevent playback mode, we need to stop the stream
-                await self.stop()
-            elif self.stream.session:
-                await self.stream.session.replace_stream(audio_source)
-                return
+        # select audio source
+        audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT, self.player_id)
 
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
         stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_FLOW_PCM_FORMAT)
         await stream_session.start(audio_source)
+        self._attr_elapsed_time = time.time() - stream_session.start_time
+        self._attr_elapsed_time_last_updated = time.time()
+        self._transitioning = False
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        if self.stream and self.stream.running:
-            await self.stream.send_cli_command(f"VOLUME={volume_level}\n")
+        if self.stream and self.stream.running and self.volume_muted is not True:
+            await self.stream.send_cli_command(f"VOLUME={volume_level}")
         self._attr_volume_level = volume_level
         self.update_state()
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=volume_level,
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_VOLUME,
+        # store last state in playerconfig
+        self.mass.config.set_raw_player_config_value(
+            self.player_id, CONF_STORED_VOLUME, volume_level
         )
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Handle VOLUME_MUTE command on the player."""
+        self._attr_volume_muted = muted
+        if self.stream and self.stream.running:
+            volume = 0 if muted else (self.volume_level or 0)
+            await self.stream.send_cli_command(f"VOLUME={volume}")
+        self.update_state()
 
     async def set_members(
         self,
@@ -505,23 +710,29 @@ class AirPlayPlayer(Player):
                     if child_player.player_id in self._attr_group_members:
                         self._attr_group_members.remove(child_player.player_id)
 
+            # If group leader is left alone after removals, clear the group_members list
+            if (
+                self._attr_group_members
+                and len(self._attr_group_members) == 1
+                and self.player_id in self._attr_group_members
+            ):
+                self._attr_group_members = []
+
         # handle additions
         for player_id in player_ids_to_add or []:
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
             child_player_to_add: AirPlayPlayer | None = cast(
-                "AirPlayPlayer | None", self.mass.players.get(player_id)
+                "AirPlayPlayer | None", self.mass.players.get_player(player_id)
             )
             if not child_player_to_add:
                 # should not happen, but guard against it
                 continue
-            if child_player_to_add.synced_to and child_player_to_add.synced_to != self.player_id:
-                raise RuntimeError("Player is already synced to another player")
 
             # ensure the child does not have an existing stream session active
             if child_player_to_add := cast(
-                "AirPlayPlayer | None", self.mass.players.get(player_id)
+                "AirPlayPlayer | None", self.mass.players.get_player(player_id)
             ):
                 if (
                     child_player_to_add.playback_state == PlaybackState.PAUSED
@@ -539,17 +750,22 @@ class AirPlayPlayer(Player):
 
             # add new child to the existing stream (RAOP or AirPlay2) session (if any)
             self._attr_group_members.append(player_id)
-            if stream_session:
+            if stream_session and child_player_to_add is not None:
                 await stream_session.add_client(child_player_to_add)
+
+        # Ensure group leader includes itself in group_members when it has members
+        # This is required for the synced_to property to work correctly
+        if self._attr_group_members and self.player_id not in self._attr_group_members:
+            self._attr_group_members.insert(0, self.player_id)
 
         # always update the state after modifying group members
         self.update_state()
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
-        if not self.stream or not self.stream.running or not self.stream.session:
+        if not self.stream or not self.stream.running:
             return
-        metadata = self.current_media
+        metadata = self.state.current_media
         if not metadata:
             return
         progress = int(metadata.corrected_elapsed_time or 0)
@@ -570,6 +786,7 @@ class AirPlayPlayer(Player):
             self.mass.create_task(self.volume_set(volume))
         else:
             self._attr_volume_level = volume
+            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
             self.update_state()
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
@@ -588,38 +805,65 @@ class AirPlayPlayer(Player):
             return
         if cur_address != new_address:
             self.logger.debug("Address updated from %s to %s", cur_address, new_address)
-            self.address = cur_address
-            self._attr_device_info.ip_address = new_address
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_address)
+            self.address = new_address
         self.update_state()
 
     def set_state_from_stream(
-        self, state: PlaybackState | None = None, elapsed_time: float | None = None
+        self,
+        state: PlaybackState | None = None,
+        elapsed_time: float | None = None,
+        stream: AirPlayProtocol | None = None,
     ) -> None:
-        """Set the playback state from stream (RAOP or AirPlay2)."""
+        """Set the playback state from stream (RAOP or AirPlay2).
+
+        :param state: New playback state (or None to keep current).
+        :param elapsed_time: New elapsed time (or None to keep current).
+        :param stream: The stream instance sending this update (for validation).
+        """
+        # Ignore state updates from old/stale streams
+        if stream is not None and stream != self.stream:
+            return
         if state is not None:
-            prev_state = self._attr_playback_state
             self._attr_playback_state = state
-            if self.stream and self.stream.session:
-                if prev_state == PlaybackState.PLAYING and state != PlaybackState.PLAYING:
-                    self.stream.session.last_paused = time.time()
-                elif prev_state != PlaybackState.PLAYING and state == PlaybackState.PLAYING:
-                    if self.stream.session.last_paused is not None:
-                        pause_duration = time.time() - self.stream.session.last_paused
-                        self.stream.session.total_pause_time += pause_duration
-                        self.stream.session.last_paused = None
         if elapsed_time is not None:
             self._attr_elapsed_time = elapsed_time
             self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
 
+    def sync_volume_level(self) -> None:
+        """
+        Sync volume from parent player if needed.
+
+        AirPlay players only report their volume level when we are actually streaming to them
+        and we remember the last used/reported volume level in the player config by default
+        but if we have a parent player, that may know better about the current volume level,
+        so we try to sync from that parent player if possible
+        """
+        if (
+            self.protocol_parent_id
+            and (parent_player := self.mass.players.get_player(self.protocol_parent_id))
+            and parent_player.state.volume_level is not None
+        ):
+            if self._attr_volume_level == parent_player.state.volume_level:
+                return
+            self._attr_volume_level = parent_player.state.volume_level
+            self.mass.config.set_raw_player_config_value(
+                self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
+            )
+            self.update_state()
+
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         if self.stream:
-            # stop the stream session if it is running
+            # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
-                self.mass.create_task(self.stream.session.stop())
+                await self.stream.session.remove_client(self)
             self.stream = None
+        if self._active_pairing:
+            await self._active_pairing.close()
+            self._active_pairing = None
 
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
@@ -628,6 +872,6 @@ class AirPlayPlayer(Player):
         group_child_ids = {self.player_id}
         group_child_ids.update(self.group_members)
         for child_id in group_child_ids:
-            if client := cast("AirPlayPlayer | None", self.mass.players.get(child_id)):
+            if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
-        return sync_clients
+        return sync_clients  # base don

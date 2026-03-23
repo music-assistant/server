@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING
 
 from aiohttp.web import Request, Response
@@ -40,7 +41,15 @@ class DLNANotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
             body=await request.text(),
         )
 
-        status = await self.event_handler.handle_notify(http_request)
+        try:
+            status = await self.event_handler.handle_notify(http_request)
+        except ET.ParseError as err:
+            self.mass.logger.debug(
+                "Ignoring malformed XML in DLNA notify from %s: %s",
+                request.remote,
+                err,
+            )
+            return Response(status=400)
 
         return Response(status=status)
 

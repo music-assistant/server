@@ -34,11 +34,13 @@ if TYPE_CHECKING:
 
 def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
     """Parse tidal artist object to generic layout."""
-    artist_id = str(artist_obj["id"])
+    # Handle both full artist objects and nested ones coming from albums/tracks
+    artist_obj_data = artist_obj.get("item", artist_obj)
+    artist_id = str(artist_obj_data["id"])
     artist = Artist(
         item_id=artist_id,
         provider=provider.instance_id,
-        name=artist_obj["name"],
+        name=artist_obj_data["name"],
         provider_mappings={
             ProviderMapping(
                 item_id=artist_id,
@@ -51,8 +53,11 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
         },
     )
     # metadata
-    if artist_obj["picture"]:
-        picture_id = artist_obj["picture"].replace("-", "/")
+    if "created" in artist_obj:
+        with suppress(ValueError):
+            artist.date_added = datetime.fromisoformat(artist_obj["created"])
+    if artist_obj_data["picture"]:
+        picture_id = artist_obj_data["picture"].replace("-", "/")
         image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
         artist.metadata.images = UniqueList(
             [
@@ -70,11 +75,12 @@ def parse_artist(provider: TidalProvider, artist_obj: dict[str, Any]) -> Artist:
 
 def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
     """Parse tidal album object to generic layout."""
+    album_obj_data = album_obj.get("item", album_obj)
     name, version = parse_title_and_version(
-        album_obj.get("title", "Unknown Album"),
-        album_obj.get("version") or None,
+        album_obj_data.get("title", "Unknown Album"),
+        album_obj_data.get("version") or None,
     )
-    album_id = str(album_obj.get("id", ""))
+    album_id = str(album_obj_data.get("id", ""))
 
     album = Album(
         item_id=album_id,
@@ -97,7 +103,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
 
     # Safely handle artists array
     various_artist_album: bool = False
-    for artist_obj in album_obj.get("artists", []):
+    for artist_obj in album_obj_data.get("artists", []):
         try:
             if artist_obj.get("name") == "Various Artists":
                 various_artist_album = True
@@ -106,7 +112,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
             provider.logger.warning("Error parsing artist in album %s: %s", name, err)
 
     # Safely determine album type
-    album_type = album_obj.get("type", "ALBUM")
+    album_type = album_obj_data.get("type", "ALBUM")
     if album_type == "COMPILATION" or various_artist_album:
         album.album_type = AlbumType.COMPILATION
     elif album_type == "ALBUM":
@@ -122,7 +128,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
         album.album_type = inferred_type
 
     # Safely parse year
-    if release_date := album_obj.get("releaseDate", ""):
+    if release_date := album_obj_data.get("releaseDate", ""):
         try:
             album.year = int(release_date.split("-")[0])
         except (ValueError, IndexError):
@@ -131,16 +137,19 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
             album.metadata.release_date = datetime.fromisoformat(release_date)
 
     # Safely set metadata
-    upc = album_obj.get("upc")
+    if "created" in album_obj:
+        with suppress(ValueError):
+            album.date_added = datetime.fromisoformat(album_obj["created"])
+    upc = album_obj_data.get("upc")
     if upc:
         album.external_ids.add((ExternalID.BARCODE, upc))
 
-    album.metadata.copyright = album_obj.get("copyright", "")
-    album.metadata.explicit = album_obj.get("explicit", False)
-    album.metadata.popularity = album_obj.get("popularity", 0)
+    album.metadata.copyright = album_obj_data.get("copyright", "")
+    album.metadata.explicit = album_obj_data.get("explicit", False)
+    album.metadata.popularity = album_obj_data.get("popularity", 0)
 
     # Safely handle cover image
-    cover = album_obj.get("cover")
+    cover = album_obj_data.get("cover")
     if cover:
         picture_id = cover.replace("-", "/")
         image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
@@ -164,12 +173,13 @@ def parse_track(
     lyrics: dict[str, str] | None = None,
 ) -> Track:
     """Parse tidal track object to generic layout."""
+    track_obj_data = track_obj.get("item", track_obj)
     name, version = parse_title_and_version(
-        track_obj.get("title", "Unknown"),
-        track_obj.get("version") or None,
+        track_obj_data.get("title", "Unknown"),
+        track_obj_data.get("version") or None,
     )
-    track_id = str(track_obj.get("id", 0))
-    media_metadata = track_obj.get("mediaMetadata") or {}
+    track_id = str(track_obj_data.get("id", 0))
+    media_metadata = track_obj_data.get("mediaMetadata") or {}
     tags = media_metadata.get("tags", [])
     hi_res_lossless = any(tag in tags for tag in ["HIRES_LOSSLESS", "HI_RES_LOSSLESS"])
     track = Track(
@@ -177,7 +187,7 @@ def parse_track(
         provider=provider.instance_id,
         name=name,
         version=version,
-        duration=track_obj.get("duration", 0),
+        duration=track_obj_data.get("duration", 0),
         provider_mappings={
             ProviderMapping(
                 item_id=str(track_id),
@@ -188,37 +198,40 @@ def parse_track(
                     bit_depth=24 if hi_res_lossless else 16,
                 ),
                 url=f"https://tidal.com/track/{track_id}",
-                available=track_obj["streamReady"],
+                available=track_obj_data["streamReady"],
             )
         },
-        disc_number=track_obj.get("volumeNumber", 0) or 0,
-        track_number=track_obj.get("trackNumber", 0) or 0,
+        disc_number=track_obj_data.get("volumeNumber", 0) or 0,
+        track_number=track_obj_data.get("trackNumber", 0) or 0,
     )
-    if "isrc" in track_obj:
-        track.external_ids.add((ExternalID.ISRC, track_obj["isrc"]))
+    if "isrc" in track_obj_data:
+        track.external_ids.add((ExternalID.ISRC, track_obj_data["isrc"]))
     track.artists = UniqueList()
-    for track_artist in track_obj["artists"]:
+    for track_artist in track_obj_data["artists"]:
         artist = parse_artist(provider, track_artist)
         track.artists.append(artist)
     # metadata
-    track.metadata.explicit = track_obj["explicit"]
-    track.metadata.popularity = track_obj["popularity"]
-    if "copyright" in track_obj:
-        track.metadata.copyright = track_obj["copyright"]
+    if "created" in track_obj:
+        with suppress(ValueError):
+            track.date_added = datetime.fromisoformat(track_obj["created"])
+    track.metadata.explicit = track_obj_data["explicit"]
+    track.metadata.popularity = track_obj_data["popularity"]
+    if "copyright" in track_obj_data:
+        track.metadata.copyright = track_obj_data["copyright"]
     if lyrics and "lyrics" in lyrics:
         track.metadata.lyrics = lyrics["lyrics"]
     if lyrics and "subtitles" in lyrics:
         track.metadata.lrc_lyrics = lyrics["subtitles"]
-    if track_obj["album"]:
+    if track_obj_data["album"]:
         # Here we use an ItemMapping as Tidal returns
         # minimal data when getting an Album from a Track
         track.album = provider.get_item_mapping(
             media_type=MediaType.ALBUM,
-            key=str(track_obj["album"]["id"]),
-            name=track_obj["album"]["title"],
+            key=str(track_obj_data["album"]["id"]),
+            name=track_obj_data["album"]["title"],
         )
-        if track_obj["album"]["cover"]:
-            picture_id = track_obj["album"]["cover"].replace("-", "/")
+        if track_obj_data["album"]["cover"]:
+            picture_id = track_obj_data["album"]["cover"].replace("-", "/")
             image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
             track.metadata.images = UniqueList(
                 [
@@ -237,8 +250,9 @@ def parse_playlist(
     provider: TidalProvider, playlist_obj: dict[str, Any], is_mix: bool = False
 ) -> Playlist:
     """Parse tidal playlist object to generic layout."""
+    playlist_obj_data = playlist_obj.get("playlist", playlist_obj)
     # Get ID based on playlist type
-    raw_id = str(playlist_obj.get("id" if is_mix else "uuid", ""))
+    raw_id = str(playlist_obj_data.get("id" if is_mix else "uuid", ""))
 
     # Add prefix for mixes to distinguish them
     playlist_id = f"mix_{raw_id}" if is_mix else raw_id
@@ -249,7 +263,7 @@ def parse_playlist(
         is_editable = False
     else:
         creator_id = None
-        creator = playlist_obj.get("creator", {})
+        creator = playlist_obj_data.get("creator", {})
         if creator:
             creator_id = creator.get("id")
         is_editable = bool(creator_id and str(creator_id) == str(provider.auth.user_id))
@@ -269,7 +283,7 @@ def parse_playlist(
     playlist = Playlist(
         item_id=playlist_id,
         provider=provider.instance_id,
-        name=playlist_obj.get("title", "Unknown"),
+        name=playlist_obj_data.get("title", "Unknown"),
         owner=owner_name,
         provider_mappings={
             ProviderMapping(
@@ -284,16 +298,18 @@ def parse_playlist(
     )
 
     # Metadata - different fields based on type
-
+    if "created" in playlist_obj:
+        with suppress(ValueError):
+            playlist.date_added = datetime.fromisoformat(playlist_obj["created"])
     # Add the description from the subtitle for mixes
     if is_mix:
-        subtitle = playlist_obj.get("subTitle")
+        subtitle = playlist_obj_data.get("subTitle")
         if subtitle:
             playlist.metadata.description = subtitle
 
     # Handle images differently based on type
     if is_mix:
-        if pictures := playlist_obj.get("images", {}).get("MEDIUM"):
+        if pictures := playlist_obj_data.get("images", {}).get("MEDIUM"):
             image_url = pictures.get("url", "")
             if image_url:
                 playlist.metadata.images = UniqueList(
@@ -306,7 +322,7 @@ def parse_playlist(
                         )
                     ]
                 )
-    elif picture := (playlist_obj.get("squareImage") or playlist_obj.get("image")):
+    elif picture := (playlist_obj_data.get("squareImage") or playlist_obj_data.get("image")):
         picture_id = picture.replace("-", "/")
         image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
         playlist.metadata.images = UniqueList(

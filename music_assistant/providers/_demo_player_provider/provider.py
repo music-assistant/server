@@ -49,10 +49,7 @@ class DemoPlayerprovider(PlayerProvider):
         # this is an optional method that you can implement if
         # relevant or leave out completely if not needed.
         # it will be called after the provider has been fully loaded into Music Assistant.
-        # you can use this for instance to trigger custom (non-mdns) discovery of players
-        # or any other logic that needs to run after the provider is fully loaded.
         self.logger.info("DemoPlayerProvider loaded")
-        await self.discover_players()
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -77,6 +74,7 @@ class DemoPlayerprovider(PlayerProvider):
         # OPTIONAL
         # this is an optional method that you can implement if
         # you want to do something special when a player is enabled.
+        super().on_player_enabled(player_id)
 
     def on_player_disabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets disabled."""
@@ -84,6 +82,7 @@ class DemoPlayerprovider(PlayerProvider):
         # this is an optional method that you can implement if
         # you want to do something special when a player is disabled.
         # e.g. you can stop polling the player or disconnect from it.
+        super().on_player_disabled(player_id)
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player from this provider."""
@@ -118,7 +117,7 @@ class DemoPlayerprovider(PlayerProvider):
         # handle removed player
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
+            if mass_player := self.mass.players.get_player(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 await self.mass.players.unregister(player_id)
@@ -128,7 +127,7 @@ class DemoPlayerprovider(PlayerProvider):
         # check if we have an existing player in the player manager
         # note that you can use this point to update the player connection info
         # if that changed (e.g. ip address)
-        if mass_player := self.mass.players.get(player_id):
+        if mass_player := self.mass.players.get_player(player_id):
             # existing player found in the player manager,
             # this is an existing player that has been updated/reconnected
             # or simply a re-announcement on mdns.

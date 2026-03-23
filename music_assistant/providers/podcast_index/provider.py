@@ -127,16 +127,15 @@ class PodcastIndexProvider(MusicProvider):
 
             if subpath == BROWSE_TRENDING:
                 return await self._browse_trending()
-            elif subpath == BROWSE_RECENT:
+            if subpath == BROWSE_RECENT:
                 return await self._browse_recent_episodes()
-            elif subpath == BROWSE_CATEGORIES:
+            if subpath == BROWSE_CATEGORIES:
                 if len(subpath_parts) > 1:
                     # Browse specific category - category name is directly in path
                     category_name = subpath_parts[1]
                     return await self._browse_category_podcasts(category_name)
-                else:
-                    # Browse categories
-                    return await self._browse_categories()
+                # Browse categories
+                return await self._browse_categories()
 
         return []
 
@@ -174,7 +173,7 @@ class PodcastIndexProvider(MusicProvider):
 
         self.logger.debug("Adding podcast %s to library", item.name)
         stored_podcasts.append(feed_url)
-        self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -206,7 +205,7 @@ class PodcastIndexProvider(MusicProvider):
 
         self.logger.debug("Removing podcast %s from library", prov_item_id)
         stored_podcasts = [x for x in stored_podcasts if x != feed_url]
-        self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
@@ -363,10 +362,9 @@ class PodcastIndexProvider(MusicProvider):
         """Get single MediaItem from provider."""
         if media_type == MediaType.PODCAST:
             return await self.get_podcast(prov_item_id)
-        elif media_type == MediaType.PODCAST_EPISODE:
+        if media_type == MediaType.PODCAST_EPISODE:
             return await self.get_podcast_episode(prov_item_id)
-        else:
-            raise MediaNotFoundError(f"Media type {media_type} not supported by this provider")
+        raise MediaNotFoundError(f"Media type {media_type} not supported by this provider")
 
     async def _fetch_podcasts(
         self, endpoint: str, params: dict[str, Any] | None = None
