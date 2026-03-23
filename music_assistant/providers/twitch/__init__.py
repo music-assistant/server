@@ -645,11 +645,23 @@ class TwitchProvider(MusicProvider):
                 return
 
             fd = await asyncio.to_thread(stream.open)
+            prev_ad_state = False
             try:
                 while True:
                     chunk = await asyncio.to_thread(fd.read, STREAM_CHUNK_SIZE)
                     if chunk:
                         reconnects = 0
+                        # Update stream title based on ad break state
+                        from music_assistant.providers.twitch.ad_handling import (  # noqa: PLC0415
+                            ad_break_active,
+                        )
+
+                        if ad_break_active != prev_ad_state:
+                            prev_ad_state = ad_break_active
+                            if ad_break_active:
+                                streamdetails.stream_title = f"{item_id} - Ad Break (silenced)"
+                            else:
+                                streamdetails.stream_title = ""
                         yield chunk
                         continue
                     break
@@ -664,7 +676,7 @@ class TwitchProvider(MusicProvider):
 
     def _resolve_streams(self, channel: str) -> dict[str, Any] | None:
         """Resolve Streamlink streams for a channel. Blocking — call via to_thread."""
-        from streamlink import Streamlink  # noqa: PLC0415
+        from streamlink import Streamlink  # type: ignore[attr-defined]  # noqa: PLC0415
 
         from music_assistant.providers.twitch.ad_handling import patch_ad_handling  # noqa: PLC0415
 

@@ -32,10 +32,10 @@ def patch_ad_handling(mode: str) -> None:
 
     if mode == "passthrough":
 
-        class PassthroughTwitchWriter(TwitchHLSStreamWriter):  # type: ignore[misc]
+        class PassthroughTwitchWriter(TwitchHLSStreamWriter):
             """Writer that logs ad segments but passes them through."""
 
-            def should_filter_segment(self, segment: TwitchHLSSegment) -> bool:
+            def should_filter_segment(self, segment: TwitchHLSSegment) -> bool:  # type: ignore[override]
                 """Never filter — let all segments through."""
                 if segment.ad:
                     logger.debug(
@@ -57,10 +57,10 @@ def patch_ad_handling(mode: str) -> None:
             silence_path,
         )
 
-        class SilenceInjectingTwitchWriter(TwitchHLSStreamWriter):  # type: ignore[misc]
+        class SilenceInjectingTwitchWriter(TwitchHLSStreamWriter):
             """Writer that replaces ad segments with silence."""
 
-            def write(
+            def write(  # type: ignore[override]
                 self,
                 segment: TwitchHLSSegment,
                 result: Any,
@@ -82,7 +82,7 @@ def patch_ad_handling(mode: str) -> None:
                     )
                     # Discard ad bytes without buffering
                     result.raw.drain_conn()
-                    self.reader.buffer.write(silence_data * copies)
+                    self.reader.buffer.write(silence_data * copies)  # type: ignore[no-untyped-call]
                     self._prev_was_ad = True
                 else:
                     ad_break_active = False
