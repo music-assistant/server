@@ -30,7 +30,12 @@ class FakeTwitchHLSSegment:
 
 
 class FakeTwitchHLSStreamWriter:
-    """Mock Streamlink TwitchHLSStreamWriter base class."""
+    """Mock Streamlink TwitchHLSStreamWriter base class.
+
+    Mirrors real TwitchHLSStreamWriter behavior:
+    - should_filter_segment returns segment.ad (filters ads by default)
+    - reader has is_paused() and resume() for pause/resume state machine
+    """
 
     _prev_was_ad: bool = False
 
@@ -38,14 +43,16 @@ class FakeTwitchHLSStreamWriter:
         """Initialize with a mock reader/buffer."""
         self.reader = Mock()
         self.reader.buffer = Mock()
+        self.reader.is_paused = Mock(return_value=False)
+        self.reader.resume = Mock()
 
     def write(self, segment: Any, result: Any, *data: Any) -> None:
         """Store segment content for verification."""
         self.reader.buffer.write(result.content)
 
     def should_filter_segment(self, segment: Any) -> bool:
-        """Return False — never filter segments."""
-        return False
+        """Return segment.ad — matches real TwitchHLSStreamWriter."""
+        return bool(segment.ad)
 
 
 class FakeTwitchHLSStreamReader:
@@ -312,6 +319,79 @@ def test_ad_break_flag_cleared_on_content() -> None:
 
     writer.write(segment, result)
     assert ah.ad_break_active is False
+
+
+# --- Silence Mode — Pipeline Integration ---
+
+
+def test_silence_writer_does_not_filter_ad_segments() -> None:
+    """Silence writer's should_filter_segment returns False for ad segments.
+
+    The base TwitchHLSStreamWriter filters ads (returns segment.ad), which
+    prevents write() from being called. The silence writer must override this
+    to return False so ad segments reach write() for silence injection.
+    """
+    from music_assistant.providers.twitch.ad_handling import patch_ad_handling
+
+    patch_ad_handling("silence")
+
+    writer_cls = FakeTwitchHLSStreamReader.__writer__
+    writer = object.__new__(writer_cls)
+
+    ad_segment = FakeTwitchHLSSegment(ad=True, num=1, duration=2.0)
+    content_segment = FakeTwitchHLSSegment(ad=False, num=2, duration=2.0)
+
+    assert writer.should_filter_segment(ad_segment) is False
+    assert writer.should_filter_segment(content_segment) is False
+
+
+def test_silence_writer_resumes_paused_reader() -> None:
+    """Silence writer resumes the reader after writing silence when reader is paused.
+
+    The base HLSStreamWriter pauses the reader during filtered segments.
+    When our writer injects silence, it must resume the reader so fd.read()
+    can deliver the silence bytes to the consumer.
+    """
+    from music_assistant.providers.twitch.ad_handling import patch_ad_handling
+
+    patch_ad_handling("silence")
+
+    writer_cls = FakeTwitchHLSStreamReader.__writer__
+    writer = object.__new__(writer_cls)
+    writer.reader = Mock()
+    writer.reader.buffer = Mock()
+    writer.reader.is_paused = Mock(return_value=True)
+    writer.reader.resume = Mock()
+
+    segment = FakeTwitchHLSSegment(ad=True, num=1, duration=2.0)
+    result = Mock()
+    result.raw = Mock()
+
+    writer.write(segment, result)
+
+    writer.reader.resume.assert_called_once()
+
+
+def test_silence_writer_skips_resume_when_not_paused() -> None:
+    """Silence writer does not call resume when reader is not paused."""
+    from music_assistant.providers.twitch.ad_handling import patch_ad_handling
+
+    patch_ad_handling("silence")
+
+    writer_cls = FakeTwitchHLSStreamReader.__writer__
+    writer = object.__new__(writer_cls)
+    writer.reader = Mock()
+    writer.reader.buffer = Mock()
+    writer.reader.is_paused = Mock(return_value=False)
+    writer.reader.resume = Mock()
+
+    segment = FakeTwitchHLSSegment(ad=True, num=1, duration=2.0)
+    result = Mock()
+    result.raw = Mock()
+
+    writer.write(segment, result)
+
+    writer.reader.resume.assert_not_called()
 
 
 # --- Passthrough Mode ---
