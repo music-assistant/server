@@ -912,12 +912,26 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
 async def get_icy_radio_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
-    """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
+    """Get (radio) audio stream from HTTP, including ICY metadata retrieval.
+
+    After a successful HTTP status, ICY frames are parsed and ``stream_title`` on
+    ``streamdetails`` is updated from stream metadata.
+
+    If the server returns an error status (4xx/5xx), :exc:`aiohttp.ClientResponseError`
+    is raised before any bytes are yielded, matching plain HTTP radio streams. Direct
+    callers may catch that exception; for mirror URLs use
+    :func:`get_reconnecting_icy_radio_stream`, which reconnects and rotates URLs.
+
+    :param mass: MusicAssistant instance.
+    :param url: Stream URL.
+    :param streamdetails: Stream details; ``stream_title`` is updated from ICY metadata.
+    """
     timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
     LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
     async with _connect_radio_stream(
         mass, url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
     ) as resp:
+        resp.raise_for_status()
         headers = resp.headers
         meta_int = int(headers["icy-metaint"])
         while True:
@@ -1118,6 +1132,7 @@ async def get_reconnecting_radio_stream(
         async with _connect_radio_stream(
             m, stream_url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
         ) as resp:
+            resp.raise_for_status()
             async for chunk in resp.content.iter_any():
                 yield chunk
 
