@@ -43,6 +43,7 @@ def create_clientsession(
         connector=_get_connector(mass, verify_ssl),
         json_serialize=json_dumps,
         response_class=MassClientResponse,
+        trust_env=True,
         **kwargs,
     )
     # Prevent packages accidentally overriding our default headers
