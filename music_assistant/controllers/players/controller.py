@@ -2182,6 +2182,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         When a sync group references a protocol player ID instead of
         the parent player ID, correct it using the cached protocol parent mapping.
         """
+        # wait until all players have their protocols linked
         await asyncio.sleep(300)
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         total_fixes = 0
