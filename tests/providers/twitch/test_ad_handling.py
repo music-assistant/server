@@ -317,6 +317,25 @@ def test_ad_break_flag_cleared_on_content() -> None:
 # --- Passthrough Mode ---
 
 
+def test_ad_segment_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Ad segment in passthrough mode is logged (debug level)."""
+    import logging
+
+    from music_assistant.providers.twitch.ad_handling import patch_ad_handling
+
+    patch_ad_handling("passthrough")
+
+    writer_cls = FakeTwitchHLSStreamReader.__writer__
+    writer = object.__new__(writer_cls)
+
+    segment = FakeTwitchHLSSegment(ad=True, num=1, duration=2.0)
+
+    with caplog.at_level(logging.DEBUG):
+        writer.should_filter_segment(segment)
+
+    assert any("ad segment" in r.message.lower() for r in caplog.records)
+
+
 def test_ad_segment_passes_through() -> None:
     """In passthrough mode, should_filter_segment returns False for ad segments."""
     from music_assistant.providers.twitch.ad_handling import patch_ad_handling

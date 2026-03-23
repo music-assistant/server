@@ -188,6 +188,28 @@ async def test_streamlink_token_omitted_when_empty(provider: TwitchProvider) -> 
     mock_session.set_option.assert_not_called()
 
 
+async def test_invalid_streamlink_token_stream_still_plays(provider: TwitchProvider) -> None:
+    """Bad/expired streamlink_token doesn't prevent playback."""
+    mock_session = MagicMock()
+    mock_session.streams.return_value = {"audio_only": MagicMock()}
+
+    provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
+        "streamlink_token": "invalid_expired_token",
+        "ad_handling": "silence",
+        "log_level": "GLOBAL",
+    }.get(key, default)
+
+    with (
+        patch("streamlink.Streamlink", return_value=mock_session),
+        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+    ):
+        result = provider._resolve_streams("testchannel")
+
+    # Stream should still resolve despite invalid token
+    assert result is not None
+    assert "audio_only" in result
+
+
 async def test_reconnect_delay_is_half_second() -> None:
     """Reconnect delay between attempts is 0.5 seconds."""
     assert RECONNECT_DELAY == 0.5

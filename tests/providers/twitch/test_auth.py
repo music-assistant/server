@@ -195,6 +195,17 @@ async def test_401_triggers_refresh(provider: TwitchProvider) -> None:
     assert result == {"data": []}
 
 
+async def test_refresh_no_refresh_token_raises(provider: TwitchProvider) -> None:
+    """Refresh with no stored refresh token raises LoginFailed."""
+    provider._access_token = "some_token"
+    provider._refresh_token = None
+    provider._client_id = "test_client"
+    provider._client_secret = "test_secret"
+
+    with pytest.raises(LoginFailed, match=r"(?i)refresh"):
+        await provider._refresh_access_token()
+
+
 async def test_refresh_saves_new_refresh_token(provider: TwitchProvider) -> None:
     """When refresh response includes new refresh_token, it's saved (token rotation)."""
     provider._access_token = "old_access"

@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any
-
+import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import BrowseFolder, Radio
 
 from music_assistant.providers.twitch import TwitchProvider
-from tests.providers.twitch.conftest import MockResponse, make_mock_session_method
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def load_fixture(name: str) -> dict[str, Any]:
-    """Load a JSON fixture file."""
-    with (FIXTURES / name).open() as f:
-        return json.load(f)  # type: ignore[no-any-return]
+from tests.providers.twitch.conftest import (
+    MockResponse,
+    load_fixture,
+    make_mock_session_method,
+)
 
 
 def _users_response() -> MockResponse:
@@ -388,20 +382,16 @@ async def test_browse_following_sorts_alphabetically(provider: TwitchProvider) -
 # --- Browse Error Handling ---
 
 
-async def test_browse_api_error_returns_empty(provider: TwitchProvider) -> None:
-    """API failure during browse returns empty, not exception."""
+async def test_browse_api_error_raises_provider_unavailable(provider: TwitchProvider) -> None:
+    """API failure during browse raises ProviderUnavailableError."""
     _setup_authenticated_provider(provider)
 
     provider.mass.http_session.get = make_mock_session_method(  # type: ignore[method-assign]
         MockResponse(status=500)
     )
 
-    # Should handle the error gracefully
-    try:
-        items = await provider.browse(f"{provider.instance_id}://live")
-    except Exception:
-        items = []  # If it raises, that's also a valid test — implementation should be fixed
-    assert isinstance(items, list)
+    with pytest.raises(ProviderUnavailableError):
+        await provider.browse(f"{provider.instance_id}://live")
 
 
 async def test_browse_live_empty_when_none_live(provider: TwitchProvider) -> None:

@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from music_assistant.providers.twitch import SUPPORTED_FEATURES, TwitchProvider
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def load_fixture(name: str) -> dict[str, Any]:
+    """Load a JSON fixture file by name."""
+    with (FIXTURES / name).open() as f:
+        return json.load(f)  # type: ignore[no-any-return]
 
 
 class MockResponse:

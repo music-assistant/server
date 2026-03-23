@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import time
-from pathlib import Path
-from typing import Any
 
 import pytest
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.twitch import TwitchProvider
-from tests.providers.twitch.conftest import MockResponse, make_mock_session_method
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def load_fixture(name: str) -> dict[str, Any]:
-    """Load a JSON fixture file."""
-    with (FIXTURES / name).open() as f:
-        return json.load(f)  # type: ignore[no-any-return]
-
+from tests.providers.twitch.conftest import (
+    MockResponse,
+    load_fixture,
+    make_mock_session_method,
+)
 
 # --- Request Pattern ---
 
@@ -139,6 +131,25 @@ async def test_live_streams_empty_input(provider: TwitchProvider) -> None:
 
     streams = await provider._get_live_streams([])
     assert streams == []
+
+
+async def test_user_profiles_batches_over_100(provider: TwitchProvider) -> None:
+    """150 user IDs split into batch of 100 + batch of 50 for profiles."""
+    provider._access_token = "test_token"
+    provider._client_id = "test_client"
+
+    user_ids = [str(i) for i in range(150)]
+
+    provider.mass.http_session.get = make_mock_session_method(  # type: ignore[method-assign]
+        [
+            MockResponse(status=200, json_data={"data": [{"id": "1", "login": "a"}]}),
+            MockResponse(status=200, json_data={"data": [{"id": "101", "login": "b"}]}),
+        ]
+    )
+
+    profiles = await provider._get_user_profiles(user_ids)
+    assert len(profiles) == 2
+    assert provider.mass.http_session.get.call_count == 2
 
 
 # --- Caching ---

@@ -4,24 +4,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from music_assistant.providers.twitch.eventsub import EVENTSUB_WS_URL, EventSubClient
-from tests.providers.twitch.conftest import MockResponse
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def load_fixture(name: str) -> dict[str, Any]:
-    """Load a JSON fixture file."""
-    with (FIXTURES / name).open() as f:
-        return json.load(f)  # type: ignore[no-any-return]
+from tests.providers.twitch.conftest import MockResponse, load_fixture
 
 
 @pytest.fixture
