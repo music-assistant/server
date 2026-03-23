@@ -5,7 +5,75 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+from music_assistant_models.enums import PlaybackState
+
 from music_assistant.providers.twitch import TwitchProvider
+from tests.providers.twitch.conftest import make_queue_event
+
+# --- Event Bus Dispatch ---
+
+
+async def test_on_queue_updated_dispatches_playing_twitch(provider: TwitchProvider) -> None:
+    """Mock event with state=PLAYING + Twitch URI dispatches to _handle_queue_playing."""
+    event = make_queue_event(PlaybackState.PLAYING, uri="twitch://channel/streamer_a")
+
+    with patch.object(provider, "_handle_queue_playing", new_callable=AsyncMock) as mock_handler:
+        await provider._on_queue_updated(event)
+
+    mock_handler.assert_called_once_with("twitch://channel/streamer_a", "streamer_a")
+
+
+async def test_on_queue_updated_dispatches_playing_non_twitch(
+    provider: TwitchProvider,
+) -> None:
+    """Mock event with state=PLAYING + non-Twitch URI dispatches to _handle_queue_stopped."""
+    event = make_queue_event(PlaybackState.PLAYING, uri="spotify://track/abc123")
+
+    with patch.object(provider, "_handle_queue_stopped", new_callable=AsyncMock) as mock_handler:
+        await provider._on_queue_updated(event)
+
+    mock_handler.assert_called_once()
+
+
+async def test_on_queue_updated_dispatches_paused(provider: TwitchProvider) -> None:
+    """Mock event with state=PAUSED dispatches to _handle_queue_paused."""
+    event = make_queue_event(PlaybackState.PAUSED)
+
+    with patch.object(provider, "_handle_queue_paused", new_callable=AsyncMock) as mock_handler:
+        await provider._on_queue_updated(event)
+
+    mock_handler.assert_called_once()
+
+
+async def test_on_queue_updated_dispatches_idle(provider: TwitchProvider) -> None:
+    """Mock event with state=IDLE dispatches to _handle_queue_idle."""
+    event = make_queue_event(PlaybackState.IDLE)
+
+    with patch.object(provider, "_handle_queue_idle", new_callable=AsyncMock) as mock_handler:
+        await provider._on_queue_updated(event)
+
+    mock_handler.assert_called_once()
+
+
+@pytest.mark.parametrize("invalid_event", [None, object()], ids=["none", "malformed"])
+async def test_on_queue_updated_ignores_invalid_events(
+    provider: TwitchProvider, invalid_event: object
+) -> None:
+    """Invalid events (None, no data attr) return without calling any handler."""
+    with (
+        patch.object(provider, "_handle_queue_playing", new_callable=AsyncMock) as play,
+        patch.object(provider, "_handle_queue_stopped", new_callable=AsyncMock) as stop,
+        patch.object(provider, "_handle_queue_paused", new_callable=AsyncMock) as pause,
+        patch.object(provider, "_handle_queue_idle", new_callable=AsyncMock) as idle,
+    ):
+        await provider._on_queue_updated(invalid_event)
+
+    play.assert_not_called()
+    stop.assert_not_called()
+    pause.assert_not_called()
+    idle.assert_not_called()
+
 
 # --- Event Bus Lifecycle ---
 
@@ -68,9 +136,6 @@ async def test_playing_same_channel_no_duplicate_subscribe(provider: TwitchProvi
 
     # Should not subscribe again — already on same channel
     provider._eventsub.subscribe_raids.assert_not_called()
-
-
-# --- Pause / Stop / Resume ---
 
 
 async def test_pause_unsubscribes_keeps_ws_warm(provider: TwitchProvider) -> None:
@@ -183,7 +248,6 @@ async def test_raid_triggers_play_media(provider: TwitchProvider) -> None:
 
     provider.mass.player_queues.play_media.assert_called_once()
     call_args = provider.mass.player_queues.play_media.call_args
-    # Check the media URI contains the raid target
     assert "streamer_c" in str(call_args)
 
 
@@ -239,7 +303,6 @@ async def test_rapid_raids_last_wins(provider: TwitchProvider) -> None:
     await provider._on_raid("streamer_a", "streamer_b")
     await provider._on_raid("streamer_a", "streamer_c")
 
-    # play_media called twice — last call should be for streamer_c
     assert provider.mass.player_queues.play_media.call_count == 2
     last_call = provider.mass.player_queues.play_media.call_args
     assert "streamer_c" in str(last_call)

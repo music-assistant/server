@@ -383,20 +383,39 @@ async def test_subscribe_timeout_when_not_ready(client: EventSubClient) -> None:
     assert client._current_broadcaster_user_id == "123"
 
 
-async def test_subscribe_skips_if_welcome_already_subscribed(client: EventSubClient) -> None:
-    """If welcome handler already created sub, don't duplicate."""
+async def test_subscribe_skips_if_welcome_already_subscribed(
+    client: EventSubClient, http_session: Mock
+) -> None:
+    """If welcome handler already created sub while waiting, don't duplicate.
+
+    Simulates the race condition: subscribe_raids waits for ready, and during
+    the wait the welcome handler creates a subscription. When subscribe_raids
+    resumes, it checks _current_subscription_id and skips _create_subscription.
+    """
     client._session_id = "test_session"
-    client._ready.set()
-    client._current_subscription_id = "already_subbed"  # welcome handler set this
-    client._current_broadcaster_user_id = "123"
+    client._current_broadcaster_user_id = None
+    client._current_subscription_id = None
 
-    # No unsubscribe needed (same broadcaster), but already subscribed
-    await client.subscribe_raids("123")
+    # Simulate: ready not set yet, will be set by the welcome handler
+    # which also sets _current_subscription_id
+    original_wait_for = asyncio.wait_for
 
-    # Should skip — subscription already exists
-    # The existing sub means subscribe_raids returns early after unsub+re-sub
-    # Actually per the implementation, it unsubscribes first, then checks
-    # Let's just verify no crash
+    async def wait_that_simulates_welcome(coro: Any, timeout: float) -> Any:
+        # Simulate the welcome handler creating a sub during the wait
+        client._current_subscription_id = "sub_from_welcome"
+        client._ready.set()
+        return await original_wait_for(coro, timeout=timeout)
+
+    with patch(
+        "music_assistant.providers.twitch.eventsub.asyncio.wait_for",
+        side_effect=wait_that_simulates_welcome,
+    ):
+        await client.subscribe_raids("123")
+
+    # No POST should have been made — the welcome handler's sub was detected
+    http_session.post.assert_not_called()
+    # The welcome handler's subscription ID should be preserved
+    assert client._current_subscription_id == "sub_from_welcome"
 
 
 # --- Raid Notification ---

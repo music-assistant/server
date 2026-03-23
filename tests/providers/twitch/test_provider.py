@@ -1,6 +1,6 @@
 """Test Twitch Provider lifecycle and config."""
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
@@ -12,6 +12,7 @@ from music_assistant.providers.twitch import (
     get_config_entries,
     setup,
 )
+from tests.providers.twitch.conftest import config_side_effect
 
 # --- Provider Loading ---
 
@@ -76,6 +77,53 @@ async def test_provider_domain(provider: TwitchProvider) -> None:
 async def test_provider_instance_id(provider: TwitchProvider) -> None:
     """Provider instance_id comes from config."""
     assert provider.instance_id == "twitch_test"
+
+
+# --- Provider Initialization ---
+
+
+async def test_handle_async_init_resolves_user_id(provider: TwitchProvider) -> None:
+    """handle_async_init() with valid access_token calls /helix/users and stores _user_id."""
+    provider.config.get_value.side_effect = config_side_effect(  # type: ignore[attr-defined]
+        {
+            "client_id": "test_client",
+            "client_secret": "test_secret",
+            "access_token": "test_token",
+            "refresh_token": "test_refresh",
+        }
+    )
+
+    with (
+        patch.object(
+            provider,
+            "_api_get",
+            new_callable=AsyncMock,
+            return_value={"data": [{"id": "12345", "login": "testuser"}]},
+        ),
+        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+    ):
+        await provider.handle_async_init()
+
+    assert provider._user_id == "12345"
+
+
+async def test_handle_async_init_no_token_skips(provider: TwitchProvider) -> None:
+    """handle_async_init() with no access_token does not call API."""
+    provider.config.get_value.side_effect = config_side_effect(  # type: ignore[attr-defined]
+        {
+            "client_id": "test_client",
+            "client_secret": "test_secret",
+        }
+    )
+
+    with (
+        patch.object(provider, "_api_get", new_callable=AsyncMock) as mock_api,
+        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+    ):
+        await provider.handle_async_init()
+
+    mock_api.assert_not_called()
+    assert provider._user_id is None
 
 
 # --- Config Entries ---

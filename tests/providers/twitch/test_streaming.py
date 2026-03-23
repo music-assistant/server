@@ -370,26 +370,22 @@ async def test_offline_channel_returns_empty(
         assert chunks == []
 
 
-async def test_nonexistent_channel_returns_empty(
+async def test_streamlink_plugin_error_returns_empty(
     provider: TwitchProvider, stream_details: StreamDetails
 ) -> None:
-    """get_audio_stream() for nonexistent channel yields nothing."""
-    with patch.object(provider, "_resolve_streams", return_value=None):
-        chunks = []
-        async for chunk in provider.get_audio_stream(stream_details):
-            chunks.append(chunk)
-        assert chunks == []
+    """Streamlink PluginError during resolution is caught, generator ends cleanly.
 
+    Mocks at the Streamlink session level to exercise the except block in
+    _resolve_streams(), not at _resolve_streams() itself.
+    """
+    mock_session = MagicMock()
+    mock_session.streams.side_effect = Exception("No plugin can handle URL")
+    provider._streamlink_session = mock_session
 
-async def test_streamlink_exception_handled(
-    provider: TwitchProvider, stream_details: StreamDetails
-) -> None:
-    """Streamlink exception during resolution doesn't crash the provider."""
-    with patch.object(provider, "_resolve_streams", return_value=None):
-        chunks = []
-        async for chunk in provider.get_audio_stream(stream_details):
-            chunks.append(chunk)
-        assert chunks == []
+    chunks = []
+    async for chunk in provider.get_audio_stream(stream_details):
+        chunks.append(chunk)
+    assert chunks == []
 
 
 async def test_exception_during_read_closes_fd(

@@ -21,7 +21,11 @@ from music_assistant.providers.twitch import (
     TwitchProvider,
     get_config_entries,
 )
-from tests.providers.twitch.conftest import MockResponse, make_mock_session_method
+from tests.providers.twitch.conftest import (
+    MockResponse,
+    load_fixture,
+    make_mock_session_method,
+)
 
 # --- Config Entries ---
 
@@ -174,24 +178,18 @@ async def test_auth_callback_exchanges_code_for_tokens(mass_mock: Mock) -> None:
     mock_auth.callback_url = "http://localhost:8095/callback/test"
     mock_auth.authenticate = AsyncMock(return_value={"code": "valid_code"})
 
-    # Token exchange succeeds
+    # Token exchange succeeds — use fixture for response data
+    fixture = load_fixture("token_exchange.json")
     mass_mock.http_session.post = make_mock_session_method(
-        MockResponse(
-            status=200,
-            json_data={
-                "access_token": "new_access_token",
-                "refresh_token": "new_refresh_token",
-                "expires_in": 14400,
-            },
-        )
+        MockResponse(status=200, json_data=fixture)
     )
 
     with patch("music_assistant.providers.twitch.AuthenticationHelper", return_value=mock_auth):
         entries = await get_config_entries(mass_mock, action=CONF_ACTION_AUTH, values=values)
 
     # Tokens should be stored in values
-    assert values[CONF_ACCESS_TOKEN] == "new_access_token"
-    assert values[CONF_REFRESH_TOKEN] == "new_refresh_token"
+    assert values[CONF_ACCESS_TOKEN] == fixture["access_token"]
+    assert values[CONF_REFRESH_TOKEN] == fixture["refresh_token"]
 
     # Config entries should show authenticated state
     label_entries = [e for e in entries if e.type == ConfigEntryType.LABEL]
@@ -220,15 +218,9 @@ async def test_401_triggers_refresh(provider: TwitchProvider) -> None:
             MockResponse(status=200, json_data={"data": []}),
         ]
     )
+    fixture = load_fixture("token_refresh.json")
     provider.mass.http_session.post = make_mock_session_method(  # type: ignore[method-assign]
-        MockResponse(
-            status=200,
-            json_data={
-                "access_token": "new_token",
-                "refresh_token": "new_refresh",
-                "expires_in": 14400,
-            },
-        )
+        MockResponse(status=200, json_data=fixture)
     )
 
     result = await provider._api_get("/helix/streams")
@@ -253,20 +245,14 @@ async def test_refresh_saves_new_refresh_token(provider: TwitchProvider) -> None
     provider._client_id = "test_client_id"
     provider._client_secret = "test_client_secret"
 
+    fixture = load_fixture("token_refresh.json")
     provider.mass.http_session.post = make_mock_session_method(  # type: ignore[method-assign]
-        MockResponse(
-            status=200,
-            json_data={
-                "access_token": "new_access",
-                "refresh_token": "rotated_refresh",
-                "expires_in": 14400,
-            },
-        )
+        MockResponse(status=200, json_data=fixture)
     )
 
     await provider._refresh_access_token()
-    assert provider._access_token == "new_access"
-    assert provider._refresh_token == "rotated_refresh"
+    assert provider._access_token == fixture["access_token"]
+    assert provider._refresh_token == fixture["refresh_token"]
 
 
 async def test_refresh_preserves_old_refresh_token_if_not_rotated(
@@ -278,18 +264,15 @@ async def test_refresh_preserves_old_refresh_token_if_not_rotated(
     provider._client_id = "test_client_id"
     provider._client_secret = "test_client_secret"
 
+    # Use fixture but remove refresh_token to simulate non-rotation response
+    fixture = load_fixture("token_refresh.json")
+    fixture_no_rotate = {k: v for k, v in fixture.items() if k != "refresh_token"}
     provider.mass.http_session.post = make_mock_session_method(  # type: ignore[method-assign]
-        MockResponse(
-            status=200,
-            json_data={
-                "access_token": "new_access",
-                "expires_in": 14400,
-            },
-        )
+        MockResponse(status=200, json_data=fixture_no_rotate)
     )
 
     await provider._refresh_access_token()
-    assert provider._access_token == "new_access"
+    assert provider._access_token == fixture["access_token"]
     assert provider._refresh_token == "old_refresh"
 
 

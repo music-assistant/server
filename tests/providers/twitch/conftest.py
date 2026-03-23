@@ -21,21 +21,37 @@ def load_fixture(name: str) -> dict[str, Any]:
 
 
 class MockResponse:
-    """Mock aiohttp response that works as an async context manager."""
+    """Mock aiohttp response that works as an async context manager.
+
+    Behavioral contract:
+    - .json() raises ValueError on non-2xx when json_data was not explicitly provided,
+      matching real aiohttp behavior where error responses often aren't valid JSON.
+    - .json() returns json_data when explicitly provided, even on error status codes,
+      since some error responses have JSON bodies.
+    - Accepts optional headers dict for testing header-dependent code paths.
+    """
+
+    _NO_JSON = object()  # sentinel to distinguish "not provided" from None
 
     def __init__(
         self,
         status: int = 200,
-        json_data: dict[str, Any] | list[Any] | None = None,
+        json_data: dict[str, Any] | list[Any] | None = _NO_JSON,  # type: ignore[assignment]
         text_data: str = "",
+        headers: dict[str, str] | None = None,
     ) -> None:
         """Initialize mock response."""
         self.status = status
-        self._json_data = json_data
+        self._json_explicit = json_data is not MockResponse._NO_JSON
+        self._json_data = json_data if self._json_explicit else None
         self._text_data = text_data
+        self.headers = headers or {}
 
     async def json(self) -> dict[str, Any] | list[Any] | None:
-        """Return JSON body."""
+        """Return JSON body. Raises ValueError on error status when json_data not provided."""
+        if not self._json_explicit and self.status >= 400:
+            msg = f"Cannot parse JSON from error response (status={self.status})"
+            raise ValueError(msg)
         return self._json_data
 
     async def text(self) -> str:
@@ -59,9 +75,21 @@ def make_mock_session_method(
     """
     if isinstance(responses, list):
         iterator = iter(responses)
+        expected_count = len(responses)
+        call_count = 0
 
         def side_effect(*args: Any, **kwargs: Any) -> MockResponse:  # noqa: ARG001
-            return next(iterator)
+            nonlocal call_count
+            call_count += 1
+            try:
+                return next(iterator)
+            except StopIteration:
+                msg = (
+                    f"MockResponse list exhausted: expected {expected_count} calls, "
+                    f"got call #{call_count}. Add more MockResponse entries or "
+                    f"assert the correct call count."
+                )
+                raise RuntimeError(msg) from None
 
         mock = Mock(side_effect=side_effect)
     else:
@@ -71,6 +99,42 @@ def make_mock_session_method(
 
         mock = Mock(side_effect=single)
     return mock
+
+
+_BASE_CONFIG: dict[str, Any] = {
+    "client_id": "",
+    "client_secret": "",
+    "streamlink_token": "",
+    "ad_handling": "silence",
+    "auto_raid": True,
+    "log_level": "GLOBAL",
+    "access_token": "",
+    "refresh_token": "",
+}
+
+
+def config_side_effect(overrides: dict[str, Any] | None = None) -> Any:
+    """Return a side_effect callable for config.get_value with optional overrides."""
+    values = {**_BASE_CONFIG, **(overrides or {})}
+    return lambda key, default=None: values.get(key, default)
+
+
+def make_queue_event(
+    state: Any,
+    uri: str | None = None,
+    queue_id: str = "queue_1",
+) -> Mock:
+    """Create a mock queue update event for _on_queue_updated dispatch tests."""
+    event = Mock()
+    event.data = Mock()
+    event.data.state = state
+    if uri is not None:
+        event.data.current_item = Mock()
+        event.data.current_item.uri = uri
+    else:
+        event.data.current_item = None
+    event.data.queue_id = queue_id
+    return event
 
 
 @pytest.fixture
