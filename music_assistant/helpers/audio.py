@@ -967,6 +967,15 @@ def _normalize_reconnecting_urls(url: str | list[MultiPartPath]) -> list[str]:
     return [part.path for part in url]
 
 
+def _raise_radio_stream_response_error(url: str, err: aiohttp.ClientResponseError) -> None:
+    """Raise the appropriate provider error for a failed HTTP radio response."""
+    if err.status == 404:
+        raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+    if err.status == 403:
+        raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
+    raise ProviderUnavailableError(f"Radio stream returned HTTP {err.status}: {err}") from err
+
+
 async def get_reconnecting_stream(
     mass: MusicAssistant,
     url: str | list[MultiPartPath],
@@ -980,6 +989,9 @@ async def get_reconnecting_stream(
     async-iterate the audio (or wrapper) bytes for that connection until it ends or
     raises. On clean end or selected aiohttp errors, the outer loop reconnects; when
     multiple URLs are given, each reconnect advances to the next URL, wrapping.
+    With multiple URLs, HTTP error responses (403, 404, etc.) are treated like other
+    reconnect triggers: the next URL is tried until every URL has failed in sequence,
+    then the usual single-URL error is raised.
 
     :param mass: MusicAssistant instance.
     :param url: One stream URL, or a sequence of URLs to rotate through on reconnect.
@@ -990,6 +1002,7 @@ async def get_reconnecting_stream(
     reconnect_count = 0
     max_reconnects = 1000  # Allow many reconnects for long-running radio
     url_index = 0
+    mirror_http_failures = 0
 
     while reconnect_count <= max_reconnects:
         current_url = urls[url_index % len(urls)]
@@ -997,6 +1010,7 @@ async def get_reconnecting_stream(
             chunk_count = 0
             async for chunk in stream_chunks(mass, current_url):
                 chunk_count += 1
+                mirror_http_failures = 0
                 yield chunk
 
             LOGGER.debug(
@@ -1018,6 +1032,7 @@ async def get_reconnecting_stream(
             aiohttp.ClientPayloadError,
             aiohttp.ServerDisconnectedError,
         ) as err:
+            mirror_http_failures = 0
             LOGGER.warning(
                 "%s error for %s (reconnect #%d): %s",
                 stream_label,
@@ -1033,15 +1048,28 @@ async def get_reconnecting_stream(
                 ) from err
             await asyncio.sleep(0.5)
         except aiohttp.ClientResponseError as err:
-            if err.status == 404:
-                raise MediaNotFoundError(f"Radio stream not found: {current_url}") from err
-            if err.status == 403:
-                raise ProviderPermissionDenied(
-                    f"Radio stream access denied: {current_url}"
+            if len(urls) == 1:
+                _raise_radio_stream_response_error(current_url, err)
+            mirror_http_failures += 1
+            LOGGER.warning(
+                "%s HTTP %s for %s (mirror failover %d/%d, reconnect #%d): %s",
+                stream_label,
+                err.status,
+                current_url,
+                mirror_http_failures,
+                len(urls),
+                reconnect_count,
+                err,
+            )
+            reconnect_count += 1
+            url_index += 1
+            if mirror_http_failures >= len(urls):
+                _raise_radio_stream_response_error(current_url, err)
+            if reconnect_count > max_reconnects:
+                raise RetriesExhausted(
+                    f"{stream_label} failed after {max_reconnects} reconnects: {err}"
                 ) from err
-            raise ProviderUnavailableError(
-                f"Radio stream returned HTTP {err.status}: {err}"
-            ) from err
+            await asyncio.sleep(0.5)
 
     LOGGER.warning(
         "%s reached max reconnects (%d) for urls=%s",
