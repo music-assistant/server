@@ -608,7 +608,9 @@ class DigitallyIncorporatedProvider(MusicProvider):
     @use_cache(CACHE_STREAM_URLS)
     async def _get_stream_urls(self, network_key: str, channel_key: str) -> list[str]:
         """Get the streaming URLs for a channel (ordered mirrors / failover)."""
-        self.logger.debug("%s: Getting stream URL for %s:%s", self.domain, network_key, channel_key)
+        self.logger.debug(
+            "%s: Getting stream URLs for %s:%s", self.domain, network_key, channel_key
+        )
 
         listen_key = self.config.get_value("listen_key")
         if not listen_key:
