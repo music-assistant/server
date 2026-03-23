@@ -304,6 +304,7 @@ class TwitchProvider(MusicProvider):
     _client_id: str | None = None
     _client_secret: str | None = None
     _user_id: str | None = None
+    _streamlink_session: Any | None = None
 
     # Live status cache
     _cached_channels: list[dict[str, Any]] | None = None
@@ -746,10 +747,14 @@ class TwitchProvider(MusicProvider):
         from streamlink import Streamlink  # type: ignore[attr-defined]  # noqa: PLC0415
 
         try:
-            session = Streamlink()
-            streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
-            if streamlink_token:
-                session.set_option("http-headers", {"Authorization": f"OAuth {streamlink_token}"})
+            if self._streamlink_session is None:
+                self._streamlink_session = Streamlink()
+                streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
+                if streamlink_token:
+                    self._streamlink_session.set_option(
+                        "http-headers", {"Authorization": f"OAuth {streamlink_token}"}
+                    )
+            session = self._streamlink_session
             streams = session.streams(f"https://twitch.tv/{channel}")
             return dict(streams) if streams else None
         except Exception:
