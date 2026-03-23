@@ -87,6 +87,13 @@ def patch_ad_handling(mode: str) -> None:
                     # Discard ad bytes without buffering
                     result.raw.drain_conn()
                     self.reader.buffer.write(silence_data * copies)  # type: ignore[no-untyped-call]
+                    # Resume reader if paused — the base HLSStreamWriter pauses the
+                    # reader when filtering segments, and resumes after writing data.
+                    # Since we bypass the base write() for ad segments, we must resume
+                    # explicitly so fd.read() isn't blocked.
+                    if self.reader.is_paused():
+                        logger.debug("Resuming reader after silence injection")
+                        self.reader.resume()
                     self._prev_was_ad = True
                 else:
                     ad_break_active = False
