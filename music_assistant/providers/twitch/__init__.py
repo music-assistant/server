@@ -345,12 +345,20 @@ class TwitchProvider(MusicProvider):
         except Exception:
             self.logger.warning("Failed to apply ad handling patch", exc_info=True)
 
+        self.logger.info(
+            "Twitch provider initialized: auto_raid=%s, ad_handling=%s, authenticated=%s",
+            self._auto_raid,
+            self.config.get_value(CONF_AD_HANDLING),
+            self.is_authenticated,
+        )
+
         # Resolve user ID if authenticated
         if self._access_token:
             try:
                 data = await self._api_get("/helix/users", params={})
                 if data.get("data"):
                     self._user_id = data["data"][0]["id"]
+                    self.logger.info("Resolved Twitch user ID: %s", self._user_id)
             except LoginFailed:
                 raise  # Propagate auth failures — user needs to re-authenticate
             except Exception:
@@ -362,6 +370,7 @@ class TwitchProvider(MusicProvider):
             self._on_queue_updated,
             EventType.QUEUE_UPDATED,
         )
+        self.logger.debug("Subscribed to QUEUE_UPDATED events")
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -394,6 +403,13 @@ class TwitchProvider(MusicProvider):
         current_item = getattr(queue, "current_item", None)
         queue_id = getattr(queue, "queue_id", "")
 
+        self.logger.debug(
+            "Queue update: state=%s, queue_id=%s, current_item=%s",
+            state,
+            queue_id,
+            getattr(current_item, "uri", None) if current_item else None,
+        )
+
         if state == PlaybackState.PLAYING and current_item:
             uri = getattr(current_item, "uri", "") or ""
             if uri.startswith("twitch://"):
@@ -404,6 +420,7 @@ class TwitchProvider(MusicProvider):
                     await self._handle_queue_playing(uri, channel_login)
                     return
             # Non-Twitch content playing — stop tracking
+            self.logger.debug("Non-Twitch URI playing: %s — stopping raid tracking", uri)
             await self._handle_queue_stopped()
         elif state == PlaybackState.PAUSED:
             await self._handle_queue_paused()
@@ -412,17 +429,31 @@ class TwitchProvider(MusicProvider):
 
     async def _handle_queue_playing(self, uri: str, channel_login: str) -> None:
         """Handle playback of a Twitch channel — subscribe to raids."""
+        self.logger.debug(
+            "Handle queue playing: channel=%s, current=%s, auto_raid=%s, authenticated=%s",
+            channel_login,
+            self._current_channel_login,
+            self._auto_raid,
+            self.is_authenticated,
+        )
+
         if channel_login == self._current_channel_login:
-            return  # Already subscribed to this channel
+            self.logger.debug("Already tracking %s — skipping", channel_login)
+            return
 
         self._cancel_timers()
         self._current_channel_login = channel_login
 
-        if not self._auto_raid or not self.is_authenticated:
+        if not self._auto_raid:
+            self.logger.debug("Auto-raid disabled — not subscribing to EventSub")
+            return
+        if not self.is_authenticated:
+            self.logger.debug("Not authenticated — not subscribing to EventSub")
             return
 
         # Ensure EventSub client exists
         if self._eventsub is None:
+            self.logger.debug("Creating EventSub client and starting WebSocket")
             self._eventsub = EventSubClient(
                 http_session=self.mass.http_session,
                 api_headers_fn=self._api_headers,
@@ -434,21 +465,31 @@ class TwitchProvider(MusicProvider):
         # Resolve user ID for the channel and subscribe
         users = await self._get_users(logins=[channel_login])
         if users:
+            self.logger.debug(
+                "Subscribing to raids for %s (user_id=%s)", channel_login, users[0]["id"]
+            )
             await self._eventsub.subscribe_raids(users[0]["id"])
+        else:
+            self.logger.warning(
+                "Could not resolve user ID for %s — no raid subscription", channel_login
+            )
 
     async def _handle_queue_paused(self) -> None:
         """Handle pause — unsubscribe EventSub, keep WebSocket warm."""
+        self.logger.debug("Handle queue paused — unsubscribing EventSub, keeping WS warm")
         self._cancel_timers()
         if self._eventsub is not None:
             await self._eventsub.unsubscribe_all()
 
     async def _handle_queue_idle(self) -> None:
         """Handle stop/idle — start grace period before disconnecting."""
+        self.logger.debug("Handle queue idle — starting grace period")
         self._cancel_timers()
         self._grace_timer = asyncio.create_task(self._grace_period())
 
     async def _handle_queue_stopped(self) -> None:
         """Handle non-Twitch content — immediate cleanup."""
+        self.logger.debug("Handle queue stopped — cleaning up raid tracking")
         self._cancel_timers()
         self._current_channel_login = None
         if self._eventsub is not None:
@@ -470,7 +511,15 @@ class TwitchProvider(MusicProvider):
 
     async def _on_raid(self, from_login: str, to_login: str) -> None:
         """Handle a raid event — switch playback to raid target."""
+        self.logger.debug(
+            "Raid event received: %s → %s (auto_raid=%s, current=%s)",
+            from_login,
+            to_login,
+            self._auto_raid,
+            self._current_channel_login,
+        )
         if not self._auto_raid:
+            self.logger.debug("Auto-raid disabled — ignoring raid")
             return
 
         if from_login != self._current_channel_login:
