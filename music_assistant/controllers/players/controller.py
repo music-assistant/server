@@ -2218,7 +2218,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 fixed_groups.append(group_id)
 
         for group_id in fixed_groups:
-            if group_player := self.get_player(group_id):
+            if (group_player := self.get_player(group_id)) and group_player.available:
                 await group_player.on_config_updated()
 
         if total_fixes:
