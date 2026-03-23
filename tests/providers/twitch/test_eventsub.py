@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -341,14 +341,15 @@ async def test_ready_set_after_resubscribe(client: EventSubClient) -> None:
 async def test_subscribe_timeout_when_not_ready(client: EventSubClient) -> None:
     """If ready event not set within timeout, subscribe is a no-op."""
     client._session_id = "test_session"
-    # ready NOT set and won't be set — should timeout
+    # ready NOT set — patch wait_for to timeout immediately
 
-    await client.subscribe_raids("123")
+    async def fast_timeout(coro: Any, timeout: float) -> None:  # noqa: ARG001
+        raise TimeoutError
 
-    # With 10s timeout, this should log warning and return
-    # post should NOT have been called (timed out before subscribing)
-    # Note: this test takes ~10s if timeout isn't mocked, or we can
-    # patch asyncio.wait_for to raise TimeoutError immediately
+    with patch(
+        "music_assistant.providers.twitch.eventsub.asyncio.wait_for", side_effect=fast_timeout
+    ):
+        await client.subscribe_raids("123")
     # For now, verify the broadcaster_user_id was still set
     assert client._current_broadcaster_user_id == "123"
 

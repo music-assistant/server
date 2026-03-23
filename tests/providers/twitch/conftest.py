@@ -74,6 +74,7 @@ def mass_mock() -> Mock:
     mass.player_queues.play_media = AsyncMock()
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
+    mass.config.set_raw_provider_config_value = Mock()
     # webserver for AuthenticationHelper
     mass.webserver = Mock()
     mass.webserver.base_url = "http://localhost:8095"
@@ -106,6 +107,24 @@ def config_mock() -> Mock:
         "auto_raid": True,
         "log_level": "GLOBAL",
     }.get(key, default)
+    # Mock config.values as a defaultdict-like dict for _update_config_value
+    config.values = {}
+
+    class _ValueHolder:
+        """Hold a config value for mock purposes."""
+
+        def __init__(self) -> None:
+            self.value: Any = None
+
+    class _AutoValues(dict):  # type: ignore[type-arg]
+        """Auto-create value holders on access."""
+
+        def __missing__(self, key: str) -> _ValueHolder:
+            holder = _ValueHolder()
+            self[key] = holder
+            return holder
+
+    config.values = _AutoValues()
     return config
 
 

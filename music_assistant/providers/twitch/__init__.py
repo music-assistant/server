@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
@@ -13,12 +14,20 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    EventType,
     ImageType,
     MediaType,
+    PlaybackState,
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -34,6 +43,8 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.twitch.eventsub import EventSubClient
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -139,8 +150,8 @@ async def _handle_revoke_action(
                 data={"client_id": client_id, "token": access_token},
             ):
                 pass
-        except Exception:  # noqa: S110
-            pass
+        except Exception:
+            logger.debug("Failed to revoke Twitch token", exc_info=True)
 
     values[CONF_ACCESS_TOKEN] = ""
     values[CONF_REFRESH_TOKEN] = ""
@@ -150,6 +161,9 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
+    if not config.get_value(CONF_ACCESS_TOKEN):
+        msg = "Not authenticated. Please configure and authenticate the Twitch provider."
+        raise LoginFailed(msg)
     return TwitchProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -309,7 +323,8 @@ class TwitchProvider(MusicProvider):
         self._client_secret = str(self.config.get_value(CONF_CLIENT_SECRET) or "")
         self._access_token = str(self.config.get_value(CONF_ACCESS_TOKEN) or "") or None
         self._refresh_token = str(self.config.get_value(CONF_REFRESH_TOKEN) or "") or None
-        self._auto_raid = bool(self.config.get_value(CONF_AUTO_RAID) or True)
+        val = self.config.get_value(CONF_AUTO_RAID)
+        self._auto_raid = bool(val) if val is not None else True
         # Resolve user ID if authenticated
         if self._access_token:
             try:
@@ -321,14 +336,10 @@ class TwitchProvider(MusicProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        # Subscribe to queue events for raid following
-        # NOTE: mass.subscribe is not available in test mocks the same way,
-        # so we store the unsub callable for cleanup
-        if hasattr(self.mass, "subscribe"):
-            try:
-                self._unsub_queue_updated = self.mass.subscribe(self._on_queue_updated)
-            except Exception:
-                self.logger.debug("Could not subscribe to queue events")
+        self._unsub_queue_updated = self.mass.subscribe(
+            self._on_queue_updated,
+            EventType.QUEUE_UPDATED,
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -339,25 +350,42 @@ class TwitchProvider(MusicProvider):
             self._unsub_queue_updated = None
 
         # Cancel timers
-        if self._grace_timer is not None:
-            self._grace_timer.cancel()
-            self._grace_timer = None
-        if self._idle_timer is not None:
-            self._idle_timer.cancel()
-            self._idle_timer = None
+        self._cancel_timers()
 
         # Stop EventSub
         if self._eventsub is not None:
             await self._eventsub.stop()
             self._eventsub = None
 
+        # Clear cache
+        self._clear_cache()
+
     # --- Raid State Machine ---
 
     async def _on_queue_updated(self, event: Any = None) -> None:
         """Handle queue update events for raid following."""
-        # This would parse the event to determine play/pause/stop state
-        # and Twitch URI, then delegate to the appropriate handler.
-        # Full implementation requires MA event model integration.
+        if event is None or not hasattr(event, "data"):
+            return
+
+        queue = event.data
+        state = getattr(queue, "state", None)
+        current_item = getattr(queue, "current_item", None)
+        queue_id = getattr(queue, "queue_id", "")
+
+        if state == PlaybackState.PLAYING and current_item:
+            uri = getattr(current_item, "uri", "") or ""
+            if uri.startswith("twitch://"):
+                # Extract channel login from URI: twitch://radio/{login}
+                parts = uri.split("/")
+                channel_login = parts[-1] if len(parts) >= 3 else ""
+                if channel_login:
+                    self._current_queue_id = queue_id
+                    await self._handle_queue_playing(uri, channel_login)
+                    return
+            # Non-Twitch content playing — stop tracking
+            await self._handle_queue_stopped()
+        elif state in (PlaybackState.IDLE, PlaybackState.PAUSED):
+            await self._handle_queue_stopped()
 
     async def _handle_queue_playing(self, uri: str, channel_login: str) -> None:
         """Handle playback of a Twitch channel — subscribe to raids."""
@@ -434,6 +462,23 @@ class TwitchProvider(MusicProvider):
             "Client-Id": self._client_id or "",
         }
 
+    @staticmethod
+    def _raise_for_status(status: int) -> None:
+        """Raise an appropriate MA exception for non-success HTTP status codes."""
+        if 200 <= status < 300:
+            return
+        if status == 404:
+            msg = f"Twitch API: resource not found ({status})"
+            raise MediaNotFoundError(msg)
+        if status == 429:
+            msg = f"Twitch API: rate limited ({status})"
+            raise ResourceTemporarilyUnavailable(msg)
+        if status >= 500:
+            msg = f"Twitch API: server error ({status})"
+            raise ProviderUnavailableError(msg)
+        msg = f"Twitch API error ({status})"
+        raise MusicAssistantError(msg)
+
     async def _refresh_access_token(self) -> None:
         """Refresh the Twitch access token using the refresh token."""
         if not self._refresh_token:
@@ -460,6 +505,10 @@ class TwitchProvider(MusicProvider):
         # Twitch may rotate the refresh token
         self._refresh_token = data.get("refresh_token", self._refresh_token)
 
+        # Persist tokens to config storage so they survive restarts
+        self._update_config_value(CONF_ACCESS_TOKEN, self._access_token, encrypted=True)
+        self._update_config_value(CONF_REFRESH_TOKEN, self._refresh_token, encrypted=True)
+
     async def _api_get(
         self,
         url: str,
@@ -475,13 +524,9 @@ class TwitchProvider(MusicProvider):
                 async with self.mass.http_session.get(
                     full_url, headers=self._api_headers(), params=params
                 ) as retry_response:
-                    if retry_response.status != 200:
-                        msg = f"Twitch API error {retry_response.status}"
-                        raise Exception(msg)
+                    self._raise_for_status(retry_response.status)
                     return await retry_response.json()  # type: ignore[no-any-return]
-            if response.status != 200:
-                msg = f"Twitch API error {response.status}"
-                raise Exception(msg)
+            self._raise_for_status(response.status)
             return await response.json()  # type: ignore[no-any-return]
 
     # --- Twitch API Methods ---

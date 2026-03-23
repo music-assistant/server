@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "twitch",
+  "stage": "beta",
   "name": "Twitch Audio",
   "description": "Audio-only streaming from Twitch channels with raid following and ad handling.",
   "codeowners": ["@Drizzt321"],

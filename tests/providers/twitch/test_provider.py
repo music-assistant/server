@@ -19,7 +19,17 @@ from music_assistant.providers.twitch import (
 async def test_setup_returns_provider_instance(
     mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
 ) -> None:
-    """setup() returns a TwitchProvider instance."""
+    """setup() returns a TwitchProvider instance when authenticated."""
+    config_mock.get_value.side_effect = lambda key, default=None: {
+        "client_id": "test",
+        "client_secret": "test",
+        "streamlink_token": "",
+        "ad_handling": "silence",
+        "auto_raid": True,
+        "log_level": "GLOBAL",
+        "access_token": "test_token",
+        "refresh_token": "test_refresh",
+    }.get(key, default)
     provider = await setup(mass_mock, manifest_mock, config_mock)
     assert isinstance(provider, TwitchProvider)
 
