@@ -1809,7 +1809,9 @@ async def analyze_loudness(
         audio_source = music_prov.get_audio_stream(streamdetails)
     elif stream_type == StreamType.ICY:
         assert streamdetails.path is not None
-        assert isinstance(streamdetails.path, str | list)
+        assert isinstance(streamdetails.path, (str, list))
+        if isinstance(streamdetails.path, list):
+            assert all(isinstance(part, MultiPartPath) for part in streamdetails.path)
         audio_source = get_reconnecting_icy_radio_stream(mass, streamdetails.path, streamdetails)
     elif stream_type == StreamType.IN_BAND:
         assert isinstance(streamdetails.path, str)  # for type checking
