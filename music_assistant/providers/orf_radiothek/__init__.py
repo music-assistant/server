@@ -855,7 +855,7 @@ class RadiothekProvider(MusicProvider):
     # MA API: Search
     # ----------------------------
 
-    @use_cache(3600 * 6)
+    @use_cache(3600 * 24)
     async def search(
         self,
         search_query: str,
