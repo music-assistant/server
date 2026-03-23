@@ -122,6 +122,11 @@ async def buffered(
         # Wait for the producer to finish cleanly with a timeout to prevent blocking
         with contextlib.suppress(asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.shield(producer_task), timeout=1.0)
+        # Force-cancel producer if still stuck on a slow read to prevent resource leaks
+        if not producer_task.done():
+            producer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await producer_task
 
 
 def use_buffer(
