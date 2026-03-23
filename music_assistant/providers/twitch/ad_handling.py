@@ -15,13 +15,16 @@ ad_break_active: bool = False
 _SILENCE_DURATION = 1.0  # seconds — must match generated silence.ts
 
 
-def patch_ad_handling(mode: str) -> None:
+def patch_ad_handling(mode: str, reader_cls: type | None = None) -> None:
     """Patch TwitchHLSStreamReader.__writer__ based on the ad handling mode.
-
-    Must be called once before any session.streams() call.
 
     Args:
         mode: "silence" or "passthrough"
+        reader_cls: The actual TwitchHLSStreamReader class to patch. If None,
+            patches the imported class (which may differ from the class Streamlink's
+            plugin system uses at runtime due to fresh module loading).
+            Callers should pass the reader class from the resolved stream object
+            to ensure the correct class is patched.
 
     """
     from streamlink.plugins.twitch import (  # noqa: PLC0415
@@ -29,6 +32,8 @@ def patch_ad_handling(mode: str) -> None:
         TwitchHLSStreamReader,
         TwitchHLSStreamWriter,
     )
+
+    target_reader = reader_cls or TwitchHLSStreamReader
 
     if mode == "passthrough":
 
@@ -45,7 +50,7 @@ def patch_ad_handling(mode: str) -> None:
                     )
                 return False
 
-        TwitchHLSStreamReader.__writer__ = PassthroughTwitchWriter
+        target_reader.__writer__ = PassthroughTwitchWriter  # type: ignore[attr-defined]
         logger.info("Twitch ad handling: passthrough (ads play as audio)")
 
     else:
@@ -105,5 +110,5 @@ def patch_ad_handling(mode: str) -> None:
                     self._prev_was_ad = False
                     super().write(segment, result, *data)
 
-        TwitchHLSStreamReader.__writer__ = SilenceInjectingTwitchWriter
+        target_reader.__writer__ = SilenceInjectingTwitchWriter  # type: ignore[attr-defined]
         logger.info("Twitch ad handling: silence injection enabled")

@@ -857,7 +857,26 @@ class TwitchProvider(MusicProvider):
                     )
             session = self._streamlink_session
             streams = session.streams(f"https://twitch.tv/{channel}")
-            return dict(streams) if streams else None
+            if not streams:
+                return None
+
+            # Apply ad handling monkey-patch to the ACTUAL reader class from
+            # Streamlink's plugin system. Must be done after streams() because
+            # Streamlink loads plugins into a fresh module namespace — patching
+            # the imported class at startup patches a different class object.
+            result = dict(streams)
+            any_stream = next(iter(result.values()), None)
+            if any_stream is not None:
+                reader_cls = getattr(type(any_stream), "__reader__", None)
+                if reader_cls is not None:
+                    from music_assistant.providers.twitch.ad_handling import (  # noqa: PLC0415
+                        patch_ad_handling,
+                    )
+
+                    ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or AD_MODE_SILENCE)
+                    patch_ad_handling(ad_mode, reader_cls=reader_cls)
+
+            return result
         except Exception:
             self.logger.exception("Failed to resolve streams for %s", channel)
             return None
