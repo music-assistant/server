@@ -579,7 +579,7 @@ async def get_media_stream(
         seek_position = 0 if streamdetails.can_seek else seek_position
     elif stream_type == StreamType.ICY:
         assert streamdetails.path is not None
-        assert isinstance(streamdetails.path, str | list)
+        assert isinstance(streamdetails.path, (str, list))
         audio_source = get_reconnecting_icy_radio_stream(mass, streamdetails.path, streamdetails)
         seek_position = 0  # seeking not possible on radio streams
     elif stream_type == StreamType.IN_BAND:
