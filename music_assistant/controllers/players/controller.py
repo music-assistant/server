@@ -159,10 +159,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Async initialize of module."""
         self._cleanup_stale_protocol_parent_ids()
         self._poll_task = self.mass.create_task(self._poll_players())
-        self.mass.call_later(
-            300,
-            self._schedule_fix_group_member_configs,
+        self.mass.tasks.run_background_task(
             task_id="fix_group_member_configs",
+            name="Fix sync group member configurations",
+            handler=self._fix_group_member_configs,
         )
 
     async def close(self) -> None:
@@ -2176,25 +2176,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
                 self.mass.config.set(conf_key, None)
 
-    def _schedule_fix_group_member_configs(self) -> None:
-        """Schedule the sync group member config fix as a visible background task."""
-        self.mass.tasks.run_background_task(
-            task_id="fix_group_member_configs",
-            name="Fix sync group member configurations",
-            handler=self._fix_group_member_configs,
-        )
-
     async def _fix_group_member_configs(self) -> None:
         """Fix stale protocol player IDs in sync group member configs.
 
         When a sync group references a protocol player ID instead of
         the parent player ID, correct it using the cached protocol parent mapping.
         """
+        await asyncio.sleep(300)
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         total_fixes = 0
         fixed_groups: list[str] = []
 
-        for group_id, group_config in all_player_configs.items():
+        for group_id, group_config in list(all_player_configs.items()):
             if group_config.get("provider") != "sync_group":
                 continue
             old_members: list[str] = group_config.get("values", {}).get(CONF_GROUP_MEMBERS, [])
