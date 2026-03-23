@@ -325,12 +325,25 @@ class TwitchProvider(MusicProvider):
         self._refresh_token = str(self.config.get_value(CONF_REFRESH_TOKEN) or "") or None
         val = self.config.get_value(CONF_AUTO_RAID)
         self._auto_raid = bool(val) if val is not None else True
+        # Apply ad handling patch once (not per-resolution)
+        try:
+            from music_assistant.providers.twitch.ad_handling import (  # noqa: PLC0415
+                patch_ad_handling,
+            )
+
+            ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or "silence")
+            patch_ad_handling(ad_mode)
+        except Exception:
+            self.logger.warning("Failed to apply ad handling patch", exc_info=True)
+
         # Resolve user ID if authenticated
         if self._access_token:
             try:
                 data = await self._api_get("/helix/users", params={})
                 if data.get("data"):
                     self._user_id = data["data"][0]["id"]
+            except LoginFailed:
+                raise  # Propagate auth failures — user needs to re-authenticate
             except Exception:
                 self.logger.warning("Failed to resolve user ID during init")
 
@@ -585,9 +598,12 @@ class TwitchProvider(MusicProvider):
 
         channels = await self._get_followed_channels()
         user_ids = [ch["broadcaster_id"] for ch in channels]
-        streams = await self._get_live_streams(user_ids)
+        # Fetch streams and profiles concurrently — both only need user_ids
+        streams, profiles = await asyncio.gather(
+            self._get_live_streams(user_ids),
+            self._get_user_profiles(user_ids),
+        )
         live_by_login = {s["user_login"]: s for s in streams}
-        profiles = await self._get_user_profiles(user_ids)
 
         self._cached_channels = channels
         self._cached_live = live_by_login
@@ -721,12 +737,7 @@ class TwitchProvider(MusicProvider):
         """Resolve Streamlink streams for a channel. Blocking — call via to_thread."""
         from streamlink import Streamlink  # type: ignore[attr-defined]  # noqa: PLC0415
 
-        from music_assistant.providers.twitch.ad_handling import patch_ad_handling  # noqa: PLC0415
-
         try:
-            ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or "silence")
-            patch_ad_handling(ad_mode)
-
             session = Streamlink()
             streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
             if streamlink_token:
@@ -807,6 +818,28 @@ class TwitchProvider(MusicProvider):
             login = ch["broadcaster_login"]
             if login in live_by_login:
                 yield self._channel_to_radio(ch, live_by_login[login], profiles.get(login))
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full radio details by id (channel login)."""
+        if not self.is_authenticated:
+            msg = f"Not authenticated — cannot look up channel {prov_radio_id}"
+            raise MediaNotFoundError(msg)
+
+        users = await self._get_users(logins=[prov_radio_id])
+        if not users:
+            msg = f"Twitch channel not found: {prov_radio_id}"
+            raise MediaNotFoundError(msg)
+
+        user = users[0]
+        # Check if live
+        streams = await self._get_live_streams([user["id"]])
+        stream = streams[0] if streams else None
+
+        return self._channel_to_radio(
+            {"broadcaster_login": user["login"], "broadcaster_name": user["display_name"]},
+            stream,
+            user,
+        )
 
     async def search(
         self,
