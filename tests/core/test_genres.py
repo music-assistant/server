@@ -26,7 +26,6 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
-    DB_TABLE_GENRE_GLOBAL_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -2109,34 +2108,28 @@ class TestGetGenreMediaCounts:
 
 
 # ===================================================================
-# Group O: Global Genre Exclusion (8 tests)
+# Group O: Global Genre Exclusion (9 tests)
 # ===================================================================
 
-# Pick two distinct default entries with a translation_key for the tests below.
-_DEFAULT_ENTRIES_WITH_TK = [e for e in DEFAULT_GENRE_MAPPING if e.get("translation_key")]
-assert len(_DEFAULT_ENTRIES_WITH_TK) >= 2, (
-    "DEFAULT_GENRE_MAPPING must contain at least two entries with a translation_key "
-    "for global genre exclusion tests"
-)
-_DEFAULT_ENTRY_A = _DEFAULT_ENTRIES_WITH_TK[0]
-_DEFAULT_ENTRY_B = _DEFAULT_ENTRIES_WITH_TK[1]
+# Two distinct default entries with a translation_key for the tests below.
+_tk_entries = [e for e in DEFAULT_GENRE_MAPPING if e.get("translation_key")]
+_DEFAULT_ENTRY_A = _tk_entries[0]  # used for deletion-only test
+_DEFAULT_ENTRY_B = _tk_entries[1]  # used for delete-then-restore test
 
 
 class TestGlobalGenreExclusion:
     """Tests for the global genre exclusion API and scanner guard."""
 
-    async def test_delete_writes_exclusion_row(
+    async def test_delete_sets_is_excluded_flag(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """remove_item_from_library writes a row to genre_global_exclusion."""
+        """remove_item_from_library sets is_excluded = 1 on the genre row."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("GblExcl1"))
-        search_name = create_safe_string(genre.name, True, True)
-        await genre_ctrl.remove_item_from_library(int(genre.item_id))
-        row = await mass.music.database.get_row(
-            DB_TABLE_GENRE_GLOBAL_EXCLUSION, {"search_name": search_name}
-        )
+        genre_id = int(genre.item_id)
+        await genre_ctrl.remove_item_from_library(genre_id)
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
         assert row is not None
-        assert row["name"] == "GblExcl1"
+        assert row["is_excluded"] == 1
 
     async def test_get_exclusions_lists_deleted_genre(
         self, mass: MusicAssistant, genre_ctrl: GenreController
@@ -2148,17 +2141,17 @@ class TestGlobalGenreExclusion:
         names = {e["name"] for e in exclusions}
         assert "GblExcl2" in names
 
-    async def test_default_genre_deletion_preserves_translation_key(
+    async def test_default_genre_exclusion_preserves_translation_key(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Deleting a default genre stores its translation_key in the exclusion row."""
+        """Excluding a default genre preserves its translation_key on the row."""
         tk = _DEFAULT_ENTRY_A["translation_key"]
         search_name = create_safe_string(_DEFAULT_ENTRY_A["genre"], True, True)
         db_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"search_name": search_name})
         assert db_row is not None, "default genre must be seeded at startup"
         await genre_ctrl.remove_item_from_library(int(db_row["item_id"]))
         excl_row = await mass.music.database.get_row(
-            DB_TABLE_GENRE_GLOBAL_EXCLUSION, {"search_name": search_name}
+            DB_TABLE_GENRES, {"item_id": int(db_row["item_id"]), "is_excluded": 1}
         )
         assert excl_row is not None
         assert excl_row["translation_key"] == tk
@@ -2173,53 +2166,57 @@ class TestGlobalGenreExclusion:
     async def test_restore_custom_genre_has_no_translation_key(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Restoring a custom (non-default) genre stores translation_key as None."""
+        """Restoring a custom (non-default) genre leaves translation_key as None."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("GblExclCustom"))
-        await genre_ctrl.remove_item_from_library(int(genre.item_id))
-        exclusions = await genre_ctrl.get_global_genre_exclusions()
-        excl = next(e for e in exclusions if e["name"] == "GblExclCustom")
-        assert excl["translation_key"] is None
-        restored = await genre_ctrl.remove_global_genre_exclusion(int(str(excl["id"])))
-        db_row = await mass.music.database.get_row(
-            DB_TABLE_GENRES, {"item_id": int(restored.item_id)}
-        )
+        genre_id = int(genre.item_id)
+        await genre_ctrl.remove_item_from_library(genre_id)
+        restored = await genre_ctrl.remove_global_genre_exclusion(genre_id)
+        db_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
         assert db_row is not None
+        assert db_row["is_excluded"] == 0
         assert db_row["translation_key"] is None
+        assert int(restored.item_id) == genre_id
 
-    async def test_restore_default_genre_stamps_translation_key(
+    async def test_restore_default_genre_translation_key_preserved(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Restoring a default genre stamps the correct translation_key on the DB row."""
+        """Restoring a default genre retains the correct translation_key (row was never deleted)."""
         tk = _DEFAULT_ENTRY_B["translation_key"]
         search_name = create_safe_string(_DEFAULT_ENTRY_B["genre"], True, True)
         db_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"search_name": search_name})
         assert db_row is not None, "default genre must be seeded at startup"
-        await genre_ctrl.remove_item_from_library(int(db_row["item_id"]))
-        exclusions = await genre_ctrl.get_global_genre_exclusions()
-        excl = next(e for e in exclusions if e["translation_key"] == tk)
-        restored = await genre_ctrl.remove_global_genre_exclusion(int(str(excl["id"])))
-        restored_row = await mass.music.database.get_row(
-            DB_TABLE_GENRES, {"item_id": int(restored.item_id)}
-        )
+        genre_id = int(db_row["item_id"])
+        await genre_ctrl.remove_item_from_library(genre_id)
+        await genre_ctrl.remove_global_genre_exclusion(genre_id)
+        restored_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
         assert restored_row is not None
+        assert restored_row["is_excluded"] == 0
         assert restored_row["translation_key"] == tk
 
-    async def test_restore_removes_exclusion_row(
+    async def test_restore_clears_exclusion_flag(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Exclusion row is deleted after a successful restore."""
+        """is_excluded is set back to 0 after a successful restore."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("GblExclClean"))
-        await genre_ctrl.remove_item_from_library(int(genre.item_id))
-        exclusions = await genre_ctrl.get_global_genre_exclusions()
-        excl = next(e for e in exclusions if e["name"] == "GblExclClean")
-        excl_id = int(str(excl["id"]))
-        await genre_ctrl.remove_global_genre_exclusion(excl_id)
-        remaining = await mass.music.database.get_row(
-            DB_TABLE_GENRE_GLOBAL_EXCLUSION, {"id": excl_id}
-        )
-        assert remaining is None
+        genre_id = int(genre.item_id)
+        await genre_ctrl.remove_item_from_library(genre_id)
+        await genre_ctrl.remove_global_genre_exclusion(genre_id)
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row is not None
+        assert row["is_excluded"] == 0
 
     async def test_restore_nonexistent_raises_key_error(self, genre_ctrl: GenreController) -> None:
-        """remove_global_genre_exclusion raises KeyError for an unknown exclusion id."""
+        """remove_global_genre_exclusion raises KeyError for an unknown genre id."""
         with pytest.raises(KeyError):
             await genre_ctrl.remove_global_genre_exclusion(999_999_999)
+
+    async def test_merge_does_not_exclude_source_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """merge_genres hard-deletes the source: it must not appear in the exclusion list."""
+        source = await genre_ctrl.add_item_to_library(_make_genre("GblMergeSource"))
+        target = await genre_ctrl.add_item_to_library(_make_genre("GblMergeTarget"))
+        await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        exclusions = await genre_ctrl.get_global_genre_exclusions()
+        names = {e["name"] for e in exclusions}
+        assert "GblMergeSource" not in names

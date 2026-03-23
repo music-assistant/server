@@ -162,7 +162,6 @@ DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
-DB_TABLE_GENRE_GLOBAL_EXCLUSION: Final[str] = "genre_global_exclusion"
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:

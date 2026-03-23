@@ -56,7 +56,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
-    DB_TABLE_GENRE_GLOBAL_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -2649,18 +2648,13 @@ class MusicController(CoreController):
             await self._database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
 
         if prev_version <= 33:
-            # create the genre_global_exclusion table (new in schema 34)
+            # add is_excluded column to genres table (new in schema 34)
             await self._database.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(
-                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                [name] TEXT NOT NULL,
-                [sort_name] TEXT NOT NULL,
-                [search_name] TEXT NOT NULL,
-                [translation_key] TEXT,
-                UNIQUE(search_name)
-                );"""
+                f"ALTER TABLE {DB_TABLE_GENRES} "
+                "ADD COLUMN [is_excluded] INTEGER NOT NULL DEFAULT 0;"
             )
+            # drop the old genre_global_exclusion table (replaced by is_excluded column)
+            await self._database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
         # save changes
         await self._database.commit()
 
@@ -2852,7 +2846,8 @@ class MusicController(CoreController):
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [is_excluded] INTEGER NOT NULL DEFAULT 0
             );"""
         )
         await self.database.execute(
@@ -2875,17 +2870,6 @@ class MusicController(CoreController):
             [media_type] TEXT NOT NULL,
             FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
             UNIQUE(genre_id, media_id, media_type)
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_GLOBAL_EXCLUSION}(
-            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [search_name] TEXT NOT NULL,
-            [translation_key] TEXT,
-            UNIQUE(search_name)
             );"""
         )
         await self.database.execute(
