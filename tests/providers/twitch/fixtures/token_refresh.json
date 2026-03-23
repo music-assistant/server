@@ -1,0 +1,7 @@
+{
+  "access_token": "refreshed_access_token_789",
+  "expires_in": 14400,
+  "refresh_token": "rotated_refresh_token_012",
+  "scope": ["user:read:follows"],
+  "token_type": "bearer"
+}

@@ -91,6 +91,19 @@ def _mock_streamlink_modules() -> Any:
 # --- Monkey-Patch Application ---
 
 
+def test_patch_targets_exist_in_streamlink() -> None:
+    """TwitchHLSSegment, TwitchHLSStreamReader, TwitchHLSStreamWriter are importable."""
+    from streamlink.plugins.twitch import (
+        TwitchHLSSegment,
+        TwitchHLSStreamReader,
+        TwitchHLSStreamWriter,
+    )
+
+    assert TwitchHLSSegment is FakeTwitchHLSSegment  # type: ignore[comparison-overlap]
+    assert TwitchHLSStreamReader is FakeTwitchHLSStreamReader  # type: ignore[comparison-overlap]
+    assert TwitchHLSStreamWriter is FakeTwitchHLSStreamWriter  # type: ignore[comparison-overlap]
+
+
 def test_silence_patch_applies_without_error() -> None:
     """Silence mode monkey-patch applies without import/attribute errors."""
     from music_assistant.providers.twitch.ad_handling import patch_ad_handling

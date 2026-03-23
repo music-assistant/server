@@ -2,11 +2,14 @@
 
 from unittest.mock import Mock
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.providers.twitch import (
+    CONF_AD_HANDLING,
+    CONF_AUTO_RAID,
     SUPPORTED_FEATURES,
     TwitchProvider,
+    get_config_entries,
     setup,
 )
 
@@ -39,9 +42,9 @@ async def test_supported_features_no_edit() -> None:
 
 
 async def test_loaded_in_mass_subscribes_to_events(provider: TwitchProvider) -> None:
-    """loaded_in_mass() calls mass.subscribe() for QUEUE_UPDATED."""
-    # Step 6 will make this test meaningful — for now verify it doesn't crash
+    """loaded_in_mass() calls mass.subscribe()."""
     await provider.loaded_in_mass()
+    provider.mass.subscribe.assert_called_once()  # type: ignore[attr-defined]
 
 
 async def test_unload_cleans_up(provider: TwitchProvider) -> None:
@@ -63,3 +66,35 @@ async def test_provider_domain(provider: TwitchProvider) -> None:
 async def test_provider_instance_id(provider: TwitchProvider) -> None:
     """Provider instance_id comes from config."""
     assert provider.instance_id == "twitch_test"
+
+
+# --- Config Entries ---
+
+
+async def test_config_entries_includes_ad_handling(mass_mock: Mock) -> None:
+    """get_config_entries() includes ad_handling config entry."""
+    entries = await get_config_entries(mass_mock)
+    keys = {e.key for e in entries}
+    assert CONF_AD_HANDLING in keys
+
+
+async def test_config_entries_includes_auto_raid(mass_mock: Mock) -> None:
+    """get_config_entries() includes auto_raid config entry."""
+    entries = await get_config_entries(mass_mock)
+    keys = {e.key for e in entries}
+    assert CONF_AUTO_RAID in keys
+
+
+async def test_ad_handling_is_string_with_options(mass_mock: Mock) -> None:
+    """ad_handling config entry is STRING type with options."""
+    entries = await get_config_entries(mass_mock)
+    entry = next(e for e in entries if e.key == CONF_AD_HANDLING)
+    assert entry.type == ConfigEntryType.STRING
+    assert len(entry.options) >= 2
+
+
+async def test_auto_raid_is_boolean(mass_mock: Mock) -> None:
+    """auto_raid config entry is BOOLEAN type."""
+    entries = await get_config_entries(mass_mock)
+    entry = next(e for e in entries if e.key == CONF_AUTO_RAID)
+    assert entry.type == ConfigEntryType.BOOLEAN

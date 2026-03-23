@@ -13,6 +13,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.twitch import (
     MAX_CONSECUTIVE_RECONNECTS,
+    RECONNECT_DELAY,
     STREAM_CHUNK_SIZE,
     TwitchProvider,
 )
@@ -144,11 +145,52 @@ async def test_chunk_size_is_64kb() -> None:
 # --- Audio Stream — Streamlink Token ---
 
 
-async def test_streamlink_token_code_path(provider: TwitchProvider) -> None:
-    """Verify _resolve_streams checks config for streamlink_token."""
-    source = inspect.getsource(provider._resolve_streams)
-    assert "CONF_STREAMLINK_TOKEN" in source
-    assert "OAuth" in source
+async def test_streamlink_token_passed_as_header(provider: TwitchProvider) -> None:
+    """When streamlink_token configured, Streamlink session gets OAuth header."""
+    mock_session = MagicMock()
+    mock_session.streams.return_value = {"audio_only": MagicMock()}
+
+    provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
+        "streamlink_token": "test_oauth_token",
+        "ad_handling": "silence",
+        "log_level": "GLOBAL",
+    }.get(key, default)
+
+    with (
+        patch("streamlink.Streamlink", return_value=mock_session),
+        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+    ):
+        provider._resolve_streams("testchannel")
+
+    mock_session.set_option.assert_called_once()
+    call_args = mock_session.set_option.call_args
+    assert "Authorization" in str(call_args)
+    assert "OAuth test_oauth_token" in str(call_args)
+
+
+async def test_streamlink_token_omitted_when_empty(provider: TwitchProvider) -> None:
+    """When streamlink_token not set, no extra auth header on Streamlink."""
+    mock_session = MagicMock()
+    mock_session.streams.return_value = {"audio_only": MagicMock()}
+
+    provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
+        "streamlink_token": "",
+        "ad_handling": "silence",
+        "log_level": "GLOBAL",
+    }.get(key, default)
+
+    with (
+        patch("streamlink.Streamlink", return_value=mock_session),
+        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+    ):
+        provider._resolve_streams("testchannel")
+
+    mock_session.set_option.assert_not_called()
+
+
+async def test_reconnect_delay_is_half_second() -> None:
+    """Reconnect delay between attempts is 0.5 seconds."""
+    assert RECONNECT_DELAY == 0.5
 
 
 # --- Audio Stream — Reconnection ---

@@ -235,3 +235,52 @@ async def test_get_users_resolves_login_to_id(provider: TwitchProvider) -> None:
     assert len(users) == 1
     assert users[0]["id"] == "123"
     assert users[0]["login"] == "streamer_a"
+
+
+async def test_get_users_empty_returns_empty(provider: TwitchProvider) -> None:
+    """Empty logins list returns empty without API call."""
+    provider._access_token = "test_token"
+    provider._client_id = "test_client"
+
+    users = await provider._get_users(logins=[])
+    assert users == []
+
+
+async def test_followed_channels_aggregates_pages(provider: TwitchProvider) -> None:
+    """Results from all pages combined into single list with correct content."""
+    provider._access_token = "test_token"
+    provider._client_id = "test_client"
+    provider._user_id = "99"
+
+    fixture = load_fixture("followed_channels.json")
+    provider.mass.http_session.get = make_mock_session_method(  # type: ignore[method-assign]
+        [
+            MockResponse(status=200, json_data=fixture["page1"]),
+            MockResponse(status=200, json_data=fixture["page2"]),
+        ]
+    )
+
+    channels = await provider._get_followed_channels()
+    logins = [ch["broadcaster_login"] for ch in channels]
+    assert "streamer_a" in logins
+    assert "streamer_b" in logins
+    assert "streamer_c" in logins
+
+
+async def test_live_streams_aggregates_batches(provider: TwitchProvider) -> None:
+    """Results from all batches combined into single list."""
+    provider._access_token = "test_token"
+    provider._client_id = "test_client"
+
+    provider.mass.http_session.get = make_mock_session_method(  # type: ignore[method-assign]
+        [
+            MockResponse(status=200, json_data={"data": [{"user_id": "1", "user_login": "a"}]}),
+            MockResponse(status=200, json_data={"data": [{"user_id": "101", "user_login": "b"}]}),
+        ]
+    )
+
+    user_ids = [str(i) for i in range(150)]
+    streams = await provider._get_live_streams(user_ids)
+    logins = [s["user_login"] for s in streams]
+    assert "a" in logins
+    assert "b" in logins

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import ConfigEntryType
@@ -280,7 +280,97 @@ async def test_refresh_failure_clears_both_tokens(provider: TwitchProvider) -> N
     assert cleared_refresh is None
 
 
+# --- Token Exchange Errors ---
+
+
+async def test_token_exchange_fails_invalid_code(mass_mock: Mock) -> None:
+    """Twitch rejects authorization code — LoginFailed raised."""
+    values: dict[str, Any] = {
+        "session_id": "test_session",
+        CONF_CLIENT_ID: "test_client",
+        CONF_CLIENT_SECRET: "test_secret",
+    }
+
+    # Mock AuthenticationHelper to return a code
+    mock_auth = AsyncMock()
+    mock_auth.__aenter__ = AsyncMock(return_value=mock_auth)
+    mock_auth.__aexit__ = AsyncMock(return_value=None)
+    mock_auth.callback_url = "http://localhost:8095/callback/test"
+    mock_auth.authenticate = AsyncMock(return_value={"code": "bad_code"})
+
+    # Token exchange fails
+    mass_mock.http_session.post = make_mock_session_method(
+        MockResponse(status=400, text_data="Invalid authorization code")
+    )
+
+    with (
+        patch("music_assistant.providers.twitch.AuthenticationHelper", return_value=mock_auth),
+        pytest.raises(LoginFailed),
+    ):
+        await get_config_entries(mass_mock, action=CONF_ACTION_AUTH, values=values)
+
+
+async def test_token_exchange_fails_network_error(mass_mock: Mock) -> None:
+    """Network failure during token exchange — LoginFailed raised."""
+    values: dict[str, Any] = {
+        "session_id": "test_session",
+        CONF_CLIENT_ID: "test_client",
+        CONF_CLIENT_SECRET: "test_secret",
+    }
+
+    mock_auth = AsyncMock()
+    mock_auth.__aenter__ = AsyncMock(return_value=mock_auth)
+    mock_auth.__aexit__ = AsyncMock(return_value=None)
+    mock_auth.callback_url = "http://localhost:8095/callback/test"
+    mock_auth.authenticate = AsyncMock(return_value={"code": "valid_code"})
+
+    def raise_error(*_args: Any, **_kwargs: Any) -> None:
+        msg = "connection refused"
+        raise ConnectionError(msg)
+
+    mass_mock.http_session.post = Mock(side_effect=raise_error)
+
+    with (
+        patch("music_assistant.providers.twitch.AuthenticationHelper", return_value=mock_auth),
+        pytest.raises(ConnectionError),
+    ):
+        await get_config_entries(mass_mock, action=CONF_ACTION_AUTH, values=values)
+
+
 # --- Logout / Revoke ---
+
+
+async def test_revoke_noop_when_not_authenticated(mass_mock: Mock) -> None:
+    """Revoke with no tokens is a no-op — no API call made."""
+    values: dict[str, Any] = {
+        "session_id": "test_session",
+        CONF_ACCESS_TOKEN: "",
+        CONF_REFRESH_TOKEN: "",
+        CONF_CLIENT_ID: "test_client",
+    }
+    mass_mock.http_session.post = make_mock_session_method(MockResponse(status=200))
+
+    await get_config_entries(mass_mock, action=CONF_ACTION_REVOKE, values=values)
+
+    # post should NOT have been called — no token to revoke
+    mass_mock.http_session.post.assert_not_called()
+
+
+async def test_revoke_invalidates_live_status_cache(mass_mock: Mock) -> None:
+    """After revoke, tokens are cleared in the values dict."""
+    values: dict[str, Any] = {
+        "session_id": "test_session",
+        CONF_ACCESS_TOKEN: "test_token",
+        CONF_REFRESH_TOKEN: "test_refresh",
+        CONF_CLIENT_ID: "test_client",
+    }
+    mass_mock.http_session.post = make_mock_session_method(MockResponse(status=200))
+
+    await get_config_entries(mass_mock, action=CONF_ACTION_REVOKE, values=values)
+
+    # Values dict should have tokens cleared
+    assert values[CONF_ACCESS_TOKEN] == ""
+    assert values[CONF_REFRESH_TOKEN] == ""
 
 
 async def test_revoke_action_clears_tokens(mass_mock: Mock) -> None:

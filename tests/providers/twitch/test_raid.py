@@ -106,6 +106,43 @@ async def test_raid_to_offline_target_handled(provider: TwitchProvider) -> None:
     await provider._on_raid("streamer_a", "offline_channel")
 
 
+# --- State Machine — Extended ---
+
+
+async def test_playing_different_channel_resubscribes(provider: TwitchProvider) -> None:
+    """Switching channels: unsubscribe old, subscribe new."""
+    provider._access_token = "test"
+    provider._client_id = "test"
+    provider._auto_raid = True
+    provider._current_channel_login = "streamer_a"
+    provider._eventsub = Mock()
+    provider._eventsub.subscribe_raids = AsyncMock()
+    provider._eventsub.unsubscribe_all = AsyncMock()
+    provider._eventsub.is_connected = True
+    provider._eventsub.start = AsyncMock()
+
+    with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "456"}]):
+        await provider._handle_queue_playing("twitch://channel/streamer_b", "streamer_b")
+
+    # Should have subscribed to the new channel
+    provider._eventsub.subscribe_raids.assert_called_once_with("456")
+    assert provider._current_channel_login == "streamer_b"
+
+
+async def test_rapid_raids_last_wins(provider: TwitchProvider) -> None:
+    """Multiple rapid raids — last one is the one that plays."""
+    provider._current_channel_login = "streamer_a"
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_b")
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    # play_media called twice — last call should be for streamer_c
+    assert provider.mass.player_queues.play_media.call_count == 2
+    last_call = provider.mass.player_queues.play_media.call_args
+    assert "streamer_c" in str(last_call)
+
+
 # --- Auto-Raid Toggle ---
 
 
@@ -118,6 +155,20 @@ async def test_auto_raid_disabled_ignores_raids(provider: TwitchProvider) -> Non
     await provider._on_raid("streamer_a", "streamer_c")
 
     provider.mass.player_queues.play_media.assert_not_called()
+
+
+async def test_auto_raid_disabled_no_eventsub_connection(provider: TwitchProvider) -> None:
+    """With auto_raid=False, _handle_queue_playing does not create EventSub."""
+    provider._access_token = "test"
+    provider._client_id = "test"
+    provider._auto_raid = False
+    provider._eventsub = None
+
+    with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
+        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+
+    # EventSub should NOT have been created
+    assert provider._eventsub is None
 
 
 # --- Cleanup ---
@@ -165,4 +216,40 @@ async def test_unload_stops_eventsub(provider: TwitchProvider) -> None:
     await provider.unload()
 
     # _eventsub is set to None after stop, so check the saved ref
+    eventsub_mock.stop.assert_called_once()
+
+
+async def test_unload_closes_websocket(provider: TwitchProvider) -> None:
+    """unload() closes EventSub WebSocket (alias for stop)."""
+    eventsub_mock = Mock()
+    eventsub_mock.stop = AsyncMock()
+    provider._eventsub = eventsub_mock
+    provider._grace_timer = None
+    provider._idle_timer = None
+    provider._unsub_queue_updated = None
+
+    await provider.unload()
+
+    eventsub_mock.stop.assert_called_once()
+    assert provider._eventsub is None
+
+
+async def test_unload_cancels_asyncio_tasks(provider: TwitchProvider) -> None:
+    """unload() cancels all pending tasks (timers + eventsub)."""
+    grace_mock = Mock()
+    grace_mock.cancel = Mock()
+    idle_mock = Mock()
+    idle_mock.cancel = Mock()
+    eventsub_mock = Mock()
+    eventsub_mock.stop = AsyncMock()
+
+    provider._grace_timer = grace_mock
+    provider._idle_timer = idle_mock
+    provider._eventsub = eventsub_mock
+    provider._unsub_queue_updated = None
+
+    await provider.unload()
+
+    grace_mock.cancel.assert_called_once()
+    idle_mock.cancel.assert_called_once()
     eventsub_mock.stop.assert_called_once()
