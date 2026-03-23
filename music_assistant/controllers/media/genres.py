@@ -255,7 +255,7 @@ class GenreController(MediaControllerBase[Genre]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "translation_key": None,
+                "translation_key": item.translation_key,
                 "description": item.metadata.description if item.metadata else None,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
@@ -860,6 +860,7 @@ class GenreController(MediaControllerBase[Genre]):
             f"AND item_id IN ("
             f"  SELECT item_id FROM {DB_TABLE_GENRES} "
             f"  WHERE translation_key IS NULL "
+            f"  AND is_excluded = 0 "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
             f"  ) "
@@ -872,6 +873,7 @@ class GenreController(MediaControllerBase[Genre]):
         await db.delete_where_query(
             DB_TABLE_GENRES,
             f"translation_key IS NULL "
+            f"AND is_excluded = 0 "
             f"AND NOT EXISTS ("
             f"  SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
             f") "
