@@ -621,14 +621,21 @@ class DigitallyIncorporatedProvider(MusicProvider):
         channels_by_key: dict[str, dict[str, Any]],
     ) -> dict[str, Any] | None:
         """Match a PLS-derived slug to channel JSON (handles ``*_aac`` / ``*_mp3`` mounts)."""
+        # Fast path: exact match with original casing.
         if pls_key in channels_by_key:
             return channels_by_key[pls_key]
+        # Build a lowercase-keyed view for case-insensitive matching.
+        lower_channels_by_key = {key.lower(): value for key, value in channels_by_key.items()}
         pls_lower = pls_key.lower()
+        # Direct case-insensitive match.
+        if pls_lower in lower_channels_by_key:
+            return lower_channels_by_key[pls_lower]
+        # Handle codec suffixes (e.g. ``_aac``, ``_mp3``) in a case-insensitive way.
         for suffix in PLS_KEY_CODEC_SUFFIXES:
             if pls_lower.endswith(suffix):
-                trimmed = pls_key[: -len(suffix)]
-                if trimmed in channels_by_key:
-                    return channels_by_key[trimmed]
+                trimmed_lower = pls_lower[: -len(suffix)]
+                if trimmed_lower in lower_channels_by_key:
+                    return lower_channels_by_key[trimmed_lower]
         return None
 
     def _parse_favorites_pls_channel_keys(self, pls_body: str, network_key: str) -> list[str]:
