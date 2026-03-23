@@ -6,7 +6,11 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 from unittest.mock import Mock
@@ -93,6 +97,77 @@ def _mock_streamlink_modules() -> Any:
 
     # Also clear ad_handling module cache so it reimports cleanly
     sys.modules.pop("music_assistant.providers.twitch.ad_handling", None)
+
+
+# --- Silence Clip Format Validation ---
+
+_SILENCE_PATH = (
+    Path(__file__).parent.parent.parent.parent
+    / "music_assistant"
+    / "providers"
+    / "twitch"
+    / "data"
+    / "silence.ts"
+)
+
+
+@pytest.mark.skipif(
+    shutil.which("ffprobe") is None,
+    reason="ffprobe not available",
+)
+def test_silence_clip_matches_twitch_audio_format() -> None:
+    """Silence clip must be 48000 Hz AAC stereo MPEG-TS to match Twitch HLS output.
+
+    A sample rate mismatch (e.g., 44100 Hz) causes FFmpeg to reject the silence
+    data or produce no output, resulting in an 18-second dead period during
+    pre-roll ads.
+    """
+    assert _SILENCE_PATH.exists(), f"silence.ts not found at {_SILENCE_PATH}"
+
+    ffprobe = shutil.which("ffprobe")
+    assert ffprobe is not None  # guaranteed by skipif above
+    result = subprocess.run(  # noqa: S603
+        [
+            ffprobe,
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            str(_SILENCE_PATH),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"ffprobe failed: {result.stderr}"
+
+    probe = json.loads(result.stdout)
+    streams = probe.get("streams", [])
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+
+    assert len(audio_streams) == 1, f"Expected 1 audio stream, got {len(audio_streams)}"
+
+    audio = audio_streams[0]
+    assert audio["codec_name"] == "aac", f"Expected AAC codec, got {audio['codec_name']}"
+    assert audio["sample_rate"] == "48000", (
+        f"Expected 48000 Hz sample rate (Twitch standard), got {audio['sample_rate']} Hz"
+    )
+    assert audio["channels"] == 2, f"Expected stereo (2 channels), got {audio['channels']}"
+
+
+def test_silence_clip_is_valid_mpegts() -> None:
+    """Silence clip starts with MPEG-TS sync byte and is non-empty.
+
+    Pure Python check — no ffprobe dependency.
+    """
+    assert _SILENCE_PATH.exists(), f"silence.ts not found at {_SILENCE_PATH}"
+
+    data = _SILENCE_PATH.read_bytes()
+    assert len(data) > 188, f"silence.ts too small ({len(data)} bytes) — likely corrupt"
+    assert data[0] == 0x47, (
+        f"silence.ts does not start with MPEG-TS sync byte (0x47), got 0x{data[0]:02x}"
+    )
 
 
 # --- Monkey-Patch Application ---
