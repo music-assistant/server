@@ -34,11 +34,15 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     AudioFormat,
     BrowseFolder,
+    Genre,
     ItemMapping,
     MediaItemType,
+    Playlist,
+    Podcast,
     ProviderMapping,
     RecommendationFolder,
     SearchResults,
@@ -1270,6 +1274,17 @@ class MusicController(CoreController):
                     params,
                     allow_replace=True,
                 )
+
+        # Set seconds_played in accordance with fully_played, if the media_item has
+        # a duration, before it is forwarded to music_providers
+        if seconds_played is None:
+            seconds_played = 0
+            if (
+                fully_played
+                and not isinstance(media_item, Album | Artist | Genre | Playlist | Podcast)
+                and isinstance(media_item.duration, int)  # for Radio duration can be None
+            ):
+                seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
