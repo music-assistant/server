@@ -334,17 +334,6 @@ class TwitchProvider(MusicProvider):
         self._refresh_token = str(self.config.get_value(CONF_REFRESH_TOKEN) or "") or None
         val = self.config.get_value(CONF_AUTO_RAID)
         self._auto_raid = bool(val) if val is not None else True
-        # Apply ad handling patch once (not per-resolution)
-        try:
-            from music_assistant.providers.twitch.ad_handling import (  # noqa: PLC0415
-                patch_ad_handling,
-            )
-
-            ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or AD_MODE_SILENCE)
-            patch_ad_handling(ad_mode)
-        except Exception:
-            self.logger.warning("Failed to apply ad handling patch", exc_info=True)
-
         self.logger.info(
             "Twitch provider initialized: auto_raid=%s, ad_handling=%s, authenticated=%s",
             self._auto_raid,
