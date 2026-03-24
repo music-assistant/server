@@ -34,6 +34,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import LoginError, PocketCastsClient
@@ -437,6 +438,7 @@ class PocketCastsProvider(MusicProvider):
             LOGGER.exception("Error removing podcast from library: %s", err)
             return False
 
+    @use_cache(3600 * 24)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details."""
         # First try library
@@ -717,6 +719,7 @@ class PocketCastsProvider(MusicProvider):
             allow_seek=True,
         )
 
+    @use_cache(3600 * 24 * 7)
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -743,6 +746,7 @@ class PocketCastsProvider(MusicProvider):
 
         return results
 
+    @use_cache(3600)
     async def get_podcast_episode(self, prov_item_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id.
 
