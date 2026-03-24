@@ -64,10 +64,6 @@ async def get_config_entries(
 class RadioBrowserProvider(MusicProvider):
     """Provider implementation for RadioBrowser."""
 
-    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
-        """Return the default recurring schedule for RadioBrowser sync tasks."""
-        return TaskSchedule.hourly(every=3)
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.radios = RadioBrowser(
