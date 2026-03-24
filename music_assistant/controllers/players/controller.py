@@ -23,6 +23,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -159,11 +160,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Async initialize of module."""
         self._cleanup_stale_protocol_parent_ids()
         self._poll_task = self.mass.create_task(self._poll_players())
-        self.mass.tasks.run_background_task(
+        self.mass.tasks.register_scheduled_task(
             task_id="fix_group_member_configs",
             name="Fix sync group member configurations",
             handler=self._fix_group_member_configs,
-            delay=300,
+            schedule=TaskSchedule.weekly(
+                days_of_week=[0],
+                hour=4,
+                minute=0,
+            ),
+            initial_delay=300,
         )
 
     async def close(self) -> None:

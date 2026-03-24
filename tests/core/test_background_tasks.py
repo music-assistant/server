@@ -39,7 +39,6 @@ from music_assistant.controllers.tasks import (
     update_current_task_progress_text,
 )
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
-from music_assistant.controllers.tasks.helpers import get_task_timer_id
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.mass import MusicAssistant
@@ -540,90 +539,6 @@ async def test_genre_scan_queues_managed_background_task(
     status = await genre_controller.get_scanner_status()
     assert status["running"] is False
     assert status["last_scan_mapped"] == 3
-
-
-async def test_run_background_task_with_delay_defers_execution(
-    tasks_controller: TasksController,
-) -> None:
-    """A task with a delay should not run immediately but succeed after the delay elapses."""
-    handler_started = asyncio.Event()
-
-    async def handler() -> None:
-        handler_started.set()
-
-    task = tasks_controller.run_background_task(
-        name="Delayed fix",
-        handler=handler,
-        delay=0.2,
-    )
-
-    # Task should be registered but not yet queued.
-    assert task.status == TaskStatus.IDLE
-
-    # After the delay the task should execute and complete.
-    await handler_started.wait()
-    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
-
-    task = tasks_controller.get_task(task.id)
-    assert task.status == TaskStatus.SUCCESS
-    assert task.started_at is not None
-    assert task.finished_at is not None
-
-
-async def test_run_background_task_with_zero_delay_runs_immediately(
-    tasks_controller: TasksController,
-) -> None:
-    """A delay of 0 should queue the task immediately, same as no delay."""
-    handler_started = asyncio.Event()
-
-    async def handler() -> None:
-        handler_started.set()
-
-    task = tasks_controller.run_background_task(
-        name="Immediate task",
-        handler=handler,
-        delay=0,
-    )
-
-    await handler_started.wait()
-    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
-    assert tasks_controller.get_task(task.id).status == TaskStatus.SUCCESS
-
-
-async def test_run_background_task_delay_uses_call_later(
-    tasks_controller: TasksController,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When delay is provided, run_background_task should defer via mass.call_later."""
-    call_later_calls: list[tuple[Any, ...]] = []
-    original_call_later = tasks_controller.mass.call_later
-
-    def spy_call_later(*args: Any, **kwargs: Any) -> Any:
-        call_later_calls.append((args, kwargs))
-        return original_call_later(*args, **kwargs)
-
-    monkeypatch.setattr(tasks_controller.mass, "call_later", spy_call_later)
-
-    async def handler() -> None:
-        """No-op test handler."""
-
-    task = tasks_controller.run_background_task(
-        name="Deferred task",
-        handler=handler,
-        delay=300,
-    )
-
-    # call_later should have been invoked with the correct delay and timer id.
-    assert len(call_later_calls) == 1
-    args, kwargs = call_later_calls[0]
-    assert args[0] == 300
-    assert kwargs["task_id"] == get_task_timer_id(task.id)
-
-    # Task should still be idle because the 300s delay hasn't elapsed.
-    assert tasks_controller.get_task(task.id).status == TaskStatus.IDLE
-
-    # Cancel the scheduled timer to prevent it firing after the test ends.
-    tasks_controller.mass.cancel_timer(get_task_timer_id(task.id))
 
 
 async def test_schedule_update_metadata_uses_managed_background_task(

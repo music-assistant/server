@@ -224,7 +224,6 @@ class TasksController(CoreController):
         name: str,
         handler: Callable[[], Awaitable[Any]],
         task_id: str | None = None,
-        delay: float | None = None,
         translation_key: str | None = None,
         translation_args: list[Any] | None = None,
         user_id: str | None = None,
@@ -241,7 +240,6 @@ class TasksController(CoreController):
         :param task_id: Optional deterministic id. Auto-generated if not provided.
             When a task with the same id already exists and is active,
             the existing task is returned as-is. If inactive, it is replaced.
-        :param delay: Optional delay in seconds before the task is queued for execution.
         :param translation_key: Optional translation key for localised task names.
         :param translation_args: Optional arguments for the translation key.
         :param user_id: Optional user id that initiated the task.
@@ -277,14 +275,7 @@ class TasksController(CoreController):
             max_log_lines=max_log_lines,
         )
         self._tasks[task_info.id] = managed
-        if delay is not None and delay > 0:
-            self.mass.call_later(
-                delay,
-                partial(self._queue_task, managed, reset_logs=True, run_user_id=user_id),
-                task_id=get_task_timer_id(task_info.id),
-            )
-        else:
-            self._queue_task(managed, reset_logs=True, run_user_id=user_id)
+        self._queue_task(managed, reset_logs=True, run_user_id=user_id)
         return task_info
 
     def register_scheduled_task(
