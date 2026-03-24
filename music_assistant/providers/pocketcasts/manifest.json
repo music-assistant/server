@@ -5,7 +5,7 @@
   "documentation": "https://music-assistant.io/music-providers/pocketcasts/",
   "type": "music",
   "requirements": [],
-  "codeowners": "@yfhyou",
+  "codeowners": "[@yfhyou]",
   "multi_instance": false,
   "stage": "beta"
 }

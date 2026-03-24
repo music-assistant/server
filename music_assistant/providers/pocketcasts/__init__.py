@@ -36,16 +36,18 @@ from music_assistant import MusicAssistant
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.models.music_provider import MusicProvider
 
+from .api_client import LoginError, PocketCastsClient
+
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
 
-# Import our custom API client
-from .api_client import LoginError, PocketCastsClient
-
 LOGGER = logging.getLogger(__name__)
+
+FULLY_PLAYED_THRESHOLD = 0.9
+SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
@@ -53,9 +55,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
-
-FULLY_PLAYED_THRESHOLD = 0.9
-SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
 
 BROWSE_FOLDER_ICONS: dict[str, str] = {
     "up_next": (
