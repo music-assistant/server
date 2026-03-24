@@ -1497,6 +1497,23 @@ class ConfigController:
                 values.pop("protocol_parent_id")
                 changed = True
 
+        # Remove orphaned stored_radios config from RadioBrowser provider instances
+        # now that LIBRARY_RADIOS support has been removed from the provider.
+        # TODO: remove after 2.8 release
+        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
+            if provider_config.get("domain") != "radiobrowser":
+                continue
+            if not (values := provider_config.get("values")):
+                continue
+            for key in (
+                "stored_radios",
+                "library_sync_radios",
+                "provider_sync_interval_radios",
+                "library_sync_back",
+            ):
+                if values.pop(key, None) is not None:
+                    changed = True
+
         if changed:
             await self._async_save()
 
