@@ -62,6 +62,9 @@ CONF_ANTI_BURN_IN = "anti_burn_in"
 CONF_PARTY_NAME = "party_name"
 CONF_PARTY_QR_TEXT = "qr_text"
 CONF_HIDE_BACK_BUTTON = "hide_back_button"
+# Actions
+CONF_ACTION_ENABLE_GUEST_ACCESS = "action_enable_guest_access"
+CONF_ACTION_DISABLE_GUEST_ACCESS = "action_disable_guest_access"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -136,8 +139,8 @@ async def setup(
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider.
 
@@ -146,16 +149,45 @@ async def get_config_entries(
     :param action: Optional action key called from config entries UI.
     :param values: The (intermediate) raw values for config entries sent with the action.
     """
+    if values is None:
+        values = {}
+
+    # Handle guest access toggle actions
+    if action == CONF_ACTION_ENABLE_GUEST_ACCESS:
+        values[CONF_ENABLE_GUEST_ACCESS] = True
+    elif action == CONF_ACTION_DISABLE_GUEST_ACCESS:
+        values[CONF_ENABLE_GUEST_ACCESS] = False
+
+    guest_access_enabled = bool(values.get(CONF_ENABLE_GUEST_ACCESS, True))
+
     return (
         ConfigEntry(
             key=CONF_ENABLE_GUEST_ACCESS,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
             label="Enable Guest Access via QR Code",
-            description=(
-                "Enable shareable guest access URL and QR code. "
-                "When enabled, guests can scan the QR code to add songs to the queue."
-            ),
+            hidden=True,
+            value=guest_access_enabled,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_ENABLE_GUEST_ACCESS,
+            type=ConfigEntryType.ACTION,
+            label="Guest access is disabled",
+            description="Click to enable guest access via QR code, "
+            "allowing guests to scan and add songs to the queue.",
+            action=CONF_ACTION_ENABLE_GUEST_ACCESS,
+            action_label="Enable Guest Access",
+            hidden=guest_access_enabled,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_DISABLE_GUEST_ACCESS,
+            type=ConfigEntryType.ACTION,
+            label="Guest access is enabled",
+            description="Guests can currently scan the QR code to add songs to the queue. "
+            "Click to disable guest access.",
+            action=CONF_ACTION_DISABLE_GUEST_ACCESS,
+            action_label="Disable Guest Access",
+            hidden=not guest_access_enabled,
         ),
         ConfigEntry(
             key=CONF_PARTY_PLAYER,
@@ -176,7 +208,10 @@ async def get_config_entries(
             default_value="Party time!",
             required=False,
             label="Party Name",
-            description="Custom name/title for the party, displayed in the party dashboard.",
+            description=(
+                "Custom name/title for the party, displayed in the party dashboard. "
+                "Leave blank to not show a text at all."
+            ),
         ),
         ConfigEntry(
             key=CONF_PARTY_QR_TEXT,
@@ -184,7 +219,10 @@ async def get_config_entries(
             default_value="Scan the QR code to join the party!",
             required=False,
             label="QR Code Text",
-            description="Custom text to display alongside the QR code.",
+            description=(
+                "Custom text to display alongside the QR code. "
+                "Leave blank to not show a text at all."
+            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
