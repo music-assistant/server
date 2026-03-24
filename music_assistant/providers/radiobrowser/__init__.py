@@ -365,17 +365,19 @@ class RadioBrowserProvider(MusicProvider):
             },
         )
         radio.metadata.popularity = radio_obj.click_count
-        radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)}
-        radio.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=radio_obj.favicon,
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                )
-            ]
-        )
+        if radio_obj.homepage:
+            radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)}
+        if radio_obj.favicon:
+            radio.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=radio_obj.favicon,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
         return radio
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -387,6 +389,10 @@ class RadioBrowserProvider(MusicProvider):
 
             await self.radios.station_click(uuid=item_id)
 
+            stream_url = stream.url_resolved or stream.url
+            if not stream_url:
+                raise MediaNotFoundError(f"Radio station {item_id} has no stream URL")
+
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -396,7 +402,7 @@ class RadioBrowserProvider(MusicProvider):
                 ),
                 media_type=MediaType.RADIO,
                 stream_type=StreamType.HTTP,
-                path=stream.url_resolved or stream.url,
+                path=stream_url,
                 can_seek=False,
                 allow_seek=False,
             )
