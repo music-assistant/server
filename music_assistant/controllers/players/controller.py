@@ -23,6 +23,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -75,6 +76,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_GROUP_MEMBERS,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -158,6 +160,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Async initialize of module."""
         self._cleanup_stale_protocol_parent_ids()
         self._poll_task = self.mass.create_task(self._poll_players())
+        self.mass.tasks.register_scheduled_task(
+            task_id="fix_group_member_configs",
+            name="Fix sync group member configurations",
+            handler=self._fix_group_member_configs,
+            schedule=TaskSchedule.weekly(
+                days_of_week=[0],
+                hour=4,
+                minute=0,
+            ),
+            initial_delay=300,
+        )
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -2169,6 +2182,57 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 )
                 conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
                 self.mass.config.set(conf_key, None)
+
+    async def _fix_group_member_configs(self) -> None:
+        """Fix stale protocol player IDs in sync group member configs.
+
+        When a sync group references a protocol player ID instead of
+        the parent player ID, correct it using the cached protocol parent mapping.
+        """
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        total_fixes = 0
+        fixed_groups: list[str] = []
+
+        for group_id, group_config in list(all_player_configs.items()):
+            if group_config.get("provider") != "sync_group":
+                continue
+            old_members: list[str] = group_config.get("values", {}).get(CONF_GROUP_MEMBERS, [])
+            if not old_members:
+                continue
+
+            new_members: list[str] = []
+            changes = 0
+            for member_id in old_members:
+                parent_id = self._get_cached_protocol_parent_id(member_id)
+                corrected_id = parent_id or member_id
+                if corrected_id != member_id:
+                    changes += 1
+                    self.logger.debug(
+                        "Sync group %s: corrected member %s -> %s",
+                        group_id,
+                        member_id,
+                        corrected_id,
+                    )
+                if corrected_id not in new_members:
+                    new_members.append(corrected_id)
+
+            if changes:
+                self.mass.config.set_raw_player_config_value(
+                    group_id, CONF_GROUP_MEMBERS, new_members
+                )
+                total_fixes += changes
+                fixed_groups.append(group_id)
+
+        for group_id in fixed_groups:
+            if (group_player := self.get_player(group_id)) and group_player.available:
+                await group_player.on_config_updated()
+
+        if total_fixes:
+            self.logger.info(
+                "Fixed %d stale member reference(s) across %d sync group(s)",
+                total_fixes,
+                len(fixed_groups),
+            )
 
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""
