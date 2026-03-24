@@ -162,34 +162,6 @@ async def get_config_entries(
 
     return (
         ConfigEntry(
-            key=CONF_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Enable Guest Access via QR Code",
-            hidden=True,
-            value=guest_access_enabled,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.ACTION,
-            label="Guest access is disabled",
-            description="Click to enable guest access via QR code, "
-            "allowing guests to scan and add songs to the queue.",
-            action=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            action_label="Enable Guest Access",
-            hidden=guest_access_enabled,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            type=ConfigEntryType.ACTION,
-            label="Guest access is enabled",
-            description="Guests can currently scan the QR code to add songs to the queue. "
-            "Click to disable guest access.",
-            action=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            action_label="Disable Guest Access",
-            hidden=not guest_access_enabled,
-        ),
-        ConfigEntry(
             key=CONF_PARTY_PLAYER,
             type=ConfigEntryType.STRING,
             required=True,
@@ -214,6 +186,49 @@ async def get_config_entries(
             ),
         ),
         ConfigEntry(
+            key=CONF_ENABLE_GUEST_ACCESS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Enable Guest Access via QR Code",
+            hidden=True,
+            value=guest_access_enabled,
+        ),
+        # Guest access disabled state
+        ConfigEntry(
+            key="guest_disabled_note",
+            type=ConfigEntryType.LABEL,
+            label="Ready to get the party started? Enable guest access and let "
+            "your friends add songs by scanning a QR code!",
+            required=False,
+            hidden=guest_access_enabled,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_ENABLE_GUEST_ACCESS,
+            type=ConfigEntryType.ACTION,
+            label="Enable Guest Access",
+            action=CONF_ACTION_ENABLE_GUEST_ACCESS,
+            action_label="Enable Guest Access",
+            hidden=guest_access_enabled,
+        ),
+        # Guest access enabled state
+        ConfigEntry(
+            key="guest_enabled_note",
+            type=ConfigEntryType.ALERT,
+            label="Guest mode is enabled. Guests will be able to join your party "
+            "by scanning the QR code (which automatically expires after 8 hours). "
+            "Click the button below to end the party and withdraw guest access.",
+            required=False,
+            hidden=not guest_access_enabled,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_DISABLE_GUEST_ACCESS,
+            type=ConfigEntryType.ACTION,
+            label="Disable Guest Access",
+            action=CONF_ACTION_DISABLE_GUEST_ACCESS,
+            action_label="Disable Guest Access",
+            hidden=not guest_access_enabled,
+        ),
+        ConfigEntry(
             key=CONF_PARTY_QR_TEXT,
             type=ConfigEntryType.STRING,
             default_value="Scan the QR code to join the party!",
@@ -236,6 +251,7 @@ async def get_config_entries(
                 "(e.g. Alt+Left or the browser back button) to navigate back to "
                 "Music Assistant."
             ),
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_PARTY_DISPLAY_LYRICS,
