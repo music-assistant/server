@@ -43,7 +43,13 @@ def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
 def split_items(
     org_str: str | list[str] | tuple[str, ...] | None, allow_unsafe_splitters: bool = False
 ) -> tuple[str, ...]:
-    """Split up a tags string by common splitter."""
+    """Split a tag string into multiple values.
+
+    Splits on semicolon (;) first as the standard multi-value delimiter.
+
+    :param org_str: The string or list of strings to split.
+    :param allow_unsafe_splitters: Also split on "/" and ", " (use for genres, not artists).
+    """
     if org_str is None:
         return ()
     if isinstance(org_str, tuple | list):
@@ -286,7 +292,13 @@ class AudioTags:
         # Vorbis: multiple ARTIST fields, ID3: TXXX:ARTISTS or multi-value TPE1
         # APEv2: null-separated ARTISTS tag (if present), MP4: not supported
         if tag := self.tags.get("artists"):
-            artists = split_items(tag)
+            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
+                # Multiple ARTIST fields from Vorbis - already separated, no splitting needed
+                artists = clean_tuple(tag)  # type: ignore[unreachable]
+            else:
+                # Single field - split on semicolons
+                artists = split_items(tag)
             # Warn if ARTISTS tag count doesn't match MB Artist ID count
             mb_id_count = len(self.musicbrainz_artistids)
             if mb_id_count and mb_id_count != len(artists):
@@ -301,13 +313,11 @@ class AudioTags:
         # All formats: parser returns artist (singular)
         # APEv2: also falls through here if no ARTISTS tag present
         if tag := self.tags.get("artist"):
+            mb_id_count = len(self.musicbrainz_artistids)
+            if mb_id_count == 1:
+                return (tag,)
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            # Use MB artist ID count to guide splitting
-            # - 0 IDs: only split on "feat." etc., not on "&" or ","
-            # - 1 ID: don't split at all
-            # - 2+ IDs: split to match the expected count
-            mb_id_count = len(self.musicbrainz_artistids)
             return split_artists(tag, expected_count=mb_id_count if mb_id_count else None)
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
@@ -338,7 +348,13 @@ class AudioTags:
         # Preferred path when unambiguously separated album artist names are available
         # Vorbis: multiple ALBUMARTIST fields, ID3: multi-value TPE2
         if tag := self.tags.get("albumartists"):
-            artists = split_items(tag)
+            # Runtime check: mutagen returns list[str] for Vorbis multi-field
+            if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
+                # Multiple ALBUMARTIST fields from Vorbis - already separated, no splitting needed
+                artists = clean_tuple(tag)  # type: ignore[unreachable]
+            else:
+                # Single field (non-standard ALBUMARTISTS tag) - split on semicolons
+                artists = split_items(tag)
             # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
             mb_id_count = len(self.musicbrainz_albumartistids)
             if mb_id_count and mb_id_count != len(artists):
@@ -353,10 +369,11 @@ class AudioTags:
         # Fallback to single album artist string, splitting if necessary
         # All formats: parser returns albumartist (singular)
         if tag := self.tags.get("albumartist"):
+            mb_id_count = len(self.musicbrainz_albumartistids)
+            if mb_id_count == 1:
+                return (tag,)
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            # Use MB album artist ID count to guide splitting
-            mb_id_count = len(self.musicbrainz_albumartistids)
             return split_artists(tag, expected_count=mb_id_count if mb_id_count else None)
         return ()
 
@@ -759,6 +776,8 @@ def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
 def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     """Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
 
+    See: https://mutagen.readthedocs.io/en/latest/api/mp4.html
+
     :param tags: The MP4Tags object from mutagen.
     """
     result: dict[str, Any] = {}
@@ -995,9 +1014,14 @@ def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> Non
         else:
             result["albumartist"] = albumartist_values[0]
 
-    # Explicit ARTISTS tag takes precedence if present
+    # ARTISTS (plural) is non-standard in Vorbis - it's a MusicBrainz/Picard ID3 convention.
+    # Vorbis spec recommends multiple ARTIST (singular) fields instead.
+    # We can however accept it. See: https://xiph.org/vorbis/doc/v-comment.html
     if artists := _vorbis_get_multi(tags, "ARTISTS"):
         result["artists"] = artists
+
+    if albumartists := _vorbis_get_multi(tags, "ALBUMARTISTS"):
+        result["albumartists"] = albumartists
 
 
 def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
@@ -1126,6 +1150,8 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
     APEv2 tags are used by WavPack, Musepack, Monkey's Audio, OptimFROG, and TAK.
     Multi-value fields use null byte (\x00) as separator.
 
+    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
+
     :param tags: APEv2 tags object from mutagen.
     """
     result: dict[str, Any] = {}
@@ -1133,18 +1159,26 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
     # Basic text tags
     if title := _apev2_get_single(tags, "Title"):
         result["title"] = title
-    if artist := _apev2_get_single(tags, "Artist"):
-        result["artist"] = artist
-    if albumartist := _apev2_get_single(tags, "Album Artist"):
-        result["albumartist"] = albumartist
     if album := _apev2_get_single(tags, "Album"):
         result["album"] = album
+
+    # Artist tags - support null-separated multi-value
+    if artist_values := _apev2_get_multi(tags, "Artist"):
+        if len(artist_values) > 1:
+            result["artists"] = artist_values
+        else:
+            result["artist"] = artist_values[0]
+    if albumartist_values := _apev2_get_multi(tags, "Album Artist"):
+        if len(albumartist_values) > 1:
+            result["albumartists"] = albumartist_values
+        else:
+            result["albumartist"] = albumartist_values[0]
 
     # Genre (can be multi-value)
     if genre := _apev2_get_multi(tags, "Genre"):
         result["genre"] = genre
 
-    # Multi-artist support (ARTISTS tag)
+    # Explicit multi-artist support (ARTISTS tag takes precedence)
     if artists := _apev2_get_multi(tags, "Artists"):
         result["artists"] = artists
 
