@@ -33,7 +33,12 @@ async def _finalize_producer(
     # Close the upstream generator on any early-exit path, even if it already
     # produced some chunks before the consumer stopped.
     if not completed_naturally:
-        await close_async_generator(generator)
+        close_task = asyncio.create_task(close_async_generator(generator))
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            await close_task
+            raise
     # Signal end of stream by putting None
     # We must wait for space in the queue if needed, otherwise the consumer may
     # hang waiting for data that will never come
