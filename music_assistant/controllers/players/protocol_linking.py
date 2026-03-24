@@ -495,6 +495,94 @@ class ProtocolLinkingMixin:
 
         self.mass.create_task(_do_save())
 
+    def _get_known_protocol_ids(self, parent: Player) -> list[str]:
+        """
+        Get all protocol IDs tracked for a parent player.
+
+        Includes both active links and cached/inactive protocol IDs so callers can
+        safely migrate or clean up the full parent/protocol relationship.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+
+        for linked in parent.linked_output_protocols:
+            if linked.output_protocol_id not in seen:
+                result.append(linked.output_protocol_id)
+                seen.add(linked.output_protocol_id)
+
+        if parent.provider.domain == "universal_player" and isinstance(parent, UniversalPlayer):
+            cached_ids = parent._protocol_player_ids
+        else:
+            cached_ids = self._get_cached_protocol_ids(parent.player_id)
+
+        for protocol_id in cached_ids:
+            if protocol_id not in seen:
+                result.append(protocol_id)
+                seen.add(protocol_id)
+
+        return result
+
+    def _migrate_protocol_ids_to_parent(self, parent: Player, protocol_ids: set[str]) -> None:
+        """
+        Persist protocol ownership on a new parent without requiring active links.
+
+        This is used when protocol ownership moves from one parent to another during
+        promotion/merge flows. Active protocols are already linked in memory, but
+        disabled or temporarily unavailable protocols still need their cached parent
+        relationship moved as well.
+        """
+        if not protocol_ids:
+            return
+
+        if parent.provider.domain == "universal_player" and isinstance(parent, UniversalPlayer):
+            for protocol_id in protocol_ids:
+                parent.add_protocol_player(protocol_id)
+            self._save_universal_player_data(parent)
+        else:
+            conf_key = f"{CONF_PLAYERS}/{parent.player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
+            cached_ids = self._get_cached_protocol_ids(parent.player_id)
+            changed = False
+            for protocol_id in protocol_ids:
+                if protocol_id not in cached_ids:
+                    cached_ids.append(protocol_id)
+                    changed = True
+            if changed:
+                self.mass.config.set(conf_key, cached_ids)
+
+        for protocol_id in protocol_ids:
+            if self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}"):
+                self._save_protocol_parent_id(protocol_id, parent.player_id)
+
+    def _remove_protocol_ids_from_parent(self, parent: Player, protocol_ids: set[str]) -> None:
+        """
+        Remove protocol ownership from a parent before it is permanently cleaned up.
+
+        This prevents `_cleanup_protocol_links` from treating already-migrated
+        protocols as orphaned when the obsolete parent is unregistered.
+        """
+        if not protocol_ids:
+            return
+
+        remaining_links = [
+            link
+            for link in parent.linked_output_protocols
+            if link.output_protocol_id not in protocol_ids
+        ]
+        if len(remaining_links) != len(parent.linked_output_protocols):
+            parent.set_linked_output_protocols(remaining_links)
+
+        if parent.provider.domain == "universal_player" and isinstance(parent, UniversalPlayer):
+            for protocol_id in protocol_ids:
+                parent.remove_protocol_player(protocol_id)
+            if self.mass.config.get(f"{CONF_PLAYERS}/{parent.player_id}"):
+                self.mass.config.set(
+                    f"{CONF_PLAYERS}/{parent.player_id}/values/{CONF_LINKED_PROTOCOL_IDS}",
+                    parent._protocol_player_ids,
+                )
+        else:
+            for protocol_id in protocol_ids:
+                self._remove_protocol_id_from_cache(parent.player_id, protocol_id)
+
     def _check_merge_universal_players(self, universal_player: UniversalPlayer) -> None:
         """
         Check if another universal player should be merged into this one.
@@ -532,6 +620,12 @@ class ProtocolLinkingMixin:
                 keep.player_id,
             )
 
+            known_protocol_ids = set(self._get_known_protocol_ids(remove))
+            active_protocol_ids = {
+                link.output_protocol_id for link in remove.linked_output_protocols
+            }
+            moved_protocol_ids: set[str] = set()
+
             # Transfer protocol links from the removed player to the keeper
             for linked in list(remove.linked_output_protocols):
                 if protocol_player := self.get_player(linked.output_protocol_id):
@@ -548,18 +642,20 @@ class ProtocolLinkingMixin:
                         continue
 
                     self._add_protocol_link(keep, protocol_player, domain)
-                    protocol_player.update_state()
+                    if protocol_player.protocol_parent_id == keep.player_id:
+                        moved_protocol_ids.add(protocol_player.player_id)
+                        protocol_player.update_state()
+
+            # Move cached-only protocol ownership as well so old-parent cleanup
+            # does not wipe protocols that were intentionally preserved.
+            cached_only_ids = known_protocol_ids - active_protocol_ids
+            preserved_protocol_ids = moved_protocol_ids | cached_only_ids
+            self._migrate_protocol_ids_to_parent(keep, preserved_protocol_ids)
+            self._remove_protocol_ids_from_parent(remove, preserved_protocol_ids)
 
             # Merge identifiers
             for conn_type, value in remove.device_info.identifiers.items():
                 keep.device_info.add_identifier(conn_type, value)
-
-            # Add protocol player IDs from the removed player
-            if isinstance(keep, UniversalPlayer):
-                for pid in remove._protocol_player_ids:
-                    keep.add_protocol_player(pid)
-
-            remove.set_linked_output_protocols([])
             keep.update_state()
 
             # Persist updated data and remove the obsolete player
@@ -713,15 +809,26 @@ class ProtocolLinkingMixin:
             if not identifiers_match and not player_id_in_protocols:
                 continue
 
+            known_protocol_ids = set(self._get_known_protocol_ids(player))
+            active_protocol_ids = {
+                link.output_protocol_id for link in player.linked_output_protocols
+            }
+            moved_protocol_ids: set[str] = set()
+
             # Transfer all protocol links from universal player to native player
             for linked in list(player.linked_output_protocols):
                 if protocol_player := self.get_player(linked.output_protocol_id):
                     protocol_player.set_protocol_parent_id(None)
                     domain = linked.protocol_domain or protocol_player.provider.domain
                     self._add_protocol_link(native_player, protocol_player, domain)
-                    protocol_player.update_state()
+                    if protocol_player.protocol_parent_id == native_player.player_id:
+                        moved_protocol_ids.add(protocol_player.player_id)
+                        protocol_player.update_state()
 
-            player.set_linked_output_protocols([])
+            cached_only_ids = known_protocol_ids - active_protocol_ids
+            preserved_protocol_ids = moved_protocol_ids | cached_only_ids
+            self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
+            self._remove_protocol_ids_from_parent(player, preserved_protocol_ids)
             native_player.update_state()
 
             # Remove the now-obsolete universal player
@@ -1009,12 +1116,9 @@ class ProtocolLinkingMixin:
                         parent_player.update_state()
         else:
             # Native/universal player being removed: handle all linked protocol players.
-            # Collect all known protocol IDs from both active links and cached config,
-            # since cached config may contain protocols that weren't restored this session.
-            all_protocol_ids: set[str] = {
-                link.output_protocol_id for link in player.linked_output_protocols
-            }
-            all_protocol_ids.update(self._get_cached_protocol_ids(player.player_id))
+            # Collect all known protocol IDs from both active links and cached state,
+            # since disabled/inactive protocols may only exist in the cached parent data.
+            all_protocol_ids = set(self._get_known_protocol_ids(player))
             for protocol_id in all_protocol_ids:
                 # Clear cached parent ID in config so protocol won't try to
                 # restore a link to the deleted player on next restart
