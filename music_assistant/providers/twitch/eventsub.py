@@ -48,6 +48,7 @@ class EventSubClient:
         self._backoff = 1.0
         self._listen_task: asyncio.Task[None] | None = None
         self._on_raid: Callable[[str, str], Any] | None = None
+        self._subscribe_pending = False  # True when subscribe_raids is waiting for ready
 
     @property
     def is_connected(self) -> bool:
@@ -91,13 +92,16 @@ class EventSubClient:
         self._current_broadcaster_user_id = broadcaster_user_id
 
         # Wait for WebSocket to be ready
+        self._subscribe_pending = True
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=10.0)
         except TimeoutError:
             logger.warning("EventSub not ready — cannot subscribe to raids")
             return
+        finally:
+            self._subscribe_pending = False
 
-        # Check if welcome handler already re-subscribed
+        # Check if welcome handler already re-subscribed (reconnect case)
         if self._current_subscription_id:
             return
 
@@ -205,8 +209,11 @@ class EventSubClient:
         self._current_subscription_id = None  # old sub is invalid
         self._backoff = 1.0  # reset backoff
 
-        # Re-subscribe if we had an active subscription before disconnect
-        if self._current_broadcaster_user_id is not None:
+        # Re-subscribe if we had an active subscription before disconnect,
+        # but only if subscribe_raids isn't already waiting to do it.
+        # Without this check, both the welcome handler and subscribe_raids
+        # create subscriptions, resulting in duplicates.
+        if self._current_broadcaster_user_id is not None and not self._subscribe_pending:
             asyncio.create_task(self._create_subscription(self._current_broadcaster_user_id))
 
         self._ready.set()
