@@ -58,6 +58,10 @@ CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
 CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
 # Anti burn-in
 CONF_ANTI_BURN_IN = "anti_burn_in"
+# Custom party settings
+CONF_PARTY_NAME = "party_name"
+CONF_PARTY_QR_TEXT = "qr_text"
+CONF_HIDE_BACK_BUTTON = "hide_back_button"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -116,6 +120,10 @@ class PartyConfig(DataClassDictMixin):
     boost_badge_color: str
     # Anti burn-in
     anti_burn_in: bool
+    # Custom party settings
+    party_name: str
+    qr_text: str
+    hide_back_button: bool
 
 
 async def setup(
@@ -161,6 +169,37 @@ async def get_config_entries(
                     mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                 )
             ],
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_NAME,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            required=False,
+            label="Party Name",
+            description=(
+                "Optional custom name/title for the party, displayed in the party dashboard."
+            ),
+        ),
+        ConfigEntry(
+            key=CONF_PARTY_QR_TEXT,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            required=False,
+            label="QR Code Text",
+            description="Optional custom text to display alongside the QR code.",
+            depends_on=CONF_ENABLE_GUEST_ACCESS,
+        ),
+        ConfigEntry(
+            key=CONF_HIDE_BACK_BUTTON,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Hide Back Button in Fullscreen Mode",
+            description=(
+                "WARNING: Enabling this option will hide all regular navigation "
+                "elements in fullscreen mode. You will need to use browser controls "
+                "(e.g. Alt+Left or the browser back button) to navigate back to "
+                "Music Assistant."
+            ),
         ),
         ConfigEntry(
             key=CONF_PARTY_DISPLAY_LYRICS,
@@ -547,6 +586,9 @@ class PartyPlugin(PluginProvider):
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
+            party_name=cast("str", self.config.get_value(CONF_PARTY_NAME)) or "",
+            qr_text=cast("str", self.config.get_value(CONF_PARTY_QR_TEXT)) or "",
+            hide_back_button=cast("bool", self.config.get_value(CONF_HIDE_BACK_BUTTON)),
         )
 
     # ==================== Guest Action API Commands ====================
