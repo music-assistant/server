@@ -813,13 +813,12 @@ class TwitchProvider(MusicProvider):
                     chunk = await asyncio.to_thread(fd.read, STREAM_CHUNK_SIZE)
                     if chunk:
                         reconnects = 0
-                        # Update stream title based on ad break state
                         if _ah.ad_break_active != prev_ad_state:
                             prev_ad_state = _ah.ad_break_active
                             if _ah.ad_break_active:
                                 streamdetails.stream_title = f"{item_id} - Ad Break (silenced)"
                             else:
-                                streamdetails.stream_title = ""
+                                streamdetails.stream_metadata = None
                         yield chunk
                         continue
                     break
