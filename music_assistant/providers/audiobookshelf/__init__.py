@@ -18,13 +18,13 @@ from aioaudiobookshelf.client.items import (
 from aioaudiobookshelf.client.items import PlaybackSessionExpanded as AbsPlaybackSessionExpanded
 from aioaudiobookshelf.client.items import PlaybackSessionParameters as AbsPlaybackSessionParameters
 from aioaudiobookshelf.client.session import SyncOpenSessionParameters
+from aioaudiobookshelf.exceptions import AbsError, RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import (
     LoginError as AbsLoginError,
 )
 from aioaudiobookshelf.exceptions import (
     NotFoundError as AbsNotFoundError,
 )
-from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import SessionNotFoundError as AbsSessionNotFoundError
 from aioaudiobookshelf.exceptions import (
     SessionSyncError as AbsSessionSyncError,
@@ -68,7 +68,6 @@ from aioaudiobookshelf.schema.shelf import (
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from aiohttp import web
-from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -390,7 +389,6 @@ for more details.
             )
         )
 
-    @handle_refresh_token
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle unload/close of the provider.
@@ -401,7 +399,7 @@ for more details.
         try:
             await self._client.logout()
             await self._client_socket.logout()
-        except ClientError as err:
+        except AbsError as err:
             self.logger.debug("Ignoring error during logout: %s", err)
         for callback in self._on_unload_callbacks:
             callback()
@@ -1203,11 +1201,11 @@ for more details.
         async def _update_by_session(session_helper: SessionHelper, duration: int) -> bool:
             now = time.time()
             time_listened = now - session_helper.last_sync_time
-            if time_listened > PLAYBACK_REPORT_INTERVAL_SECONDS + 3:
+            if time_listened > PLAYBACK_REPORT_INTERVAL_SECONDS * 2 + 10:
                 # See player_queues controller, we get an update every 30s, and immediately on pause
                 # or play.
-                # We reset above 33, as this indicates a trigger after a longer absence and should
-                # not count into abs' statistics
+                # We reset after two missed updates, as this indicates a trigger after a longer
+                # absence and should not count into abs' statistics
                 self.logger.debug("Resetting time_listened due to longer absence.")
                 time_listened = 0.0
             try:

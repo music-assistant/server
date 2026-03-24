@@ -12,7 +12,7 @@ inputs:
     description: 'The branch being released from'
     required: true
   channel:
-    description: 'The release channel (stable, beta, nightly)'
+    description: 'The release channel (stable, rc, beta, nightly)'
     required: true
   github-token:
     description: 'GitHub token for API access'

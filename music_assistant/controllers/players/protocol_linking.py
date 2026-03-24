@@ -891,6 +891,9 @@ class ProtocolLinkingMixin:
 
     def _clear_protocol_parent_id(self, protocol_player_id: str) -> None:
         """Clear the cached parent ID for a protocol player."""
+        # Only clear if the player config still exists to avoid creating partial entries
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{protocol_player_id}"):
+            return
         conf_key = f"{CONF_PLAYERS}/{protocol_player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
         self.mass.config.set(conf_key, None)
 
@@ -1484,10 +1487,7 @@ class ProtocolLinkingMixin:
             protocol_player = parent_player.get_protocol_player(
                 parent_output_protocol.output_protocol_id
             )
-            if (
-                protocol_player
-                and PlayerFeature.SET_MEMBERS in protocol_player.state.supported_features
-            ):
+            if protocol_player and PlayerFeature.SET_MEMBERS in protocol_player.supported_features:
                 return parent_output_protocol, child_protocol
         return None, None
 

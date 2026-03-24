@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -237,6 +238,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
+        # delete genre exclusions for this media item
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
+            {"media_type": self.media_type.value, "media_id": db_id},
+        )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
@@ -319,8 +325,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        allow_update_metadata: bool = True,
     ) -> ItemCls:
-        """Return (full) details for a single media item."""
+        """
+        Return (full) details for a single media item.
+
+        Tries to find the item in the library first, falling back to
+        fetching directly from the provider if not found.
+
+        :param item_id: The provider item id to fetch.
+        :param provider_instance_id_or_domain: The provider instance id or
+            domain to fetch the item from.
+        :param allow_update_metadata: Schedule a metadata refresh on access.
+            Set to False when fetching items in bulk (e.g. provider sync).
+        """
         # always prefer the full library item if we have it
         if library_item := await self.get_library_item_by_prov_id(
             item_id,
@@ -328,8 +346,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         ):
             # schedule a refresh of the metadata on access of the item
             # e.g. the item is being played or opened in the UI
-            assert library_item.uri is not None
-            self.mass.metadata.schedule_update_metadata(library_item.uri)
+            if allow_update_metadata:
+                assert library_item.uri is not None
+                self.mass.metadata.schedule_update_metadata(library_item)
             return library_item
         # grab full details from the provider
         return await self.get_provider_item(

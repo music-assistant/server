@@ -10,11 +10,13 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     Genre,
     Track,
@@ -22,9 +24,13 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
 )
@@ -92,6 +98,18 @@ async def _add_test_track(mass: MusicAssistant, name: str) -> Track:
         artists=UniqueList([artist]),
     )
     return await mass.music.tracks.add_item_to_library(track)
+
+
+async def _add_test_album(mass: MusicAssistant, name: str) -> Album:
+    """Add a minimal album to the library."""
+    album = Album(
+        item_id="0",
+        provider="library",
+        name=name,
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
+    )
+    return await mass.music.albums.add_item_to_library(album)
 
 
 # ===================================================================
@@ -203,16 +221,152 @@ class TestGenreCRUD:
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
 
     async def test_library_items_search(self, genre_ctrl: GenreController) -> None:
-        """Search 'country' returns only matching genres."""
-        await genre_ctrl.add_item_to_library(_make_genre("Country"))
+        """Search 'country' returns Country genre but not unrelated ones like Metal."""
         await genre_ctrl.add_item_to_library(_make_genre("Metal"))
         items = await genre_ctrl.library_items(search="country", hide_empty=False)
-        assert all("country" in g.name.lower() for g in items)
+        names = {g.name for g in items}
+        assert "country" in names
+        assert "Metal" not in names
+
+    async def test_library_items_hide_empty_true(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """hide_empty=True returns only genres with media mappings."""
+        mapped = await genre_ctrl.add_item_to_library(_make_genre("HideEmptyMapped"))
+        await genre_ctrl.add_item_to_library(_make_genre("HideEmptyUnmapped"))
+        track = await _add_test_track(mass, "HideEmpty Track")
+        await genre_ctrl.add_media_mapping(
+            int(mapped.item_id), MediaType.TRACK, track.item_id, "HideEmptyMapped"
+        )
+        items = await genre_ctrl.library_items(hide_empty=True)
+        names = {g.name for g in items}
+        assert "HideEmptyMapped" in names
+        assert "HideEmptyUnmapped" not in names
+
+    async def test_library_items_hide_empty_false(self, genre_ctrl: GenreController) -> None:
+        """hide_empty=False returns all genres regardless of mappings."""
+        await genre_ctrl.add_item_to_library(_make_genre("HideEmptyFalseGenre"))
+        items = await genre_ctrl.library_items(hide_empty=False)
+        names = {g.name for g in items}
+        assert "HideEmptyFalseGenre" in names
+
+    async def test_library_items_hide_empty_none_returns_default_genres(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """hide_empty=None (default) returns only default genres (translation_key IS NOT NULL).
+
+        Default genres are seeded via restore_default_genres (translation_key IS NOT NULL).
+        Non-default genres created via _find_genres_for_alias mirror the library scan path
+        and store translation_key=NULL in the DB.
+        """
+        await genre_ctrl.restore_default_genres()
+        scanned_name = "ScannedNonDefaultGenreXyz"
+        await genre_ctrl._find_genres_for_alias(scanned_name)
+
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        items = await genre_ctrl.library_items(hide_empty=None)
+        names = {g.name for g in items}
+        assert default_genre_name in names
+        assert scanned_name not in names
+
+    async def test_library_items_default_is_hide_empty_none(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Calling library_items() with no hide_empty arg behaves like hide_empty=None."""
+        await genre_ctrl.restore_default_genres()
+        await genre_ctrl._find_genres_for_alias("DefaultArgScannedGenreXyz")
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        items_default = await genre_ctrl.library_items()
+        items_none = await genre_ctrl.library_items(hide_empty=None)
+        assert {g.item_id for g in items_default} == {g.item_id for g in items_none}
+        names = {g.name for g in items_default}
+        assert default_genre_name in names
+        assert "DefaultArgScannedGenreXyz" not in names
 
     async def test_library_items_rejects_genre_param(self, genre_ctrl: GenreController) -> None:
         """library_items(genre=1) raises ValueError."""
         with pytest.raises(ValueError, match="genre parameter is not supported"):
             await genre_ctrl.library_items(genre=1)
+
+    async def test_library_items_media_type_filter(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """media_type filter returns all non-empty genres for that type, including non-defaults.
+
+        Verifies:
+        - Non-default genres (no translation_key) with mappings ARE returned — the default
+          translation_key IS NOT NULL filter is bypassed when media_type is set.
+        - Genres mapped only to another type are excluded.
+        - Default genres (with translation_key) that have no mapping for the type are excluded.
+        - A genre mapped to multiple types appears in results for each of those types.
+        - search composing with media_type works correctly.
+        - No mappings for the requested type returns an empty list.
+        """
+        track_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterTrackOnlyGenre"))
+        album_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterAlbumOnlyGenre"))
+        shared_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterSharedGenre"))
+
+        track = await _add_test_track(mass, "MT Filter Track")
+        album = await _add_test_album(mass, "MT Filter Album")
+        await genre_ctrl.add_media_mapping(
+            int(track_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterTrackOnlyGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(album_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterAlbumOnlyGenre"
+        )
+        # shared_genre is mapped to both tracks and albums
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterSharedGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterSharedGenre"
+        )
+
+        # Add a default genre (has translation_key) that has NO mappings for any type —
+        # it must not appear in media_type results even though hide_empty=None would normally
+        # include all defaults.
+        await genre_ctrl.restore_default_genres()
+
+        track_results = await genre_ctrl.library_items(media_type=MediaType.TRACK)
+        track_names = {g.name for g in track_results}
+        assert "MT_FilterTrackOnlyGenre" in track_names, (
+            "track-mapped genre missing from TRACK results"
+        )
+        assert "MT_FilterSharedGenre" in track_names, "shared genre missing from TRACK results"
+        assert "MT_FilterAlbumOnlyGenre" not in track_names, (
+            "album-only genre appeared in TRACK results"
+        )
+        # Unmapped default genres must not bleed through —
+        # media_type overrides the translation_key filter
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        assert default_genre_name not in track_names, (
+            "unmapped default genre appeared in TRACK results"
+        )
+
+        album_results = await genre_ctrl.library_items(media_type=MediaType.ALBUM)
+        album_names = {g.name for g in album_results}
+        assert "MT_FilterAlbumOnlyGenre" in album_names, (
+            "album-mapped genre missing from ALBUM results"
+        )
+        assert "MT_FilterSharedGenre" in album_names, "shared genre missing from ALBUM results"
+        assert "MT_FilterTrackOnlyGenre" not in album_names, (
+            "track-only genre appeared in ALBUM results"
+        )
+
+        # search composes correctly with media_type
+        search_results = await genre_ctrl.library_items(
+            media_type=MediaType.TRACK, search="MT_FilterShared"
+        )
+        search_names = {g.name for g in search_results}
+        assert "MT_FilterSharedGenre" in search_names
+        assert "MT_FilterTrackOnlyGenre" not in search_names
+
+        # No mappings for the requested type returns an empty list
+        playlist_results = await genre_ctrl.library_items(media_type=MediaType.PLAYLIST)
+        playlist_names = {g.name for g in playlist_results}
+        assert "MT_FilterTrackOnlyGenre" not in playlist_names
+        assert "MT_FilterAlbumOnlyGenre" not in playlist_names
+        assert "MT_FilterSharedGenre" not in playlist_names
 
     async def test_library_count(self, genre_ctrl: GenreController) -> None:
         """Returns correct count; favorite_only=True filters."""
@@ -458,10 +612,11 @@ class TestSyncMediaItemGenres:
     ) -> None:
         """New genre created, mapping exists."""
         track = await _add_test_track(mass, "Sync Track 1")
-        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Psytrance"})
+        unique_genre = "SzTestSyncGenreXYZ"
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {unique_genre})
         rows = await mass.music.database.get_rows_from_query(
             f"SELECT * FROM {DB_TABLE_GENRES} WHERE name = :name",
-            {"name": "Psytrance"},
+            {"name": unique_genre},
             limit=1,
         )
         assert len(rows) == 1
@@ -794,12 +949,14 @@ class TestRestoreDefaultGenres:
     """Tests for restore_default_genres."""
 
     async def test_restore_partial_on_empty(self, genre_ctrl: GenreController) -> None:
-        """Creates genres from DEFAULT_GENRE_MAPPING with self-aliases."""
+        """Partial restore on pre-seeded DB returns empty (nothing to add)."""
+        # Genres are already seeded during startup (_setup_database), so a partial
+        # restore is idempotent and returns no new genres.
         created = await genre_ctrl.restore_default_genres(full_restore=False)
-        assert len(created) > 0
-        for genre in created[:3]:
-            assert genre.genre_aliases is not None
-            assert genre.name in genre.genre_aliases
+        assert len(created) == 0
+        # Verify the default genres are actually present
+        count = await genre_ctrl.library_count()
+        assert count >= len(DEFAULT_GENRE_MAPPING)
 
     async def test_restore_partial_idempotent(self, genre_ctrl: GenreController) -> None:
         """Second call returns empty list (no duplicates)."""
@@ -966,20 +1123,17 @@ class TestQueryMethods:
         assert int(mapped.item_id) in result_ids
         assert int(unmapped.item_id) not in result_ids
 
-    async def test_library_items_hide_empty_default(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
-    ) -> None:
-        """Default (hide_empty=True) excludes unmapped genres."""
-        mapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterMapped"))
-        unmapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterUnmapped"))
-        track = await _add_test_track(mass, "DefaultFilter Track")
-        await genre_ctrl.add_media_mapping(
-            mapped.item_id, MediaType.TRACK, track.item_id, "DefaultFilterMapped"
-        )
+    async def test_library_items_hide_empty_default(self, genre_ctrl: GenreController) -> None:
+        """Default (hide_empty=None) returns only default genres (translation_key IS NOT NULL)."""
+        await genre_ctrl.restore_default_genres()
+        scanned = await genre_ctrl._find_genres_for_alias("DefaultFilterScannedXyz")
+        assert scanned
+
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
         results = await genre_ctrl.library_items()
-        result_ids = {int(g.item_id) for g in results}
-        assert int(mapped.item_id) in result_ids
-        assert int(unmapped.item_id) not in result_ids
+        names = {g.name for g in results}
+        assert default_genre_name in names
+        assert "DefaultFilterScannedXyz" not in names
 
     async def test_library_items_show_all(
         self, mass: MusicAssistant, genre_ctrl: GenreController
@@ -1019,6 +1173,25 @@ class TestGenreLookupAndScanner:
         found = await genre_ctrl._find_genres_for_alias("Big Beat")
         assert isinstance(found, list)
         assert int(genre.item_id) in found
+
+    async def test_find_genres_for_alias_primary_name_takes_priority(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Primary name match returns only that genre, ignoring secondary alias matches.
+
+        Regression test: a bare "pop" tag must not fan out to Rock/Punk/etc. that
+        accumulated "pop" as a side-effect alias, when a dedicated Pop genre exists.
+        """
+        # Use the pre-seeded Pop and Rock genres (seeded during startup).
+        pop_items = await genre_ctrl.library_items(search="Pop", hide_empty=False)
+        rock_items = await genre_ctrl.library_items(search="Rock", hide_empty=False)
+        pop_genre = next(g for g in pop_items if g.name == "pop")
+        rock_genre = next(g for g in rock_items if g.name == "rock")
+        # Simulate "pop" being written as a secondary alias on Rock (the bug scenario)
+        await genre_ctrl.add_alias(rock_genre.item_id, "pop")
+
+        found = await genre_ctrl._find_genres_for_alias("Pop")
+        assert found == [int(pop_genre.item_id)]
 
     async def test_find_genres_for_alias_creates_new(self, genre_ctrl: GenreController) -> None:
         """Creates new genre when no match found."""
@@ -1093,6 +1266,17 @@ async def _set_track_genres(mass: MusicAssistant, track_id: int, genres: list[st
         "SET metadata = json_set(metadata, '$.genres', json(:genres)) "
         "WHERE item_id = :id",
         {"genres": json.dumps(genres), "id": track_id},
+    )
+    await mass.music.database.commit()
+
+
+async def _set_album_genres(mass: MusicAssistant, album_id: int, genres: list[str]) -> None:
+    """Set metadata.genres on an album row directly in the DB."""
+    await mass.music.database.execute(
+        f"UPDATE {DB_TABLE_ALBUMS} "
+        "SET metadata = json_set(metadata, '$.genres', json(:genres)) "
+        "WHERE item_id = :id",
+        {"genres": json.dumps(genres), "id": album_id},
     )
     await mass.music.database.commit()
 
@@ -1283,3 +1467,580 @@ class TestCleanupStaleMappings:
             limit=0,
         )
         assert len(playlog_rows) == 0
+
+
+# ===================================================================
+# Group L: Genre Exclusion (5 tests)
+# ===================================================================
+
+
+class TestGenreExclusion:
+    """Tests for exclude_genre_from_media_item and remove_genre_exclusion."""
+
+    async def test_exclude_inserts_row(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """exclude_genre_from_media_item inserts a row into the exclusion table."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("ExclGenre1"))
+        track = await _add_test_track(mass, "ExclTrack1")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = :mt",
+            {"gid": genre_id, "mid": track_id, "mt": "track"},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_exclude_removes_existing_mapping(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """exclude_genre_from_media_item immediately deletes any existing mapping."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("ExclGenre2"))
+        track = await _add_test_track(mass, "ExclTrack2")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "ExclGenre2")
+        pre_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(pre_rows) == 1
+
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+
+        post_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(post_rows) == 0
+
+    async def test_exclude_idempotent(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Calling exclude_genre_from_media_item twice is idempotent."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("ExclGenre3"))
+        track = await _add_test_track(mass, "ExclTrack3")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = :mt",
+            {"gid": genre_id, "mid": track_id, "mt": "track"},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_remove_exclusion_deletes_row(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """remove_genre_exclusion deletes the exclusion row."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("ExclGenre4"))
+        track = await _add_test_track(mass, "ExclTrack4")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+        await genre_ctrl.remove_genre_exclusion(genre_id, MediaType.TRACK, track_id)
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(rows) == 0
+
+    async def test_scanner_respects_exclusion(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """_bulk_scan_unmapped_genres does not create a mapping for an excluded pair."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("ExclScanGenre"))
+        track = await _add_test_track(mass, "ExclScan Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        await _set_track_genres(mass, track_id, ["ExclScanGenre"])
+        await genre_ctrl.add_alias(genre_id, "ExclScanGenre")
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+        await genre_ctrl._bulk_scan_unmapped_genres()
+
+        mapping_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(mapping_rows) == 0
+
+    async def test_full_scanner_respects_exclusion(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """_bulk_scan_media_genres does not create a mapping for an excluded pair."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("ExclFullScanGenre"))
+        track = await _add_test_track(mass, "ExclFullScan Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        await _set_track_genres(mass, track_id, ["ExclFullScanGenre"])
+        await genre_ctrl.add_alias(genre_id, "ExclFullScanGenre")
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+        await genre_ctrl._bulk_scan_media_genres()
+
+        mapping_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid",
+            {"gid": genre_id, "mid": track_id},
+            limit=0,
+        )
+        assert len(mapping_rows) == 0
+
+    async def test_cleanup_preserves_genre_with_exclusion(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """_cleanup_stale_genre_mappings keeps a genre that has an exclusion but no mappings.
+
+        Verifies both that the genre row survives and that a playlog entry for it is
+        also preserved (the playlog DELETE uses the same exclusion guard).
+        """
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CleanupPreservedGenre"))
+        track = await _add_test_track(mass, "CleanupPreserved Track")
+        genre_id = int(genre.item_id)
+        track_id = int(track.item_id)
+
+        # Exclude the genre from the track (also removes any mapping that might exist)
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, track_id)
+
+        # Insert a playlog entry for the genre so we can confirm it is also kept
+        cols = (
+            "(item_id, provider, media_type, name, fully_played, seconds_played, timestamp, userid)"
+        )
+        await mass.music.database.execute(
+            f"INSERT OR IGNORE INTO {DB_TABLE_PLAYLOG} {cols} "
+            "VALUES (:item_id, 'library', 'genre', :name, 0, 0, 0, 'testuser')",
+            {"item_id": str(genre_id), "name": "CleanupPreservedGenre"},
+        )
+        await mass.music.database.commit()
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        genre_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert genre_row is not None, "genre with an exclusion must not be deleted by cleanup"
+
+        playlog_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type = 'genre' AND item_id = :id",
+            {"id": str(genre_id)},
+            limit=0,
+        )
+        assert len(playlog_rows) == 1, "playlog entry for an excluded genre must not be deleted"
+
+    async def test_get_genre_exclusions_for_media_item(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns genres excluded from a specific media item."""
+        genre1 = await genre_ctrl.add_item_to_library(_make_genre("ExclQueryGenre1"))
+        genre2 = await genre_ctrl.add_item_to_library(_make_genre("ExclQueryGenre2"))
+        track = await _add_test_track(mass, "ExclQuery Track")
+        await genre_ctrl.exclude_genre_from_media_item(
+            genre1.item_id, MediaType.TRACK, track.item_id
+        )
+        await genre_ctrl.exclude_genre_from_media_item(
+            genre2.item_id, MediaType.TRACK, track.item_id
+        )
+        result = await genre_ctrl.get_genre_exclusions_for_media_item(
+            MediaType.TRACK, track.item_id
+        )
+        names = {g.name for g in result}
+        assert "ExclQueryGenre1" in names
+        assert "ExclQueryGenre2" in names
+
+    async def test_get_genre_exclusions_for_media_item_empty(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns empty list when no genres are excluded from the media item."""
+        track = await _add_test_track(mass, "ExclQuery No Exclusions Track")
+        result = await genre_ctrl.get_genre_exclusions_for_media_item(
+            MediaType.TRACK, track.item_id
+        )
+        assert result == []
+
+    async def test_get_genre_exclusions_for_media_item_non_integer_id(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Returns empty list for non-integer media IDs."""
+        result = await genre_ctrl.get_genre_exclusions_for_media_item(
+            MediaType.ALBUM, "3957198221-190478553"
+        )
+        assert result == []
+
+
+class TestPropagateGenreMappings:
+    """Tests for _propagate_genre_mappings_to_parents."""
+
+    async def test_propagation_derives_album_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Track genre mappings are propagated to the track's album."""
+        instance_id = "fs_local_instance_album"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropAlbumGenre"))
+        artist = await _add_test_artist(mass, "PropAlbum Artist")
+        album = await _add_test_album(mass, "PropAlbum Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="PropAlbum Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropAlbumGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album' AND is_derived = 1",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_propagation_derives_artist_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Track genre mappings are propagated to the track's artist."""
+        instance_id = "fs_local_instance_artist"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropArtistGenre"))
+        track = await _add_test_track(mass, "PropArtist Track")
+        track_id = int(track.item_id)
+        artist_id = int(track.artists[0].item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropArtistGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid "
+            "AND media_type = 'artist' AND is_derived = 1",
+            {"gid": genre_id, "mid": artist_id},
+            limit=0,
+        )
+        assert len(rows) == 1
+
+    async def test_propagation_respects_exclusion(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Excluded genre-album pairs are not derived even when propagation is enabled."""
+        instance_id = "fs_local_instance_excl"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropExclGenre"))
+        artist = await _add_test_artist(mass, "PropExcl Artist")
+        album = await _add_test_album(mass, "PropExcl Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="PropExcl Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropExclGenre")
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.ALBUM, album_id)
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album'",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows) == 0
+
+    async def test_propagation_disabled_removes_derived(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Disabling propagation on all providers removes previously derived mappings."""
+        instance_id = "fs_local_instance_disable"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("PropDisableGenre"))
+        artist = await _add_test_artist(mass, "PropDisable Artist")
+        album = await _add_test_album(mass, "PropDisable Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="PropDisable Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropDisableGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows_after_enable = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album' AND is_derived = 1",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows_after_enable) == 1
+
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=False)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        rows_after_disable = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album' AND is_derived = 1",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(rows_after_disable) == 0
+
+    async def test_derived_mapping_replaced_by_direct_when_album_gains_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Derived mapping is replaced by direct when album gains own genre metadata.
+
+        Verifies the mapping becomes a direct one instead of leaving the album with no mapping.
+        """
+        instance_id = "fs_local_instance_transition"
+        genre = await genre_ctrl.add_item_to_library(_make_genre("TransitionGenre"))
+        artist = await _add_test_artist(mass, "Transition Artist")
+        album = await _add_test_album(mass, "Transition Album")
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name="Transition Track",
+                provider_mappings=set(),
+                artists=UniqueList([artist]),
+            )
+        )
+        track_id = int(track.item_id)
+        album_id = int(album.item_id)
+        genre_id = int(genre.item_id)
+
+        await mass.music.database.insert(
+            DB_TABLE_ALBUM_TRACKS,
+            {"track_id": track_id, "album_id": album_id, "disc_number": 1, "track_number": 1},
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await _set_track_genres(mass, track_id, ["TransitionGenre"])
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "TransitionGenre")
+
+        mock_provider = MagicMock()
+        mock_provider.domain = "filesystem_local"
+        mock_provider.instance_id = instance_id
+
+        # Step 1: album has no genres yet → propagation creates a derived mapping.
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._propagate_genre_mappings_to_parents()
+
+        derived_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album'",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(derived_rows) == 1
+        assert derived_rows[0]["is_derived"] == 1
+
+        # Step 2: album gains its own genre metadata.
+        await _set_album_genres(mass, album_id, ["TransitionGenre"])
+
+        # Step 3: incremental scan must replace the derived mapping with a direct one,
+        # not leave the album with no mapping at all.
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._bulk_scan_unmapped_genres()
+
+        final_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album'",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(final_rows) == 1
+        assert final_rows[0]["is_derived"] == 0
+        assert final_rows[0]["alias"] == "TransitionGenre"

@@ -282,7 +282,9 @@ class AudioTags:
     @property
     def artists(self) -> tuple[str, ...]:
         """Return track artists."""
-        # prefer multi-artist tag (ARTISTS plural)
+        # Preferred path when unambiguously separated artist names are available
+        # Vorbis: multiple ARTIST fields, ID3: TXXX:ARTISTS or multi-value TPE1
+        # APEv2: null-separated ARTISTS tag (if present), MP4: not supported
         if tag := self.tags.get("artists"):
             artists = split_items(tag)
             # Warn if ARTISTS tag count doesn't match MB Artist ID count
@@ -295,7 +297,9 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # fallback to regular artist string
+        # Fallback to single artist string, splitting if necessary
+        # All formats: parser returns artist (singular)
+        # APEv2: also falls through here if no ARTISTS tag present
         if tag := self.tags.get("artist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
@@ -331,7 +335,8 @@ class AudioTags:
     @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
-        # prefer multi-artist tag (ALBUMARTISTS plural)
+        # Preferred path when unambiguously separated album artist names are available
+        # Vorbis: multiple ALBUMARTIST fields, ID3: multi-value TPE2
         if tag := self.tags.get("albumartists"):
             artists = split_items(tag)
             # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
@@ -345,7 +350,8 @@ class AudioTags:
                     tag,
                 )
             return artists
-        # fallback to regular album artist string
+        # Fallback to single album artist string, splitting if necessary
+        # All formats: parser returns albumartist (singular)
         if tag := self.tags.get("albumartist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
@@ -868,6 +874,9 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
 def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     """Parse ID3 tags (MP3 files) from mutagen tags dict.
 
+    See: https://mutagen-specs.readthedocs.io/en/latest/id3/id3v2.4.0-frames.html
+    See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
+
     :param tags: Dictionary of ID3 tags from mutagen.
     """
     result: dict[str, Any] = {}
@@ -875,18 +884,28 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     # Basic tags (single value)
     if "TIT2" in tags:
         result["title"] = tags["TIT2"].text[0]
-    if "TPE1" in tags:
-        result["artist"] = tags["TPE1"].text[0]
-    if "TPE2" in tags:
-        result["albumartist"] = tags["TPE2"].text[0]
     if "TALB" in tags:
         result["album"] = tags["TALB"].text[0]
+
+    # Artist tags - support ID3v2.4 null-separated multi-value
+    if "TPE1" in tags:
+        artist_values = tags["TPE1"].text
+        if len(artist_values) > 1:
+            result["artists"] = list(artist_values)
+        else:
+            result["artist"] = artist_values[0]
+    if "TPE2" in tags:
+        albumartist_values = tags["TPE2"].text
+        if len(albumartist_values) > 1:
+            result["albumartists"] = list(albumartist_values)
+        else:
+            result["albumartist"] = albumartist_values[0]
 
     # Genre (multi-value)
     if "TCON" in tags:
         result["genre"] = tags["TCON"].text
 
-    # Multi-value artist tag
+    # Explicit multi-value artist tag (takes precedence)
     if "TXXX:ARTISTS" in tags:
         result["artists"] = tags["TXXX:ARTISTS"].text
 
