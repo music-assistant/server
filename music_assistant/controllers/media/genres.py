@@ -1123,9 +1123,12 @@ class GenreController(MediaControllerBase[Genre]):
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": db_id}
         )
         if exclude_globally:
+            # Fetch the item while it is still visible (base_query filters is_excluded=1).
+            library_item = await self.get_library_item(db_id)
             await self.mass.music.database.update(
                 DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 1}
             )
+            self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
         else:
             await super().remove_item_from_library(item_id, recursive)
 
@@ -1324,7 +1327,9 @@ class GenreController(MediaControllerBase[Genre]):
         await self.mass.music.database.update(
             DB_TABLE_GENRES, {"item_id": genre_id}, {"is_excluded": 0}
         )
-        return await self.get_library_item(genre_id)
+        library_item = await self.get_library_item(genre_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_ADDED, library_item.uri, library_item)
+        return library_item
 
     async def promote_alias_to_genre(self, genre_id: str | int, alias: str) -> Genre:
         """Promote an alias to become a standalone genre.
