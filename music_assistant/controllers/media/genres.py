@@ -602,11 +602,18 @@ class GenreController(MediaControllerBase[Genre]):
             raise InvalidDataError(f"Invalid genre_id value: {err}") from err
         norm_ids = [str(i) for i in int_ids]
         placeholders = ",".join(norm_ids)
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT genre_id, media_type, COUNT(*) AS cnt "
-            f"FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-            f"WHERE genre_id IN ({placeholders}) "
-            "GROUP BY genre_id, media_type",
+            f"SELECT {gm}.genre_id, {gm}.media_type, COUNT(*) AS cnt "
+            f"FROM {gm} "
+            f"WHERE {gm}.genre_id IN ({placeholders}) "
+            f"AND EXISTS ("
+            f"  SELECT 1 FROM provider_mappings pm "
+            f"  WHERE pm.item_id = {gm}.media_id "
+            f"  AND pm.media_type = {gm}.media_type "
+            f"  AND pm.in_library = 1"
+            f") "
+            f"GROUP BY {gm}.genre_id, {gm}.media_type",
             limit=0,
         )
         empty: dict[str, int] = {mt.value: 0 for _, mt in MEDIA_TABLES}
