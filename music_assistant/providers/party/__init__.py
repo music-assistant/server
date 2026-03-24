@@ -173,20 +173,18 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PARTY_NAME,
             type=ConfigEntryType.STRING,
-            default_value=None,
+            default_value="Party time!",
             required=False,
             label="Party Name",
-            description=(
-                "Optional custom name/title for the party, displayed in the party dashboard."
-            ),
+            description="Custom name/title for the party, displayed in the party dashboard.",
         ),
         ConfigEntry(
             key=CONF_PARTY_QR_TEXT,
             type=ConfigEntryType.STRING,
-            default_value=None,
+            default_value="Scan the QR code to join the party!",
             required=False,
             label="QR Code Text",
-            description="Optional custom text to display alongside the QR code.",
+            description="Custom text to display alongside the QR code.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
