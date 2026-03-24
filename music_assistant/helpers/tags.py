@@ -1016,19 +1016,11 @@ def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> Non
 
     # ARTISTS (plural) is non-standard in Vorbis - it's a MusicBrainz/Picard ID3 convention.
     # Vorbis spec recommends multiple ARTIST (singular) fields instead.
-    # Accept it but warn. See: https://xiph.org/vorbis/doc/v-comment.html
+    # We can however accept it. See: https://xiph.org/vorbis/doc/v-comment.html
     if artists := _vorbis_get_multi(tags, "ARTISTS"):
-        LOGGER.warning(
-            "ARTISTS tag found in Vorbis file. Use multiple ARTIST fields instead: %s",
-            artists,
-        )
         result["artists"] = artists
 
     if albumartists := _vorbis_get_multi(tags, "ALBUMARTISTS"):
-        LOGGER.warning(
-            "ALBUMARTISTS tag found in Vorbis file. Use multiple ALBUMARTIST fields instead: %s",
-            albumartists,
-        )
         result["albumartists"] = albumartists
 
 
