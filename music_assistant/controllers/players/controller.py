@@ -2677,11 +2677,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # fallback: just try to resume queue playback
         await self.mass.player_queues.resume(player.player_id)
 
-    async def _handle_cmd_power(self, player_id: str, powered: bool) -> None:
+    async def _handle_cmd_power(
+        self, player_id: str, powered: bool, skip_auto_play: bool = False
+    ) -> None:
         """
         Handle player power on/off command.
 
         Skips the permission checks (internal use only).
+
+        :param player_id: The player ID to power on/off.
+        :param powered: True to power on, False to power off.
+        :param skip_auto_play: If True, skip auto-play on power on.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
@@ -2769,7 +2775,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle 'auto play on power on' feature
         if (
-            not player_state.active_group
+            not skip_auto_play
+            and not player_state.active_group
             and not player_state.synced_to
             and powered
             and player.config.get_value(CONF_AUTO_PLAY)
@@ -2867,9 +2874,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # power on the player if needed
+        # power on the player if needed (skip auto-play since we're about to start playback)
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
+            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
 
         # Determine output protocol to use:
         # If player already has an active protocol set, prefer that.
@@ -2904,12 +2911,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             player.set_active_output_protocol(output_protocol.output_protocol_id)
             # if the (protocol)player has power control and is currently powered off,
-            # we need to power it on before playback
+            # we need to power it on before playback (skip auto-play since we're starting playback)
             if (
                 target_player.state.powered is False
                 and target_player.power_control != PLAYER_CONTROL_NONE
             ):
-                await self._handle_cmd_power(target_player.player_id, True)
+                await self._handle_cmd_power(target_player.player_id, True, skip_auto_play=True)
             # forward play media command to protocol player
             await target_player.play_media(media)
             # notify the native player that protocol playback started
