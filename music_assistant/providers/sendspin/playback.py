@@ -673,9 +673,7 @@ class SendspinPlaybackSession:
                             ),
                             return_exceptions=True,
                         )
-                        for pipeline, result in zip(
-                            transform_pipelines, results, strict=True
-                        ):
+                        for pipeline, result in zip(transform_pipelines, results, strict=True):
                             if isinstance(result, BaseException):
                                 self.player.logger.warning(
                                     "Transform push failed for channel %s: %s",
