@@ -513,7 +513,7 @@ async def get_buffered_media_stream(
             completed = True
         finally:
             if not completed:
-                await media_stream.aclose()
+                await asyncio.shield(media_stream.aclose())
         return
 
     if not existing_buffer:
