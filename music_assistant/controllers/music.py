@@ -2651,7 +2651,7 @@ class MusicController(CoreController):
             # add is_excluded column to genres table (new in schema 34)
             await self._database.execute(
                 f"ALTER TABLE {DB_TABLE_GENRES} "
-                "ADD COLUMN [is_excluded] INTEGER NOT NULL DEFAULT 0;"
+                "ADD COLUMN [is_excluded] BOOLEAN NOT NULL DEFAULT 0;"
             )
             # drop the old genre_global_exclusion table (replaced by is_excluded column)
             await self._database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
@@ -2855,7 +2855,7 @@ class MusicController(CoreController):
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
-            [is_excluded] INTEGER NOT NULL DEFAULT 0,
+            [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
             [is_default] BOOLEAN NOT NULL DEFAULT 0
             );"""
         )
