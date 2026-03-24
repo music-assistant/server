@@ -475,9 +475,10 @@ async def get_buffered_media_stream(
                 seek_position,
                 existing_buffer._discarded_chunks,
             )
-            await existing_buffer.clear()
+            buffer_to_clear = existing_buffer
             streamdetails.buffer = None
             existing_buffer = None
+            await asyncio.shield(buffer_to_clear.clear())
         else:
             LOGGER.debug(
                 "buffered_media_stream: Reusing existing buffer for %s - "
