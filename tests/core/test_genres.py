@@ -1381,8 +1381,8 @@ class TestCleanupStaleMappings:
     async def test_empty_nondefault_genre_deleted(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Non-default genre (translation_key IS NULL) with no mappings is deleted."""
-        # _find_genres_for_alias creates genres without translation_key
+        """Non-default genre (is_default = 0) with no mappings is deleted."""
+        # _find_genres_for_alias creates genres with is_default = 0
         found = await genre_ctrl._find_genres_for_alias("CsNonDefault1XYZ99")
         assert len(found) == 1
         genre_id = found[0]
@@ -2167,10 +2167,10 @@ class TestGlobalGenreExclusion:
         result = await genre_ctrl._find_genres_for_alias("GblExclScan")
         assert result == []
 
-    async def test_restore_custom_genre_has_no_translation_key(
+    async def test_restore_custom_genre_is_not_default(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Restoring a custom (non-default) genre leaves translation_key as None."""
+        """Restoring a custom (non-default) genre leaves is_default as 0."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("GblExclCustom"))
         genre_id = int(genre.item_id)
         await genre_ctrl.remove_item_from_library(genre_id)
@@ -2178,7 +2178,7 @@ class TestGlobalGenreExclusion:
         db_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
         assert db_row is not None
         assert db_row["is_excluded"] == 0
-        assert db_row["translation_key"] is None
+        assert db_row["is_default"] == 0
         assert int(restored.item_id) == genre_id
 
     async def test_restore_default_genre_translation_key_preserved(

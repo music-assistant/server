@@ -255,7 +255,7 @@ class GenreController(MediaControllerBase[Genre]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "translation_key": None,
+                "translation_key": item.translation_key,
                 "description": item.metadata.description if item.metadata else None,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
@@ -266,6 +266,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": UNSET,
+                "is_default": 0,
             },
         )
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -668,10 +669,10 @@ class GenreController(MediaControllerBase[Genre]):
                 f"INSERT INTO {DB_TABLE_GENRES}"
                 "(name, sort_name, translation_key, description, favorite, metadata, "
                 "external_ids, genre_aliases, play_count, last_played, "
-                "search_name, search_sort_name) "
+                "search_name, search_sort_name, is_default) "
                 "VALUES (:name, :sort_name, :translation_key, :description, :favorite, "
                 ":metadata, :external_ids, :genre_aliases, :play_count, :last_played, "
-                ":search_name, :search_sort_name)",
+                ":search_name, :search_sort_name, :is_default)",
                 {
                     "name": name_value,
                     "sort_name": sort_name,
@@ -685,6 +686,7 @@ class GenreController(MediaControllerBase[Genre]):
                     "last_played": 0,
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
+                    "is_default": 1,
                 },
             )
             created_ids.append(cursor.lastrowid)
@@ -851,15 +853,15 @@ class GenreController(MediaControllerBase[Genre]):
 
         # Delete playlog entries for empty non-default genres before removing them, to avoid
         # orphaned playlog rows pointing to genres that no longer exist.
-        # 'WHERE translation_key IS NULL' is used because it is only set for default genres, so this
-        # keeps all default genres even if they become unmapped/empty.
+        # is_default = 0 identifies non-default genres; default genres are always kept
+        # even if they become unmapped/empty.
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         await db.delete_where_query(
             DB_TABLE_PLAYLOG,
             f"media_type = '{MediaType.GENRE.value}' "
             f"AND item_id IN ("
             f"  SELECT item_id FROM {DB_TABLE_GENRES} "
-            f"  WHERE translation_key IS NULL "
+            f"  WHERE is_default = 0 "
             f"  AND is_excluded = 0 "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
@@ -872,7 +874,7 @@ class GenreController(MediaControllerBase[Genre]):
         genres_before = await db.get_count(DB_TABLE_GENRES)
         await db.delete_where_query(
             DB_TABLE_GENRES,
-            f"translation_key IS NULL "
+            f"is_default = 0 "
             f"AND is_excluded = 0 "
             f"AND NOT EXISTS ("
             f"  SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
@@ -1617,6 +1619,7 @@ class GenreController(MediaControllerBase[Genre]):
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
                     "timestamp_added": UNSET,
+                    "is_default": 0,
                 },
             )
             return [new_id]
