@@ -684,7 +684,12 @@ class SendspinPlaybackSession:
                 completed = True
             finally:
                 if not completed:
-                    await audio_source.aclose()
+                    close_task = asyncio.create_task(audio_source.aclose())
+                    try:
+                        await asyncio.shield(close_task)
+                    except asyncio.CancelledError:
+                        await close_task
+                        raise
 
         async def _commit_pending_chunks() -> None:
             nonlocal pending_duration_us, last_elapsed_update_s
