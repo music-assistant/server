@@ -11,6 +11,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from uuid import uuid4
 
 import pytest
 from music_assistant_models.enums import AlbumType, MediaType
@@ -19,6 +20,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    ProviderMapping,
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
@@ -77,13 +79,25 @@ def _make_genre(name: str, favorite: bool = False) -> Genre:
     )
 
 
+def _library_provider_mapping() -> set[ProviderMapping]:
+    """Create a provider mapping set with in_library=True and a unique provider_item_id."""
+    return {
+        ProviderMapping(
+            item_id=uuid4().hex,
+            provider_domain="library",
+            provider_instance="library",
+            in_library=True,
+        )
+    }
+
+
 async def _add_test_artist(mass: MusicAssistant, name: str) -> Artist:
     """Add a minimal artist to the library."""
     artist = Artist(
         item_id="0",
         provider="library",
         name=name,
-        provider_mappings=set(),
+        provider_mappings=_library_provider_mapping(),
     )
     return await mass.music.artists.add_item_to_library(artist)
 
@@ -95,7 +109,7 @@ async def _add_test_track(mass: MusicAssistant, name: str) -> Track:
         item_id="0",
         provider="library",
         name=name,
-        provider_mappings=set(),
+        provider_mappings=_library_provider_mapping(),
         artists=UniqueList([artist]),
     )
     return await mass.music.tracks.add_item_to_library(track)
@@ -107,7 +121,7 @@ async def _add_test_album(mass: MusicAssistant, name: str) -> Album:
         item_id="0",
         provider="library",
         name=name,
-        provider_mappings=set(),
+        provider_mappings=_library_provider_mapping(),
         album_type=AlbumType.ALBUM,
     )
     return await mass.music.albums.add_item_to_library(album)
