@@ -506,14 +506,21 @@ async def get_buffered_media_stream(
             "starting normal (unbuffered) stream",
             streamdetails.uri,
         )
-        async for chunk in get_media_stream(
+        media_stream = get_media_stream(
             mass,
             streamdetails,
             pcm_format,
             seek_position=seek_position,
             filter_params=filter_params,
-        ):
-            yield chunk
+        )
+        completed = False
+        try:
+            async for chunk in media_stream:
+                yield chunk
+            completed = True
+        finally:
+            if not completed:
+                await media_stream.aclose()
         return
 
     if not existing_buffer:

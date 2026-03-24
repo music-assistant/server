@@ -641,6 +641,7 @@ class SendspinPlaybackSession:
             audio_source = self.player.mass.streams.get_stream(
                 media, _PCM_FORMAT, self.player.player_id
             )
+            completed = False
             try:
                 async for chunk in audio_source:
                     if not chunk:
@@ -680,8 +681,10 @@ class SendspinPlaybackSession:
                                     pipeline.channel_id,
                                     result,
                                 )
+                completed = True
             finally:
-                await audio_source.aclose()
+                if not completed:
+                    await audio_source.aclose()
 
         async def _commit_pending_chunks() -> None:
             nonlocal pending_duration_us, last_elapsed_update_s
