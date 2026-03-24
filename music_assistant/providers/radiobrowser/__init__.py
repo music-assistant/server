@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     LinkType,
@@ -30,51 +28,20 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError, Station
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_SYNC_BACK,
-    CONF_ENTRY_LIBRARY_SYNC_RADIOS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
-)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.BROWSE,
-    ProviderFeature.LIBRARY_RADIOS,
-    ProviderFeature.LIBRARY_RADIOS_EDIT,
 }
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-CONF_STORED_RADIOS = "stored_radios"
-
-CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),
-        "hidden": True,
-        "default_value": "import_only",
-    }
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS.to_dict(),
-        "hidden": True,
-        "default_value": 180,
-    }
-)
-CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_LIBRARY_SYNC_BACK.to_dict(),
-        "hidden": True,
-        "default_value": True,
-    }
-)
 
 
 async def setup(
@@ -82,39 +49,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return RadioBrowserProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001 D205
-    return (
-        ConfigEntry(
-            # RadioBrowser doesn't support a library feature at all
-            # but MA users like to favorite their radio stations and
-            # have that included in backups so we store it in the config.
-            key=CONF_STORED_RADIOS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            label=CONF_STORED_RADIOS,
-            default_value=[],
-            required=False,
-            hidden=True,
-        ),
-        # hide some of the default (dynamic) entries for library management
-        CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
-        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
-        CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
-    )
 
 
 class RadioBrowserProvider(MusicProvider):
@@ -240,41 +174,6 @@ class RadioBrowserProvider(MusicProvider):
                 return await self.get_tag_folders(path)
 
         return []
-
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve library/subscribed radio stations from the provider."""
-        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
-        if TYPE_CHECKING:
-            stored_radios = cast("list[str]", stored_radios)
-        for item in stored_radios:
-            try:
-                yield await self.get_radio(item)
-            except MediaNotFoundError:
-                self.logger.warning("Radio station %s no longer exists", item)
-
-    async def library_add(self, item: MediaItemType) -> bool:
-        """Add item to provider's library. Return true on success."""
-        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
-        if TYPE_CHECKING:
-            stored_radios = cast("list[str]", stored_radios)
-        if item.item_id in stored_radios:
-            return False
-        self.logger.debug("Adding radio %s to stored radios", item.item_id)
-        stored_radios = [*stored_radios, item.item_id]
-        self._update_config_value(CONF_STORED_RADIOS, stored_radios)
-        return True
-
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove item from provider's library. Return true on success."""
-        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
-        if TYPE_CHECKING:
-            stored_radios = cast("list[str]", stored_radios)
-        if prov_item_id not in stored_radios:
-            return False
-        self.logger.debug("Removing radio %s from stored radios", prov_item_id)
-        stored_radios = [x for x in stored_radios if x != prov_item_id]
-        self._update_config_value(CONF_STORED_RADIOS, stored_radios)
-        return True
 
     @use_cache(3600 * 6)  # Cache for 6 hours
     async def get_by_popularity(self) -> Sequence[Radio]:
