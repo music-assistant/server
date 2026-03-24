@@ -548,7 +548,7 @@ class TwitchProvider(MusicProvider):
         try:
             await self.mass.player_queues.play_media(
                 queue_id=self._current_queue_id or "",
-                media=f"twitch://channel/{to_login}",
+                media=f"twitch://radio/{to_login}",
             )
         except Exception:
             self.logger.warning("Failed to follow raid to %s", to_login, exc_info=True)

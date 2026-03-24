@@ -124,7 +124,7 @@ async def test_playing_twitch_uri_subscribes_to_raids(provider: TwitchProvider) 
 
     # Mock _get_users to avoid real API call
     with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
-        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+        await provider._handle_queue_playing("twitch://radio/streamer_a", "streamer_a")
 
     provider._eventsub.subscribe_raids.assert_called_once_with("123")
 
@@ -149,7 +149,7 @@ async def test_playing_same_channel_no_duplicate_subscribe(provider: TwitchProvi
     provider._eventsub.is_connected = True
     provider._current_channel_login = "streamer_a"
 
-    await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+    await provider._handle_queue_playing("twitch://radio/streamer_a", "streamer_a")
 
     # Should not subscribe again — already on same channel
     provider._eventsub.subscribe_raids.assert_not_called()
@@ -224,7 +224,7 @@ async def test_resume_resubscribes(provider: TwitchProvider) -> None:
     provider._idle_timer = mock_timer
 
     with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
-        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+        await provider._handle_queue_playing("twitch://radio/streamer_a", "streamer_a")
 
     # Timer should have been cancelled
     mock_timer.cancel.assert_called_once()
@@ -247,7 +247,7 @@ async def test_resume_cancels_idle_timer(provider: TwitchProvider) -> None:
     provider._eventsub.start = AsyncMock()
 
     with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
-        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+        await provider._handle_queue_playing("twitch://radio/streamer_a", "streamer_a")
 
     mock_timer.cancel.assert_called_once()
     assert provider._idle_timer is None
@@ -305,7 +305,7 @@ async def test_playing_different_channel_resubscribes(provider: TwitchProvider) 
     provider._eventsub.start = AsyncMock()
 
     with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "456"}]):
-        await provider._handle_queue_playing("twitch://channel/streamer_b", "streamer_b")
+        await provider._handle_queue_playing("twitch://radio/streamer_b", "streamer_b")
 
     # Should have subscribed to the new channel
     provider._eventsub.subscribe_raids.assert_called_once_with("456")
@@ -347,7 +347,7 @@ async def test_auto_raid_disabled_no_eventsub_connection(provider: TwitchProvide
     provider._eventsub = None
 
     with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
-        await provider._handle_queue_playing("twitch://channel/streamer_a", "streamer_a")
+        await provider._handle_queue_playing("twitch://radio/streamer_a", "streamer_a")
 
     # EventSub should NOT have been created
     assert provider._eventsub is None
