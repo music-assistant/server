@@ -121,8 +121,8 @@ class PartyConfig(DataClassDictMixin):
     # Anti burn-in
     anti_burn_in: bool
     # Custom party settings
-    party_name: str
-    qr_text: str
+    party_name: str | None
+    qr_text: str | None
     hide_back_button: bool
 
 
@@ -173,7 +173,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PARTY_NAME,
             type=ConfigEntryType.STRING,
-            default_value="",
+            default_value=None,
             required=False,
             label="Party Name",
             description=(
@@ -183,7 +183,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PARTY_QR_TEXT,
             type=ConfigEntryType.STRING,
-            default_value="",
+            default_value=None,
             required=False,
             label="QR Code Text",
             description="Optional custom text to display alongside the QR code.",
@@ -586,8 +586,8 @@ class PartyPlugin(PluginProvider):
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
             boost_badge_color=cast("str", self.config.get_value(CONF_BOOST_BADGE_COLOR)),
             anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
-            party_name=cast("str", self.config.get_value(CONF_PARTY_NAME)) or "",
-            qr_text=cast("str", self.config.get_value(CONF_PARTY_QR_TEXT)) or "",
+            party_name=cast("str | None", self.config.get_value(CONF_PARTY_NAME)),
+            qr_text=cast("str | None", self.config.get_value(CONF_PARTY_QR_TEXT)),
             hide_back_button=cast("bool", self.config.get_value(CONF_HIDE_BACK_BUTTON)),
         )
 
