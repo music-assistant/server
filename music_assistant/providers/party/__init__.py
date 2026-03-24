@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 # Configuration keys
 CONF_ENABLE_GUEST_ACCESS = "enable_guest_access"
 CONF_PARTY_PLAYER = "player"
+CONF_PARTY_PLAYER_AUTO = "__auto__"
 CONF_ENABLE_RATE_LIMITING = "enable_rate_limiting"
 # Boost song feature
 CONF_ENABLE_BOOST = "enable_boost"
@@ -164,14 +165,20 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PARTY_PLAYER,
             type=ConfigEntryType.STRING,
-            required=True,
+            required=False,
+            default_value=CONF_PARTY_PLAYER_AUTO,
             label="Party Player",
-            description="Select which player/queue guests will add songs to.",
+            description="Select which player/queue is attached to the party dashboard. "
+            "When set to auto, the last active player will be used.",
             options=[
-                ConfigValueOption(player.display_name, player.player_id)
-                for player in sorted(
-                    mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                )
+                ConfigValueOption("Auto (last active player)", CONF_PARTY_PLAYER_AUTO),
+                *[
+                    ConfigValueOption(player.display_name, player.player_id)
+                    for player in sorted(
+                        mass.players.all_players(False, False),
+                        key=lambda p: p.display_name.lower(),
+                    )
+                ],
             ],
         ),
         ConfigEntry(
@@ -602,13 +609,33 @@ class PartyPlugin(PluginProvider):
     async def get_party_player(self) -> str | None:
         """Get the configured party player/queue ID.
 
-        :returns: The queue ID for party, or None to use active player.
+        When configured to auto, returns the most recently active playing queue,
+        falling back to any paused queue, then any available queue.
+
+        :returns: The queue ID for party, or None if no player available.
         """
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
 
         player_id = self.config.get_value(CONF_PARTY_PLAYER)
-        return str(player_id) if player_id else None
+        if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
+            return str(player_id)
+
+        # Auto-select: prefer playing queue, then paused, then any active queue
+        best_queue: str | None = None
+        best_priority = -1
+        for queue in self.mass.player_queues:
+            if not queue.active:
+                continue
+            if queue.state == PlaybackState.PLAYING:
+                return queue.queue_id
+            if queue.state == PlaybackState.PAUSED and best_priority < 1:
+                best_queue = queue.queue_id
+                best_priority = 1
+            elif best_priority < 0:
+                best_queue = queue.queue_id
+                best_priority = 0
+        return best_queue
 
     async def get_party_config(self) -> PartyConfig:
         """Get the party configuration for guest rate limiting.
