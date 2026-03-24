@@ -42,13 +42,13 @@ def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     zc_iface = str(mass.discovery.config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
     if zc_iface not in ("default", "all", ""):
         return zc_iface
-    # 2. Use the OS routing table via a connected UDP socket to find the outbound
-    #    interface for the specific Apple TV address. This correctly handles
-    #    multi-homed hosts where different Apple TVs are on different subnets.
-    # 3. Fall back to publish_ip if it is a bindable local interface (handles
-    #    Docker/OrbStack where the container needs to advertise the host IP).
-    # 4. Fall back to bind_ip as a last resort.
-    if_ip = str(mass.streams.bind_ip)
+    # 2. Use the stream server's bind_ip directly. The stream server is on the same
+    #    subnet as the players by design, so this should always be correct.
+    bind_ip = str(mass.streams.bind_ip)
+    if bind_ip not in ("0.0.0.0", ""):
+        return bind_ip
+    # 3. Only when bind_ip is 0.0.0.0 (e.g. Docker/OrbStack), use the routing table
+    #    to find the actual outbound interface for this specific target.
     try:
         is_ipv6_target = ip_address(target_ip).version == 6
     except ValueError:
@@ -57,38 +57,15 @@ def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     route_target: tuple[str, int] | tuple[str, int, int, int] = (
         (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
     )
-    _s = socket.socket(route_family, socket.SOCK_DGRAM)
-    try:
-        _s.connect(route_target)
-        routed_ip = _s.getsockname()[0]
-        if routed_ip and routed_ip not in ("0.0.0.0", ""):
-            if_ip = routed_ip
-    except OSError:
-        pass
-    finally:
-        _s.close()
-    if if_ip in ("0.0.0.0", ""):
-        # Routing gave no usable result; try publish_ip as a bindable override
-        # (Docker/OrbStack scenario where the host IP should be advertised)
-        publish_ip = str(mass.streams.publish_ip or "")
-        if publish_ip:
-            try:
-                publish_is_ipv6 = ip_address(publish_ip).version == 6
-            except ValueError:
-                publish_is_ipv6 = False
-            publish_family = socket.AF_INET6 if publish_is_ipv6 else socket.AF_INET
-            bind_target: tuple[str, int] | tuple[str, int, int, int] = (
-                (publish_ip, 0, 0, 0) if publish_is_ipv6 else (publish_ip, 0)
-            )
-            _s = socket.socket(publish_family, socket.SOCK_DGRAM)
-            try:
-                _s.bind(bind_target)
-                if_ip = publish_ip
-            except OSError:
-                pass
-            finally:
-                _s.close()
-    return if_ip
+    with socket.socket(route_family, socket.SOCK_DGRAM) as _s:
+        try:
+            _s.connect(route_target)
+            routed_ip = str(_s.getsockname()[0])
+            if routed_ip and routed_ip not in ("0.0.0.0", ""):
+                return routed_ip
+        except OSError:
+            pass
+    return bind_ip
 
 
 def convert_airplay_volume(value: float) -> int:
