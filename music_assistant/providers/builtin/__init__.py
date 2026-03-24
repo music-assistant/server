@@ -384,6 +384,8 @@ class BuiltinProvider(MusicProvider):
     ) -> list[PlaylistPlayableItem]:
         """Get playlist tracks (paginated, 500 items per page)."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
+            if page > 0:
+                return []
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
         return await self._get_user_playlist_tracks(prov_playlist_id, page)
 

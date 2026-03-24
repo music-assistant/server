@@ -14,6 +14,7 @@ but it can also be something else, hence the loose coupling.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import random
 import time
@@ -114,6 +115,9 @@ CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 RADIO_TRACK_MAX_DURATION_SECS = 20 * 60  # 20 minutes
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
+IN_PLAY_ACTION: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "in_play_action", default=False
+)
 
 
 def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R](
@@ -122,8 +126,10 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     """
     Decorator to mark a play action in progress on the queue.
 
-    Fetches the queue based on queue_id, sets ATTR_PLAY_ACTION_IN_PROGRESS
-    to True before calling the function, and removes it after the function completes.
+    Sets ATTR_PLAY_ACTION_IN_PROGRESS to True before calling the function,
+    and removes it after the function completes. Uses a per-queue lock to
+    ensure play actions are serialized per queue. The lock is reentrant so
+    nested calls (e.g. play_media calling play_index) pass through without deadlock.
 
     :param func: The function to wrap.
     """  # noqa: D401
@@ -135,16 +141,19 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
         assert isinstance(queue_id, str)  # for type checking
         queue = self._queues.get(queue_id)
         if queue is None:
-            # Queue not found, just call the function and let it handle the error
             return await func(self, *args, **kwargs)
-        flag_already_present = bool(queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS))
-        try:
-            if not flag_already_present:
+        if IN_PLAY_ACTION.get():
+            # already in a play action context (nested call), just execute
+            return await func(self, *args, **kwargs)
+        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
+        async with lock:
+            token = IN_PLAY_ACTION.set(True)
+            try:
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
                 self.signal_update(queue_id)
-            return await func(self, *args, **kwargs)
-        finally:
-            if not flag_already_present:
+                return await func(self, *args, **kwargs)
+            finally:
+                IN_PLAY_ACTION.reset(token)
                 queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 self.signal_update(queue_id)
 
@@ -183,6 +192,7 @@ class PlayerQueuesController(CoreController):
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, CompareState] = {}
         self._transitioning_players: set[str] = set()
+        self._play_action_locks: dict[str, asyncio.Lock] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."

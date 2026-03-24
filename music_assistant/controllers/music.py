@@ -108,7 +108,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 33
+DB_SCHEMA_VERSION: Final[int] = 34
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -2647,6 +2647,22 @@ class MusicController(CoreController):
             )
             await self._database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
 
+        if prev_version <= 33:
+            # add is_excluded column to genres table (new in schema 34)
+            await self._database.execute(
+                f"ALTER TABLE {DB_TABLE_GENRES} "
+                "ADD COLUMN [is_excluded] BOOLEAN NOT NULL DEFAULT 0;"
+            )
+            # drop the old genre_global_exclusion table (replaced by is_excluded column)
+            await self._database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
+            # add is_default column to genres table (new in schema 34)
+            await self._database.execute(
+                f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN [is_default] BOOLEAN NOT NULL DEFAULT 0;"
+            )
+            # mark all existing genres with a translation_key as default
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_GENRES} SET is_default = 1 WHERE translation_key IS NOT NULL;"
+            )
         # save changes
         await self._database.commit()
 
@@ -2838,7 +2854,9 @@ class MusicController(CoreController):
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
+            [is_default] BOOLEAN NOT NULL DEFAULT 0
             );"""
         )
         await self.database.execute(
