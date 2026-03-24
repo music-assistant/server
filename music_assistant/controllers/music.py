@@ -1483,8 +1483,33 @@ class MusicController(CoreController):
         provider_fully_played = False
         provider_position_ms = 0
 
+        user: User | None = None
+        if userid:
+            # userid overridden by parameter
+            user = await self.mass.webserver.auth.get_user(userid)
+        elif session_user := get_current_user():
+            # this is the active session user that triggered the action
+            user = session_user
+        elif provider_user := await self._get_user_for_provider(media_item.provider_mappings):
+            # based on configured provider filter we can try to find a user
+            user = provider_user
+
+        provider_instances = {x.provider_instance for x in media_item.provider_mappings}
+        if user and user.provider_filter:
+            # only if the user has provider filters configured
+            # otherwise we allow all providers
+            preferred_provider_instances = provider_instances.intersection(user.provider_filter)
+        else:
+            preferred_provider_instances = provider_instances
+
+        preferred_providers = [
+            x
+            for x in media_item.provider_mappings
+            if x.provider_instance in preferred_provider_instances
+        ]
+
         # Try to get position from providers
-        for prov_mapping in media_item.provider_mappings:
+        for prov_mapping in preferred_providers:
             if not (
                 provider := self.mass.get_provider(
                     prov_mapping.provider_instance, provider_type=MusicProvider
@@ -1508,6 +1533,8 @@ class MusicController(CoreController):
         }
         if userid:
             params["userid"] = userid
+        elif user:
+            params["userid"] = user.user_id
         if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
             ma_fully_played = parse_optional_bool(db_entry["fully_played"])
