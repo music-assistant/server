@@ -576,7 +576,7 @@ jobs:
           event-type: frontend-update
           client-payload: |
             {
-              "channel": "${{ inputs.channel }}",
+              "channel": "${{ inputs.channel == 'rc' && 'beta' || inputs.channel }}",
               "frontend_version": "${{ steps.frontend.outputs.version }}"
             }
 
