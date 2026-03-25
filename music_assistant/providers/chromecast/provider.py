@@ -12,7 +12,6 @@ from uuid import UUID
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
-from pychromecast.models import CastInfo
 
 from music_assistant.constants import (
     CONF_ENABLED,
