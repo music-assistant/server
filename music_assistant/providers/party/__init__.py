@@ -159,7 +159,7 @@ async def get_config_entries(
     elif action == CONF_ACTION_DISABLE_GUEST_ACCESS:
         values[CONF_ENABLE_GUEST_ACCESS] = False
 
-    guest_access_enabled = bool(values.get(CONF_ENABLE_GUEST_ACCESS, True))
+    guest_access_enabled = bool(values.get(CONF_ENABLE_GUEST_ACCESS, False))
 
     return (
         ConfigEntry(
@@ -169,7 +169,7 @@ async def get_config_entries(
             default_value=CONF_PARTY_PLAYER_AUTO,
             label="Party Player",
             description="Select which player/queue is attached to the party dashboard. "
-            "When set to auto, the last active player will be used.",
+            "When set to auto, the first active player will be used.",
             options=[
                 ConfigValueOption("Auto (last active player)", CONF_PARTY_PLAYER_AUTO),
                 *[
@@ -195,7 +195,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_GUEST_ACCESS,
             type=ConfigEntryType.BOOLEAN,
-            default_value=True,
+            default_value=False,
             label="Enable Guest Access via QR Code",
             hidden=True,
             value=guest_access_enabled,
@@ -609,7 +609,7 @@ class PartyPlugin(PluginProvider):
     async def get_party_player(self) -> str | None:
         """Get the configured party player/queue ID.
 
-        When configured to auto, returns the most recently active playing queue,
+        When configured to auto, returns the first active playing queue,
         falling back to any paused queue, then any available queue.
 
         :returns: The queue ID for party, or None if no player available.
