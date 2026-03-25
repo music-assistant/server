@@ -184,7 +184,9 @@ class TestGroupUngroup:
         leader.set_members = mock_set_members  # type: ignore[method-assign]
 
         # Mock power handling to skip power control (focus is on grouping logic)
-        async def mock_handle_cmd_power(player_id: str, powered: bool) -> None:
+        async def mock_handle_cmd_power(
+            player_id: str, powered: bool, skip_auto_play: bool = False
+        ) -> None:
             pass
 
         controller._handle_cmd_power = mock_handle_cmd_power  # type: ignore[method-assign]

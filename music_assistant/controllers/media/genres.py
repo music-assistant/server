@@ -44,7 +44,7 @@ from music_assistant.controllers.tasks.context import update_current_task_progre
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.json import json_loads, serialize_to_json
 
 from .base import MediaControllerBase
 
@@ -78,6 +78,8 @@ class GenreController(MediaControllerBase[Genre]):
         super().__init__(mass)
         self._last_scan_time: float = 0
         self._last_scan_mapped: int = 0
+        # Use a derived table to filter out globally excluded genres so all queries
+        # built by the base class (which appends its own WHERE) stay valid SQL.
         self.base_query = f"""
         SELECT
             {DB_TABLE_GENRES}.*,
@@ -96,7 +98,7 @@ class GenreController(MediaControllerBase[Genre]):
                 WHERE provider_mappings.item_id = {DB_TABLE_GENRES}.item_id
                 AND provider_mappings.media_type = '{MediaType.GENRE.value}'
             ) AS provider_mappings
-        FROM {DB_TABLE_GENRES}"""
+        FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
 
         # register extra api handlers
         self.mass.register_api_command(
@@ -168,6 +170,19 @@ class GenreController(MediaControllerBase[Genre]):
             self.merge_genres,
             required_role="admin",
         )
+        self.mass.register_api_command(
+            "music/genres/media_counts",
+            self.get_genre_media_counts,
+        )
+        self.mass.register_api_command(
+            "music/genres/global_exclusions",
+            self.get_global_genre_exclusions,
+        )
+        self.mass.register_api_command(
+            "music/genres/remove_global_exclusion",
+            self.remove_global_genre_exclusion,
+            required_role="admin",
+        )
 
         # Run genre mapping scanner after library sync completes
         self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
@@ -225,6 +240,16 @@ class GenreController(MediaControllerBase[Genre]):
         name_norm = create_safe_string(item.name, True, True)
         if not any(create_safe_string(a, True, True) == name_norm for a in aliases):
             aliases.insert(0, item.name)
+        # If a soft-deleted genre with the same name exists, restore it instead of inserting
+        if excl_row := await self.mass.music.database.get_row(
+            DB_TABLE_GENRES, {"search_name": name_norm, "is_excluded": 1}
+        ):
+            db_id = int(excl_row["item_id"])
+            await self.mass.music.database.update(
+                DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 0}
+            )
+            self.logger.debug("restored soft-deleted genre %s (id: %s)", item.name, db_id)
+            return db_id
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -241,6 +266,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": UNSET,
+                "is_default": 0,
             },
         )
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -562,6 +588,42 @@ class GenreController(MediaControllerBase[Genre]):
         results = await asyncio.gather(*[_fetch_media_type(mt, title) for mt, title in media_rows])
         return [r for r in results if r is not None]
 
+    async def get_genre_media_counts(self, genre_ids: list[str]) -> dict[str, dict[str, int]]:
+        """Return media item counts per media type for each requested genre.
+
+        :param genre_ids: List of genre database IDs to query.
+        :return: Mapping of genre_id -> {media_type -> count}.
+        """
+        if not genre_ids:
+            return {}
+        try:
+            int_ids = [int(gid) for gid in genre_ids]
+        except (TypeError, ValueError) as err:
+            raise InvalidDataError(f"Invalid genre_id value: {err}") from err
+        norm_ids = [str(i) for i in int_ids]
+        placeholders = ",".join(norm_ids)
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT {gm}.genre_id, {gm}.media_type, COUNT(*) AS cnt "
+            f"FROM {gm} "
+            f"WHERE {gm}.genre_id IN ({placeholders}) "
+            f"AND EXISTS ("
+            f"  SELECT 1 FROM provider_mappings pm "
+            f"  WHERE pm.item_id = {gm}.media_id "
+            f"  AND pm.media_type = {gm}.media_type "
+            f"  AND pm.in_library = 1"
+            f") "
+            f"GROUP BY {gm}.genre_id, {gm}.media_type",
+            limit=0,
+        )
+        empty: dict[str, int] = {mt.value: 0 for _, mt in MEDIA_TABLES}
+        result: dict[str, dict[str, int]] = {nid: dict(empty) for nid in norm_ids}
+        for row in rows:
+            gid = str(row["genre_id"])
+            if gid in result:
+                result[gid][row["media_type"]] = row["cnt"]
+        return result
+
     async def match_providers(self, db_item: Genre) -> None:
         """No provider matching for genres at this time."""
         return
@@ -614,10 +676,10 @@ class GenreController(MediaControllerBase[Genre]):
                 f"INSERT INTO {DB_TABLE_GENRES}"
                 "(name, sort_name, translation_key, description, favorite, metadata, "
                 "external_ids, genre_aliases, play_count, last_played, "
-                "search_name, search_sort_name) "
+                "search_name, search_sort_name, is_default) "
                 "VALUES (:name, :sort_name, :translation_key, :description, :favorite, "
                 ":metadata, :external_ids, :genre_aliases, :play_count, :last_played, "
-                ":search_name, :search_sort_name)",
+                ":search_name, :search_sort_name, :is_default)",
                 {
                     "name": name_value,
                     "sort_name": sort_name,
@@ -631,6 +693,7 @@ class GenreController(MediaControllerBase[Genre]):
                     "last_played": 0,
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
+                    "is_default": 1,
                 },
             )
             created_ids.append(cursor.lastrowid)
@@ -797,15 +860,16 @@ class GenreController(MediaControllerBase[Genre]):
 
         # Delete playlog entries for empty non-default genres before removing them, to avoid
         # orphaned playlog rows pointing to genres that no longer exist.
-        # 'WHERE translation_key IS NULL' is used because it is only set for default genres, so this
-        # keeps all default genres even if they become unmapped/empty.
+        # is_default = 0 identifies non-default genres; default genres are always kept
+        # even if they become unmapped/empty.
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         await db.delete_where_query(
             DB_TABLE_PLAYLOG,
             f"media_type = '{MediaType.GENRE.value}' "
             f"AND item_id IN ("
             f"  SELECT item_id FROM {DB_TABLE_GENRES} "
-            f"  WHERE translation_key IS NULL "
+            f"  WHERE is_default = 0 "
+            f"  AND is_excluded = 0 "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
             f"  ) "
@@ -817,7 +881,8 @@ class GenreController(MediaControllerBase[Genre]):
         genres_before = await db.get_count(DB_TABLE_GENRES)
         await db.delete_where_query(
             DB_TABLE_GENRES,
-            f"translation_key IS NULL "
+            f"is_default = 0 "
+            f"AND is_excluded = 0 "
             f"AND NOT EXISTS ("
             f"  SELECT 1 FROM {gm} WHERE {gm}.genre_id = {DB_TABLE_GENRES}.item_id"
             f") "
@@ -1039,8 +1104,17 @@ class GenreController(MediaControllerBase[Genre]):
 
         await db.commit()
 
-    async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
-        """Delete genre record from the database."""
+    async def remove_item_from_library(
+        self, item_id: str | int, recursive: bool = True, exclude_globally: bool = True
+    ) -> None:
+        """Delete genre record from the database.
+
+        :param item_id: Database ID of the genre to remove.
+        :param recursive: Unused for genres, kept for base-class compatibility.
+        :param exclude_globally: If True (default), soft-delete the genre so the scanner
+            will not recreate it. If False, hard-delete the row (used internally by
+            merge_genres where the source should not appear in the exclusion list).
+        """
         db_id = int(item_id)
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, {"genre_id": db_id}
@@ -1048,7 +1122,15 @@ class GenreController(MediaControllerBase[Genre]):
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": db_id}
         )
-        await super().remove_item_from_library(item_id, recursive)
+        if exclude_globally:
+            # Fetch the item while it is still visible (base_query filters is_excluded=1).
+            library_item = await self.get_library_item(db_id)
+            await self.mass.music.database.update(
+                DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 1}
+            )
+            self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
+        else:
+            await super().remove_item_from_library(item_id, recursive)
 
     async def add_alias(self, genre_id: str | int, alias: str) -> Genre:
         """Add an alias string to a genre.
@@ -1215,6 +1297,40 @@ class GenreController(MediaControllerBase[Genre]):
             },
         )
 
+    async def get_global_genre_exclusions(self) -> list[dict[str, object]]:
+        """Return all globally excluded genres."""
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, name, sort_name, search_name, translation_key, metadata "
+            f"FROM {DB_TABLE_GENRES} WHERE is_excluded = 1 ORDER BY sort_name",
+            limit=0,
+        )
+        result = []
+        for row in rows:
+            entry = dict(row)
+            if raw_metadata := entry.get("metadata"):
+                entry["metadata"] = json_loads(raw_metadata)
+            result.append(entry)
+        return result
+
+    async def remove_global_genre_exclusion(self, genre_id: int) -> Genre:
+        """Lift a global genre exclusion, making the genre visible and scannable again.
+
+        :param genre_id: Database ID of the excluded genre (item_id in genres table).
+        :return: The restored Genre.
+        """
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_GENRES, {"item_id": genre_id, "is_excluded": 1}
+        )
+        if not row:
+            msg = f"No globally excluded genre found with id {genre_id}"
+            raise KeyError(msg)
+        await self.mass.music.database.update(
+            DB_TABLE_GENRES, {"item_id": genre_id}, {"is_excluded": 0}
+        )
+        library_item = await self.get_library_item(genre_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_ADDED, library_item.uri, library_item)
+        return library_item
+
     async def promote_alias_to_genre(self, genre_id: str | int, alias: str) -> Genre:
         """Promote an alias to become a standalone genre.
 
@@ -1318,9 +1434,10 @@ class GenreController(MediaControllerBase[Genre]):
             {"target_id": target_id},
         )
 
-        # Delete source genres (remove_item_from_library cleans up remaining mappings)
+        # Hard-delete source genres: merging is not a user exclusion so sources must
+        # not appear in the global exclusion list.
         for source_id in source_ids:
-            await self.remove_item_from_library(source_id)
+            await self.remove_item_from_library(source_id, exclude_globally=False)
 
         updated = await self.get_library_item(target_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
@@ -1398,7 +1515,9 @@ class GenreController(MediaControllerBase[Genre]):
         alias_to_genre: dict[str, list[int]] = {}
         primary_name_to_genre: dict[str, int] = {}
         genre_rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id, search_name, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+            f"SELECT item_id, search_name, genre_aliases FROM {DB_TABLE_GENRES} "
+            "WHERE is_excluded = 0",
+            limit=0,
         )
         for row in genre_rows:
             genre_id = int(row["item_id"])
@@ -1447,19 +1566,19 @@ class GenreController(MediaControllerBase[Genre]):
         async with self._db_add_lock:
             found_ids: list[int] = []
 
-            # Check if a genre exists with this name as its own primary name.
+            # Check if a non-excluded genre exists with this name as its own primary name.
             # If so, return immediately — an exact primary-name match takes full priority
             # over alias scanning. This prevents broad tags like "pop" from fanning out
             # to every genre that accumulated "pop" as a secondary alias (Rock, Punk, etc.).
             if db_row := await self.mass.music.database.get_row(
-                DB_TABLE_GENRES, {"search_name": search_name}
+                DB_TABLE_GENRES, {"search_name": search_name, "is_excluded": 0}
             ):
                 return [int(db_row["item_id"])]
 
             # Search genre_aliases JSON columns (case-insensitive, can match multiple)
             rows = await self.mass.music.database.get_rows_from_query(
                 f"SELECT item_id FROM {DB_TABLE_GENRES} "
-                "WHERE EXISTS("
+                "WHERE is_excluded = 0 AND EXISTS("
                 "SELECT 1 FROM json_each(genre_aliases) "
                 "WHERE LOWER(json_each.value) = LOWER(:alias_name)"
                 ")",
@@ -1476,7 +1595,8 @@ class GenreController(MediaControllerBase[Genre]):
             # differences, e.g. genre A has "synthpop", genre B has "synth-pop"
             # — both normalize to "synthpop" but LOWER can't bridge the gap.
             all_genres = await self.mass.music.database.get_rows_from_query(
-                f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES}", limit=0
+                f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES} WHERE is_excluded = 0",
+                limit=0,
             )
             for row in all_genres:
                 aliases = json.loads(row["genre_aliases"]) if row["genre_aliases"] else []
@@ -1488,6 +1608,12 @@ class GenreController(MediaControllerBase[Genre]):
 
             if found_ids:
                 return found_ids
+
+            # Check if this name was deliberately excluded before creating a new genre
+            if await self.mass.music.database.get_row(
+                DB_TABLE_GENRES, {"search_name": search_name, "is_excluded": 1}
+            ):
+                return []
 
             # No genre owns this alias — create a new one
             new_id = await self.mass.music.database.insert(
@@ -1505,6 +1631,7 @@ class GenreController(MediaControllerBase[Genre]):
                     "search_name": search_name,
                     "search_sort_name": search_sort_name,
                     "timestamp_added": UNSET,
+                    "is_default": 0,
                 },
             )
             return [new_id]
