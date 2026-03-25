@@ -605,6 +605,46 @@ def test_id3_artist_tag_semicolon_single_mbid() -> None:
     assert "new" not in audio_tags.artists
 
 
+def test_artists_tag_semicolon_single_mbid() -> None:
+    """Test that ARTISTS tag with semicolon is not split when 1 MB ID exists.
+
+    Regression test for the ARTISTS (plural) tag path:
+    - Artist name "ave;new" contains a semicolon
+    - Single MUSICBRAINZ_ARTISTID confirms this is one artist
+    - The semicolon must NOT cause the name to be split
+
+    Based on real tags from ave;new's "Lovable" album track "eve".
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags={
+            "title": "eve",
+            "album": "Lovable",
+            "artist": "ave;new",
+            "artists": "ave;new",  # ARTISTS tag with semicolon
+            "artistsort": "ave;new",
+            "musicbrainzartistid": "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+            "musicbrainzrecordingid": "0389384e-3015-45ba-8a09-d949ff68f9d9",
+        },
+        has_cover_image=False,
+        filename="04 - ave;new - eve.flac",
+    )
+
+    # Single MB ID = single artist, ARTISTS tag should NOT be split on semicolon
+    assert audio_tags.artists == ("ave;new",)
+    assert audio_tags.musicbrainz_artistids == ("2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",)
+    # Verify the semicolon did NOT cause incorrect splitting
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+
+
 def test_id3_artist_tag_semicolon_multiple_mbids() -> None:
     """Test that ARTIST tag with semicolon IS split when multiple MB IDs exist.
 

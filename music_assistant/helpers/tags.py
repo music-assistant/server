@@ -292,18 +292,21 @@ class AudioTags:
         # Vorbis: multiple ARTIST fields, ID3: TXXX:ARTISTS or multi-value TPE1
         # APEv2: null-separated ARTISTS tag (if present), MP4: not supported
         if tag := self.tags.get("artists"):
+            mb_id_count = len(self.musicbrainz_artistids)
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
                 # Multiple ARTIST fields from Vorbis - already separated, no splitting needed
                 artists = clean_tuple(tag)  # type: ignore[unreachable]
+            elif mb_id_count == 1:
+                # Single MB ID confirms single artist - don't split
+                return (tag if isinstance(tag, str) else tag[0],)
             else:
-                # Single field - split on semicolons
+                # Split on semicolons
                 artists = split_items(tag)
             # Warn if ARTISTS tag count doesn't match MB Artist ID count
-            mb_id_count = len(self.musicbrainz_artistids)
             if mb_id_count and mb_id_count != len(artists):
                 LOGGER.warning(
-                    "ARTISTS tag count (%d) does not match MusicBrainz Artist ID count (%d): %s",
+                    "ARTISTS tag count (%d) doesn't match MusicBrainz Artist ID count (%d): %s",
                     len(artists),
                     mb_id_count,
                     tag,
@@ -348,19 +351,21 @@ class AudioTags:
         # Preferred path when unambiguously separated album artist names are available
         # Vorbis: multiple ALBUMARTIST fields, ID3: multi-value TPE2
         if tag := self.tags.get("albumartists"):
+            mb_id_count = len(self.musicbrainz_albumartistids)
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
             if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
                 # Multiple ALBUMARTIST fields from Vorbis - already separated, no splitting needed
                 artists = clean_tuple(tag)  # type: ignore[unreachable]
+            elif mb_id_count == 1:
+                # Single MB ID confirms single artist - don't split
+                return (tag if isinstance(tag, str) else tag[0],)
             else:
-                # Single field (non-standard ALBUMARTISTS tag) - split on semicolons
+                # Split on semicolons
                 artists = split_items(tag)
             # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
-            mb_id_count = len(self.musicbrainz_albumartistids)
             if mb_id_count and mb_id_count != len(artists):
                 LOGGER.warning(
-                    "ALBUMARTISTS tag count (%d) does not match MusicBrainz Album Artist ID "
-                    "count (%d): %s",
+                    "ALBUMARTISTS tag count (%d) doesn't match MB Album Artist ID count (%d): %s",
                     len(artists),
                     mb_id_count,
                     tag,
