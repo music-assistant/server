@@ -2676,16 +2676,25 @@ class MusicController(CoreController):
 
         if prev_version <= 33:
             # add is_excluded column to genres table (new in schema 34)
-            await self._database.execute(
-                f"ALTER TABLE {DB_TABLE_GENRES} "
-                "ADD COLUMN [is_excluded] BOOLEAN NOT NULL DEFAULT 0;"
-            )
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} "
+                    "ADD COLUMN [is_excluded] BOOLEAN NOT NULL DEFAULT 0;"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
             # drop the old genre_global_exclusion table (replaced by is_excluded column)
             await self._database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
             # add is_default column to genres table (new in schema 34)
-            await self._database.execute(
-                f"ALTER TABLE {DB_TABLE_GENRES} ADD COLUMN [is_default] BOOLEAN NOT NULL DEFAULT 0;"
-            )
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} "
+                    "ADD COLUMN [is_default] BOOLEAN NOT NULL DEFAULT 0;"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
             # mark all existing genres with a translation_key as default
             await self._database.execute(
                 f"UPDATE {DB_TABLE_GENRES} SET is_default = 1 WHERE translation_key IS NOT NULL;"
