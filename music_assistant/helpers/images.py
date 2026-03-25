@@ -123,9 +123,13 @@ async def get_image_data(
     if path_or_url.startswith("http"):
         # Handle imageproxy URLs pointing to our own server
         parsed_url = urllib.parse.urlparse(path_or_url)
-        url_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        server_base_urls = {mass.webserver.base_url, mass.streams.base_url}
-        if url_host in server_base_urls:
+        url_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        server_origins = {
+            f"{p.scheme}://{p.netloc}"
+            for b in (mass.webserver.base_url, mass.streams.base_url)
+            if (p := urllib.parse.urlparse(b)).netloc
+        }
+        if url_origin in server_origins:
             if imageproxy_params := _extract_imageproxy_params(path_or_url):
                 extracted_path, extracted_provider = imageproxy_params
                 # Validate extracted path before recursive call
@@ -136,6 +140,8 @@ async def get_image_data(
                 return await get_image_data(
                     mass, extracted_path, extracted_provider, _depth=_depth + 1
                 )
+            msg = f"Invalid imageproxy URL (missing path): {path_or_url}"
+            raise FileNotFoundError(msg)
         try:
             async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
                 return await resp.read()
