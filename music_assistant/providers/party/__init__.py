@@ -178,7 +178,6 @@ async def get_config_entries(
                     )
                 ],
             ],
-            immediate_apply=True,
         ),
         ConfigEntry(
             key=CONF_PARTY_NAME,
@@ -198,6 +197,7 @@ async def get_config_entries(
             label="Enable Guest Access via QR Code",
             hidden=True,
             value=guest_access_enabled,
+            immediate_apply=True,
         ),
         # Guest access disabled state
         ConfigEntry(
@@ -215,6 +215,7 @@ async def get_config_entries(
             action=CONF_ACTION_ENABLE_GUEST_ACCESS,
             action_label="Enable Guest Access",
             hidden=guest_access_enabled,
+            immediate_apply=True,
         ),
         # Guest access enabled state
         ConfigEntry(
@@ -233,6 +234,7 @@ async def get_config_entries(
             action=CONF_ACTION_DISABLE_GUEST_ACCESS,
             action_label="Disable Guest Access",
             hidden=not guest_access_enabled,
+            immediate_apply=True,
         ),
         ConfigEntry(
             key=CONF_PARTY_QR_TEXT,
@@ -266,8 +268,7 @@ async def get_config_entries(
             label="Karaoke Mode",
             description=(
                 "When enabled, lyrics are displayed prominently in the center of the screen "
-                "with the track list minimized to current and next song at the bottom. "
-                "Requires Display Lyrics to be enabled."
+                "with the track list minimized to current and next song at the bottom."
             ),
             category="Karaoke",
         ),
