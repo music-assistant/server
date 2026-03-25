@@ -732,10 +732,7 @@ class BuiltinProvider(MusicProvider):
                     return library_item
             except (InvalidDataError, KeyError):
                 continue
-        if not media_item.provider_mappings:
-            # no providers at all, can't resolve
-            return None
-        # return with unavailable mappings so the item still shows in the playlist
+        # return unresolved media item so the entry still shows in the playlist
         return media_item
 
     async def _get_user_playlist_tracks(
