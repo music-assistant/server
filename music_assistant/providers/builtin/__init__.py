@@ -1000,4 +1000,5 @@ class BuiltinProvider(MusicProvider):
         self.logger.info("Playlist migration completed with %d errors", errors)
         # if there were no errors, we can safely unregister the migration task
         if errors == 0 and (current_task_id := get_current_task_id()):
-            self.mass.tasks.unregister_scheduled_task(current_task_id)
+            # defer unregistering the scheduled task to avoid cancelling the current task
+            self.mass.call_later(0, self.mass.tasks.unregister_scheduled_task, current_task_id)
