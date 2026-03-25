@@ -1,8 +1,10 @@
 """Fixtures for testing Music Assistant."""
 
 import asyncio
+import json
 import logging
 import pathlib
+import socket
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
@@ -13,6 +15,13 @@ from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.mass import MusicAssistant
+
+
+def _find_free_port() -> int:
+    """Find a free TCP port by binding to port 0."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return int(s.getsockname()[1])
 
 
 @pytest.fixture(name="caplog")
@@ -55,14 +64,20 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
+    # Pre-write settings with random ports to avoid conflicts with a running MA instance
+    web_port = _find_free_port()
+    streams_port = _find_free_port()
+    settings = {
+        "core": {
+            "webserver": {"domain": "webserver", "values": {"bind_port": web_port}},
+            "streams": {"domain": "streams", "values": {"bind_port": streams_port}},
+        }
+    }
+    (storage_path / "settings.json").write_text(json.dumps(settings))
+
     mass_instance = MusicAssistant(str(storage_path), str(cache_path))
 
-    # TODO: Configure a random port to avoid conflicts when MA is already running
-    # The conftest was modified in PR #2738 to add port configuration but it doesn't
-    # work correctly - the settings.json file is created but the config isn't respected.
-    # For now, tests that use the `mass` fixture will fail if MA is running on port 8095.
-
-    # Mock zeroconf to prevent real network I/O during tests
+    # Mock zeroconf and UPnP/SSDP to prevent real network I/O during tests
     mock_zc = _create_mock_zeroconf()
     mock_browser = NonCallableMagicMock()  # Use NonCallable to avoid api_cmd issues
 
@@ -74,6 +89,10 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
         patch(
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=mock_browser,
+        ),
+        patch(
+            "music_assistant.controllers.discovery.controller.async_upnp_search",
+            new_callable=AsyncMock,
         ),
     ):
         await mass_instance.start()

@@ -100,5 +100,8 @@ jobs:
           key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
       - name: Install dependencies
         run: uv pip install --system . .[test] -r requirements_all.txt
-      - name: Pytest
-        run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/
+      - name: Run unit and core tests
+        run: pytest tests/unit/ tests/core/ tests/providers/ tests/test_*.py --durations 10 --cov=music_assistant --cov-report=term-missing --cov-report=xml
+
+      - name: Run E2E tests
+        run: pytest tests/e2e/ --durations 10 --cov=music_assistant --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=80

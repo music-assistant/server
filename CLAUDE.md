@@ -34,6 +34,25 @@ Always run `pre-commit run --all-files` after a code change to ensure the new co
 - Server runs on `localhost:8095`
 - Entry point: `music_assistant.__main__:main`
 
+## Testing
+
+### Commands
+- `pytest` — run all tests (unit + E2E)
+- `pytest tests/unit/` — unit tests only, no Docker
+- `pytest tests/e2e/` — E2E tests only, testcontainers manages Docker
+- See `tests/README.md` for full details
+
+### Coverage targets
+| Area | Target | CI Enforced |
+|------|--------|------------|
+| Core controllers | 80%+ | Yes (`--cov-fail-under=80`) |
+| Helpers/utilities | 90%+ | No (documented) |
+| Provider parsers/converters | 80%+ | No (documented) |
+| Provider API clients | 50–60% | No (documented) |
+
+### E2E test style
+All E2E tests must use `# Given / # When / # And / # Then` inline comments. This is a requirement, not a suggestion. See `tests/README.md` for the pattern.
+
 ## Architecture
 
 ### Core Components

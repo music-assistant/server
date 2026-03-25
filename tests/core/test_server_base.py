@@ -1,11 +1,14 @@
 """Tests for the core Music Assistant server object."""
 
 import asyncio
+import pathlib
+from unittest.mock import AsyncMock, NonCallableMagicMock, patch
 
 from music_assistant_models.enums import EventType
 from music_assistant_models.event import MassEvent
 
 from music_assistant.mass import MusicAssistant
+from tests.conftest import _create_mock_zeroconf
 
 
 async def test_start_and_stop_server(mass: MusicAssistant) -> None:
@@ -58,3 +61,33 @@ async def test_events(mass: MusicAssistant) -> None:
         mass.signal_event(EventType.UNKNOWN)
         await asyncio.sleep(0)
         assert flag is False
+
+
+async def test_mass_fixture_uses_unique_port(mass: MusicAssistant, tmp_path: pathlib.Path) -> None:
+    """Two concurrent mass instances must not share a port."""
+    storage2 = tmp_path / "data2"
+    cache2 = tmp_path / "cache2"
+    storage2.mkdir()
+    cache2.mkdir()
+    mass2 = MusicAssistant(str(storage2), str(cache2))
+    mock_zc = _create_mock_zeroconf()
+    mock_browser = NonCallableMagicMock()
+    with (
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncZeroconf",
+            return_value=mock_zc,
+        ),
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
+            return_value=mock_browser,
+        ),
+        patch(
+            "music_assistant.controllers.discovery.controller.async_upnp_search",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await mass2.start()
+        try:
+            assert mass2.webserver.publish_port != mass.webserver.publish_port
+        finally:
+            await mass2.stop()
