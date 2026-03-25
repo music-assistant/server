@@ -186,7 +186,7 @@ def _get_connector(
 @cache
 def _get_resolver(mass: MusicAssistant) -> MassAsyncDNSResolver:
     """Return the MassAsyncDNSResolver."""
-    resolver = MassAsyncDNSResolver(async_zeroconf=mass.aiozc)
+    resolver = MassAsyncDNSResolver(async_zeroconf=mass.discovery.aiozc)
 
     async def _close_resolver(event: MassEvent) -> None:  # noqa: ARG001
         await resolver.real_close()

@@ -237,12 +237,8 @@ class AirPlayPairing:
             return "RAOP (AirPlay 1)"
         return "AirPlay"
 
-    async def start_pairing(self) -> bool:
-        """Start the pairing process.
-
-        :return: True if device provides PIN (always True for AirPlay).
-        :raises PlayerCommandFailed: If device connection fails.
-        """
+    async def start_pairing_session(self) -> None:
+        """Start HTTP session for pairing."""
         self.logger.info(
             "Starting %s pairing with %s at %s:%d",
             self.protocol_name,
@@ -260,7 +256,16 @@ class AirPlayPairing:
 
         # Create HTTP session
         self._session = aiohttp.ClientSession()
+        self._is_pairing = True
 
+    async def start_pin_pairing(self) -> bool:
+        """Start the pairing process.
+
+        :return: True if device provides PIN.
+        :raises PlayerCommandFailed: If device connection fails.
+        """
+        if not self._session:
+            raise PlayerCommandFailed("Session not started")
         try:
             # Request PIN to be shown on device
             async with self._session.post(
@@ -270,7 +275,6 @@ class AirPlayPairing:
                 if resp.status != 200:
                     raise PlayerCommandFailed(f"Failed to start pairing: HTTP {resp.status}")
 
-            self._is_pairing = True
             self.logger.info("Device %s is displaying PIN", self.name)
 
             # SRP context will be created in finish_pairing when we have the PIN
@@ -281,9 +285,9 @@ class AirPlayPairing:
             raise PlayerCommandFailed(f"Connection failed: {err}") from err
 
     async def finish_pairing(self, pin: str) -> str:
-        """Complete pairing with the provided PIN.
+        """Complete pairing with the provided PIN or password.
 
-        :param pin: 4-digit PIN from device screen.
+        :param pin: 4-digit PIN from device screen or device password.
         :return: Credentials string for cliap2/cliraop.
         :raises PlayerCommandFailed: If pairing fails.
         """

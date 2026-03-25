@@ -11,24 +11,13 @@ from typing import TYPE_CHECKING, cast
 from aiovban.asyncio.util import BackPressureStrategy
 from aiovban.enums import VBANSampleRate
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ContentType,
-    ProviderFeature,
-    StreamType,
-)
+from music_assistant_models.enums import ConfigEntryType, ContentType, ProviderFeature, StreamType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
-from music_assistant.constants import (
-    CONF_BIND_IP,
-    CONF_BIND_PORT,
-    CONF_ENTRY_WARN_PREVIEW,
-)
-from music_assistant.helpers.util import (
-    get_ip_addresses,
-)
+from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, CONF_ENTRY_WARN_PREVIEW
+from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
 from .vban import AsyncVBANClientMod
@@ -180,7 +169,7 @@ async def get_config_entries(
             "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
             "This is an advanced setting that should normally "
             "not be adjusted in regular setups.",
-            category="advanced",
+            advanced=True,
             required=True,
         ),
         ConfigEntry(
@@ -190,7 +179,7 @@ async def get_config_entries(
             options=[ConfigValueOption(x, x) for x in VBAN_QUEUE_STRATEGIES],
             label="Receiver: VBAN queue strategy",
             description="What should happen if the receiving queue fills up?",
-            category="advanced",
+            advanced=True,
             required=True,
         ),
         ConfigEntry(
@@ -200,7 +189,7 @@ async def get_config_entries(
             label="Receiver: VBAN packets queue size",
             description="This can be increased if MA is running on a very low power device, "
             "otherwise this should not need to be changed.",
-            category="advanced",
+            advanced=True,
             required=True,
         ),
     )

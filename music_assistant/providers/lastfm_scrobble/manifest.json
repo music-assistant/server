@@ -7,7 +7,7 @@
   "codeowners": ["@music-assistant"],
   "credits": ["[pylast](https://github.com/pylast/pylast)"],
   "documentation": "https://music-assistant.io/plugins/lastfm_scrobble/",
-  "multi_instance": false,
+  "multi_instance": true,
   "builtin": false,
-  "requirements": ["pylast==6.0.0"]
+  "requirements": ["pylast==7.0.2"]
 }

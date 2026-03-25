@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
@@ -22,7 +23,9 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidCommand,
     InvalidToken,
+    MusicAssistantError,
 )
+from music_assistant_models.event import MassEvent
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
@@ -36,8 +39,6 @@ from .helpers.auth_middleware import (
 from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
-    from music_assistant_models.event import MassEvent
-
     from music_assistant.controllers.webserver import WebserverController
 
 MAX_PENDING_MSG = 512
@@ -238,9 +239,15 @@ class WebsocketClientHandler:
                         )
                         items = []
                 result = items
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             await self._send_message(SuccessResultMessage(msg.message_id, result))
+        except MusicAssistantError as err:
+            # Expected operational errors (player unavailable, queue empty, etc.)
+            # Log at warning level since these are normal error responses, not crashes.
+            self._logger.warning("%s: %s", msg.command, err)
+            err_msg = str(err) or err.__class__.__name__
+            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
@@ -443,6 +450,19 @@ class WebsocketClientHandler:
                 and event.object_id not in self._authenticated_user.player_filter
                 and event.object_id != self._sendspin_player_id
             ):
+                return
+
+            if event.event == EventType.TASKS_UPDATED:
+                if self._authenticated_user is None:
+                    return
+                task_data = self.mass.tasks.list_tasks_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=task_data,
+                    )
+                )
                 return
 
             self._send_message_sync(event)

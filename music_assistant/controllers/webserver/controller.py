@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import inspect
 import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -19,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import quote
 
 import aiofiles
-from aiohttp import ClientTimeout, web
+from aiohttp import web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
@@ -31,6 +32,7 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
 )
@@ -43,7 +45,7 @@ from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
-from music_assistant.helpers.util import get_ip_addresses
+from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
@@ -65,7 +67,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 DEFAULT_SERVER_PORT = 8095
-INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
@@ -99,7 +100,10 @@ class WebserverController(CoreController):
     @property
     def base_url(self) -> str:
         """Return the base_url for the webserver."""
-        return str(self.config.get_value(CONF_BASE_URL)).removesuffix("/")
+        config = getattr(self, "config", None)
+        if config is None:
+            return ""
+        return str(config.get_value(CONF_BASE_URL)).removesuffix("/")
 
     async def get_config_entries(
         self,
@@ -107,7 +111,7 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_publish_ip = ip_addresses[0]
 
         # Handle verify SSL action
@@ -122,7 +126,9 @@ class WebserverController(CoreController):
         # Determine if SSL is enabled from values
         ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
         protocol = "https" if ssl_enabled else "http"
-        default_base_url = f"{protocol}://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
+        default_base_url = (
+            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
+        )
         return (
             ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -223,16 +229,17 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces. \n"
+                "Use 0.0.0.0 or :: to bind to all interfaces. \n"
                 "Set this address for example to a docker-internal network, "
                 "when you are running a reverse proxy to enhance security and "
                 "protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
                 requires_reload=True,
             ),
         )
@@ -253,6 +260,7 @@ class WebserverController(CoreController):
         # add index (with onboarding check)
         self._index_path = os.path.join(frontend_dir, "index.html")
         routes.append(("GET", "/", self._handle_index))
+        routes.append(("HEAD", "/", self._handle_index))
         # add logo
         logo_path = str(RESOURCES_DIR.joinpath("logo.png"))
         handler = partial(self._server.serve_static, logo_path)
@@ -301,7 +309,7 @@ class WebserverController(CoreController):
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
-        all_ip_addresses = await get_ip_addresses()
+        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
@@ -370,9 +378,6 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        if self.mass.running_as_hass_addon:
-            # (re)announce to HA supervisor to make sure that HA picks it up
-            await self._announce_to_homeassistant()
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
@@ -574,7 +579,7 @@ class WebserverController(CoreController):
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             return web.json_response(result, dumps=json_dumps)
         except Exception as e:
@@ -1055,33 +1060,3 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
-
-    async def _announce_to_homeassistant(self) -> None:
-        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
-        addon_hostname = os.environ["HOSTNAME"]
-        # Get or create auth token for the HA system user
-        ha_integration_token = await self.auth.get_homeassistant_system_user_token()
-        discovery_payload = {
-            "service": "music_assistant",
-            "config": {
-                "host": addon_hostname,
-                "port": INGRESS_SERVER_PORT,
-                "auth_token": ha_integration_token,
-            },
-        }
-        try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
-        except Exception as err:
-            self.logger.warning("Failed to announce to Home Assistant: %s", err)

@@ -109,7 +109,12 @@ def parse_track(
         for c in sonic_song.contributors:
             metadata.performers.add(c.artist.name)
 
-    name, version = parse_title_and_version(sonic_song.title)
+    if isinstance(album, Album) and album.version:
+        name = sonic_song.title
+        version = album.version
+    else:
+        name, version = parse_title_and_version(sonic_song.title)
+
     track = Track(
         item_id=sonic_song.id,
         provider=instance_id,
@@ -216,6 +221,16 @@ def parse_artist(
     """Parse artist and artistInfo into a Music Assistant Artist."""
     metadata: MediaItemMetadata = MediaItemMetadata()
 
+    if sonic_artist.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_artist.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
     if sonic_artist.artist_image_url:
         metadata.add_image(
             MediaItemImage(
@@ -226,15 +241,6 @@ def parse_artist(
             )
         )
 
-    if sonic_artist.cover_art:
-        metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=sonic_artist.cover_art,
-                provider=instance_id,
-                remotely_accessible=False,
-            )
-        )
     if sonic_info:
         if sonic_info.biography:
             metadata.description = sonic_info.biography
@@ -316,7 +322,12 @@ def parse_album(
     if sonic_album.moods:
         metadata.mood = sonic_album.moods[0]
 
-    name, version = parse_title_and_version(sonic_album.name)
+    if sonic_album.version:
+        name = sonic_album.name
+        version = sonic_album.version
+    else:
+        name, version = parse_title_and_version(sonic_album.name)
+
     album = Album(
         item_id=sonic_album.id,
         provider=SUBSONIC_DOMAIN,

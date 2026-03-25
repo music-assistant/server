@@ -11,7 +11,6 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
-    AIRPLAY_OUTPUT_BUFFER_DURATION_MS,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
@@ -40,7 +39,6 @@ class RaopStream(AirPlayProtocol):
         assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
-        player_id = self.player.player_id
         extra_args += ["-if", self.mass.streams.bind_ip]
         if self.player.config.get_value(CONF_ENCRYPTION, True):
             extra_args += ["-encrypt"]
@@ -49,9 +47,7 @@ class RaopStream(AirPlayProtocol):
         for prop in ("et", "md", "am", "pk", "pw"):
             if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
-        if device_password := self.mass.config.get_raw_player_config_value(
-            player_id, CONF_PASSWORD
-        ):
+        if device_password := self.player.config.get_value(CONF_PASSWORD):
             extra_args += ["-password", str(device_password)]
         # Add RAOP credentials from pairing if available (for Apple devices)
         if raop_credentials := self.player.config.get_value(CONF_RAOP_CREDENTIALS):
@@ -71,7 +67,7 @@ class RaopStream(AirPlayProtocol):
             "-port",
             str(self.player.raop_discovery_info.port),
             "-latency",
-            str(AIRPLAY_OUTPUT_BUFFER_DURATION_MS),
+            str(self.player.output_buffer_duration_ms),
             "-volume",
             str(self.player.volume_level),
             *extra_args,
@@ -118,6 +114,24 @@ class RaopStream(AirPlayProtocol):
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=0, stream=self
                 )
+            elif "elapsed milliseconds:" in line:
+                # this is received more or less every second while playing
+                millis = int(line.split("elapsed milliseconds: ")[1])
+                silence_ms = (self.session.silence_padding * 1000) if self.session else 0
+                adjusted_millis = millis - silence_ms
+                if adjusted_millis < 0:
+                    # we need to ignore updates until we have passed the initial silence padding,
+                    # otherwise the player will not correct drift
+                    continue
+                # note that this represents the total elapsed time of the streaming session
+                elapsed_time = adjusted_millis / 1000
+                player.set_state_from_stream(elapsed_time=elapsed_time)
+            elif "Password required, but none supplied." in line:
+                logger.error(
+                    f"Player {self.player.name} requires a password. "
+                    f"Please add one in Player Settings"
+                )
+                break
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:

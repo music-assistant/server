@@ -12,7 +12,7 @@ from aioslimproto.server import SlimServer
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type, get_player_filter_params
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -144,7 +144,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             self.mass.create_task(player.setup())
             return
 
-        if not (mass_player := self.mass.players.get(event.player_id)):
+        if not (mass_player := self.mass.players.get_player(event.player_id)):
             return  # guard for unknown player
         player = cast("SqueezelitePlayer", mass_player)
 
@@ -169,11 +169,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if not child_player_id:
             raise web.HTTPNotFound(reason="Missing child_player_id parameter")
 
-        if not (sync_parent := self.mass.players.get(player_id)):
+        if not (sync_parent := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
         sync_parent = cast("SqueezelitePlayer", sync_parent)
 
-        if not (child_player := self.mass.players.get(child_player_id)):
+        if not (child_player := self.mass.players.get_player(child_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {child_player_id}")
 
         if not (stream := sync_parent.multi_client_stream) or stream.done:
@@ -183,7 +183,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             status=200,
             reason="OK",
             headers={
-                "Content-Type": f"audio/{fmt}",
+                "Content-Type": get_mime_type(fmt),
             },
         )
         await resp.prepare(request)

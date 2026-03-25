@@ -10,6 +10,7 @@ from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
@@ -21,6 +22,10 @@ if TYPE_CHECKING:
 
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
+
+    mass: MusicAssistant
+    manifest: ProviderManifest
+    config: ProviderConfig
 
     def __init__(
         self,
@@ -74,7 +79,7 @@ class Provider:
         self.config = config
 
         # update log level if changed
-        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys or "name" in changed_keys:
             self._set_log_level_from_config(config)
 
         # reload if any non-log-level value keys changed
@@ -88,14 +93,17 @@ class Provider:
                 self.instance_id,
             )
             task_id = f"provider_reload_{self.instance_id}"
-            self.mass.call_later(
-                1, self.mass.load_provider_config, config, self.instance_id, task_id=task_id
-            )
+            self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+
+    async def on_upnp_service_discovered(
+        self, search_target: str, discovery_info: CaseInsensitiveDict
+    ) -> None:
+        """Handle UPNP/SSDP discovery callback."""
 
     @property
     @final
@@ -191,7 +199,13 @@ class Provider:
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)
-        self.logger = mass_logger.getChild(self.domain)
+        # self.name is only available after async_init. Otherwise we run into a race condition.
+        # see https://github.com/music-assistant/support/issues/4801
+        logging_name = self.domain
+        if getattr(self, "available", False):
+            # async_init completed
+            logging_name = self.name
+        self.logger = mass_logger.getChild(logging_name)
         log_level = str(config.get_value(CONF_LOG_LEVEL))
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)

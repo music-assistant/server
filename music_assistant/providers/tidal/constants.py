@@ -42,3 +42,7 @@ DEFAULT_LIMIT: Final[int] = 50
 CACHE_CATEGORY_DEFAULT: Final[int] = 0
 CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 1
 CACHE_CATEGORY_ISRC_MAP: Final[int] = 2
+# Playback info (DASH manifest / direct URL) per track+quality. CDN tokens observed to be
+# valid for ~60 minutes, so 20 minutes gives a safe window without stale data.
+CACHE_CATEGORY_PLAYBACK_INFO: Final[int] = 3
+CACHE_TTL_PLAYBACK_INFO: Final[int] = 1200  # 20 minutes
