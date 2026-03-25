@@ -306,8 +306,8 @@ class MyDemoMusicprovider(MusicProvider):
         # in the supported_features and you did not override the default sync method.
         # It allows retrieving the library/favorite radio stations from your provider.
         # To be clear, this is only implemented (and the LIBRARY_RADIOS feature declared
-        # if the originating provider supports the concept of favourites or a library of 
-        # its own. This method synchronises the providers library with MA's library. It 
+        # if the originating provider supports the concept of favourites or a library of
+        # its own. This method synchronises the providers library with MA's library. It
         # is not acceptable to automatically add all channels to the users library.
 
         # Warning: Async generator:
