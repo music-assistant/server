@@ -10,6 +10,7 @@ from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
@@ -98,6 +99,11 @@ class Provider:
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+
+    async def on_upnp_service_discovered(
+        self, search_target: str, discovery_info: CaseInsensitiveDict
+    ) -> None:
+        """Handle UPNP/SSDP discovery callback."""
 
     @property
     @final

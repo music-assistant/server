@@ -25,6 +25,7 @@ from music_assistant_models.errors import (
     InvalidToken,
     MusicAssistantError,
 )
+from music_assistant_models.event import MassEvent
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
@@ -38,8 +39,6 @@ from .helpers.auth_middleware import (
 from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
 
 if TYPE_CHECKING:
-    from music_assistant_models.event import MassEvent
-
     from music_assistant.controllers.webserver import WebserverController
 
 MAX_PENDING_MSG = 512
@@ -451,6 +450,19 @@ class WebsocketClientHandler:
                 and event.object_id not in self._authenticated_user.player_filter
                 and event.object_id != self._sendspin_player_id
             ):
+                return
+
+            if event.event == EventType.TASKS_UPDATED:
+                if self._authenticated_user is None:
+                    return
+                task_data = self.mass.tasks.list_tasks_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=task_data,
+                    )
+                )
                 return
 
             self._send_message_sync(event)

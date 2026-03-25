@@ -17,6 +17,12 @@ from music_assistant_models.errors import InsufficientPermissions, PlayerCommand
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 
 if TYPE_CHECKING:
+    import logging
+
+    from music_assistant_models.player_control import PlayerControl
+
+    from music_assistant.models.player import Player
+
     from .controller import PlayerController
 
 
@@ -140,3 +146,32 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     if func is not None:
         return decorator(func)
     return decorator
+
+
+async def wait_for_power_on(
+    logger: logging.Logger,
+    player: Player,
+    player_control: PlayerControl | None = None,
+    timeout: float = 5.0,
+) -> None:
+    """Wait for a player (or player control) to report powered on after a power on command.
+
+    :param logger: Logger instance for debug logging.
+    :param player: The player to wait for (checked when player_control is None).
+    :param player_control: Optional PlayerControl to check instead of the player.
+    :param timeout: Maximum time to wait in seconds.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            if player_control is not None:
+                while not player_control.power_state:
+                    await asyncio.sleep(0.1)
+            else:
+                while not player.powered:
+                    await asyncio.sleep(0.1)
+    except TimeoutError:
+        logger.debug(
+            "Player %s did not report powered on within %s seconds",
+            player.state.name,
+            timeout,
+        )

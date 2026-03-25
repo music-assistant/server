@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     StreamType,
+    TaskScheduleType,
 )
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -30,10 +31,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
-)
+from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
@@ -80,14 +78,6 @@ CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN = ConfigEntry.from_dict(
         "default_value": True,
     }
 )
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS_MOD = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS.to_dict(),
-        "label": "In-library podcast sync interval",
-        "description": "The interval at which the podcast feed added to the library are refreshed. "
-        "A podcast must have been either added to the library or favorited, to make this work.",
-    }
-)
 
 
 async def setup(
@@ -118,7 +108,6 @@ async def get_config_entries(
     language_options = [ConfigValueOption(val, key.lower()) for key, val in country_codes.items()]
     return (
         CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
-        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS_MOD,
         ConfigEntry(
             key=CONF_LOCALE,
             type=ConfigEntryType.STRING,
@@ -421,17 +410,18 @@ class ITunesPodcastsProvider(MusicProvider):
         return parsed_podcast  # type: ignore[no-any-return]
 
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
-        # We cache just a couple minutes longer then our sync interval, if it is configured.
-        # Otherwise we cache for 12 hrs
-        # Keys are in music_assistant/constants
-        library_sync_time_minutes = int(
-            str(self.config.get_value("provider_sync_interval_podcasts"))
-        )
+        # Cache slightly longer than the effective sync interval to avoid fetching
+        # the same podcast feed repeatedly during recurring library sync.
+        schedule = self.mass.music.get_provider_sync_schedule(self.instance_id, MediaType.PODCAST)
         library_sync_enabled = bool(self.config.get_value("library_sync_podcasts"))
-        if library_sync_time_minutes == 0 or not library_sync_enabled:
+        if not library_sync_enabled or schedule is None or not schedule.enabled:
             cache_time = 60 * 60 * 12  # 12h
+        elif schedule.type == TaskScheduleType.HOURLY and schedule.every is not None:
+            cache_time = schedule.every * 60 * 60 + 600  # 10 minutes extra cache
+        elif schedule.type == TaskScheduleType.DAILY and schedule.every is not None:
+            cache_time = schedule.every * 24 * 60 * 60 + 600
         else:
-            cache_time = library_sync_time_minutes * 60 + 600  # 10 minutes extra cache
+            cache_time = 60 * 60 * 12  # 12h
         await self.mass.cache.set(
             key=feed_url,
             provider=self.instance_id,

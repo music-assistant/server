@@ -1178,7 +1178,6 @@ class Player(ABC):
                 1, self._on_player_media_updated, task_id=f"player_media_updated_{self.player_id}"
             )
         # ignore some values that are not relevant for the state
-        changed_values.pop("elapsed_time_last_updated", None)
         changed_values.pop("extra_attributes.seq_no", None)
         changed_values.pop("extra_attributes.last_poll", None)
         changed_values.pop("current_media.elapsed_time_last_updated", None)
@@ -1471,11 +1470,14 @@ class Player(ABC):
             return None
         # handle protocol player as volume control
         if control := self.mass.players.get_player(volume_control):
-            return control.volume_level
+            if control.volume_level is not None:
+                return control.volume_level
         # handle player control for volume if set
         if player_control := self.mass.players.get_player_control(volume_control):
-            return player_control.volume_level
-        return None
+            if player_control.volume_level is not None:
+                return player_control.volume_level
+        # control not (yet) available or has no volume, fall back to native
+        return self.volume_level
 
     @cached_property
     @final
@@ -1490,11 +1492,14 @@ class Player(ABC):
             return None
         # handle protocol player as mute control
         if control := self.mass.players.get_player(mute_control):
-            return control.volume_muted
+            if control.volume_muted is not None:
+                return control.volume_muted
         # handle player control for mute if set
         if player_control := self.mass.players.get_player_control(mute_control):
-            return player_control.volume_muted
-        return None
+            if player_control.volume_muted is not None:
+                return player_control.volume_muted
+        # control not (yet) available or has no mute state, fall back to native
+        return self.volume_muted
 
     @cached_property
     @final
@@ -1518,7 +1523,7 @@ class Player(ABC):
                 continue
             if group_player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
                 continue
-            if self.player_id in group_player.group_members:
+            if self.player_id in group_player.state.group_members:
                 return group_player.player_id
         return None
 
