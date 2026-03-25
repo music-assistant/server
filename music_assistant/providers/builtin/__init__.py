@@ -27,6 +27,7 @@ from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
+    MediaItem,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
@@ -55,6 +56,9 @@ from music_assistant.helpers.playlists import (
     ImageInfo,
     PlaylistItem,
     ProviderMappingInfo,
+    collect_album_info,
+    collect_artist_infos,
+    collect_podcast_info,
     construct_media_item_from_playlist_item,
     generate_m3u,
     parse_m3u,
@@ -717,6 +721,8 @@ class BuiltinProvider(MusicProvider):
         falls back to a library lookup by domain.
         """
         media_item = construct_media_item_from_playlist_item(item, self.mass)
+        if media_item is None:
+            return None
         # if at least one provider mapping is available, we're done
         if any(pm.available for pm in media_item.provider_mappings):
             return media_item
@@ -730,7 +736,7 @@ class BuiltinProvider(MusicProvider):
                 )
                 if library_item is not None:
                     return library_item
-            except (InvalidDataError, KeyError):
+            except (InvalidDataError, KeyError, NotImplementedError):
                 continue
         # return unresolved media item so the entry still shows in the playlist
         return media_item
@@ -821,24 +827,26 @@ class BuiltinProvider(MusicProvider):
     async def _build_m3u_entry_from_uri(self, uri: str) -> PlaylistItem:
         """Fetch a media item by URI and convert it to a PlaylistItem with full metadata."""
         full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
-        if not hasattr(full_item, "provider_mappings"):
+        if not isinstance(full_item, MediaItem):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)
 
-        # build EXTINF title
-        title = full_item.name
+        # build M3U-compliant EXTINF title
         if hasattr(full_item, "artists") and full_item.artists:
             artist_names = ", ".join(a.name for a in full_item.artists)
-            title = f"{artist_names} - {title}"
+            title = f"{artist_names} - {full_item.name}"
+        elif hasattr(full_item, "podcast") and full_item.podcast:
+            title = f"{full_item.podcast.name} - {full_item.name}"
+        else:
+            title = full_item.name
 
         duration = getattr(full_item, "duration", None) or 0
 
         # build EXTMA metadata
-        metadata: dict[str, str] = {"media_type": full_item.media_type.value}
-        if hasattr(full_item, "album") and full_item.album:
-            metadata["album"] = full_item.album.name
-        if hasattr(full_item, "podcast") and full_item.podcast:
-            metadata["podcast"] = full_item.podcast.name
+        metadata: dict[str, str] = {
+            "media_type": full_item.media_type.value,
+            "name": full_item.name,
+        }
         if hasattr(full_item, "authors") and full_item.authors:
             metadata["authors"] = "; ".join(full_item.authors)
         if hasattr(full_item, "narrators") and full_item.narrators:
@@ -879,6 +887,10 @@ class BuiltinProvider(MusicProvider):
         primary = prov_infos[0]
         primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
 
+        artist_infos = collect_artist_infos(full_item)
+        album_info = collect_album_info(full_item)
+        podcast_info = collect_podcast_info(full_item)
+
         # collect images
         images: list[ImageInfo] = []
         if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
@@ -899,6 +911,9 @@ class BuiltinProvider(MusicProvider):
             metadata=metadata,
             providers=prov_infos,
             images=images,
+            artists=artist_infos,
+            album=album_info,
+            podcast=podcast_info,
         )
 
     @staticmethod
@@ -968,7 +983,8 @@ class BuiltinProvider(MusicProvider):
             all_items = parse_m3u(m3u_data)
             has_changes = False
             for item in all_items:
-                if item.title and item.providers and item.metadata:
+                force_migration = item.metadata and item.metadata.get("album") and not item.album
+                if item.title and item.providers and item.metadata and not force_migration:
                     continue
                 self.logger.debug(
                     "Found unresolved entry in playlist '%s': %s", playlist_id, item.path
@@ -980,6 +996,9 @@ class BuiltinProvider(MusicProvider):
                     item.images = enriched.images
                     item.providers = enriched.providers
                     item.metadata = enriched.metadata
+                    item.album = enriched.album
+                    item.artists = enriched.artists
+                    item.podcast = enriched.podcast
                 except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                     self.logger.warning(
                         "Could not enrich playlist entry %s during migration: %s", item.path, err
