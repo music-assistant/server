@@ -354,11 +354,12 @@ def construct_media_item_from_playlist_item(
     )
     item_provider = first_provider.provider_domain if first_provider else "builtin"
     item_instance = first_provider.provider_instance if first_provider else "builtin"
+    item_id = first_provider.item_id if first_provider else item.path.rsplit("/", 1)[-1]
 
     media_item: MediaItemType
     if media_type == MediaType.RADIO:
         media_item = Radio(
-            item_id=item.path,
+            item_id=item_id,
             provider=item_provider,
             name=name,
             provider_mappings=provider_mappings,
@@ -367,7 +368,7 @@ def construct_media_item_from_playlist_item(
     elif media_type == MediaType.PODCAST_EPISODE:
         podcast_name = metadata.get("podcast", "")
         media_item = PodcastEpisode(
-            item_id=item.path,
+            item_id=item_id,
             provider=item_provider,
             name=name,
             duration=duration,
@@ -383,7 +384,7 @@ def construct_media_item_from_playlist_item(
         )
     elif media_type == MediaType.AUDIOBOOK:
         media_item = Audiobook(
-            item_id=item.path,
+            item_id=item_id,
             provider=item_provider,
             name=name,
             duration=duration,
@@ -415,7 +416,7 @@ def construct_media_item_from_playlist_item(
                 )
             )
         media_item = Track(
-            item_id=item.path,
+            item_id=item_id,
             provider=item_provider,
             name=name,
             duration=duration,
