@@ -30,13 +30,15 @@ A single session builds the shared test infrastructure first. Once that foundati
 
 ## Coverage Targets
 
-| Area | Target |
-|------|--------|
-| Core controllers (`music.py`, `players.py`, `player_queues.py`, `streams.py`) | 80%+ |
-| Helpers/utilities | 90%+ |
-| Provider parsers/converters | 80%+ |
-| Provider API clients | 50–60% |
-| E2E scenarios | All main user journeys (see below) |
+| Area | Target | CI Enforcement |
+|------|--------|---------------|
+| Core controllers (`music.py`, `players.py`, `player_queues.py`, `streams.py`) | 80%+ | Global `--cov-fail-under=80` hard-fails CI |
+| Helpers/utilities | 90%+ | Documented; reported in coverage output |
+| Provider parsers/converters | 80%+ | Documented; reported in coverage output |
+| Provider API clients | 50–60% | Documented; reported in coverage output |
+| E2E scenarios | All main user journeys (see below) | Test suite must be green |
+
+**Note on per-module enforcement:** `--cov-fail-under` in pytest-cov supports a single global threshold only. The 80% global floor is the hard CI gate. Per-area targets above 80% (helpers: 90%, parsers: 80%) are documented and visible in coverage reports but not independently enforced via tooling. Agents must treat them as goals, not suggestions.
 
 These targets are also documented in `tests/README.md` and `CLAUDE.md`.
 
@@ -58,30 +60,32 @@ pytest tests/unit/        # unit tests only (fast, no Docker)
 pytest tests/e2e/         # E2E tests only (testcontainers manages Docker)
 ```
 
-No shell scripts. No manual docker commands. Testcontainers handles all container lifecycle inside pytest fixtures.
+No shell scripts. No manual docker commands. Testcontainers handles all container lifecycle inside pytest fixtures. GitHub Actions `ubuntu-latest` runners have Docker available — no additional runner configuration needed.
 
 ---
 
 ## Directory Structure
 
+Existing tests in `tests/core/` and `tests/providers/` **stay in place**. New unit tests go into `tests/unit/`. Do not move existing tests — `tests/common.py` builds fixture paths relative to `__file__` and moving files would silently break fixture loading.
+
 ```
 tests/
 ├── conftest.py                        # extend with harness fixtures
 ├── common.py                          # extend MockPlayer/MockProvider
-├── helpers/
+├── support/                           # shared test infrastructure (new)
 │   ├── harness.py                     # MusicAssistantHarness
 │   ├── mock_music_provider.py         # configurable MockMusicProvider
 │   ├── mock_player_provider.py        # extended MockPlayerProvider + MockPlayer
 │   ├── fixture_factory.py             # Track/Album/Artist/Playlist builders
 │   └── wiremock.py                    # WireMock testcontainers fixture
-├── unit/
-│   ├── controllers/
-│   │   ├── test_music.py
-│   │   ├── test_players.py
-│   │   ├── test_player_queues.py
-│   │   └── test_streams.py
-│   ├── helpers/                       # existing helper tests (moved here)
-│   └── providers/                     # existing provider tests (moved here)
+├── core/                              # existing — do not move
+├── providers/                         # existing — do not move
+├── unit/                              # new unit tests only
+│   └── controllers/
+│       ├── test_music.py
+│       ├── test_players.py
+│       ├── test_player_queues.py
+│       └── test_streams.py
 ├── e2e/
 │   ├── conftest.py                    # harness fixture scoped for E2E
 │   ├── test_library_sync.py
@@ -105,6 +109,8 @@ The MA server runs in-process (using the existing `mass` fixture pattern) rather
 - Full Python stack traces and log capture for debuggability
 - The `mass` fixture already starts a real MA instance with real controllers, real SQLite, and real async event loop — that is a meaningful E2E test
 
+**Port conflict fix (infra task):** The existing `mass` fixture has a known issue where tests fail if MA is already running on port 8095. The infra teammate must fix this by configuring the test server to bind to a random available port. This is a prerequisite for E2E tests to run reliably in CI.
+
 ### Docker via Testcontainers (WireMock only)
 
 Docker is used exclusively for **WireMock** — a container that replays recorded HTTP responses for provider integration tests. This tests the full provider HTTP client + parser stack against realistic API response shapes without hitting real external services.
@@ -118,11 +124,13 @@ def wiremock():
         yield wm
 ```
 
-No docker-compose files. No manual container management.
+No docker-compose files. No manual container management. The `testcontainers` and `wiremock` packages must be added to `pyproject.toml` under `[project.optional-dependencies] test`.
 
 ### BDD-Style Tests (pytest, no .feature files)
 
-E2E tests use explicit inline BDD comments within regular pytest. No Gherkin, no `pytest-bdd` — the codebase is heavily async and developer-facing, so the ceremony of `.feature` files adds no value.
+E2E tests use explicit inline BDD comments within regular pytest. No Gherkin, no `pytest-bdd`.
+
+**Rule:** Every E2E test function must use `# Given`, `# When`, `# And`, `# Then` inline comments to label each logical step. The docstring must also summarise the scenario in one sentence. This is a requirement, not a style suggestion — agents must not write E2E tests without these comments.
 
 ```python
 async def test_track_plays_after_queue_add(harness, mock_player, mock_provider):
@@ -161,14 +169,17 @@ class MusicAssistantHarness:
 
 ### MockMusicProvider
 
-Implements the full music provider interface with configurable fixture data:
+Implements the full music provider interface with configurable fixture data. Supports a configurable failure mode so tests can exercise not-found and error paths:
 
 ```python
 class MockMusicProvider(MusicProvider):
-    def __init__(self, tracks=None, albums=None, artists=None, playlists=None): ...
+    def __init__(self, tracks=None, albums=None, artists=None, playlists=None,
+                 fail_stream: bool = False): ...
     async def search(self, search_query, media_types, limit) -> SearchResults: ...
     async def get_library_tracks(self) -> AsyncGenerator[Track]: ...
-    async def get_stream_details(self, item_id) -> StreamDetails: ...
+    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+        # Returns None if fail_stream=True or item_id not found
+        ...
 ```
 
 ### fixture_factory.py
@@ -186,35 +197,50 @@ def make_playlist(item_id="1", name="Test Playlist", ...) -> Playlist: ...
 
 ## Agent Team Structure
 
-After the infra teammate completes, four teammates run in parallel:
+After the infra teammate completes, four teammates run in parallel. No teammate may be marked done until the lead's full-suite `pytest` run passes with coverage — individual green runs are necessary but not sufficient.
 
 | Teammate | Owns | Blocked by |
 |----------|------|-----------|
-| **infra** | `tests/helpers/`, `tests/conftest.py`, `tests/README.md`, coverage targets in `CLAUDE.md` | — |
+| **infra** | `tests/support/`, `tests/conftest.py`, `tests/README.md`, coverage targets in `CLAUDE.md`, port-conflict fix | — |
 | **controllers-1** | `tests/unit/controllers/test_music.py`, `test_players.py` | infra |
 | **controllers-2** | `tests/unit/controllers/test_player_queues.py`, `test_streams.py` | infra |
-| **helpers-providers** | `tests/unit/helpers/`, `tests/unit/providers/` | infra |
+| **helpers-providers** | new tests alongside existing `tests/core/` and `tests/providers/` | infra |
 | **e2e** | `tests/e2e/` | infra |
 
-Each teammate runs `pytest` on their own files and must see green output before marking tasks done. The lead runs the full `pytest` suite with coverage at the end and verifies all targets are met before declaring the team done.
+Each teammate runs `pytest` on their own files and must see green output before marking their task done. After all teammates are done, the lead runs:
+
+```bash
+pytest --cov=music_assistant --cov-report=term-missing --cov-fail-under=80
+```
+
+If this fails, the team is **not done**. The lead identifies which teammate's area is below target and unblocks them to add more tests. Only a green full-suite run with passing coverage unlocks the "done" declaration.
+
+---
+
+## Dependencies to Add
+
+Add to `pyproject.toml` under `[project.optional-dependencies] test`:
+
+```toml
+"testcontainers>=4.0",
+"testcontainers[wiremock]>=4.0",
+```
 
 ---
 
 ## CI Integration
 
-Extends the existing `test.yml` — no new workflow files:
+Replace the existing single `pytest tests/` step in `test.yml` with two steps that preserve `--cov-append` merging:
 
 ```yaml
 - name: Run unit tests
-  run: pytest tests/unit/ --cov=music_assistant --cov-report=xml
+  run: pytest tests/unit/ tests/core/ tests/providers/ --cov=music_assistant --cov-report=xml
 
 - name: Run E2E tests
-  run: pytest tests/e2e/ --cov=music_assistant --cov-append --cov-report=xml
+  run: pytest tests/e2e/ --cov=music_assistant --cov-append --cov-report=xml --cov-fail-under=80
 ```
 
-Coverage from both runs is merged (`--cov-append`). `--cov-fail-under=80` enforces the core controller target at the CI level — not just reported, hard-fails if missed.
-
-`.coveragerc` provides per-module overrides (e.g., 90% for helpers, 50% for provider API clients).
+The `--cov-fail-under=80` is on the final (E2E) step so it evaluates the merged coverage from both runs. Docker is available on `ubuntu-latest` runners; testcontainers requires no additional setup.
 
 ---
 
@@ -225,3 +251,4 @@ Coverage from both runs is merged (`--cov-append`). `--cov-fail-under=80` enforc
 - Shell scripts or manual docker commands
 - Testing every provider's API client exhaustively (50-60% is sufficient)
 - Backwards-compatible test shims for removed code
+- Per-module CI enforcement beyond the global 80% floor
