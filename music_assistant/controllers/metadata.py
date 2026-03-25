@@ -203,8 +203,6 @@ class MetaDataController(CoreController):
                 default_value=DEFAULT_THUMB_CACHE_MAX_SIZE_MB,
                 range=(50, 5000),
                 description="Maximum total size in megabytes for the on-disk thumbnail cache.\n\n"
-                "Thumbnails are generated from album art and other images to avoid "
-                "repeated processing (e.g. ffmpeg extractions for embedded cover art). "
                 "Oldest thumbnails are automatically removed when this limit is exceeded.",
             ),
         )
