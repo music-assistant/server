@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -56,12 +56,18 @@ class MockMusicProvider(MusicProvider):
         manifest = MagicMock()
         manifest.name = "Mock Music Provider"
         manifest.domain = MOCK_PROVIDER_DOMAIN
+        manifest.type = ProviderType.MUSIC
         manifest.mdns_discovery = []
         manifest.upnp_discovery = []
         config = MagicMock()
         config.instance_id = instance_id
         config.get_value = MagicMock(return_value="GLOBAL")
         super().__init__(mass, manifest, config)
+
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return False so multiple test instances with the same domain are all queried."""
+        return False
 
     @property
     def supported_features(self) -> set[ProviderFeature]:

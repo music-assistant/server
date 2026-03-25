@@ -21,14 +21,26 @@ def make_track(
     provider_domain: str = "mock_provider",
     duration: int = 180,
 ) -> Track:
-    """Create a Track with sensible test defaults."""
-    return Track(
+    """Create a Track with sensible test defaults.
+
+    Includes a default artist so the track can be added to the MA library,
+    which requires at least one artist per track.
+    """
+    artist = Artist(
+        item_id=f"{item_id}-artist",
+        provider=provider_domain,
+        name="Test Artist",
+        provider_mappings={make_provider_mapping(provider_domain, f"{item_id}-artist")},
+    )
+    track = Track(
         item_id=item_id,
         provider=provider_domain,
         name=name,
         duration=duration,
         provider_mappings={make_provider_mapping(provider_domain, item_id)},
     )
+    track.artists.append(artist)
+    return track
 
 
 def make_album(
