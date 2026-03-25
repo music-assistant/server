@@ -37,11 +37,13 @@ def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     :param mass: The MusicAssistant instance.
     :param target_ip: The IP address of the target AirPlay device.
     """
-    # 1. Prefer an explicitly configured zeroconf interface if the user has specified
-    #    a specific IP/interface (not the automatic "default" or "all" choices).
+    # 1. Prefer an explicitly configured zeroconf interface. The setting may be a
+    #    comma-separated list; pick the first non-empty, non-default/all entry.
     zc_iface = str(mass.discovery.config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
-    if zc_iface not in ("default", "all", ""):
-        return zc_iface
+    for candidate in zc_iface.split(","):
+        iface = candidate.strip()
+        if iface and iface not in ("default", "all"):
+            return iface
     # 2. Use the stream server's bind_ip directly. The stream server is on the same
     #    subnet as the players by design, so this should always be correct.
     bind_ip = str(mass.streams.bind_ip)
@@ -59,12 +61,16 @@ def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     )
     with socket.socket(route_family, socket.SOCK_DGRAM) as _s:
         try:
+            _s.settimeout(1.0)
             _s.connect(route_target)
             routed_ip = str(_s.getsockname()[0])
             if routed_ip and routed_ip not in ("0.0.0.0", ""):
                 return routed_ip
         except OSError:
             pass
+    # 4. Fall back to publish_ip as a concrete, bindable address (Docker scenario).
+    if publish_ip := str(mass.streams.publish_ip or ""):
+        return publish_ip
     return bind_ip
 
 
