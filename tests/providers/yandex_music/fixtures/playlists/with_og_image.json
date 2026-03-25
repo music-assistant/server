@@ -1,0 +1,11 @@
+{
+  "kind": 3,
+  "title": "Playlist With OG Image",
+  "uid": 12345,
+  "owner": {
+    "uid": 12345,
+    "login": "testuser",
+    "name": "Test User"
+  },
+  "og_image": "avatars.yandex.net/get-music-content/og/playlist3/%%"
+}

@@ -7,12 +7,14 @@ import pathlib
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from music_assistant_models.enums import AlbumType
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
 from yandex_music import Playlist as YandexPlaylist
 from yandex_music import Track as YandexTrack
 
 from music_assistant.providers.kion_music.parsers import (
+    _get_image_url,
     parse_album,
     parse_artist,
     parse_playlist,
@@ -231,6 +233,131 @@ def test_parse_track_snapshot(
     result = parse_track(cast("KionMusicProvider", provider_stub), track_obj)
     parsed = _sort_for_snapshot(result.to_dict())
     assert snapshot == parsed
+
+
+def test_get_image_url_none_returns_none() -> None:
+    """_get_image_url returns None when cover_uri is None."""
+    assert _get_image_url(None) is None
+
+
+def test_parse_artist_og_image_fallback(provider_stub: ProviderStub) -> None:
+    """Artist with og_image but no cover uses og_image as fallback."""
+    path = FIXTURES_DIR / "artists" / "with_og_image.json"
+    artist_obj = _artist_from_fixture(path)
+    assert artist_obj is not None
+    result = parse_artist(cast("KionMusicProvider", provider_stub), artist_obj)
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
+
+
+def test_parse_album_single_type(provider_stub: ProviderStub) -> None:
+    """Album with type=single gets AlbumType.SINGLE."""
+    path = FIXTURES_DIR / "albums" / "single.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("KionMusicProvider", provider_stub), album_obj)
+    assert result.album_type == AlbumType.SINGLE
+
+
+def test_parse_album_compilation_type(provider_stub: ProviderStub) -> None:
+    """Album with type=compilation gets AlbumType.COMPILATION."""
+    path = FIXTURES_DIR / "albums" / "compilation.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("KionMusicProvider", provider_stub), album_obj)
+    assert result.album_type == AlbumType.COMPILATION
+
+
+def test_parse_album_various_artists_becomes_compilation(provider_stub: ProviderStub) -> None:
+    """Album whose sole artist is 'Various Artists' gets AlbumType.COMPILATION."""
+    path = FIXTURES_DIR / "albums" / "with_various_artists.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("KionMusicProvider", provider_stub), album_obj)
+    assert result.album_type == AlbumType.COMPILATION
+
+
+def test_parse_album_release_date_and_genre(provider_stub: ProviderStub) -> None:
+    """Album with release_date and genre populates those metadata fields."""
+    path = FIXTURES_DIR / "albums" / "with_release_date_and_genre.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("KionMusicProvider", provider_stub), album_obj)
+    assert result.metadata.release_date is not None
+    assert result.metadata.genres is not None
+    assert "electronic" in result.metadata.genres
+
+
+def test_parse_album_og_image_fallback(provider_stub: ProviderStub) -> None:
+    """Album without cover_uri uses og_image as image fallback."""
+    path = FIXTURES_DIR / "albums" / "with_release_date_and_genre.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("KionMusicProvider", provider_stub), album_obj)
+    # The fixture has og_image but no cover_uri
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
+
+
+def test_parse_track_content_warning_explicit(provider_stub: ProviderStub) -> None:
+    """Track with content_warning=explicit sets metadata.explicit=True."""
+    path = FIXTURES_DIR / "tracks" / "with_content_warning.json"
+    track_obj = _track_from_fixture(path)
+    assert track_obj is not None
+    result = parse_track(cast("KionMusicProvider", provider_stub), track_obj)
+    assert result.metadata.explicit is True
+
+
+def test_parse_playlist_og_image_fallback(provider_stub: ProviderStub) -> None:
+    """Playlist without cover uri uses og_image as image fallback."""
+    path = FIXTURES_DIR / "playlists" / "with_og_image.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("KionMusicProvider", provider_stub), playlist_obj)
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
+
+
+def test_parse_track_with_real_id(provider_stub: ProviderStub) -> None:
+    """Track with real_id hits the real_id branch without raising."""
+    path = FIXTURES_DIR / "tracks" / "with_real_id.json"
+    track_obj = _track_from_fixture(path)
+    assert track_obj is not None
+    result = parse_track(cast("KionMusicProvider", provider_stub), track_obj)
+    assert result.item_id == "502"
+
+
+def test_parse_playlist_no_owner_is_editable(provider_stub: ProviderStub) -> None:
+    """Playlist with no owner falls back to user_id as owner, which is editable."""
+    path = FIXTURES_DIR / "playlists" / "no_owner_editable.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("KionMusicProvider", provider_stub), playlist_obj)
+    # Without an owner the playlist owner defaults to the provider user, so it's "Me"
+    assert result.owner == "Me"
+    assert result.is_editable is True
+
+
+def test_parse_playlist_other_user_no_name_defaults_to_kion_music(
+    provider_stub: ProviderStub,
+) -> None:
+    """Playlist owned by another user with no owner.name defaults to 'KION Music'."""
+    path = FIXTURES_DIR / "playlists" / "other_user_no_name.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("KionMusicProvider", provider_stub), playlist_obj)
+    assert result.owner == "KION Music"
+    assert result.is_editable is False
+
+
+def test_parse_playlist_cover_with_uri(provider_stub: ProviderStub) -> None:
+    """Playlist with a cover object that has a uri attribute uses it for the image."""
+    path = FIXTURES_DIR / "playlists" / "with_cover_uri.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("KionMusicProvider", provider_stub), playlist_obj)
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
 
 
 @pytest.mark.parametrize("example", PLAYLIST_FIXTURES, ids=lambda val: val.stem)

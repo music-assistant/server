@@ -1,0 +1,10 @@
+{
+  "kind": 7,
+  "title": "Yandex System Playlist",
+  "uid": 99999,
+  "owner": {
+    "uid": 99999,
+    "login": "yndx-music",
+    "name": "Yandex Music"
+  }
+}

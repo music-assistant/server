@@ -1,0 +1,14 @@
+{
+  "kind": 6,
+  "title": "Playlist With Cover URI",
+  "uid": 12345,
+  "owner": {
+    "uid": 12345,
+    "login": "testuser",
+    "name": "Test User"
+  },
+  "cover": {
+    "type": "pic",
+    "uri": "avatars.yandex.net/get-music-content/cover/playlist6/%%"
+  }
+}

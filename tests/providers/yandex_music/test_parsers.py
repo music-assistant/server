@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import pathlib
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.enums import AlbumType
 from yandex_music import Album as YandexAlbum
 from yandex_music import Artist as YandexArtist
 from yandex_music import Playlist as YandexPlaylist
 from yandex_music import Track as YandexTrack
 
 from music_assistant.providers.yandex_music.parsers import (
+    _get_image_url,
+    get_canonical_provider_name,
     parse_album,
     parse_artist,
     parse_playlist,
@@ -176,6 +180,178 @@ def test_parse_playlist_other_user(provider_stub: ProviderStub) -> None:
     assert result.owner == "Other User"
     assert result.is_editable is False
     assert result.metadata.description == "A shared playlist"
+
+
+def test_get_image_url_none_returns_none() -> None:
+    """_get_image_url returns None when cover_uri is None."""
+    assert _get_image_url(None) is None
+
+
+def test_parse_artist_og_image_fallback(provider_stub: ProviderStub) -> None:
+    """Artist with og_image but no cover uses og_image as fallback."""
+    path = FIXTURES_DIR / "artists" / "with_og_image.json"
+    artist_obj = _artist_from_fixture(path)
+    assert artist_obj is not None
+    result = parse_artist(cast("YandexMusicProvider", provider_stub), artist_obj)
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
+
+
+def test_parse_album_single_type(provider_stub: ProviderStub) -> None:
+    """Album with type=single gets AlbumType.SINGLE."""
+    path = FIXTURES_DIR / "albums" / "single.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.album_type == AlbumType.SINGLE
+
+
+def test_parse_album_compilation_type(provider_stub: ProviderStub) -> None:
+    """Album with type=compilation gets AlbumType.COMPILATION."""
+    path = FIXTURES_DIR / "albums" / "compilation.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.album_type == AlbumType.COMPILATION
+
+
+def test_parse_album_various_artists_becomes_compilation(provider_stub: ProviderStub) -> None:
+    """Album whose sole artist is 'Various Artists' gets AlbumType.COMPILATION."""
+    path = FIXTURES_DIR / "albums" / "with_various_artists.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.album_type == AlbumType.COMPILATION
+
+
+def test_parse_album_release_date_and_genre(provider_stub: ProviderStub) -> None:
+    """Album with release_date and genre populates those metadata fields."""
+    path = FIXTURES_DIR / "albums" / "with_release_date_and_genre.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.metadata.release_date is not None
+    assert result.metadata.genres is not None
+    assert "electronic" in result.metadata.genres
+
+
+def test_parse_album_og_image_fallback(provider_stub: ProviderStub) -> None:
+    """Album without cover_uri uses og_image as image fallback."""
+    path = FIXTURES_DIR / "albums" / "with_release_date_and_genre.json"
+    album_obj = _album_from_fixture(path)
+    assert album_obj is not None
+    result = parse_album(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
+
+
+def test_parse_track_content_warning_explicit(provider_stub: ProviderStub) -> None:
+    """Track with content_warning=explicit sets metadata.explicit=True."""
+    path = FIXTURES_DIR / "tracks" / "with_content_warning.json"
+    track_obj = _track_from_fixture(path)
+    assert track_obj is not None
+    result = parse_track(cast("YandexMusicProvider", provider_stub), track_obj)
+    assert result.metadata.explicit is True
+
+
+def test_parse_track_with_real_id(provider_stub: ProviderStub) -> None:
+    """Track with real_id hits the real_id branch without raising."""
+    path = FIXTURES_DIR / "tracks" / "with_real_id.json"
+    track_obj = _track_from_fixture(path)
+    assert track_obj is not None
+    result = parse_track(cast("YandexMusicProvider", provider_stub), track_obj)
+    assert result.item_id == "502"
+
+
+def test_parse_track_with_lyrics(provider_stub: ProviderStub) -> None:
+    """Track with plain lyrics stores them in metadata.lyrics."""
+    path = FIXTURES_DIR / "tracks" / "minimal.json"
+    track_obj = _track_from_fixture(path)
+    assert track_obj is not None
+    result = parse_track(
+        cast("YandexMusicProvider", provider_stub), track_obj, lyrics="Verse 1\nVerse 2"
+    )
+    assert result.metadata.lyrics == "Verse 1\nVerse 2"
+
+
+def test_parse_track_with_synced_lyrics(provider_stub: ProviderStub) -> None:
+    """Track with synced lyrics stores them in metadata.lrc_lyrics."""
+    path = FIXTURES_DIR / "tracks" / "minimal.json"
+    track_obj = _track_from_fixture(path)
+    assert track_obj is not None
+    result = parse_track(
+        cast("YandexMusicProvider", provider_stub),
+        track_obj,
+        lyrics="[00:01.00]Verse 1",
+        lyrics_synced=True,
+    )
+    assert result.metadata.lrc_lyrics == "[00:01.00]Verse 1"
+
+
+def test_parse_playlist_og_image_fallback(provider_stub: ProviderStub) -> None:
+    """Playlist without cover uri uses og_image as image fallback."""
+    path = FIXTURES_DIR / "playlists" / "with_og_image.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("YandexMusicProvider", provider_stub), playlist_obj)
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
+
+
+def test_parse_playlist_no_owner_is_editable(provider_stub: ProviderStub) -> None:
+    """Playlist with no owner defaults to user_id as owner (editable)."""
+    path = FIXTURES_DIR / "playlists" / "no_owner_editable.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("YandexMusicProvider", provider_stub), playlist_obj)
+    assert result.owner == "Me"
+    assert result.is_editable is True
+
+
+def test_parse_playlist_cover_with_uri(provider_stub: ProviderStub) -> None:
+    """Playlist with a cover object that has a uri attribute uses it for the image."""
+    path = FIXTURES_DIR / "playlists" / "with_cover_uri.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("YandexMusicProvider", provider_stub), playlist_obj)
+    assert result.metadata.images is not None
+    assert "avatars.yandex.net" in result.metadata.images[0].path
+
+
+def test_parse_playlist_system_owner_normalized(provider_stub: ProviderStub) -> None:
+    """Playlist with a system-account owner name is normalized to the canonical form."""
+    path = FIXTURES_DIR / "playlists" / "system_owner.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("YandexMusicProvider", provider_stub), playlist_obj)
+    # System owner names are normalized to the canonical English display name
+    assert result.owner == "Yandex Music"
+
+
+def test_parse_playlist_other_user_no_name_defaults_to_canonical_name(
+    provider_stub: ProviderStub,
+) -> None:
+    """Playlist owned by another user with no owner.name defaults to canonical provider name."""
+    path = FIXTURES_DIR / "playlists" / "other_user_no_name.json"
+    playlist_obj = _playlist_from_fixture(path)
+    assert playlist_obj is not None
+    result = parse_playlist(cast("YandexMusicProvider", provider_stub), playlist_obj)
+    assert result.owner == "Yandex Music"
+    assert result.is_editable is False
+
+
+def test_get_canonical_provider_name_ru_locale() -> None:
+    """get_canonical_provider_name returns Russian name for ru locale."""
+    provider = MagicMock()
+    provider.mass.metadata.locale = "ru_RU"
+    assert get_canonical_provider_name(provider) == "Яндекс Музыка"
+
+
+def test_get_canonical_provider_name_en_locale() -> None:
+    """get_canonical_provider_name returns English name for en locale."""
+    provider = MagicMock()
+    provider.mass.metadata.locale = "en_US"
+    assert get_canonical_provider_name(provider) == "Yandex Music"
 
 
 # --- Snapshot tests ---

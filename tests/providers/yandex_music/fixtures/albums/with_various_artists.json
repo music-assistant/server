@@ -1,0 +1,7 @@
+{
+  "id": 303,
+  "title": "Various Artists Album",
+  "available": true,
+  "artists": [{"id": 999, "name": "Various Artists"}],
+  "type": "album"
+}
