@@ -1540,9 +1540,6 @@ class ConfigController:
                 self.set_provider_default_name(
                     prov_instance.instance_id, prov_instance.default_name
                 )
-            if "name" in changed_keys:
-                # signal providers updated so frontends refresh the provider name
-                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
         elif config.enabled:
             # provider is enabled but not available, try to load it
             await self.mass.load_provider_config(config)
@@ -1558,6 +1555,9 @@ class ConfigController:
                     await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
             # For player providers, unload_provider should have removed all its players by now
+        if "name" in changed_keys:
+            # signal providers updated so frontends refresh the provider name
+            self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
         return config
 
     async def _add_provider_config(
