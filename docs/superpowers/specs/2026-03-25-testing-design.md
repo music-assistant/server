@@ -111,6 +111,14 @@ The MA server runs in-process (using the existing `mass` fixture pattern) rather
 
 **Port conflict fix (infra task):** The existing `mass` fixture has a known issue where tests fail if MA is already running on port 8095. The infra teammate must fix this by configuring the test server to bind to a random available port. This is a prerequisite for E2E tests to run reliably in CI.
 
+**Discovery isolation (infra task, prerequisite for all E2E tests):** Music Assistant auto-discovers devices via multiple mechanisms — zeroconf/mDNS (Chromecast, AirPlay), SSDP/UPnP (DLNA, Sonos), and any provider-specific scanners. On a real developer machine or CI runner, these will discover actual devices on the network, producing non-deterministic test state. The infra teammate must:
+
+1. Audit every discovery mechanism in the codebase
+2. Disable or mock each one in the `MusicAssistantHarness` so no real network scanning occurs
+3. Ensure the harness only ever sees devices explicitly injected via `harness.add_player()` and `harness.add_provider()`
+
+The existing `mass` fixture already mocks zeroconf — this must be extended to cover SSDP and all other discovery paths. This isolation work is a hard prerequisite: no other teammate may start writing tests until it is complete and verified.
+
 ### Docker via Testcontainers (WireMock only)
 
 Docker is used exclusively for **WireMock** — a container that replays recorded HTTP responses for provider integration tests. This tests the full provider HTTP client + parser stack against realistic API response shapes without hitting real external services.
