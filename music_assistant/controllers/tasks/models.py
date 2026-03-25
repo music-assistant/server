@@ -24,7 +24,7 @@ class ManagedTask:
     max_log_lines: int = DEFAULT_TASK_LOG_LINES
     current_task: asyncio.Task[Any] | None = None
     timer_delay: float | None = None
-    remove_on_finish: bool = False
+    priority: bool = False
     removed: bool = False
     clear_persisted_state_on_remove: bool = True
 

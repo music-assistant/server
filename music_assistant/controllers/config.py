@@ -1349,6 +1349,17 @@ class ConfigController:
                 LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
                 changed = True
 
+        # Remove corrupt player configurations that are missing the required 'player_id' key
+        # This can happen when _clear_protocol_parent_id is called on an already-deleted player
+        # TODO: remove after 2.8 release
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if "player_id" not in player_config:
+                self._data[CONF_PLAYERS].pop(player_id, None)
+                # Also remove any DSP config for this player
+                if CONF_PLAYER_DSP in self._data:
+                    self._data[CONF_PLAYER_DSP].pop(player_id, None)
+                changed = True
+
         # The background tasks controller originally persisted runtime state directly under
         # core/tasks, which could create a CoreConfig object without the required domain field.
         # Repair that single known corruption case on load.
@@ -1485,6 +1496,23 @@ class ConfigController:
             if values.get("protocol_parent_id") in group_player_ids:
                 values.pop("protocol_parent_id")
                 changed = True
+
+        # Remove orphaned stored_radios config from RadioBrowser provider instances
+        # now that LIBRARY_RADIOS support has been removed from the provider.
+        # TODO: remove after 2.8 release
+        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
+            if provider_config.get("domain") != "radiobrowser":
+                continue
+            if not (values := provider_config.get("values")):
+                continue
+            for key in (
+                "stored_radios",
+                "library_sync_radios",
+                "provider_sync_interval_radios",
+                "library_sync_back",
+            ):
+                if values.pop(key, None) is not None:
+                    changed = True
 
         if changed:
             await self._async_save()

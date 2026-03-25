@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -79,8 +78,8 @@ async def tasks_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[Tasks
         await controller.close()
 
 
-async def test_create_task_runs_immediately(tasks_controller: TasksController) -> None:
-    """Ad hoc tasks queued immediately should transition to success and capture context."""
+async def test_run_background_task(tasks_controller: TasksController) -> None:
+    """Ad hoc background tasks should transition to success and capture context."""
     handler_started = asyncio.Event()
     seen_task_id: str | None = None
 
@@ -93,7 +92,7 @@ async def test_create_task_runs_immediately(tasks_controller: TasksController) -
         update_current_task_progress_text("Refreshing playlist")
         handler_started.set()
 
-    task = tasks_controller.create_task(
+    task = tasks_controller.run_background_task(
         name="Add tracks to playlist",
         handler=handler,
         user_id="user-123",
@@ -123,7 +122,7 @@ async def test_task_can_report_partial_success(tasks_controller: TasksController
         assert progress == 50
         report_current_task_failure("Skipped duplicate playlist item")
 
-    task = tasks_controller.create_task(
+    task = tasks_controller.run_background_task(
         name="Update playlist",
         handler=handler,
         allow_retry=True,
@@ -141,22 +140,58 @@ async def test_task_can_report_partial_success(tasks_controller: TasksController
     assert any("completed with 1 issue" in line for line in task.logs)
 
 
+async def test_priority_task_runs_before_normal(tasks_controller: TasksController) -> None:
+    """Priority tasks should be queued ahead of normal tasks."""
+    execution_order: list[str] = []
+    blocker = asyncio.Event()
+
+    async def blocking_handler() -> None:
+        await blocker.wait()
+
+    async def make_handler(label: str) -> Callable[[], Awaitable[None]]:
+        async def handler() -> None:
+            execution_order.append(label)
+
+        return handler
+
+    # Limit concurrency to 1 so tasks queue up.
+    tasks_controller._max_concurrent_tasks = 1
+
+    # Start a blocking task to saturate concurrency.
+    tasks_controller.run_background_task(
+        name="blocker",
+        handler=blocking_handler,
+    )
+
+    # Queue two normal tasks, then one priority task.
+    normal_handler_1 = await make_handler("normal-1")
+    normal_handler_2 = await make_handler("normal-2")
+    priority_handler = await make_handler("priority")
+    tasks_controller.run_background_task(name="normal-1", handler=normal_handler_1)
+    tasks_controller.run_background_task(name="normal-2", handler=normal_handler_2)
+    tasks_controller.run_background_task(name="priority", handler=priority_handler, priority=True)
+
+    # Unblock — the priority task should run before the normal ones.
+    blocker.set()
+    await asyncio.sleep(0.1)
+
+    assert execution_order[0] == "priority"
+
+
 async def test_user_scoped_task_visibility(tasks_controller: TasksController) -> None:
     """Non-admin users should only see and access their own tasks."""
 
     async def handler() -> None:
         """No-op test handler."""
 
-    user_task = tasks_controller.create_task(
+    user_task = tasks_controller.run_background_task(
         name="Add playlist tracks",
         handler=handler,
         user_id="user-123",
-        queue_immediately=False,
     )
-    system_task = tasks_controller.create_task(
+    system_task = tasks_controller.run_background_task(
         name="Database cleanup",
         handler=handler,
-        queue_immediately=False,
     )
 
     all_tasks = tasks_controller.list_tasks_for_user(None)
@@ -459,7 +494,7 @@ async def test_music_sync_completion_queues_database_cleanup_background_task(
         supported_features={ProviderFeature.LIBRARY_ARTISTS},
     )
 
-    sync_task = tasks_controller.create_task(
+    sync_task = tasks_controller.run_background_task(
         task_id=music._get_sync_task_id(provider, MediaType.ARTIST),
         name=music._get_sync_task_name(provider, MediaType.ARTIST),
         handler=music._create_provider_sync_handler(provider, MediaType.ARTIST),
@@ -521,9 +556,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
         media_type=MediaType.ARTIST,
         provider="library",
         uri="artist://library/123",
-    )
-    mass_minimal.music = cast(
-        "Any", SimpleNamespace(get_item_by_uri=AsyncMock(return_value=resolved_item))
+        metadata=SimpleNamespace(last_refresh=0),
     )
 
     async def fake_update_metadata(item: object, force_refresh: bool = False) -> object:
@@ -534,7 +567,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
         return item
 
     monkeypatch.setattr(metadata, "update_metadata", fake_update_metadata)
-    metadata.schedule_update_metadata(resolved_item.uri)
+    metadata.schedule_update_metadata(cast("Any", resolved_item))
 
     task_id = metadata._get_metadata_lookup_task_id(resolved_item.uri)
     await lookup_started.wait()
@@ -549,10 +582,8 @@ async def test_schedule_update_metadata_uses_managed_background_task(
     release_lookup.set()
     deadline = asyncio.get_running_loop().time() + 2.0
     while asyncio.get_running_loop().time() < deadline:
-        with suppress(InvalidDataError):
-            tasks_controller.get_task(task_id)
-            await asyncio.sleep(0.01)
-            continue
-        break
+        if tasks_controller.get_task(task_id).status == TaskStatus.SUCCESS:
+            break
+        await asyncio.sleep(0.01)
     else:
-        raise AssertionError("Metadata lookup task was not removed after finishing")
+        raise AssertionError("Metadata lookup task did not finish successfully")
