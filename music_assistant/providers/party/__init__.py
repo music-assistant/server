@@ -54,7 +54,6 @@ CONF_PARTY_SKIP_SONG_REFILL_MINUTES = "skip_song_refill_minutes"
 CONF_REQUEST_BADGE_COLOR = "request_badge_color"
 CONF_BOOST_BADGE_COLOR = "boost_badge_color"
 # Lyrics / Karaoke
-CONF_PARTY_DISPLAY_LYRICS = "display_lyrics"
 CONF_PARTY_KARAOKE_MODE = "karaoke_mode"
 CONF_PARTY_HIGHLIGHT_AHEAD = "highlight_ahead"
 # Anti burn-in
@@ -116,7 +115,6 @@ class PartyConfig(DataClassDictMixin):
     skip_song_limit: int
     skip_song_refill_minutes: int
     # UI settings
-    display_lyrics: bool
     karaoke_mode: bool
     highlight_ahead: bool
     # Badge colors (hex values)
@@ -180,6 +178,7 @@ async def get_config_entries(
                     )
                 ],
             ],
+            immediate_apply=True,
         ),
         ConfigEntry(
             key=CONF_PARTY_NAME,
@@ -261,17 +260,6 @@ async def get_config_entries(
             advanced=True,
         ),
         ConfigEntry(
-            key=CONF_PARTY_DISPLAY_LYRICS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Display Lyrics in Party Dashboard",
-            description=(
-                "Show synchronized lyrics (karaoke-style) in the party dashboard. "
-                "Lyrics are hidden on mobile devices."
-            ),
-            category="Karaoke",
-        ),
-        ConfigEntry(
             key=CONF_PARTY_KARAOKE_MODE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
@@ -281,7 +269,6 @@ async def get_config_entries(
                 "with the track list minimized to current and next song at the bottom. "
                 "Requires Display Lyrics to be enabled."
             ),
-            depends_on=CONF_PARTY_DISPLAY_LYRICS,
             category="Karaoke",
         ),
         ConfigEntry(
@@ -294,7 +281,7 @@ async def get_config_entries(
                 "when the line's timestamp arrives, giving a smooth anticipation effect. "
                 "When disabled, the transition starts at the timestamp instead."
             ),
-            depends_on=CONF_PARTY_DISPLAY_LYRICS,
+            depends_on=CONF_PARTY_KARAOKE_MODE,
             category="Karaoke",
             advanced=True,
         ),
@@ -659,7 +646,6 @@ class PartyPlugin(PluginProvider):
             skip_song_refill_minutes=cast(
                 "int", self.config.get_value(CONF_PARTY_SKIP_SONG_REFILL_MINUTES)
             ),
-            display_lyrics=cast("bool", self.config.get_value(CONF_PARTY_DISPLAY_LYRICS)),
             karaoke_mode=cast("bool", self.config.get_value(CONF_PARTY_KARAOKE_MODE)),
             highlight_ahead=cast("bool", self.config.get_value(CONF_PARTY_HIGHLIGHT_AHEAD)),
             request_badge_color=cast("str", self.config.get_value(CONF_REQUEST_BADGE_COLOR)),
