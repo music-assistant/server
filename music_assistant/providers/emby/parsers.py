@@ -129,7 +129,7 @@ def parse_track(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
@@ -168,7 +168,7 @@ def parse_artist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
@@ -223,8 +223,8 @@ def parse_album(
     )
 
     # Extract images
-    if image_id := item.get("PrimaryImageItemId"):
-        image_url = f"{provider._base_url}Items/{image_id}/Images/Primary"
+    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
+        image_url = f"{provider._base_url}Items/{album_id}/Images/Primary"
         if album.metadata.images is None:
             album.metadata.images = UniqueList[MediaItemImage]()
         album.metadata.images.append(
@@ -232,7 +232,7 @@ def parse_album(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
@@ -270,7 +270,7 @@ def parse_playlist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
