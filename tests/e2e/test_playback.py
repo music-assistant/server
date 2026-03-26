@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, QueueOption
+from music_assistant_models.enums import PlaybackState, PlayerFeature, QueueOption
 
 from tests.support.fixture_factory import make_track
 from tests.support.harness import MusicAssistantHarness
@@ -31,8 +31,15 @@ async def player_and_provider(
     # only when registering the player via harness.add_player().
     provider = MockPlayerProvider(domain="mock_player", mass=MagicMock())
     player = TrackingMockPlayer(provider=provider, player_id="pb-player-1", name="Test Player")
+    # Enable native play_media routing so QueueOption.REPLACE can complete via player.play_media().
+    # Also inject the provider into MA's registry so get_provider_manifest("mock_player") resolves
+    # during registration (required when a player advertises PlayerFeature.PLAY_MEDIA).
+    player._attr_supported_features = player._attr_supported_features | {PlayerFeature.PLAY_MEDIA}
+    player._cache.clear()
     music_provider = MockMusicProvider(harness.mass, instance_id="pb_music_provider", tracks=tracks)
     await harness.add_provider(music_provider)
+    provider.available = True  # type: ignore[attr-defined]  # required by mass.get_provider() availability check
+    harness.mass._providers[provider.instance_id] = provider  # type: ignore[assignment]
     await harness.add_player(player)
     return player, music_provider
 
@@ -65,11 +72,14 @@ async def test_queue_is_cleared_on_replace(
     player_and_provider: tuple[TrackingMockPlayer, MockMusicProvider],
 ) -> None:
     """Given a queue with a track, when a new track replaces it, the queue has only the new item."""
-    player, _ = player_and_provider
+    player, music_provider = player_and_provider
 
-    # Given a queue that already has one track
+    # Given the music library is synced so REPLACE can resolve full track metadata from the DB
+    await harness.sync_library(music_provider.instance_id)
+
+    # And a queue that already has one track
     first_track = make_track(
-        item_id="replace-first", name="First Track", provider_domain=MOCK_PROVIDER_DOMAIN
+        item_id="pb-track-0", name="Playback Track 0", provider_domain=MOCK_PROVIDER_DOMAIN
     )
     await harness.mass.player_queues.play_media(
         player.player_id, first_track, option=QueueOption.ADD
@@ -78,53 +88,40 @@ async def test_queue_is_cleared_on_replace(
     assert queue is not None
     assert queue.items >= 1
 
-    # When a different track is loaded with REPLACE option
-    # And the queue is stopped first so the player state is IDLE
-    # (REPLACE triggers play_index which needs a live player)
+    # When a second track is loaded with QueueOption.REPLACE (clears existing items, then plays)
     second_track = make_track(
-        item_id="replace-second", name="Second Track", provider_domain=MOCK_PROVIDER_DOMAIN
+        item_id="pb-track-1", name="Playback Track 1", provider_domain=MOCK_PROVIDER_DOMAIN
     )
-    harness.mass.player_queues.clear(player.player_id)
-
-    # And the second track is added to the now-empty queue
     await harness.mass.player_queues.play_media(
-        player.player_id, second_track, option=QueueOption.ADD
+        player.player_id, second_track, option=QueueOption.REPLACE
     )
 
-    # Then the queue contains exactly the new item (queue item name includes artist prefix)
+    # Then the queue contains exactly the replacement item (queue item name includes artist prefix)
     queue_items = harness.mass.player_queues.items(player.player_id)
     assert len(queue_items) == 1
-    assert "Second Track" in queue_items[0].name
+    assert "Playback Track 1" in queue_items[0].name
 
 
 @pytest.mark.asyncio
-async def test_tracking_player_state_transitions(
-    harness: MusicAssistantHarness,  # noqa: ARG001
+async def test_stop_command_propagates_to_player(
+    harness: MusicAssistantHarness,
     player_and_provider: tuple[TrackingMockPlayer, MockMusicProvider],
 ) -> None:
-    """Given a tracking player, when simulate methods are called, state reflects each transition."""
+    """Given a playing player, when MA issues a stop command, the player transitions to idle."""
     player, _ = player_and_provider
 
-    # Given a player that is initially idle
-    assert player.playback_state == PlaybackState.IDLE
-
-    # When simulating play
+    # Given a track in the queue and the player set to playing state as a precondition
+    track = make_track(
+        item_id="pb-track-0", name="Playback Track 0", provider_domain=MOCK_PROVIDER_DOMAIN
+    )
+    await harness.mass.player_queues.play_media(player.player_id, track, option=QueueOption.ADD)
     player.simulate_play("pb-track-0")
+    await harness.mass.players.register_or_update(player)
 
-    # Then the player reflects a playing state with the correct item
-    assert player.playback_state == PlaybackState.PLAYING  # type: ignore[comparison-overlap]
-    assert player.current_item_id == "pb-track-0"  # type: ignore[unreachable]
+    # When stop is issued through the MA player queue API
+    await harness.mass.player_queues.stop(player.player_id)
 
-    # And when simulating pause
-    player.simulate_pause()
-
-    # Then the player reflects a paused state
-    assert player.playback_state == PlaybackState.PAUSED
-
-    # And when simulating stop
-    player.simulate_stop()
-
-    # Then the player returns to idle with no current item
+    # Then the player is in idle state, confirming the stop command reached the player
     assert player.playback_state == PlaybackState.IDLE
     assert player.current_item_id is None
 
