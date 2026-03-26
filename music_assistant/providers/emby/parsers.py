@@ -223,8 +223,8 @@ def parse_album(
     )
 
     # Extract images
-    if image_id := item.get("PrimaryImageItemId"):
-        image_url = f"{provider._base_url}Items/{image_id}/Images/Primary"
+    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
+        image_url = f"{provider._base_url}Items/{album_id}/Images/Primary"
         if album.metadata.images is None:
             album.metadata.images = UniqueList[MediaItemImage]()
         album.metadata.images.append(
