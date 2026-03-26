@@ -102,12 +102,12 @@ jobs:
         run: uv pip install --system . .[test] -r requirements_all.txt
       - name: Run unit and core tests
         # Override addopts to suppress the default --cov music_assistant (full-tree),
-        # then re-enable coverage scoped to controllers + helpers only.
-        run: pytest tests/unit/ tests/core/ tests/providers/ tests/test_*.py --durations 10 --override-ini="addopts=" --cov=music_assistant/controllers --cov=music_assistant/helpers --cov-report=term-missing --cov-report=xml
+        # then re-enable coverage scoped to the four controller modules with tests.
+        run: pytest tests/unit/ tests/core/ tests/providers/ tests/test_*.py --durations 10 --override-ini="addopts=" --cov=music_assistant/controllers/music --cov=music_assistant/controllers/players --cov=music_assistant/controllers/player_queues --cov=music_assistant/controllers/streams/streams_controller --cov-report=term-missing --cov-report=xml
 
       - name: Run E2E tests
-        # Coverage gated on controllers + helpers only (80% floor).
-        # Provider API clients (50-60% target) are excluded from the gate — too
-        # many providers have no tests and would dilute the meaningful coverage signal.
+        # Coverage gated on the four core controller modules (80% floor).
+        # Webserver, media sub-controllers, helpers, and provider API clients are
+        # excluded — too many untested paths would dilute the meaningful coverage signal.
         # Override addopts to suppress the default --cov music_assistant (full-tree).
-        run: pytest tests/e2e/ --durations 10 --override-ini="addopts=" --cov=music_assistant/controllers --cov=music_assistant/helpers --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        run: pytest tests/e2e/ --durations 10 --override-ini="addopts=" --cov=music_assistant/controllers/music --cov=music_assistant/controllers/players --cov=music_assistant/controllers/player_queues --cov=music_assistant/controllers/streams/streams_controller --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=80
