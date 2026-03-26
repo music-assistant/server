@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.models.types import AudioCodec
 from music_assistant_models.enums import EventType, IdentifierType
 
 from music_assistant.helpers.util import is_valid_mac_address
@@ -35,10 +35,14 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.constants import (
+    BRIDGE_PREFIX,
     CONF_SENDSPIN_SYNC_DELAY,
     DEFAULT_SENDSPIN_SYNC_DELAY,
 )
-from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
+from music_assistant.providers.sendspin.helpers import (
+    bridge_client_id_from_mac,
+    bridge_client_id_from_uuid,
+)
 
 from .constants import SENDSPIN_CAST_APP_ID, SENDSPIN_CAST_BLOCKLIST, SENDSPIN_CAST_NAMESPACE
 
@@ -55,16 +59,13 @@ if TYPE_CHECKING:
 def get_bridge_client_id(cast_player: ChromecastPlayer) -> str | None:
     """Get the Sendspin bridge client ID for a Chromecast player.
 
-    Uses the MAC address as the client_id to enable protocol linking.
-    The Sendspin provider will create a SendspinPlayer with this client_id.
-
-    Checks cast_info.mac_address first (from eureka_info API), then falls
-    back to the player's device_info MAC (which may have been resolved via
-    ARP by the Players controller after registration).
+    Uses MAC address for physical devices, UUID for groups (which have no MAC).
 
     :param cast_player: The Chromecast player to bridge.
-    :return: The bridge client_id, or None if no valid MAC address is available.
+    :return: The bridge client_id, or None if no valid identifier is available.
     """
+    if cast_player.cast_info.is_audio_group:
+        return bridge_client_id_from_uuid(str(cast_player.cast_info.uuid))
     cast_mac = cast_player.cast_info.mac_address
     if cast_mac and is_valid_mac_address(cast_mac):
         return bridge_client_id_from_mac(cast_mac)
@@ -72,6 +73,22 @@ def get_bridge_client_id(cast_player: ChromecastPlayer) -> str | None:
     if device_mac and is_valid_mac_address(device_mac):
         return bridge_client_id_from_mac(device_mac)
     return None
+
+
+def _toggle_locally_administered_bit(mac_hex: str) -> str | None:
+    """Toggle bit 1 (locally-administered bit) of the first octet of a hex MAC string.
+
+    :param mac_hex: Lowercase 12-char hex MAC without separators (e.g. "5478c9e60da0").
+    :return: The MAC with the LA bit toggled, or None if input is invalid.
+    """
+    if len(mac_hex) != 12:
+        return None
+    try:
+        first_octet = int(mac_hex[:2], 16)
+        toggled = first_octet ^ 0x02
+        return f"{toggled:02x}{mac_hex[2:]}"
+    except ValueError:
+        return None
 
 
 def is_sendspin_cast_blocked(manufacturer: str, model: str) -> bool:
@@ -154,7 +171,7 @@ class SendspinChromecastBridge:
                     )
                 ],
                 buffer_capacity=1_000,
-                supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
+                supported_commands=[],
             ),
         )
 
@@ -399,14 +416,14 @@ class SendspinBridgeManager:
                 return
 
             # skip if the cast player's parent also has airplay linked
-            # (we prefer the airplay bridge due to better sync performance))
+            # (we prefer the airplay bridge due to better sync performance)
             if cast_player.protocol_parent_id:
                 parent_player = self.mass.players.get_player(cast_player.protocol_parent_id)
-                for protocol in parent_player.linked_output_protocols:
-                    if protocol.protocol_domain == "airplay":
-                        return
+                if parent_player:
+                    for protocol in parent_player.linked_output_protocols:
+                        if protocol.protocol_domain == "airplay":
+                            return
 
-            # Resolve client_id from device MAC address
             bridge_client_id = get_bridge_client_id(cast_player)
             if not bridge_client_id:
                 return
@@ -431,17 +448,31 @@ class SendspinBridgeManager:
                 )
                 return
 
-            # Check if another bridge (e.g. AirPlay) already registered this client_id.
-            # Devices that support both AirPlay and Chromecast share the same MAC,
-            # so only the first bridge to register wins.
+            # Check if a bridge already exists for this client_id.
             if sendspin_server.get_client(bridge_client_id):
                 self.logger.debug(
-                    "Sendspin client %s already registered (likely by another bridge), "
-                    "skipping Chromecast bridge for %s",
+                    "Sendspin client %s already registered, skipping Chromecast bridge for %s",
                     bridge_client_id,
                     cast_player.display_name,
                 )
                 return
+
+            # For MAC-based IDs, also check the LA-bit variant.
+            # AirPlay uses locally-administered MAC, Chromecast uses the real MAC.
+            if not cast_player.cast_info.is_audio_group:
+                la_variant_mac = _toggle_locally_administered_bit(
+                    bridge_client_id[len(BRIDGE_PREFIX) :]
+                )
+                if la_variant_mac:
+                    la_variant_id = f"{BRIDGE_PREFIX}{la_variant_mac}"
+                    if sendspin_server.get_client(la_variant_id):
+                        self.logger.debug(
+                            "Sendspin client %s already registered (LA variant), "
+                            "skipping Chromecast bridge for %s",
+                            la_variant_id,
+                            cast_player.display_name,
+                        )
+                        return
 
             bridge = SendspinChromecastBridge(
                 self.provider, cast_player, sendspin_server, bridge_client_id

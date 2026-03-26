@@ -43,6 +43,8 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 # Home Assistant system user
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
+# Port used by the internal ingress webserver for the HA integration
+INGRESS_SERVER_PORT: Final[int] = 8094
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
@@ -118,6 +120,8 @@ CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast 
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
     "protocol_parent_id"  # cached native player ID for protocol player
 )
+CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
+CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
@@ -157,6 +161,7 @@ DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
+DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:
@@ -204,6 +209,7 @@ MASS_LOGO_ONLINE: Final[str] = (
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
+    "discovery",
     "streams",
     "webserver",
     "players",
@@ -786,105 +792,6 @@ CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
     advanced=True,
 )
 
-
-CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
-    ConfigValueOption("Disable automatic sync for this mediatype", 0),
-    ConfigValueOption("Every 30 minutes", 30),
-    ConfigValueOption("Every hour", 60),
-    ConfigValueOption("Every 3 hours", 180),
-    ConfigValueOption("Every 6 hours", 360),
-    ConfigValueOption("Every 12 hours", 720),
-    ConfigValueOption("Every 24 hours", 1440),
-    ConfigValueOption("Every 36 hours", 2160),
-    ConfigValueOption("Every 48 hours", 2880),
-    ConfigValueOption("Once a week", 10080),
-]
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS = ConfigEntry(
-    key="provider_sync_interval_artists",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Artists",
-    description="The interval at which the Artists are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_ARTISTS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS = ConfigEntry(
-    key="provider_sync_interval_albums",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Albums",
-    description="The interval at which the Albums are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_ALBUMS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS = ConfigEntry(
-    key="provider_sync_interval_tracks",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Tracks",
-    description="The interval at which the Tracks are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_TRACKS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS = ConfigEntry(
-    key="provider_sync_interval_playlists",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Playlists",
-    description="The interval at which the Playlists are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS = ConfigEntry(
-    key="provider_sync_interval_podcasts",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Podcasts",
-    description="The interval at which the Podcasts are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS = ConfigEntry(
-    key="provider_sync_interval_audiobooks",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Audiobooks",
-    description="The interval at which the Audiobooks are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS = ConfigEntry(
-    key="provider_sync_interval_radios",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Radios",
-    description="The interval at which the Radios are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_RADIOS.key,
-    depends_on_value=True,
-    required=True,
-)
-
-
 CONF_ENTRY_PLAYER_ICON = ConfigEntry(
     key=CONF_ICON,
     type=ConfigEntryType.ICON,
@@ -1055,4 +962,56 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("sonos", True),
     ("bluesound", True),
     ("heos", True),
+    ("party", False),
+}
+
+EXTERNAL_SOURCES: Final[set[str]] = {
+    # list of sources that are definitely considered "external"
+    # values are matched case-insensitive against the player's active_source
+    # streaming services / connect sources
+    "spotify",
+    "spotify_connect",
+    "spotify connect",
+    "apple_music",
+    "apple music",
+    "tidal",
+    "tidal_connect",
+    "tidal connect",
+    "qobuz",
+    "deezer",
+    "amazon_music",
+    "amazon music",
+    "pandora",
+    "iheartradio",
+    "napster",
+    "rhapsody",
+    "siriusxm",
+    "soundcloud",
+    "tunein",
+    "tune in",
+    "radioparadise",
+    "radio paradise",
+    "radiko",
+    "juke",
+    "alexa",
+    "radio",
+    "airplay",
+    "chromecast",
+    # bluetooth (bluesound, musiccast)
+    "bluetooth",
+    # physical/analog inputs (sonos, heos, musiccast, demo)
+    "line-in",
+    "linein",
+    "line in",
+    "line_in",
+    "aux",
+    "tuner",
+    # tv / hdmi (sonos, bluesound)
+    "tv",
+    "tv input",
+    "hdmi arc",
+    # local/usb playback on device (musiccast)
+    "usb",
+    # external (hass_players)
+    "external",
 }

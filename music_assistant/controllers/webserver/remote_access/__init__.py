@@ -259,12 +259,17 @@ class RemoteAccessManager:
 
             :param enabled: Enable or disable remote access.
             """
+            changed = self._enabled != enabled
             self._enabled = enabled
             self.mass.config.set(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", enabled)
             if self._enabled and not self.is_running:
                 await self._start_gateway()
             elif not self._enabled and self.is_running:
                 await self.stop()
+            if changed:
+                self.mass.signal_event(
+                    EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info()
+                )
             return await get_remote_access_info()
 
         self._on_unload_callbacks.append(

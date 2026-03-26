@@ -81,7 +81,8 @@ class AirPlayProtocol(ABC):
         # repeat sending the volume level to the player because some players seem
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
-        self.mass.call_later(2, self.send_cli_command(f"VOLUME={self.player.volume_level}"))
+        volume = 0 if self.player.volume_muted else self.player.volume_level
+        self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         # we also need to send the metadata after connection, because some players (e.g. Sonos)
         # simply won't start playback until they receive the metadata ?!
         self.mass.call_later(2, self.player._on_player_media_updated)
@@ -94,17 +95,19 @@ class AirPlayProtocol(ABC):
         """
         # always send stop command first
         await self.send_cli_command("ACTION=STOP")
-        if self._cli_proc:
-            await self._cli_proc.write_eof()
         self._stopped = True
         await self.commands_pipe.remove()
         if force:
+            # Kill immediately - skip write_eof() as it can block indefinitely
+            # when the CLI stops reading from stdin after receiving STOP.
             if self._cli_proc and not self._cli_proc.closed:
                 await self._cli_proc.kill()
-        elif self._cli_proc and not self._cli_proc.closed:
-            await self._cli_proc.close()
-        if not force:
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+        else:
+            if self._cli_proc:
+                await self._cli_proc.write_eof()
+            if self._cli_proc and not self._cli_proc.closed:
+                await self._cli_proc.close()
+        self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
     async def write_audio(self, data: bytes) -> None:
         """Write raw audio data to the CLI process stdin.

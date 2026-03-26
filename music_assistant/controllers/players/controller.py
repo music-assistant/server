@@ -23,6 +23,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -30,6 +31,7 @@ from music_assistant_models.constants import (
 )
 from music_assistant_models.enums import (
     EventType,
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -68,15 +70,18 @@ from music_assistant.constants import (
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
     CONF_AUTO_PLAY,
+    CONF_CACHED_ARP_MAC,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
+    CONF_GROUP_MEMBERS,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
+    CONF_PROTOCOL_PARENT_ID,
+    CONF_REPORTED_MAC,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -88,6 +93,7 @@ from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import (
     TaskManager,
     enrich_device_mac_address,
+    is_valid_mac_address,
     validate_announcement_chime_url,
 )
 from music_assistant.models.core_controller import CoreController
@@ -95,7 +101,7 @@ from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
-from .helpers import AnnounceData, handle_player_command
+from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
 if TYPE_CHECKING:
@@ -139,6 +145,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._register_lock = asyncio.Lock()
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
+        # Serialize delayed evaluations to prevent race conditions
+        self._delayed_evaluation_lock = asyncio.Lock()
 
     async def get_config_entries(
         self,
@@ -146,11 +154,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
-        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
+        return ()
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        self._cleanup_stale_protocol_parent_ids()
         self._poll_task = self.mass.create_task(self._poll_players())
+        self.mass.tasks.register_scheduled_task(
+            task_id="fix_group_member_configs",
+            name="Fix sync group member configurations",
+            handler=self._fix_group_member_configs,
+            schedule=TaskSchedule.weekly(
+                days_of_week=[0],
+                hour=4,
+                minute=0,
+            ),
+            initial_delay=300,
+        )
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -613,6 +633,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         if not (player := self.get_player(player_id)):
             return
+        if player.type == PlayerType.GROUP:
+            await self.cmd_group_volume_up(player_id)
+            return
         current_volume = player.state.volume_level or 0
         if current_volume < 10 or current_volume > 90:
             step_size = 1
@@ -631,6 +654,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - player_id: player_id of the player to handle the command.
         """
         if not (player := self.get_player(player_id)):
+            return
+        if player.type == PlayerType.GROUP:
+            await self.cmd_group_volume_down(player_id)
             return
         current_volume = player.state.volume_level or 0
         if current_volume < 10 or current_volume > 90:
@@ -789,7 +815,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(player.state.volume_control):
+        if protocol_player := self.get_player(player.mute_control):
             self.logger.debug(
                 "Redirecting mute command to protocol player %s",
                 protocol_player.provider.manifest.name,
@@ -1240,9 +1266,56 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if not player.state.enabled:
                 return
 
-            # Enrich device MAC address via ARP if needed
-            # (handles invalid MACs, locally-administered MACs, and missing MACs)
-            await enrich_device_mac_address(player.device_info, self.logger)
+            conf_base = f"{CONF_PLAYERS}/{player_id}/values"
+            if player.type not in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+                # Save the original MAC reported by the provider (before ARP enrichment)
+                reported_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+
+                # Try to use cached ARP MAC from config for fast matching on restart.
+                # This allows protocol linking to work immediately even if ARP is slow/fails.
+                cached_arp_mac: str | None = self.mass.config.get(
+                    f"{conf_base}/{CONF_CACHED_ARP_MAC}", None
+                )
+                if cached_arp_mac and is_valid_mac_address(cached_arp_mac):
+                    player.device_info.add_identifier(IdentifierType.MAC_ADDRESS, cached_arp_mac)
+
+                # Enrich device MAC address via ARP if needed
+                # (handles invalid MACs, locally-administered MACs, and missing MACs)
+                await enrich_device_mac_address(player.device_info, self.logger)
+
+                # Cache the resolved MAC for fast matching on subsequent restarts
+                current_mac = player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)
+                if (
+                    current_mac
+                    and is_valid_mac_address(current_mac)
+                    and current_mac != cached_arp_mac
+                ):
+                    self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", current_mac)
+
+                # Store original reported MAC if it differs from the resolved MAC.
+                # This enables multi-MAC matching for devices with multiple interfaces
+                # (e.g., WiFi + Ethernet) where ARP resolves one interface but the
+                # protocol reports the other.
+                if reported_mac and is_valid_mac_address(reported_mac) and current_mac:
+                    if reported_mac.upper() != current_mac.upper():
+                        player.extra_data["reported_mac"] = reported_mac
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", reported_mac)
+                    else:
+                        # Provider's reported MAC matches the resolved MAC; clear any stale
+                        # stored reported MAC to avoid false-positive multi-MAC matches.
+                        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                elif not reported_mac or not is_valid_mac_address(reported_mac):
+                    # Restore reported MAC from config on restart only when the provider
+                    # did not supply a usable MAC address.
+                    cached_reported_mac: str | None = self.mass.config.get(
+                        f"{conf_base}/{CONF_REPORTED_MAC}", None
+                    )
+                    if cached_reported_mac and is_valid_mac_address(cached_reported_mac):
+                        if current_mac and cached_reported_mac.upper() == current_mac.upper():
+                            # Cached value matches the resolved MAC; clear stale entry.
+                            self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+                        else:
+                            player.extra_data["reported_mac"] = cached_reported_mac
 
             # register throttler for this player
             self._player_throttlers[player_id] = Throttler(1, 0.05)
@@ -1268,10 +1341,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # We use the 'initialized' attribute to indicate that the player
             # is still in the process of being registered so we can filter it out where needed.
             self._players[player_id] = player
+            # update state to ensure player.state reflects the final attributes
+            # (e.g. player type) set after super().__init__() in the player subclass,
+            # before we fetch config (which relies on state.type for entry resolution)
+            player.update_state(signal_event=False)
             # ensure we fetch and set the latest/full config for the player
             player_config = await self.mass.config.get_player_config(player_id)
             player.set_config(player_config)
-            # update state without signaling event first (ensures all attributes are set)
+            # update state again now that config is loaded
             player.update_state(signal_event=False)
             # call hook after the player is registered and config is set
             await player.on_config_updated()
@@ -1298,7 +1375,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Schedule debounced update of all players since can_group_with values may change
         # when a new player is added (provider IDs expand to include the new player)
-        self._schedule_update_all_players(5)
+        self._schedule_update_all_players(2)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
@@ -1438,19 +1515,34 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # nothing changed
             return
 
-        # always signal update to the playerqueue
-        if player.state.type != PlayerType.PROTOCOL:
-            self.mass.player_queues.on_player_update(player, changed_values)
-
         # to prevent spamming the eventbus on small changes (e.g. elapsed time),
-        # we check if there are only changes in the elapsed time
-        clean_changed_keys = set(changed_values.keys()) - {"current_media.elapsed_time"}
+        # we check if there are only changes in the elapsed time and send
+        # a lightweight event.
+        clean_changed_keys = set(changed_values.keys()) - {
+            "current_media.elapsed_time",
+            "elapsed_time_last_updated",
+        }
         if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
-            # ignore small changes in elapsed time
-            prev_value = changed_values[ATTR_ELAPSED_TIME][0] or 0
-            new_value = changed_values[ATTR_ELAPSED_TIME][1] or 0
-            if abs(prev_value - new_value) < 5:
-                return
+            now = time.time()
+            prev_elapsed, new_elapsed = changed_values[ATTR_ELAPSED_TIME]
+            prev_updated, new_updated = changed_values.get("elapsed_time_last_updated", (now, now))
+            prev_corrected = (prev_elapsed or 0) + (now - (prev_updated or now))
+            new_corrected = (new_elapsed or 0) + (now - (new_updated or now))
+            if abs(prev_corrected - new_corrected) > 1.0:
+                self.mass.player_queues.on_player_elapsed_time_corrected(player)
+                if player.protocol_parent_id:
+                    self.trigger_player_update(player.protocol_parent_id)
+            return
+
+        # signal update to the playerqueue
+        if player.state.type != PlayerType.PROTOCOL:
+            self.mass.call_later(
+                0.5,
+                self.mass.player_queues.on_player_update,
+                player,
+                changed_values,
+                task_id=f"queue_on_player_update_{player.player_id}",
+            )
 
         # handle DSP reload of the leader when grouping/ungrouping
         if ATTR_GROUP_MEMBERS in changed_values:
@@ -1816,7 +1908,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player.state.playback_state == PlaybackState.PLAYING:
             self.logger.info("Restarting playback of Player %s after DSP change", player_id)
             # this will restart the queue stream/playback
-            if player.mass_queue_active:
+            if self.get_active_queue(player):
                 self.mass.call_later(
                     0, self.mass.player_queues.resume, player.state.active_source, False
                 )
@@ -2066,6 +2158,82 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # player was playing something before the announcement - try to resume that here
             await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
 
+    def _cleanup_stale_protocol_parent_ids(self) -> None:
+        """Clean up stale protocol_parent_id values in config on startup.
+
+        Scans protocol player configs and clears parent_ids that point to
+        player configs that no longer exist (e.g., deleted universal players).
+        """
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        for player_id, player_config in all_player_configs.items():
+            if player_config.get("player_type") != "protocol":
+                continue
+            values = player_config.get("values", {})
+            parent_id = values.get(CONF_PROTOCOL_PARENT_ID)
+            if not parent_id:
+                continue
+            # Check if parent config still exists
+            parent_config = all_player_configs.get(parent_id)
+            if not parent_config:
+                self.logger.debug(
+                    "Clearing stale protocol_parent_id %s for %s (parent config deleted)",
+                    parent_id,
+                    player_id,
+                )
+                conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
+                self.mass.config.set(conf_key, None)
+
+    async def _fix_group_member_configs(self) -> None:
+        """Fix stale protocol player IDs in sync group member configs.
+
+        When a sync group references a protocol player ID instead of
+        the parent player ID, correct it using the cached protocol parent mapping.
+        """
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        total_fixes = 0
+        fixed_groups: list[str] = []
+
+        for group_id, group_config in list(all_player_configs.items()):
+            if group_config.get("provider") != "sync_group":
+                continue
+            old_members: list[str] = group_config.get("values", {}).get(CONF_GROUP_MEMBERS, [])
+            if not old_members:
+                continue
+
+            new_members: list[str] = []
+            changes = 0
+            for member_id in old_members:
+                parent_id = self._get_cached_protocol_parent_id(member_id)
+                corrected_id = parent_id or member_id
+                if corrected_id != member_id:
+                    changes += 1
+                    self.logger.debug(
+                        "Sync group %s: corrected member %s -> %s",
+                        group_id,
+                        member_id,
+                        corrected_id,
+                    )
+                if corrected_id not in new_members:
+                    new_members.append(corrected_id)
+
+            if changes:
+                self.mass.config.set_raw_player_config_value(
+                    group_id, CONF_GROUP_MEMBERS, new_members
+                )
+                total_fixes += changes
+                fixed_groups.append(group_id)
+
+        for group_id in fixed_groups:
+            if (group_player := self.get_player(group_id)) and group_player.available:
+                await group_player.on_config_updated()
+
+        if total_fixes:
+            self.logger.info(
+                "Fixed %d stale member reference(s) across %d sync group(s)",
+                total_fixes,
+                len(fixed_groups),
+            )
+
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""
         while True:
@@ -2073,11 +2241,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = player.state.playback_state == PlaybackState.PLAYING
-                if player_playing:
-                    self.mass.loop.call_soon(
+                if player_playing and player.type != PlayerType.PROTOCOL:
+                    self.mass.call_later(
+                        0.5,
                         self.mass.player_queues.on_player_update,
                         player,
-                        {"corrected_elapsed_time": (None, player.corrected_elapsed_time)},
+                        {"corrected_elapsed_time": (None, player.state.corrected_elapsed_time)},
+                        task_id=f"queue_on_player_update_{player.player_id}",
                     )
                 # Poll player;
                 if not player.needs_poll:
@@ -2413,7 +2583,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Forward command to the appropriate player after all (base) sanity checks
         # GROUP players (sync_group, universal_group) manage their own members internally
         # and don't need protocol translation - call their set_members directly
-        if parent_player.type == PlayerType.GROUP:
+        if (
+            parent_player.type == PlayerType.GROUP
+            and PlayerFeature.SET_MEMBERS in parent_player.state.supported_features
+        ):
             await parent_player.set_members(
                 player_ids_to_add=final_player_ids_to_add,
                 player_ids_to_remove=final_player_ids_to_remove,
@@ -2568,11 +2741,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # fallback: just try to resume queue playback
         await self.mass.player_queues.resume(player.player_id)
 
-    async def _handle_cmd_power(self, player_id: str, powered: bool) -> None:
+    async def _handle_cmd_power(
+        self, player_id: str, powered: bool, skip_auto_play: bool = False
+    ) -> None:
         """
         Handle player power on/off command.
 
         Skips the permission checks (internal use only).
+
+        :param player_id: The player ID to power on/off.
+        :param powered: True to power on, False to power off.
+        :param skip_auto_play: If True, skip auto-play on power on.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
@@ -2625,6 +2804,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
+            if powered:
+                await wait_for_power_on(self.logger, player)
         elif player_state.power_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
@@ -2648,6 +2829,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if powered:
                 assert player_control.power_on is not None  # for type checking
                 await player_control.power_on()
+                await wait_for_power_on(self.logger, player, player_control)
             else:
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
@@ -2657,7 +2839,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle 'auto play on power on' feature
         if (
-            not player_state.active_group
+            not skip_auto_play
+            and not player_state.active_group
             and not player_state.synced_to
             and powered
             and player.config.get_value(CONF_AUTO_PLAY)
@@ -2755,9 +2938,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # power on the player if needed
+        # power on the player if needed (skip auto-play since we're about to start playback)
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
+            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
 
         # Determine output protocol to use:
         # If player already has an active protocol set, prefer that.
@@ -2792,12 +2975,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             player.set_active_output_protocol(output_protocol.output_protocol_id)
             # if the (protocol)player has power control and is currently powered off,
-            # we need to power it on before playback
+            # we need to power it on before playback (skip auto-play since we're starting playback)
             if (
                 target_player.state.powered is False
                 and target_player.power_control != PLAYER_CONTROL_NONE
             ):
-                await self._handle_cmd_power(target_player.player_id, True)
+                await self._handle_cmd_power(target_player.player_id, True, skip_auto_play=True)
             # forward play media command to protocol player
             await target_player.play_media(media)
             # notify the native player that protocol playback started
@@ -2918,7 +3101,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # If there are still protocol group members, keep the protocol active so that
         # when playback resumes it continues on the same protocol.
         if target_player.player_id == player.player_id or len(target_player.group_members) <= 1:
-            player.set_active_output_protocol(None)
+            self.mass.call_later(
+                5,
+                player.set_active_output_protocol,
+                None,
+                task_id=f"clear_active_protocol_{player_id}",
+            )
 
     async def _handle_cmd_play(self, player_id: str) -> None:
         """

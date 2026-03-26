@@ -11,6 +11,7 @@ from music_assistant_models.media_items import Podcast, PodcastEpisode, Provider
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
 from music_assistant.controllers.media.base import MediaControllerBase
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_podcast,
@@ -22,6 +23,7 @@ from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.media_items import Track
 
     from music_assistant import MusicAssistant
@@ -219,19 +221,34 @@ class PodcastsController(MediaControllerBase[Podcast]):
         if not isinstance(prov, MusicProvider):
             return
 
+        # Get user who initiated the query. Querying the userid as well is most useful
+        # in a multi-user environment where a single instance provider is used.
+        user: User | None = None
+        if session_user := get_current_user():
+            # this is the active session user that triggered the action
+            user = session_user
+        elif provider_user := await self.mass.music._get_user_for_provider(
+            provider_mappings_or_instance_id=provider_instance_id_or_domain
+        ):
+            # based on configured provider filter we can try to find a user
+            user = provider_user
+
         async def set_resume_position(episode: PodcastEpisode) -> None:
             if episode.fully_played is not None or episode.resume_position_ms:
                 # provider supports resume info, we can skip
                 return
             # for providers that do not natively support providing resume info,
             # we fallback to the playlog db table
+            match = {
+                "item_id": episode.item_id,
+                "provider": prov.instance_id,
+                "media_type": MediaType.PODCAST_EPISODE,
+            }
+            if user is not None:
+                match["userid"] = user.user_id
             resume_info_db_row = await self.mass.music.database.get_row(
                 DB_TABLE_PLAYLOG,
-                {
-                    "item_id": episode.item_id,
-                    "provider": prov.instance_id,
-                    "media_type": MediaType.PODCAST_EPISODE,
-                },
+                match=match,
             )
             if resume_info_db_row is None:
                 return

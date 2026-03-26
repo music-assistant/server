@@ -402,6 +402,14 @@ class StreamsController(CoreController):
         :param media: The PlayerMedia object for which to resolve the stream URL.
         :return: The resolved stream URL as a string.
         """
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            return media.uri
+        if media.media_type == MediaType.PLUGIN_SOURCE:
+            if media.custom_data and (source_id := media.custom_data.get("source_id")):
+                plugin_source = self.mass.players.get_plugin_source(source_id)
+                if plugin_source:
+                    return await self.get_plugin_source_url(plugin_source, player_id)
+            return media.uri
         protocol_player = self.mass.players.get_player(player_id)
         conf_output_codec = cast(
             "str",
@@ -637,8 +645,6 @@ class StreamsController(CoreController):
         start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
-
-        queue.flow_mode_stream_log = []
 
         # select the highest possible PCM settings for this player
         flow_pcm_format = await self._select_flow_format(player)
@@ -1044,6 +1050,7 @@ class StreamsController(CoreController):
         last_streamdetails: StreamDetails | None = None
         last_play_log_entry: PlayLogEntry | None = None
         queue.flow_mode = True
+        queue.flow_mode_stream_log = []
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
             return
@@ -1264,6 +1271,7 @@ class StreamsController(CoreController):
                 )
                 # Clean up and continue to next track
                 queue_track.streamdetails.stream_error = True
+                play_log_entry.seconds_streamed = 0
                 del buffer
                 continue
             if last_fadeout_part:
@@ -1360,14 +1368,22 @@ class StreamsController(CoreController):
 
         async def fetch_announcement() -> None:
             fmt = announcement_url.rsplit(".")[-1]
-            async for chunk in get_ffmpeg_stream(
-                audio_input=announcement_url,
-                input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
-                output_format=pcm_format,
-                chunk_size=get_chunksize(pcm_format, 1),
-            ):
-                await announcement_data.put(chunk)
-            await announcement_data.put(None)  # signal end of stream
+            try:
+                async for chunk in get_ffmpeg_stream(
+                    audio_input=announcement_url,
+                    input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+                    output_format=pcm_format,
+                    chunk_size=get_chunksize(pcm_format, 1),
+                ):
+                    await announcement_data.put(chunk)
+            except AudioError as err:
+                self.logger.warning(
+                    "Failed to fetch announcement audio from %s: %s",
+                    announcement_url,
+                    err,
+                )
+            finally:
+                await announcement_data.put(None)  # always signal end of stream
 
         self.mass.create_task(fetch_announcement())
 

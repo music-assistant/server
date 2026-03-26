@@ -920,11 +920,10 @@ async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
     user = await auth_manager.create_user(username="joincodeuser", role=UserRole.GUEST)
 
     code, expires_at = await auth_manager.generate_join_code(
-        user_id=user.user_id,
+        user=user,
         expires_in_hours=24,
         max_uses=0,
         device_name="Test Device",
-        provider_name="test_provider",
     )
 
     assert code is not None
@@ -934,7 +933,9 @@ async def test_generate_join_code(auth_manager: AuthenticationManager) -> None:
     assert expires_at > utc()
 
 
-async def test_generate_join_code_non_guest_rejected(auth_manager: AuthenticationManager) -> None:
+async def test_generate_join_code_non_guest_rejected(
+    auth_manager: AuthenticationManager,
+) -> None:
     """Test that generating a join code for non-guest users is rejected.
 
     :param auth_manager: AuthenticationManager instance.
@@ -943,22 +944,10 @@ async def test_generate_join_code_non_guest_rejected(auth_manager: Authenticatio
     user = await auth_manager.create_user(username="joinuser", role=UserRole.USER)
 
     with pytest.raises(ValueError, match="guest accounts"):
-        await auth_manager.generate_join_code(user_id=admin.user_id)
+        await auth_manager.generate_join_code(user=admin)
 
     with pytest.raises(ValueError, match="guest accounts"):
-        await auth_manager.generate_join_code(user_id=user.user_id)
-
-
-async def test_generate_join_code_invalid_user(auth_manager: AuthenticationManager) -> None:
-    """Test that generating a join code for non-existent user raises error.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    with pytest.raises(ValueError, match="User not found"):
-        await auth_manager.generate_join_code(
-            user_id="nonexistent-user-id",
-            expires_in_hours=24,
-        )
+        await auth_manager.generate_join_code(user=user)
 
 
 async def test_exchange_join_code(auth_manager: AuthenticationManager) -> None:
@@ -969,7 +958,7 @@ async def test_exchange_join_code(auth_manager: AuthenticationManager) -> None:
     user = await auth_manager.create_user(username="exchangeuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
+        user=user,
         expires_in_hours=24,
         device_name="Exchange Test",
     )
@@ -995,7 +984,7 @@ async def test_exchange_join_code_case_insensitive(auth_manager: AuthenticationM
     user = await auth_manager.create_user(username="caseuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
+        user=user,
         expires_in_hours=24,
     )
 
@@ -1026,7 +1015,7 @@ async def test_exchange_join_code_expired(auth_manager: AuthenticationManager) -
     user = await auth_manager.create_user(username="expiredcodeuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
+        user=user,
         expires_in_hours=24,
     )
 
@@ -1054,7 +1043,7 @@ async def test_exchange_join_code_max_uses(auth_manager: AuthenticationManager) 
     user = await auth_manager.create_user(username="maxusesuser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
+        user=user,
         expires_in_hours=24,
         max_uses=2,  # Only allow 2 uses
     )
@@ -1080,7 +1069,7 @@ async def test_exchange_join_code_unlimited_uses(auth_manager: AuthenticationMan
     user = await auth_manager.create_user(username="unlimiteduser", role=UserRole.GUEST)
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
+        user=user,
         expires_in_hours=24,
         max_uses=0,  # Unlimited
     )
@@ -1089,29 +1078,6 @@ async def test_exchange_join_code_unlimited_uses(auth_manager: AuthenticationMan
     for _ in range(5):
         token = await auth_manager._exchange_join_code(code)
         assert token is not None
-
-
-async def test_exchange_join_code_provider_name_in_token(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """Test that provider_name is included in the JWT token claims.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    user = await auth_manager.create_user(username="provideruser", role=UserRole.GUEST)
-
-    code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
-        expires_in_hours=24,
-        provider_name="party_mode",
-    )
-
-    token = await auth_manager._exchange_join_code(code)
-    assert token is not None
-
-    # Decode token and verify provider_name claim
-    payload = auth_manager.jwt_helper.decode_token(token)
-    assert payload.get("provider_name") == "party_mode"
 
 
 async def test_revoke_join_codes_for_user(auth_manager: AuthenticationManager) -> None:
@@ -1123,11 +1089,11 @@ async def test_revoke_join_codes_for_user(auth_manager: AuthenticationManager) -
     user2 = await auth_manager.create_user(username="revokeuser2", role=UserRole.GUEST)
 
     # Create codes for both users
-    code1, _ = await auth_manager.generate_join_code(user_id=user1.user_id)
-    code2, _ = await auth_manager.generate_join_code(user_id=user2.user_id)
+    code1, _ = await auth_manager.generate_join_code(user=user1)
+    code2, _ = await auth_manager.generate_join_code(user=user2)
 
     # Revoke codes for user1 only
-    revoked_count = await auth_manager.revoke_join_codes(user_id=user1.user_id)
+    revoked_count = await auth_manager.revoke_join_codes(user1)
     assert revoked_count == 1
 
     # User1's code should no longer work
@@ -1137,15 +1103,6 @@ async def test_revoke_join_codes_for_user(auth_manager: AuthenticationManager) -
     # User2's code should still work
     token2 = await auth_manager._exchange_join_code(code2)
     assert token2 is not None
-
-
-async def test_revoke_join_codes_requires_filter(auth_manager: AuthenticationManager) -> None:
-    """Test that revoking join codes requires at least one filter parameter.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    with pytest.raises(ValueError, match="At least one of"):
-        await auth_manager.revoke_join_codes()
 
 
 async def test_authenticate_with_join_code_api(auth_manager: AuthenticationManager) -> None:
@@ -1160,9 +1117,8 @@ async def test_authenticate_with_join_code_api(auth_manager: AuthenticationManag
     )
 
     code, _ = await auth_manager.generate_join_code(
-        user_id=user.user_id,
+        user=user,
         expires_in_hours=24,
-        provider_name="party_mode",
     )
 
     # Call the API endpoint
@@ -1200,8 +1156,8 @@ async def test_list_join_codes(auth_manager: AuthenticationManager) -> None:
     set_current_user(admin)
 
     # Create codes for both guests
-    await auth_manager.generate_join_code(user_id=guest1.user_id, provider_name="party_mode")
-    await auth_manager.generate_join_code(user_id=guest2.user_id, provider_name="party_mode")
+    await auth_manager.generate_join_code(user=guest1)
+    await auth_manager.generate_join_code(user=guest2)
 
     # List all codes
     codes = await auth_manager.list_join_codes()
@@ -1222,7 +1178,7 @@ async def test_revoke_join_code_api(auth_manager: AuthenticationManager) -> None
     guest = await auth_manager.create_user(username="revokeguest", role=UserRole.GUEST)
     set_current_user(admin)
 
-    code, _ = await auth_manager.generate_join_code(user_id=guest.user_id)
+    code, _ = await auth_manager.generate_join_code(user=guest)
 
     # Get the code_id from the database
     codes = await auth_manager.list_join_codes(user_id=guest.user_id)
