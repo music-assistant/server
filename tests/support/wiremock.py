@@ -27,9 +27,15 @@ class WireMockContainer(DockerContainer):  # type: ignore[misc]
         self.with_exposed_ports(WIREMOCK_PORT)
 
     def start(self) -> WireMockContainer:
-        """Start the container and wait for WireMock to be ready."""
+        """Start the container and wait for WireMock to be ready.
+
+        WireMock 3.x does not emit a "Started WireMock" log line — it emits
+        configuration output instead. Wait for the extensions line which appears
+        at the end of startup output.
+        """
         super().start()
-        wait_for_logs(self, "Started WireMock")
+        # WireMock 3.x startup ends with the extensions line
+        wait_for_logs(self, "extensions:")
         return self
 
     def get_base_url(self) -> str:
