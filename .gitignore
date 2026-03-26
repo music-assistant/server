@@ -18,5 +18,7 @@ venv/
 .history
 .idea
 .coverage
+coverage.xml
 uv.lock
 /.claude/worktrees
+.claude/settings.local.json
