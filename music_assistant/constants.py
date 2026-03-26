@@ -651,9 +651,9 @@ CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_ARTISTS = ConfigEntry(
     key="library_sync_artists",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Artists from this provider to Music Assistant",
+    label="Sync Library Artists from this source to Music Assistant",
     description="Whether to synchronize (favourited/in-library) Artists from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
@@ -680,9 +680,9 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Albums from this provider to Music Assistant",
+    label="Sync Library Albums from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Albums from this "
-    "provider to the Music Assistant Library. \n\n"
+    "source to the Music Assistant Library. \n\n"
     "Please note that by adding an Album into the Music Assistant library, "
     "the Album Artists will always be imported as well.",
     default_value=True,
@@ -691,9 +691,9 @@ CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Tracks from this provider to Music Assistant",
+    label="Sync Library Tracks from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Tracks from this "
-    "provider to the Music Assistant Library. \n\n"
+    "source to the Music Assistant Library. \n\n"
     "Please note that by adding a Track into the Music Assistant library, "
     "the Track's Artists and Album will always be imported as well.",
     default_value=True,
@@ -702,36 +702,36 @@ CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
     key="library_sync_playlists",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Playlists from this provider to Music Assistant",
+    label="Sync Library Playlists from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Playlists from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
     key="library_sync_podcasts",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Podcasts from this provider to Music Assistant",
+    label="Sync Library Podcasts from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Podcasts from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     key="library_sync_audiobooks",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Audiobooks from this provider to Music Assistant",
+    label="Sync Library Audiobooks from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Audiobooks from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_RADIOS = ConfigEntry(
     key="library_sync_radios",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Radios from this provider to Music Assistant",
+    label="Sync Library Radios from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Radio stations from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
@@ -744,7 +744,7 @@ CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS = ConfigEntry(
     "allowing you to manually browse and select which tracks you want to import. \n\n"
     "If you want to override this default behavior, "
     "you can use this configuration option.\n\n"
-    "Please note that some (streaming) providers may already define this behavior unsolicited, "
+    "Please note that some (streaming) sources may already define this behavior unsolicited, "
     "by automatically adding all tracks from the album to their library/favorites.",
     default_value=False,
     category="sync_options",
@@ -771,9 +771,9 @@ CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
     label="Sync back library additions/removals (2-way sync)",
     description="Specify the behavior if an item is manually added to "
     "(or removed from) the Music Assistant Library. \n"
-    "Should we synchronise that action back to the provider?\n\n"
-    "Please note that if you you don't sync back to the provider and you have enabled "
-    "automatic sync/import for this provider, a removed item may reappear in the library "
+    "Should we synchronise that action back to the source?\n\n"
+    "Please note that if you you don't sync back to the source and you have enabled "
+    "automatic sync/import for this source, a removed item may reappear in the library "
     "the next time a sync is performed.",
     default_value=True,
     category="sync_options",
@@ -783,9 +783,9 @@ CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
     key="library_sync_deletions",
     type=ConfigEntryType.BOOLEAN,
     label="Sync library deletions",
-    description="When enabled, items removed from the provider's library will also be "
+    description="When enabled, items removed from the source's library will also be "
     "hidden from the Music Assistant library.\n\n"
-    "When disabled, items removed from the provider will remain visible in the "
+    "When disabled, items removed from the source will remain visible in the "
     "Music Assistant library.",
     default_value=True,
     category="sync_options",
