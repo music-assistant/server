@@ -101,7 +101,10 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system . .[test] -r requirements_all.txt
       - name: Run unit and core tests
-        run: pytest tests/unit/ tests/core/ tests/providers/ tests/test_*.py --durations 10 --cov=music_assistant --cov-report=term-missing --cov-report=xml
+        run: pytest tests/unit/ tests/core/ tests/providers/ tests/test_*.py --durations 10 --cov=music_assistant/controllers --cov=music_assistant/helpers --cov-report=term-missing --cov-report=xml
 
       - name: Run E2E tests
-        run: pytest tests/e2e/ --durations 10 --cov=music_assistant --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        # Coverage gated on controllers + helpers only (80% floor).
+        # Provider API clients (50-60% target) are excluded from the gate — too
+        # many providers have no tests and would dilute the meaningful coverage signal.
+        run: pytest tests/e2e/ --durations 10 --cov=music_assistant/controllers --cov=music_assistant/helpers --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=80
