@@ -520,6 +520,7 @@ class TwitchProvider(MusicProvider):
         """Wait 5 minutes, then disconnect EventSub WebSocket."""
         await asyncio.sleep(300)
         if self._eventsub is not None:
+            self.logger.debug("Idle timeout reached — disconnecting EventSub WebSocket")
             await self._eventsub.stop()
             self._eventsub = None
 

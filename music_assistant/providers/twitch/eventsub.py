@@ -68,6 +68,7 @@ class EventSubClient:
 
     async def stop(self) -> None:
         """Stop the EventSub WebSocket and clean up."""
+        logger.debug("EventSub: stopping WebSocket and cleaning up")
         self._stopped = True
         self._session_id = None
         self._current_subscription_id = None
