@@ -691,8 +691,9 @@ class TestSearchLibraryBranches:
                 limit=5,
             )
 
-        # Then: result is a SearchResults (no error)
+        # Then: result is a SearchResults with empty fields (empty DB)
         assert isinstance(result, SearchResults)
+        assert result.tracks == []
 
 
 # ---------------------------------------------------------------------------
@@ -759,21 +760,21 @@ class TestRecentlyPlayed:
     """Tests for MusicController.recently_played()."""
 
     async def test_recently_played_returns_list(self, mass: MagicMock) -> None:
-        """recently_played returns a list (may be empty if nothing played)."""
+        """recently_played returns an empty list when nothing has been played."""
         with patch("music_assistant.controllers.music.get_current_user", return_value=None):
             result = await mass.music.recently_played(limit=10)
 
-        assert isinstance(result, list)
+        assert result == []
 
     async def test_recently_played_with_media_type_filter(self, mass: MagicMock) -> None:
-        """recently_played accepts media_types filter without error."""
+        """recently_played with media_types filter returns empty list on empty DB."""
         with patch("music_assistant.controllers.music.get_current_user", return_value=None):
             result = await mass.music.recently_played(limit=5, media_types=[MediaType.TRACK])
 
-        assert isinstance(result, list)
+        assert result == []
 
     async def test_recently_played_with_user_filter(self, mass: MagicMock) -> None:
-        """recently_played applies user provider filter."""
+        """recently_played applies user provider filter and returns empty list on empty DB."""
         mock_user = MagicMock()
         mock_user.provider_filter = {"some_provider"}
         mock_user.user_id = "user1"
@@ -781,13 +782,13 @@ class TestRecentlyPlayed:
         with patch("music_assistant.controllers.music.get_current_user", return_value=mock_user):
             result = await mass.music.recently_played(limit=5)
 
-        assert isinstance(result, list)
+        assert result == []
 
     async def test_recently_added_tracks_returns_list(self, mass: MagicMock) -> None:
-        """recently_added_tracks returns a list."""
+        """recently_added_tracks returns an empty list on an empty DB."""
         result = await mass.music.recently_added_tracks(limit=10)
 
-        assert isinstance(result, list)
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -799,14 +800,14 @@ class TestInProgressItems:
     """Tests for MusicController.in_progress_items()."""
 
     async def test_in_progress_returns_list(self, mass: MagicMock) -> None:
-        """in_progress_items returns a list (may be empty)."""
+        """in_progress_items returns an empty list on an empty DB."""
         with patch("music_assistant.controllers.music.get_current_user", return_value=None):
             result = await mass.music.in_progress_items(limit=10)
 
-        assert isinstance(result, list)
+        assert result == []
 
     async def test_in_progress_with_user_and_provider_filter(self, mass: MagicMock) -> None:
-        """in_progress_items applies user provider filter in query."""
+        """in_progress_items with user provider filter returns empty list on empty DB."""
         mock_user = MagicMock()
         mock_user.user_id = "user1"
         mock_user.provider_filter = {"my_provider"}
@@ -814,14 +815,14 @@ class TestInProgressItems:
         with patch("music_assistant.controllers.music.get_current_user", return_value=mock_user):
             result = await mass.music.in_progress_items(limit=5)
 
-        assert isinstance(result, list)
+        assert result == []
 
     async def test_in_progress_all_users(self, mass: MagicMock) -> None:
-        """in_progress_items with all_users=True uses different query path."""
+        """in_progress_items with all_users=True returns empty list on empty DB."""
         with patch("music_assistant.controllers.music.get_current_user", return_value=None):
             result = await mass.music.in_progress_items(limit=5, all_users=True)
 
-        assert isinstance(result, list)
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -910,11 +911,12 @@ class TestRecommendations:
     """Tests for MusicController.recommendations()."""
 
     async def test_recommendations_returns_list(self, mass: MagicMock) -> None:
-        """recommendations() returns a list of RecommendationFolder."""
+        """recommendations() returns a list of RecommendationFolder objects."""
         with patch("music_assistant.controllers.music.get_current_user", return_value=None):
             result = await mass.music.recommendations()
 
         assert isinstance(result, list)
+        assert all(isinstance(item, RecommendationFolder) for item in result)
 
 
 # ---------------------------------------------------------------------------
@@ -1506,12 +1508,16 @@ class TestCleanupDatabase:
     """Tests for MusicController._cleanup_database()."""
 
     async def test_cleanup_database_runs_without_error(self, mass: MagicMock) -> None:
-        """_cleanup_database completes without raising exceptions."""
-        with patch("music_assistant.controllers.music.update_current_task_progress_text"):
+        """_cleanup_database calls delete_where_query to remove stale DB records."""
+        with (
+            patch("music_assistant.controllers.music.update_current_task_progress_text"),
+            patch.object(
+                mass.music.database, "delete_where_query", new_callable=AsyncMock
+            ) as mock_delete,
+        ):
             await mass.music._cleanup_database()
 
-        # Verify the database was actually used during cleanup
-        assert mass.music.database is not None
+        assert mock_delete.called
 
 
 # ---------------------------------------------------------------------------

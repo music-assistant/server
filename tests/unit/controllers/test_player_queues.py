@@ -657,6 +657,7 @@ class TestOnPlayerRemove:
         # Given: no queues
         # When/Then: no exception
         controller.on_player_remove("unknown", permanent=False)
+        assert len(controller._queues) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +834,7 @@ class TestPause:
         mock_mass.players.cmd_pause = AsyncMock()
         # When / Then: no exception
         await controller.pause("missing")
+        mock_mass.players.cmd_pause.assert_not_called()
 
     async def test_pause_calls_cmd_pause(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
@@ -969,7 +971,8 @@ class TestNext:
         mock_mass.players.get_player.return_value = None
         # When: no IndexError, just returns early
         await controller.next("q1")
-        # Then: no crash
+        # Then: current_index is still None (unchanged)
+        assert queue.current_index is None
 
     async def test_next_advances_to_next_track(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
@@ -1115,7 +1118,8 @@ class TestOnPlayerUpdate:
         player.player_id = "proto-player"
         # When: should return early without error
         controller.on_player_update(player, {})
-        # Then: no crash, no queue created
+        # Then: no queue was created for this player
+        assert controller.get(player.player_id) is None
 
     def test_ignores_unknown_player_id(self, controller: PlayerQueuesController) -> None:
         """on_player_update returns early when no queue exists for the player_id."""
@@ -1126,9 +1130,12 @@ class TestOnPlayerUpdate:
         player.extra_data = {}
         # When: should return early
         controller.on_player_update(player, {})
-        # Then: no crash
+        # Then: queue dict is unchanged (still empty)
+        assert len(controller._queues) == 0
 
-    def test_returns_early_during_announcement(self, controller: PlayerQueuesController) -> None:
+    def test_returns_early_during_announcement(
+        self, controller: PlayerQueuesController, mock_mass: MagicMock
+    ) -> None:
         """Test returns early during announcement."""
         # Given: queue registered, announcement in progress
         _seed_queue(controller, "q1")
@@ -1137,9 +1144,11 @@ class TestOnPlayerUpdate:
         player.player_id = "q1"
         player.extra_data = {ATTR_ANNOUNCEMENT_IN_PROGRESS: True}
         player.state.active_source = None
+        mock_mass.signal_event.reset_mock()
         # When: should not update (announcement guard)
         controller.on_player_update(player, {})
-        # Then: no crash
+        # Then: no event was fired (returned early)
+        mock_mass.signal_event.assert_not_called()
 
     def test_sets_queue_inactive_when_not_active_source(
         self, controller: PlayerQueuesController
@@ -1166,8 +1175,9 @@ class TestOnPlayerElapsedTimeCorrected:
         # Given
         player = MagicMock()
         player.type = PlayerType.PROTOCOL
-        # When / Then: no error
+        # When / Then: no error, queue state unchanged
         controller.on_player_elapsed_time_corrected(player)
+        assert len(controller._queues) == 0
 
     def test_ignores_unknown_queue(self, controller: PlayerQueuesController) -> None:
         """on_player_elapsed_time_corrected returns early when no queue exists for the player_id."""
@@ -1175,8 +1185,9 @@ class TestOnPlayerElapsedTimeCorrected:
         player = MagicMock()
         player.type = PlayerType.PLAYER
         player.player_id = "unknown"
-        # When / Then: no error
+        # When / Then: no error, queue dict unchanged
         controller.on_player_elapsed_time_corrected(player)
+        assert len(controller._queues) == 0
 
     def test_ignores_inactive_queue(self, controller: PlayerQueuesController) -> None:
         """on_player_elapsed_time_corrected returns early when the queue is marked inactive."""
@@ -1186,8 +1197,9 @@ class TestOnPlayerElapsedTimeCorrected:
         player = MagicMock()
         player.type = PlayerType.PLAYER
         player.player_id = "q1"
-        # When / Then: no error
+        # When / Then: no error, elapsed_time not updated
         controller.on_player_elapsed_time_corrected(player)
+        assert queue.elapsed_time == 0
 
     def test_updates_elapsed_time(
         self, controller: PlayerQueuesController, mock_mass: MagicMock

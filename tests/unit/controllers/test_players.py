@@ -279,6 +279,7 @@ class TestGetPlayerByName:
 
         # Then: a player is returned (whichever comes first in dict iteration)
         assert result is not None
+        assert result.player_id in {"p1", "p2"}
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +755,7 @@ class TestPlayerControlsMethods:
         ctrl = PlayerController(mass)
         # Should not raise
         ctrl.remove_player_control("ghost")
+        assert len(ctrl._controls) == 0
 
     async def test_register_or_update_player_control_updates_existing(self) -> None:
         """register_or_update_player_control updates control when already registered."""
@@ -1364,6 +1366,7 @@ class TestUnregister:
         ctrl = PlayerController(mass)
         # Should not raise
         await ctrl.unregister("unknown_player")
+        assert ctrl.get_player("unknown_player") is None
 
     async def test_unregister_temporary_marks_unavailable(self) -> None:
         """Unregister without permanent=True marks player unavailable."""
