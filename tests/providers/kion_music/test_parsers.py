@@ -91,10 +91,11 @@ def test_parse_artist_with_cover(provider_stub: ProviderStub) -> None:
     result = parse_artist(cast("KionMusicProvider", provider_stub), artist_obj)
     assert result.item_id == "200"
     assert result.name == "Artist With Cover"
-    if artist_obj.cover and artist_obj.cover.uri:
-        assert result.metadata.images is not None
-        assert len(result.metadata.images) == 1
-        assert "avatars.yandex.net" in (result.metadata.images[0].path or "")
+    assert artist_obj.cover is not None
+    assert artist_obj.cover.uri is not None
+    assert result.metadata.images is not None
+    assert len(result.metadata.images) == 1
+    assert "avatars.yandex.net" in (result.metadata.images[0].path or "")
 
 
 @pytest.mark.parametrize("example", ALBUM_FIXTURES, ids=lambda val: val.stem)
@@ -132,13 +133,13 @@ def test_parse_track_with_artist_and_album(provider_stub: ProviderStub) -> None:
     assert track_obj is not None
     result = parse_track(cast("KionMusicProvider", provider_stub), track_obj)
     assert result.item_id == "500"
-    if track_obj.artists:
-        assert len(result.artists) >= 1
-        assert result.artists[0].name == "Track Artist"
-    if track_obj.albums:
-        assert result.album is not None
-        assert result.album.item_id == "20"
-        assert result.album.name == "Track Album"
+    assert track_obj.artists
+    assert len(result.artists) >= 1
+    assert result.artists[0].name == "Track Artist"
+    assert track_obj.albums
+    assert result.album is not None
+    assert result.album.item_id == "20"
+    assert result.album.name == "Track Album"
 
 
 @pytest.mark.parametrize("example", PLAYLIST_FIXTURES, ids=lambda val: val.stem)

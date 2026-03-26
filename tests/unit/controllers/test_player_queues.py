@@ -134,7 +134,7 @@ class TestGetAndAll:
     """Tests for get() and all()."""
 
     def test_get_returns_none_for_unknown_queue(self, controller: PlayerQueuesController) -> None:
-        """Test get returns none for unknown queue."""
+        """Get returns None when the player_id has no associated queue."""
         # Given no queues registered
         # When
         result = controller.get("nonexistent")
@@ -142,7 +142,7 @@ class TestGetAndAll:
         assert result is None
 
     def test_get_returns_registered_queue(self, controller: PlayerQueuesController) -> None:
-        """Test get returns registered queue."""
+        """Get returns the exact PlayerQueue instance that was registered."""
         # Given
         queue = _seed_queue(controller, "q1")
         # When
@@ -153,7 +153,7 @@ class TestGetAndAll:
     def test_all_returns_empty_tuple_when_no_queues(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test all returns empty tuple when no queues."""
+        """All returns an empty tuple when no queues have been registered."""
         # Given no queues
         # When
         result = controller.all()
@@ -161,7 +161,7 @@ class TestGetAndAll:
         assert result == ()
 
     def test_all_returns_all_registered_queues(self, controller: PlayerQueuesController) -> None:
-        """Test all returns all registered queues."""
+        """All returns every registered PlayerQueue with no omissions."""
         # Given
         _seed_queue(controller, "q1")
         _seed_queue(controller, "q2")
@@ -179,7 +179,7 @@ class TestItems:
     def test_items_returns_empty_list_for_unknown_queue(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test items returns empty list for unknown queue."""
+        """Items returns an empty list when the queue_id is not registered."""
         # Given no queues
         # When
         result = controller.items("nonexistent")
@@ -187,7 +187,7 @@ class TestItems:
         assert result == []
 
     def test_items_returns_all_items(self, controller: PlayerQueuesController) -> None:
-        """Test items returns all items."""
+        """Items returns all queue items when no limit or offset is specified."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When
@@ -196,7 +196,7 @@ class TestItems:
         assert len(result) == 3
 
     def test_items_pagination_limit(self, controller: PlayerQueuesController) -> None:
-        """Test items pagination limit."""
+        """Items returns only N items when limit=N is specified."""
         # Given
         _seed_queue(controller, "q1", num_items=5)
         # When
@@ -207,7 +207,7 @@ class TestItems:
         assert result[1].queue_item_id == "item-1"
 
     def test_items_pagination_offset(self, controller: PlayerQueuesController) -> None:
-        """Test items pagination offset."""
+        """Items skips the first N items when offset=N is specified."""
         # Given
         _seed_queue(controller, "q1", num_items=5)
         # When
@@ -223,7 +223,7 @@ class TestGetItem:
     def test_get_item_returns_none_for_unknown_queue(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test get item returns none for unknown queue."""
+        """get_item returns None when the queue_id is not registered."""
         # Given no queues
         # When
         result = controller.get_item("nonexistent", 0)
@@ -231,7 +231,7 @@ class TestGetItem:
         assert result is None
 
     def test_get_item_by_index(self, controller: PlayerQueuesController) -> None:
-        """Test get item by index."""
+        """get_item returns the item at the given integer position."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When
@@ -241,7 +241,7 @@ class TestGetItem:
         assert result.queue_item_id == "item-1"
 
     def test_get_item_by_id(self, controller: PlayerQueuesController) -> None:
-        """Test get item by id."""
+        """get_item returns the item whose queue_item_id matches the given string."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When
@@ -253,7 +253,7 @@ class TestGetItem:
     def test_get_item_returns_none_for_out_of_range_index(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test get item returns none for out of range index."""
+        """get_item returns None when the integer index is beyond the last item."""
         # Given
         _seed_queue(controller, "q1", num_items=2)
         # When
@@ -262,7 +262,7 @@ class TestGetItem:
         assert result is None
 
     def test_get_item_returns_none_for_none_id(self, controller: PlayerQueuesController) -> None:
-        """Test get item returns none for none id."""
+        """get_item returns None when None is passed as the item identifier."""
         # Given
         _seed_queue(controller, "q1", num_items=2)
         # When
@@ -275,7 +275,7 @@ class TestIndexById:
     """Tests for index_by_id()."""
 
     def test_returns_correct_index(self, controller: PlayerQueuesController) -> None:
-        """Test returns correct index."""
+        """index_by_id returns the zero-based position of the item with the given ID."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When
@@ -284,7 +284,7 @@ class TestIndexById:
         assert index == 2
 
     def test_returns_none_for_unknown_id(self, controller: PlayerQueuesController) -> None:
-        """Test returns none for unknown id."""
+        """index_by_id returns None when no item matches the given ID."""
         # Given
         _seed_queue(controller, "q1", num_items=2)
         # When
@@ -302,7 +302,7 @@ class TestLoad:
     """Tests for load()."""
 
     async def test_load_appends_items(self, controller: PlayerQueuesController) -> None:
-        """Test load appends items."""
+        """Load appends the new items to the end of the queue."""
         # Given
         _seed_queue(controller, "q1")
         new_items = [_make_item("q1", f"new-{i}") for i in range(3)]
@@ -314,7 +314,7 @@ class TestLoad:
     async def test_load_replaces_with_keep_remaining_false(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test load replaces with keep remaining false."""
+        """Load replaces all existing items when keep_remaining=False and keep_played=False."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         new_items = [_make_item("q1", "fresh")]
@@ -341,7 +341,7 @@ class TestUpdateItems:
     """Tests for update_items()."""
 
     def test_update_items_sets_items_count(self, controller: PlayerQueuesController) -> None:
-        """Test update items sets items count."""
+        """update_items replaces the item list and keeps queue.items in sync with the new count."""
         # Given
         queue = _seed_queue(controller, "q1")
         new_items = [_make_item("q1", f"x-{i}") for i in range(5)]
@@ -354,7 +354,7 @@ class TestUpdateItems:
     def test_update_items_fires_signal(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test update items fires signal."""
+        """update_items fires a signal event after updating the item list."""
         # Given
         _seed_queue(controller, "q1")
         # When
@@ -372,7 +372,7 @@ class TestDeleteItem:
     """Tests for delete_item()."""
 
     def test_delete_item_by_index(self, controller: PlayerQueuesController) -> None:
-        """Test delete item by index."""
+        """delete_item removes the item at the given integer index."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When
@@ -384,7 +384,7 @@ class TestDeleteItem:
         assert "item-1" not in ids
 
     def test_delete_item_by_id(self, controller: PlayerQueuesController) -> None:
-        """Test delete item by id."""
+        """delete_item removes the item matching the given queue_item_id string."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When
@@ -393,7 +393,7 @@ class TestDeleteItem:
         assert len(controller._queue_items["q1"]) == 2
 
     def test_delete_item_raises_for_unknown_id(self, controller: PlayerQueuesController) -> None:
-        """Test delete item raises for unknown id."""
+        """delete_item raises InvalidDataError when no item matches the given ID."""
         # Given
         _seed_queue(controller, "q1", num_items=2)
         # When / Then
@@ -415,7 +415,7 @@ class TestMoveItem:
     """Tests for move_item()."""
 
     def test_move_item_down(self, controller: PlayerQueuesController) -> None:
-        """Test move item down."""
+        """move_item shifts the item forward by pos_shift positions in the queue."""
         # Given
         _seed_queue(controller, "q1", num_items=4)
         # When: move item at index 1 down by 1
@@ -425,7 +425,7 @@ class TestMoveItem:
         assert items[2].queue_item_id == "item-1"
 
     def test_move_item_up(self, controller: PlayerQueuesController) -> None:
-        """Test move item up."""
+        """move_item shifts the item backward when pos_shift is negative."""
         # Given
         _seed_queue(controller, "q1", num_items=4)
         # When: move item at index 2 up by 1
@@ -435,7 +435,7 @@ class TestMoveItem:
         assert items[1].queue_item_id == "item-2"
 
     def test_move_item_raises_for_unknown_id(self, controller: PlayerQueuesController) -> None:
-        """Test move item raises for unknown id."""
+        """move_item raises InvalidDataError when no item matches the given ID."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When / Then
@@ -456,7 +456,7 @@ class TestMoveItemEnd:
     """Tests for move_item_end()."""
 
     def test_move_item_to_end(self, controller: PlayerQueuesController) -> None:
-        """Test move item to end."""
+        """move_item_end relocates the specified item to the last position."""
         # Given
         _seed_queue(controller, "q1", num_items=4)
         # When
@@ -466,7 +466,7 @@ class TestMoveItemEnd:
         assert items[-1].queue_item_id == "item-0"
 
     def test_move_item_end_already_at_end_is_noop(self, controller: PlayerQueuesController) -> None:
-        """Test move item end already at end is noop."""
+        """move_item_end leaves the queue unchanged when the item is already last."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         original_items = list(controller._queue_items["q1"])
@@ -487,7 +487,7 @@ class TestClear:
     """Tests for clear()."""
 
     def test_clear_empties_queue(self, controller: PlayerQueuesController) -> None:
-        """Test clear empties queue."""
+        """Clear removes all items and resets current_index, current_item, and elapsed_time."""
         # Given
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.current_index = 1
@@ -502,7 +502,7 @@ class TestClear:
         assert queue.elapsed_time == 0
 
     def test_clear_resets_radio_source(self, controller: PlayerQueuesController) -> None:
-        """Test clear resets radio source."""
+        """Clear empties the queue's radio_source list."""
         # Given
         queue = _seed_queue(controller, "q1")
         queue.radio_source = [MagicMock()]
@@ -533,7 +533,7 @@ class TestSetRepeat:
     """Tests for set_repeat()."""
 
     def test_set_repeat_changes_mode(self, controller: PlayerQueuesController) -> None:
-        """Test set repeat changes mode."""
+        """set_repeat updates queue.repeat_mode to the specified mode."""
         # Given
         queue = _seed_queue(controller, "q1")
         assert queue.repeat_mode == RepeatMode.OFF
@@ -545,7 +545,7 @@ class TestSetRepeat:
     def test_set_repeat_noop_on_same_value(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test set repeat noop on same value."""
+        """set_repeat does not emit a signal event when the mode is already set to that value."""
         # Given: already OFF
         _seed_queue(controller, "q1")
         mock_mass.signal_event.reset_mock()
@@ -564,7 +564,7 @@ class TestSetPlaybackSpeed:
     """Tests for set_playback_speed()."""
 
     async def test_raises_for_invalid_speed(self, controller: PlayerQueuesController) -> None:
-        """Test raises for invalid speed."""
+        """set_playback_speed raises InvalidDataError when the speed is outside the valid range."""
         # Given
         _seed_queue(controller, "q1")
         # When / Then
@@ -572,7 +572,7 @@ class TestSetPlaybackSpeed:
             await controller.set_playback_speed("q1", 0.1)
 
     async def test_raises_for_empty_queue(self, controller: PlayerQueuesController) -> None:
-        """Test raises for empty queue."""
+        """set_playback_speed raises QueueEmpty when the queue has no current item."""
         # Given: queue with no current item
         _seed_queue(controller, "q1")
         # When / Then
@@ -580,7 +580,7 @@ class TestSetPlaybackSpeed:
             await controller.set_playback_speed("q1", 1.5)
 
     async def test_sets_speed_on_current_item(self, controller: PlayerQueuesController) -> None:
-        """Test sets speed on current item."""
+        """set_playback_speed stores the new speed in current_item.extra_attributes."""
         # Given: queue with a current item
         queue = _seed_queue(controller, "q1", num_items=2)
         current_item = controller._queue_items["q1"][0]
@@ -594,7 +594,7 @@ class TestSetPlaybackSpeed:
     async def test_noop_when_speed_unchanged(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test noop when speed unchanged."""
+        """set_playback_speed does not emit a signal when the speed is already set to that value."""
         # Given: speed already 1.0
         queue = _seed_queue(controller, "q1", num_items=1)
         current_item = controller._queue_items["q1"][0]
@@ -606,7 +606,7 @@ class TestSetPlaybackSpeed:
         mock_mass.signal_event.assert_not_called()
 
     async def test_raises_for_radio_item(self, controller: PlayerQueuesController) -> None:
-        """Test raises for radio item."""
+        """set_playback_speed raises InvalidCommand for items with no duration (e.g. live radio)."""
         # Given: current item with no duration (like radio)
         queue = _seed_queue(controller, "q1")
         item = _make_item("q1", "radio-item", "Radio", duration=0)
@@ -630,7 +630,7 @@ class TestOnPlayerRemove:
     def test_removes_queue_on_permanent_remove(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test removes queue on permanent remove."""
+        """on_player_remove removes queue and items and schedules cache cleanup when permanent."""
         # Given
         _seed_queue(controller, "q1")
         # When
@@ -644,7 +644,7 @@ class TestOnPlayerRemove:
     def test_removes_queue_on_non_permanent_remove(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test removes queue on non permanent remove."""
+        """on_player_remove removes the queue from memory when permanent=False."""
         # Given
         _seed_queue(controller, "q1")
         # When
@@ -653,7 +653,7 @@ class TestOnPlayerRemove:
         assert "q1" not in controller._queues
 
     def test_remove_unknown_player_is_safe(self, controller: PlayerQueuesController) -> None:
-        """Test remove unknown player is safe."""
+        """on_player_remove does not raise when the player_id is not registered."""
         # Given: no queues
         # When/Then: no exception
         controller.on_player_remove("unknown", permanent=False)
@@ -668,7 +668,7 @@ class TestGetNextItem:
     """Tests for get_next_item()."""
 
     def test_returns_next_item(self, controller: PlayerQueuesController) -> None:
-        """Test returns next item."""
+        """get_next_item returns the item immediately following the given index."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When
@@ -680,7 +680,7 @@ class TestGetNextItem:
     def test_returns_none_at_end_of_queue_no_repeat(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test returns none at end of queue no repeat."""
+        """get_next_item returns None when at the last item with RepeatMode.OFF."""
         # Given: 3-item queue, no repeat
         _seed_queue(controller, "q1", num_items=3)
         # When: we're at the last item (index 2)
@@ -689,7 +689,7 @@ class TestGetNextItem:
         assert next_item is None
 
     def test_returns_first_item_with_repeat_all(self, controller: PlayerQueuesController) -> None:
-        """Test returns first item with repeat all."""
+        """get_next_item wraps back to the first item when at the last item with RepeatMode.ALL."""
         # Given: 3-item queue, repeat ALL
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.repeat_mode = RepeatMode.ALL
@@ -711,7 +711,7 @@ class TestGetNextItem:
         assert next_item.queue_item_id == "item-2"
 
     def test_get_next_item_by_string_id(self, controller: PlayerQueuesController) -> None:
-        """Test get next item by string id."""
+        """get_next_item accepts a string queue_item_id and returns the item that follows it."""
         # Given
         _seed_queue(controller, "q1", num_items=3)
         # When: pass item id as string
@@ -730,7 +730,7 @@ class TestPlayerMediaFromQueueItem:
     """Tests for player_media_from_queue_item()."""
 
     async def test_raises_when_no_session_id(self, controller: PlayerQueuesController) -> None:
-        """Test raises when no session id."""
+        """player_media_from_queue_item raises InvalidDataError when the queue has no session_id."""
         # Given: queue with no session_id
         queue = _seed_queue(controller, "q1", num_items=1)
         queue.session_id = None
@@ -742,7 +742,7 @@ class TestPlayerMediaFromQueueItem:
     async def test_returns_player_media_with_session_id(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test returns player media with session id."""
+        """player_media_from_queue_item returns PlayerMedia with session_id in custom_data."""
         # Given: queue with session_id set
         queue = _seed_queue(controller, "q1", num_items=1)
         queue.session_id = "ses123"
@@ -778,7 +778,7 @@ class TestStop:
     async def test_stop_raises_when_player_unavailable(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test stop raises when player unavailable."""
+        """Stop raises PlayerUnavailableError when no player is found for the queue_id."""
         # Given: no player available
         _seed_queue(controller, "q1")
         mock_mass.players.get_player.return_value = None
@@ -789,7 +789,7 @@ class TestStop:
     async def test_stop_calls_cmd_stop(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test stop calls cmd stop."""
+        """Stop invokes cmd_stop on the underlying player."""
         # Given
         queue = _seed_queue(controller, "q1")
         queue.active = True
@@ -828,7 +828,7 @@ class TestPause:
     async def test_pause_noop_when_no_queue(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test pause noop when no queue."""
+        """Pause returns without error when the queue_id is not registered."""
         # Given: no queue registered
         mock_mass.players.cmd_pause = AsyncMock()
         # When / Then: no exception
@@ -837,7 +837,7 @@ class TestPause:
     async def test_pause_calls_cmd_pause(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test pause calls cmd pause."""
+        """Pause invokes cmd_pause on the underlying player."""
         # Given: idle queue
         _seed_queue(controller, "q1")
         mock_mass.players.cmd_pause = AsyncMock()
@@ -871,7 +871,7 @@ class TestPlay:
     async def test_play_raises_when_player_unavailable(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test play raises when player unavailable."""
+        """Play raises PlayerUnavailableError when no player is found for the queue_id."""
         # Given: no player available
         _seed_queue(controller, "q1")
         mock_mass.players.get_player.return_value = None
@@ -882,7 +882,7 @@ class TestPlay:
     async def test_play_calls_player_play_when_paused(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test play calls player play when paused."""
+        """Play calls player.play() to resume when the queue is in PAUSED state."""
         # Given: queue is PAUSED, player available
         queue = _seed_queue(controller, "q1")
         queue.active = True
@@ -901,7 +901,7 @@ class TestPlayPause:
     async def test_play_pause_pauses_when_playing(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test play pause pauses when playing."""
+        """play_pause delegates to pause when the queue is in PLAYING state."""
         # Given: queue is PLAYING
         queue = _seed_queue(controller, "q1")
         queue.state = PlaybackState.PLAYING
@@ -915,7 +915,7 @@ class TestPlayPause:
     async def test_play_pause_plays_when_idle(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test play pause plays when idle."""
+        """play_pause raises QueueEmpty when the queue is IDLE with no items to resume."""
         # Given: queue is IDLE with no items
         _seed_queue(controller, "q1", num_items=0)
         queue = controller._queues["q1"]
@@ -943,14 +943,14 @@ class TestNext:
     async def test_next_raises_when_queue_not_active(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test next raises when queue not active."""
+        """Next raises InvalidCommand when the queue_id is not registered."""
         # Given: no queue
         # When / Then
         with pytest.raises(InvalidCommand):
             await controller.next("unknown")
 
     async def test_next_raises_when_not_active(self, controller: PlayerQueuesController) -> None:
-        """Test next raises when not active."""
+        """Next raises InvalidCommand when the queue exists but is marked inactive."""
         # Given: inactive queue
         queue = _seed_queue(controller, "q1")
         queue.active = False
@@ -961,7 +961,7 @@ class TestNext:
     async def test_next_when_no_current_index(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test next when no current index."""
+        """Next returns without error when current_index is None."""
         # Given: active queue with no current_index
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.active = True
@@ -974,7 +974,7 @@ class TestNext:
     async def test_next_advances_to_next_track(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test next advances to next track."""
+        """Next increments current_index to move to the following track."""
         # Given: active queue at index 0
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.active = True
@@ -989,7 +989,7 @@ class TestNext:
     async def test_next_at_end_of_queue_stops(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test next at end of queue stops."""
+        """Next clears the transitioning flag and does not raise when there is no next item."""
         # Given: at last item, no repeat
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.active = True
@@ -1008,7 +1008,7 @@ class TestPrevious:
     async def test_previous_raises_when_not_active(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test previous raises when not active."""
+        """Previous raises InvalidCommand when the queue is inactive."""
         # Given
         queue = _seed_queue(controller, "q1")
         queue.active = False
@@ -1019,7 +1019,7 @@ class TestPrevious:
     async def test_previous_restarts_track_after_5s(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test previous restarts track after 5s."""
+        """Previous restarts the current track when elapsed_time exceeds 5 seconds."""
         # Given: elapsed time > 5 seconds, at index 2
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.active = True
@@ -1035,7 +1035,7 @@ class TestPrevious:
     async def test_previous_goes_to_prev_track_within_5s(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test previous goes to prev track within 5s."""
+        """Previous moves to the preceding track when elapsed_time is 5 seconds or less."""
         # Given: elapsed time < 5 seconds, at index 2
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.active = True
@@ -1053,7 +1053,7 @@ class TestSeekAndSkip:
     """Tests for seek() and skip()."""
 
     async def test_seek_raises_when_not_active(self, controller: PlayerQueuesController) -> None:
-        """Test seek raises when not active."""
+        """Seek raises InvalidCommand when the queue_id is not registered."""
         # Given: no queue
         with pytest.raises(InvalidCommand):
             await controller.seek("nonexistent", 30)
@@ -1061,7 +1061,7 @@ class TestSeekAndSkip:
     async def test_seek_raises_when_no_current_item(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test seek raises when no current item."""
+        """Seek raises InvalidCommand when the queue has no current item."""
         # Given: active queue with no current item
         queue = _seed_queue(controller, "q1")
         queue.active = True
@@ -1070,7 +1070,7 @@ class TestSeekAndSkip:
             await controller.seek("q1", 30)
 
     async def test_seek_raises_when_no_duration(self, controller: PlayerQueuesController) -> None:
-        """Test seek raises when no duration."""
+        """Seek raises InvalidCommand when the current item has no duration."""
         # Given: item with no duration
         queue = _seed_queue(controller, "q1")
         queue.active = True
@@ -1082,7 +1082,7 @@ class TestSeekAndSkip:
             await controller.seek("q1", 30)
 
     async def test_seek_raises_beyond_duration(self, controller: PlayerQueuesController) -> None:
-        """Test seek raises beyond duration."""
+        """Seek raises InvalidCommand when the seek position exceeds the item's duration."""
         # Given: item with 60s duration, seeking to 100s
         queue = _seed_queue(controller, "q1", num_items=1)
         queue.active = True
@@ -1093,7 +1093,7 @@ class TestSeekAndSkip:
             await controller.seek("q1", 99999)
 
     async def test_skip_raises_when_not_active(self, controller: PlayerQueuesController) -> None:
-        """Test skip raises when not active."""
+        """Skip raises InvalidCommand when the queue_id is not registered."""
         # Given
         with pytest.raises(InvalidCommand):
             await controller.skip("nonexistent")
@@ -1108,7 +1108,7 @@ class TestOnPlayerUpdate:
     """Tests for on_player_update()."""
 
     def test_ignores_protocol_players(self, controller: PlayerQueuesController) -> None:
-        """Test ignores protocol players."""
+        """on_player_update returns early without side-effects for players of type PROTOCOL."""
         # Given: protocol player
         player = MagicMock()
         player.type = PlayerType.PROTOCOL
@@ -1118,7 +1118,7 @@ class TestOnPlayerUpdate:
         # Then: no crash, no queue created
 
     def test_ignores_unknown_player_id(self, controller: PlayerQueuesController) -> None:
-        """Test ignores unknown player id."""
+        """on_player_update returns early when no queue exists for the player_id."""
         # Given: no queue for player
         player = MagicMock()
         player.type = PlayerType.PLAYER
@@ -1162,7 +1162,7 @@ class TestOnPlayerElapsedTimeCorrected:
     """Tests for on_player_elapsed_time_corrected()."""
 
     def test_ignores_protocol_players(self, controller: PlayerQueuesController) -> None:
-        """Test ignores protocol players."""
+        """on_player_elapsed_time_corrected returns early without error for PROTOCOL player type."""
         # Given
         player = MagicMock()
         player.type = PlayerType.PROTOCOL
@@ -1170,7 +1170,7 @@ class TestOnPlayerElapsedTimeCorrected:
         controller.on_player_elapsed_time_corrected(player)
 
     def test_ignores_unknown_queue(self, controller: PlayerQueuesController) -> None:
-        """Test ignores unknown queue."""
+        """on_player_elapsed_time_corrected returns early when no queue exists for the player_id."""
         # Given
         player = MagicMock()
         player.type = PlayerType.PLAYER
@@ -1179,7 +1179,7 @@ class TestOnPlayerElapsedTimeCorrected:
         controller.on_player_elapsed_time_corrected(player)
 
     def test_ignores_inactive_queue(self, controller: PlayerQueuesController) -> None:
-        """Test ignores inactive queue."""
+        """on_player_elapsed_time_corrected returns early when the queue is marked inactive."""
         # Given
         queue = _seed_queue(controller, "q1")
         queue.active = False
@@ -1192,7 +1192,7 @@ class TestOnPlayerElapsedTimeCorrected:
     def test_updates_elapsed_time(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test updates elapsed time."""
+        """on_player_elapsed_time_corrected updates queue.elapsed_time and fires a signal."""
         # Given: active queue, player reports elapsed time 30s
         queue = _seed_queue(controller, "q1")
         queue.active = True
@@ -1217,7 +1217,7 @@ class TestTrackLoadedInBuffer:
     """Tests for track_loaded_in_buffer()."""
 
     def test_raises_for_unknown_queue(self, controller: PlayerQueuesController) -> None:
-        """Test raises for unknown queue."""
+        """track_loaded_in_buffer raises PlayerUnavailableError when the queue is not registered."""
         # Given: no queue registered
         with pytest.raises(PlayerUnavailableError):
             controller.track_loaded_in_buffer("nonexistent", "item-0")
@@ -1305,7 +1305,7 @@ class TestGetConfigEntries:
     """Tests for get_config_entries()."""
 
     async def test_returns_config_entries(self, controller: PlayerQueuesController) -> None:
-        """Test returns config entries."""
+        """get_config_entries returns expected keys like 'default_enqueue_select_artist'."""
         # Given
         # When
         entries = await controller.get_config_entries()
@@ -1325,13 +1325,13 @@ class TestSaveAsPlaylist:
     """Tests for save_as_playlist()."""
 
     async def test_raises_when_queue_unavailable(self, controller: PlayerQueuesController) -> None:
-        """Test raises when queue unavailable."""
+        """save_as_playlist raises PlayerUnavailableError when the queue_id is not registered."""
         # Given: no queue
         with pytest.raises(PlayerUnavailableError):
             await controller.save_as_playlist("nonexistent", "My Playlist")
 
     async def test_raises_when_empty_queue(self, controller: PlayerQueuesController) -> None:
-        """Test raises when empty queue."""
+        """save_as_playlist raises QueueEmpty when the queue has no items."""
         # Given: empty queue
         _seed_queue(controller, "q1")
         with pytest.raises(QueueEmpty):
@@ -1421,7 +1421,7 @@ class TestGetActiveQueue:
     def test_returns_none_when_player_not_found(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test returns none when player not found."""
+        """get_active_queue returns None when the player_id is not found."""
         # Given: no player
         mock_mass.players.get_player.return_value = None
         # When
@@ -1432,7 +1432,7 @@ class TestGetActiveQueue:
     def test_returns_queue_when_player_found(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test returns queue when player found."""
+        """get_active_queue delegates to players.get_active_queue and returns the result."""
         # Given: player exists and has active queue
         queue = _seed_queue(controller, "q1")
         player = MagicMock()
@@ -1455,7 +1455,7 @@ class TestSetShuffle:
     async def test_noop_when_shuffle_unchanged(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test noop when shuffle unchanged."""
+        """set_shuffle does not emit a signal when shuffle is already at the requested value."""
         # Given: shuffle is already False
         _seed_queue(controller, "q1", num_items=3)
         mock_mass.signal_event.reset_mock()
@@ -1721,7 +1721,7 @@ class TestGetNextIndexRepeatOne:
     """Tests for _get_next_index() with RepeatMode.ONE."""
 
     def test_repeat_one_returns_same_index(self, controller: PlayerQueuesController) -> None:
-        """Test repeat ONE returns same index."""
+        """_get_next_index returns same index for RepeatMode.ONE when is_skip=False."""
         # Given: 3-item queue, repeat ONE
         queue = _seed_queue(controller, "q1", num_items=3)
         queue.repeat_mode = RepeatMode.ONE
@@ -2034,7 +2034,7 @@ class TestQueueBufferCompleted:
     """Tests for queue_buffer_completed()."""
 
     def test_noop_when_queue_not_found(self, controller: PlayerQueuesController) -> None:
-        """Test noop when queue does not exist."""
+        """queue_buffer_completed returns without error when the queue_id is not registered."""
         # Given: no queue
         # When / Then: no error
         controller.queue_buffer_completed("nonexistent")
@@ -2112,7 +2112,7 @@ class TestSmartShuffle:
     """Tests for _smart_shuffle() standalone function."""
 
     async def test_empty_list_returns_empty(self) -> None:
-        """Test empty list returns empty."""
+        """_smart_shuffle returns an empty list when given an empty input."""
         # Given / When
         result = await _smart_shuffle([])
         # Then
@@ -2128,7 +2128,7 @@ class TestSmartShuffle:
         assert result == [item]
 
     async def test_two_items_shuffled(self) -> None:
-        """Test two items are returned (shuffled)."""
+        """_smart_shuffle returns all items when given a two-item list."""
         # Given
         items = [_make_item(queue_item_id=f"item-{i}") for i in range(2)]
         # When
@@ -2138,7 +2138,7 @@ class TestSmartShuffle:
         assert {i.queue_item_id for i in result} == {"item-0", "item-1"}
 
     async def test_multiple_items_all_present(self) -> None:
-        """Test multiple items are all present after shuffle."""
+        """_smart_shuffle preserves all items — none are lost during shuffling."""
         # Given
         items = [_make_item(queue_item_id=f"item-{i}", name=f"Track {i}") for i in range(5)]
         # When
@@ -2307,7 +2307,7 @@ class TestGetPlaylistTracks:
     async def test_skips_unavailable_tracks(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test skips unavailable tracks."""
+        """get_playlist_tracks excludes tracks where available=False."""
         # Given: 1 available, 1 unavailable track
         track1 = MagicMock()
         track1.available = True
@@ -2342,7 +2342,7 @@ class TestResolveMediaItems:
     async def test_resolves_track_directly(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test returns single track directly."""
+        """_resolve_media_items wraps a Track in a list without further resolution."""
         # Given: a Track media item
         track = MagicMock(spec=Track)
         track.media_type = MediaType.TRACK
@@ -2928,7 +2928,7 @@ class TestEnqueueNextItem:
     def test_noop_when_no_next_item(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test noop when no next item provided."""
+        """_enqueue_next_item returns early without calling call_later when next_item is None."""
         # Given: registered queue
         _seed_queue(controller, "q1")
         # When: called with None
@@ -2939,7 +2939,7 @@ class TestEnqueueNextItem:
     def test_noop_in_flow_mode(
         self, controller: PlayerQueuesController, mock_mass: MagicMock
     ) -> None:
-        """Test noop in flow mode."""
+        """_enqueue_next_item skips scheduling when the queue is in flow mode."""
         # Given: queue in flow mode
         queue = _seed_queue(controller, "q1", num_items=2)
         queue.flow_mode = True
@@ -3108,7 +3108,7 @@ class TestPlayMedia:
     """Tests for play_media()."""
 
     async def test_raises_when_queue_unavailable(self, controller: PlayerQueuesController) -> None:
-        """Test raises when queue not found."""
+        """play_media raises PlayerUnavailableError when the queue_id is not registered."""
         # Given: no queue registered
         with pytest.raises(PlayerUnavailableError):
             await controller.play_media("nonexistent", [])
@@ -3424,7 +3424,7 @@ class TestGetNextPodcastEpisodes:
     async def test_raises_when_no_podcast_and_no_episode(
         self, controller: PlayerQueuesController
     ) -> None:
-        """Test raises when neither podcast nor episode provided."""
+        """get_next_podcast_episodes raises InvalidDataError when both args are None."""
         # Given/When/Then
         with pytest.raises(InvalidDataError):
             await controller.get_next_podcast_episodes(None, None)

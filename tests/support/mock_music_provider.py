@@ -6,10 +6,11 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
-from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     Playlist,
     SearchResults,
     Track,
@@ -128,5 +129,5 @@ class MockMusicProvider(MusicProvider):
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
-            audio_format=MagicMock(),
+            audio_format=AudioFormat(content_type=ContentType.MP3),
         )

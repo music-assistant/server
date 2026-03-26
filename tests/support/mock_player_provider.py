@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import PlaybackState
 
 from tests.common import MockPlayer, MockProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.player import PlayerMedia
 
 
 class MockPlayerProvider(MockProvider):
@@ -61,3 +65,10 @@ class TrackingMockPlayer(MockPlayer):
         """Simulate the player pausing playback."""
         self._attr_playback_state = PlaybackState.PAUSED
         self._cache.clear()
+
+    async def stop(self) -> None:
+        """Handle stop command from MA by transitioning to idle state."""
+        self.simulate_stop()
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Accept a play_media command without starting real audio playback."""

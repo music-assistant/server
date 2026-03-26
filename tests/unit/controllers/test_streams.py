@@ -8,6 +8,7 @@ HTTP handler error paths, and various utility methods.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,7 +65,7 @@ class TestParsePcmInfo:
     """Tests for the parse_pcm_info module-level helper."""
 
     def test_defaults_when_no_params(self) -> None:
-        """Test defaults when no params."""
+        """parse_pcm_info returns rate=44100, size=16, channels=2 when no parameters are present."""
         # Given: plain content type with no params
         # When
         rate, size, channels = parse_pcm_info("audio/pcm")
@@ -74,7 +75,7 @@ class TestParsePcmInfo:
         assert channels == 2
 
     def test_parses_rate_param(self) -> None:
-        """Test parses rate param."""
+        """parse_pcm_info extracts the sample rate from a 'rate=' parameter in the content type."""
         # Given
         content_type = "audio/pcm;rate=48000"
         # When
@@ -83,7 +84,7 @@ class TestParsePcmInfo:
         assert rate == 48000
 
     def test_parses_bitrate_param(self) -> None:
-        """Test parses bitrate param."""
+        """parse_pcm_info extracts the bit depth from a 'bitrate=' parameter in the content type."""
         # Given
         content_type = "audio/pcm;rate=44100;bitrate=24"
         # When
@@ -92,7 +93,7 @@ class TestParsePcmInfo:
         assert size == 24
 
     def test_parses_channels_param(self) -> None:
-        """Test parses channels param."""
+        """parse_pcm_info extracts the channel count from a 'channels=' parameter."""
         # Given
         content_type = "audio/pcm;rate=44100;channels=1"
         # When
@@ -101,7 +102,7 @@ class TestParsePcmInfo:
         assert channels == 1
 
     def test_parses_all_params(self) -> None:
-        """Test parses all params."""
+        """parse_pcm_info extracts rate, bit depth, and channels when all three are present."""
         # Given
         content_type = "audio/pcm;rate=96000;bitrate=32;channels=2"
         # When
@@ -121,7 +122,7 @@ class TestBaseUrl:
     """Tests for the base_url property."""
 
     def test_returns_server_base_url(self, controller: StreamsController) -> None:
-        """Test returns server base url."""
+        """base_url delegates to the internal webserver and returns its base URL."""
         # Given: server is mocked with a known base_url
         # When
         url = controller.base_url
@@ -164,7 +165,7 @@ class TestResolveStreamUrl:
     async def test_raises_when_missing_session_id(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test raises when missing session id."""
+        """resolve_stream_url raises InvalidDataError when session_id is absent from custom_data."""
         # Given: media with no session_id in custom_data
         media = self._make_player_media(custom_data={"session_id": None})
         mock_mass.players.get_player.return_value = self._make_player()
@@ -173,7 +174,7 @@ class TestResolveStreamUrl:
             await controller.resolve_stream_url("player-1", media)
 
     async def test_returns_announcement_uri_unchanged(self, controller: StreamsController) -> None:
-        """Test returns announcement uri unchanged."""
+        """resolve_stream_url returns the media URI unchanged for ANNOUNCEMENT media type."""
         # Given: announcement media
         media = self._make_player_media(media_type=MediaType.ANNOUNCEMENT)
         # When
@@ -184,7 +185,7 @@ class TestResolveStreamUrl:
     async def test_returns_single_url_for_non_flow_mode(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test returns single url for non flow mode."""
+        """resolve_stream_url builds a /single/ URL embedding item ID, session, and player ID."""
         # Given: regular TRACK media, non-flow player
         media = self._make_player_media(
             media_type=MediaType.TRACK,
@@ -211,7 +212,7 @@ class TestResolveStreamUrl:
     async def test_returns_flow_url_for_flow_mode_player(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test returns flow url for flow mode player."""
+        """resolve_stream_url builds a /flow/ URL when the player has flow_mode enabled."""
         # Given: TRACK media, player has flow_mode=True
         media = self._make_player_media(
             media_type=MediaType.TRACK,
@@ -229,7 +230,7 @@ class TestResolveStreamUrl:
     async def test_raises_when_missing_queue_item_id(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test raises when missing queue item id."""
+        """resolve_stream_url raises InvalidDataError when queue_item_id is None for a TRACK."""
         # Given: media with no queue_item_id
         media = self._make_player_media(
             media_type=MediaType.TRACK,
@@ -252,7 +253,7 @@ class TestGetPluginSourceUrl:
     """Tests for get_plugin_source_url()."""
 
     async def test_returns_pcm_as_wav(self, controller: StreamsController) -> None:
-        """Test returns pcm as wav."""
+        """get_plugin_source_url maps a PCM audio format to a .wav extension in the returned URL."""
         # Given: plugin source that uses PCM
         plugin_source = MagicMock()
         plugin_source.id = "my-source"
@@ -267,7 +268,7 @@ class TestGetPluginSourceUrl:
         assert "player-1" in url
 
     async def test_returns_non_pcm_format_as_is(self, controller: StreamsController) -> None:
-        """Test returns non pcm format as is."""
+        """get_plugin_source_url uses the content type as the file extension for non-PCM formats."""
         # Given: plugin source that uses MP3
         plugin_source = MagicMock()
         plugin_source.id = "mp3-source"
@@ -281,7 +282,7 @@ class TestGetPluginSourceUrl:
         assert "mp3-source" in url
 
     async def test_url_includes_base_url(self, controller: StreamsController) -> None:
-        """Test url includes base url."""
+        """get_plugin_source_url prefixes the returned URL with the streams controller base URL."""
         # Given
         plugin_source = MagicMock()
         plugin_source.id = "src-1"
@@ -304,7 +305,7 @@ class TestCleanupQueueAudioData:
     async def test_clears_crossfade_data(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test clears crossfade data."""
+        """cleanup_queue_audio_data removes stored crossfade data for the given queue ID."""
         # Given: crossfade data exists for queue q1
         controller._crossfade_data["q1"] = MagicMock()
         mock_mass.player_queues._queue_items = {"q1": []}
@@ -316,7 +317,7 @@ class TestCleanupQueueAudioData:
     async def test_clears_stream_buffers(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test clears stream buffers."""
+        """cleanup_queue_audio_data calls clear() on each stream buffer and sets it to None."""
         # Given: queue with an item that has a buffer
         buffer = AsyncMock()
         stream_details = MagicMock()
@@ -333,7 +334,7 @@ class TestCleanupQueueAudioData:
     async def test_noop_for_items_without_streamdetails(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test noop for items without streamdetails."""
+        """cleanup_queue_audio_data silently skips queue items that have no streamdetails."""
         # Given: item with no streamdetails
         item = MagicMock()
         item.streamdetails = None
@@ -344,7 +345,7 @@ class TestCleanupQueueAudioData:
     async def test_noop_for_unknown_queue(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test noop for unknown queue."""
+        """cleanup_queue_audio_data does nothing and does not raise for an unknown queue ID."""
         # Given: no data for this queue
         mock_mass.player_queues._queue_items = {}
         # When / Then: should not raise
@@ -360,7 +361,7 @@ class TestAdditionalProperties:
     """Tests for bind_ip, smart_fades_mixer, smart_fades_analyzer properties."""
 
     def test_bind_ip(self, controller: StreamsController) -> None:
-        """Test bind_ip returns default."""
+        """bind_ip returns '0.0.0.0' as the default wildcard bind address."""
         # Given/When
         result = controller.bind_ip
         # Then
@@ -390,7 +391,7 @@ class TestGetConfigEntries:
     """Tests for get_config_entries()."""
 
     async def test_returns_tuple_of_config_entries(self, controller: StreamsController) -> None:
-        """Test returns tuple of config entries."""
+        """get_config_entries returns a non-empty tuple that includes the 'allow_buffering' key."""
         # Given: mocked ip_addresses
         with patch(
             "music_assistant.controllers.streams.streams_controller.get_ip_addresses",
@@ -875,10 +876,18 @@ class TestGetStream:
             },
         )
         pcm_format = MagicMock()
+        sentinel = MagicMock()
         # When
-        result = controller.get_stream(media, pcm_format)
-        # Then: should be an async generator (coroutine returned by the method)
-        assert result is not None
+        with patch.object(controller, "get_announcement_stream", return_value=sentinel) as mock_ann:
+            result = controller.get_stream(media, pcm_format)
+        # Then: get_announcement_stream was called and its return value is forwarded
+        mock_ann.assert_called_once_with(
+            "http://example.com/bell.mp3",
+            output_format=pcm_format,
+            pre_announce=False,
+            pre_announce_url="/path/bell.mp3",
+        )
+        assert result is sentinel
 
     def test_plugin_source_returns_plugin_stream(
         self, controller: StreamsController, mock_mass: MagicMock
@@ -890,10 +899,19 @@ class TestGetStream:
             custom_data={"source_id": "my-plugin", "player_id": "p1"},
         )
         pcm_format = MagicMock()
+        sentinel = MagicMock()
         # When
-        result = controller.get_stream(media, pcm_format)
-        # Then
-        assert result is not None
+        with patch.object(
+            controller, "get_plugin_source_stream", return_value=sentinel
+        ) as mock_plugin:
+            result = controller.get_stream(media, pcm_format)
+        # Then: get_plugin_source_stream was called and its return value is forwarded
+        mock_plugin.assert_called_once_with(
+            plugin_source_id="my-plugin",
+            output_format=pcm_format,
+            player_id="p1",
+        )
+        assert result is sentinel
 
     def test_queue_stream_non_flow_mode(
         self, controller: StreamsController, mock_mass: MagicMock
@@ -945,10 +963,12 @@ class TestGetStream:
         mock_mass.streams = controller  # self-reference for get_queue_flow_stream
 
         # When — patch get_queue_flow_stream to avoid actually running it
-        with patch.object(controller, "get_queue_flow_stream", return_value=MagicMock()):
+        sentinel = MagicMock()
+        with patch.object(controller, "get_queue_flow_stream", return_value=sentinel) as mock_flow:
             result = controller.get_stream(media, pcm_format, player_id="player-1")
-        # Then: result is not None
-        assert result is not None
+        # Then: flow stream was requested and its return value is forwarded
+        mock_flow.assert_called_once()
+        assert result is sentinel
 
     def test_radio_disables_flow_mode(
         self, controller: StreamsController, mock_mass: MagicMock
@@ -998,12 +1018,14 @@ class TestGetStream:
         mock_mass.streams = controller
 
         # When
-        with patch.object(controller, "get_queue_flow_stream", return_value=MagicMock()):
+        sentinel = MagicMock()
+        with patch.object(controller, "get_queue_flow_stream", return_value=sentinel) as mock_flow:
             result = controller.get_stream(
                 media, pcm_format, player_id="player-1", force_flow_mode=True
             )
-        # Then: result is not None (flow stream used)
-        assert result is not None
+        # Then: flow stream was used despite player having flow_mode=False
+        mock_flow.assert_called_once()
+        assert result is sentinel
 
     def test_direct_url_fallback(self, controller: StreamsController, mock_mass: MagicMock) -> None:
         """Test media with no source_id falls back to direct ffmpeg stream."""
@@ -1041,8 +1063,13 @@ class TestLogRequest:
         mock_request.path = "/flow/ses/q1/item1/p1.flac"
         mock_request.remote = "192.168.1.10"
         mock_request.headers = {}
-        # When / Then: should not raise
-        controller._log_request(mock_request)
+        # Ensure VERBOSE path (level 5) is not taken by setting level to DEBUG (10)
+        controller.logger.setLevel(logging.DEBUG)
+        # When
+        with patch.object(controller.logger, "debug") as mock_debug:
+            controller._log_request(mock_request)
+        # Then: debug was called (not verbose path)
+        mock_debug.assert_called_once()
 
     def test_log_request_verbose_level(self, controller: StreamsController) -> None:
         """Test _log_request logs at verbose level when enabled."""
@@ -1054,8 +1081,12 @@ class TestLogRequest:
         mock_request.headers = {"Accept": "audio/flac"}
         # Set logger to verbose level to trigger the verbose path
         controller.logger.setLevel(5)  # VERBOSE_LOG_LEVEL is typically 5
-        # When / Then: should not raise
-        controller._log_request(mock_request)
+        # When
+        with patch.object(controller.logger, "log") as mock_log:
+            controller._log_request(mock_request)
+        # Then: log() was called at VERBOSE_LOG_LEVEL (5)
+        mock_log.assert_called_once()
+        assert mock_log.call_args[0][0] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -1182,8 +1213,8 @@ class TestSelectFlowFormat:
         mock_mass.config.get_player_config_value = AsyncMock(return_value=[("22050", "16")])
         # When: 22050 is not in (192000, 96000, 48000, 44100) preferred list
         result = await controller._select_flow_format(player)
-        # Then: uses INTERNAL_PCM_FORMAT sample_rate as default
-        assert result.sample_rate is not None
+        # Then: uses INTERNAL_PCM_FORMAT sample_rate (48000) as the fallback
+        assert result.sample_rate == 48000
 
 
 # ---------------------------------------------------------------------------
@@ -1853,7 +1884,12 @@ class TestGetQueueItemStreamFadeIn:
     async def test_fade_in_buffering(
         self, controller: StreamsController, mock_mass: MagicMock
     ) -> None:
-        """Test fade_in=True buffers initial chunks and applies afade filter."""
+        """Test fade_in=True buffers the first chunk instead of yielding it.
+
+        The fade-in logic accumulates the first chunk into a buffer and then
+        discards it (clearing the buffer and setting fade_in=False), so only
+        the remaining chunks are yielded directly.
+        """
         # Given
         queue_item = MagicMock()
         streamdetails = MagicMock()
@@ -1868,32 +1904,25 @@ class TestGetQueueItemStreamFadeIn:
         queue_item.extra_attributes = {"playback_speed": 1.0}
 
         pcm_format = MagicMock()
-        pcm_format.pcm_sample_size = 100  # small so 4 * 100 = 400 threshold
+        pcm_format.pcm_sample_size = 100  # threshold = 4 * 100 = 400
         mock_mass.config.get_raw_core_config_value.return_value = False
         mock_mass.get_provider.return_value = None
 
-        # Yield enough chunks to exceed pcm_sample_size * 4 threshold
+        # 10 chunks of 100 bytes each
+        num_chunks = 10
+
         async def fake_media(*_args: object, **_kwargs: object) -> object:
-            for _ in range(10):
+            for _ in range(num_chunks):
                 yield b"\x00" * 100
 
-        async def fake_ffmpeg_fade(*_args: object, **_kwargs: object) -> object:
-            yield b"faded_data"
-
         # When
-        with (
-            patch(
-                "music_assistant.controllers.streams.streams_controller.get_media_stream",
-                fake_media,
-            ),
-            patch(
-                "music_assistant.controllers.streams.streams_controller.get_ffmpeg_stream",
-                fake_ffmpeg_fade,
-            ),
+        with patch(
+            "music_assistant.controllers.streams.streams_controller.get_media_stream",
+            fake_media,
         ):
             chunks = [c async for c in controller.get_queue_item_stream(queue_item, pcm_format)]
-        # Then: fade applied and then direct chunks (fade_in set to False after first chunk)
-        assert len(chunks) > 0
+        # Then: first chunk was buffered (held back), remaining 9 chunks were yielded
+        assert len(chunks) == num_chunks - 1
 
 
 # ---------------------------------------------------------------------------

@@ -979,9 +979,9 @@ class TestHandleCmdStop:
         mass.players = ctrl
         mass.call_later = MagicMock()
         [player] = _add_players(ctrl, mass, "Stop Player")
-        # MockPlayer.stop() is a no-op async method
+        player.stop = AsyncMock()  # type: ignore[method-assign]
         await ctrl._handle_cmd_stop(player.player_id)
-        # Player.mark_stop_called should have been called (no assert needed, just no crash)
+        player.stop.assert_called_once()
 
     async def test_stop_with_unavailable_player_raises(self) -> None:
         """_handle_cmd_stop raises PlayerUnavailableError when player not found."""

@@ -4,7 +4,6 @@ import pytest
 
 from music_assistant.mass import MusicAssistant
 from tests.support.harness import MusicAssistantHarness
-from tests.support.wiremock import wiremock  # noqa: F401
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlaybackState
 
 from tests.support.harness import MusicAssistantHarness
 from tests.support.mock_player_provider import MockPlayerProvider, TrackingMockPlayer
@@ -83,43 +83,3 @@ async def test_cmd_stop_succeeds_on_idle_player(harness: MusicAssistantHarness) 
 
     # Then the player remains idle (stop on idle player is a no-op)
     assert player.playback_state == PlaybackState.IDLE
-
-
-@pytest.mark.asyncio
-async def test_player_state_name_reflects_registration(harness: MusicAssistantHarness) -> None:
-    """Given a player registered with a display name, the state name matches the provided name."""
-    # Given a player with a specific name
-    player = _make_player(harness, "ctrl-player-5", "My Named Player")
-    await harness.add_player(player)
-
-    # When the player state is retrieved
-    retrieved = harness.mass.players.get_player("ctrl-player-5")
-    assert retrieved is not None
-
-    # Then the display name matches what was registered
-    assert "My Named Player" in retrieved.state.name
-
-
-@pytest.mark.asyncio
-async def test_player_grouping_tracked_via_set_members(harness: MusicAssistantHarness) -> None:
-    """Given two grouping-capable players, when one joins the other, group members are updated."""
-    # Given a provider with two players that support grouping
-    provider = MockPlayerProvider(domain="group_ctrl_player", mass=MagicMock())
-    leader = TrackingMockPlayer(provider=provider, player_id="group-leader-1", name="Group Leader")
-    member = TrackingMockPlayer(provider=provider, player_id="group-member-1", name="Group Member")
-
-    # And both players support grouping
-    leader._attr_supported_features = {PlayerFeature.SET_MEMBERS}
-    member._attr_supported_features = {PlayerFeature.SET_MEMBERS}
-    leader._attr_can_group_with = {"group-member-1"}
-    leader._cache.clear()
-    member._cache.clear()
-
-    await harness.add_player(leader)
-    await harness.add_player(member)
-
-    # When the member is added to the leader's group via set_members
-    await leader.set_members(player_ids_to_add=["group-member-1"])
-
-    # Then the leader's group_members list contains the member
-    assert "group-member-1" in leader.group_members

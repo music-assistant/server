@@ -351,8 +351,10 @@ def test_parse_podcast_episode_with_chapters() -> None:
         domain=DOMAIN,
     )
     assert result is not None
-    # chapters are parsed internally but not exposed on PodcastEpisode;
-    # just assert the function ran without error
+    # PodcastEpisode does not expose chapters as a field, but confirm the episode
+    # parsed correctly with chapter data present (name and duration must survive).
+    assert result.name == "Episode 1"
+    assert result.duration == 1800
 
 
 def test_parse_podcast_episode_skips_non_dict_chapters() -> None:
