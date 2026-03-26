@@ -3079,6 +3079,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        if player.state.playback_state == PlaybackState.IDLE:
+            return
         player.mark_stop_called()
         # Delegate to active protocol player if one is active
         target_player = player
@@ -3176,6 +3178,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        if player.state.playback_state == PlaybackState.IDLE:
+            return
         # Check if a plugin source is active with a pause callback
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.can_play_pause and plugin_source.on_pause:
