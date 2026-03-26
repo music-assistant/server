@@ -129,7 +129,7 @@ def parse_track(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
@@ -168,7 +168,7 @@ def parse_artist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
@@ -232,7 +232,7 @@ def parse_album(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
@@ -270,7 +270,7 @@ def parse_playlist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
