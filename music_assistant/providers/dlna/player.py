@@ -422,9 +422,11 @@ class DLNAPlayer(Player):
         # always clear queue (by sending stop) first
         if self.device.can_stop:
             await self.stop()
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        # some strict DLNA require the metadata to correspond with the url
+        media.uri = url
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         # optimistically set the state here to help in case of a player
         # that is slow or failing to report state changes.
         prev_state = self._attr_playback_state
