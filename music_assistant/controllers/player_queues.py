@@ -2794,7 +2794,7 @@ class PlayerQueuesController(CoreController):
             # we have a new item, so we need report the previous one
             is_current_item = False
             item_to_report = prev_state["current_item"]
-            seconds_played = int(prev_state["elapsed_time"])
+            seconds_played = int(prev_state["last_playing_elapsed_time"])
         else:
             # report on current item
             is_current_item = True
