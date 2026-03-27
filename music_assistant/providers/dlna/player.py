@@ -422,9 +422,9 @@ class DLNAPlayer(Player):
         # always clear queue (by sending stop) first
         if self.device.can_stop:
             await self.stop()
-        didl_metadata = create_didl_metadata(media)
-        title = media.title or media.uri
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        didl_metadata = create_didl_metadata(media, url)
+        title = media.title or media.uri
         # optimistically set the state here to help in case of a player
         # that is slow or failing to report state changes.
         prev_state = self._attr_playback_state
@@ -445,9 +445,9 @@ class DLNAPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         assert self.device is not None  # for type checking
-        didl_metadata = create_didl_metadata(media)
-        title = media.title or media.uri
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        didl_metadata = create_didl_metadata(media, url)
+        title = media.title or media.uri
         try:
             await self.device.async_set_next_transport_uri(url, title, didl_metadata)
         except UpnpError:

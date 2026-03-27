@@ -254,6 +254,9 @@ class PandoraProvider(MusicProvider):
         if media_type != MediaType.RADIO:
             raise MediaNotFoundError(f"Unsupported media type: {media_type}")
 
+        # Clear any existing session so we get fresh tracks from the API
+        self._sessions.pop(item_id, None)
+
         # Create playlist with 1000 track placeholders for continuous streaming
         parts = [
             MultiPartPath(
