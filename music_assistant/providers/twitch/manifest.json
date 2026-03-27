@@ -3,7 +3,7 @@
   "domain": "twitch",
   "stage": "beta",
   "name": "Twitch Audio",
-  "description": "Audio-only streaming from Twitch channels with raid following and ad handling.",
+  "description": "Audio-only streaming from Twitch channels with raid following.",
   "codeowners": ["@Drizzt321"],
   "requirements": ["streamlink>=8.0,<9"],
   "documentation": "",

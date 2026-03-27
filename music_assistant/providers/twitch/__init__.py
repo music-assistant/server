@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -76,14 +76,9 @@ CONF_CLIENT_SECRET = "client_secret"
 CONF_STREAMLINK_TOKEN = "streamlink_token"
 CONF_ACCESS_TOKEN = "access_token"
 CONF_REFRESH_TOKEN = "refresh_token"
-CONF_AD_HANDLING = "ad_handling"
 CONF_AUTO_RAID = "auto_raid"
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_REVOKE = "revoke"
-
-# Ad handling modes
-AD_MODE_SILENCE = "silence"
-AD_MODE_PASSTHROUGH = "passthrough"
 
 # Browse paths
 BROWSE_LIVE = "live"
@@ -274,18 +269,6 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_STREAMLINK_TOKEN),
         ),
-        # Ad handling mode
-        ConfigEntry(
-            key=CONF_AD_HANDLING,
-            type=ConfigEntryType.STRING,
-            label="Ad Handling",
-            options=[
-                ConfigValueOption("Silence (replace ads with silence)", AD_MODE_SILENCE),
-                ConfigValueOption("Passthrough (play ad audio)", AD_MODE_PASSTHROUGH),
-            ],
-            default_value=AD_MODE_SILENCE,
-            value=values.get(CONF_AD_HANDLING),
-        ),
         # Auto-raid toggle
         ConfigEntry(
             key=CONF_AUTO_RAID,
@@ -337,9 +320,8 @@ class TwitchProvider(MusicProvider):
         val = self.config.get_value(CONF_AUTO_RAID)
         self._auto_raid = bool(val) if val is not None else True
         self.logger.info(
-            "Twitch provider initialized: auto_raid=%s, ad_handling=%s, authenticated=%s",
+            "Twitch provider initialized: auto_raid=%s, authenticated=%s",
             self._auto_raid,
-            self.config.get_value(CONF_AD_HANDLING),
             self.is_authenticated,
         )
 
@@ -819,7 +801,7 @@ class TwitchProvider(MusicProvider):
                         if _ah.ad_break_active != prev_ad_state:
                             prev_ad_state = _ah.ad_break_active
                             if _ah.ad_break_active:
-                                streamdetails.stream_title = f"{item_id} - Ad Break (silenced)"
+                                streamdetails.stream_title = f"{item_id} - Ad Break"
                             else:
                                 streamdetails.stream_metadata = None
                         yield chunk
@@ -864,8 +846,7 @@ class TwitchProvider(MusicProvider):
                         patch_ad_handling,
                     )
 
-                    ad_mode = str(self.config.get_value(CONF_AD_HANDLING) or AD_MODE_SILENCE)
-                    patch_ad_handling(ad_mode, reader_cls=reader_cls)
+                    patch_ad_handling(reader_cls=reader_cls)
 
             return result
         except Exception:

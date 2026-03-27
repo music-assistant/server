@@ -105,7 +105,6 @@ _BASE_CONFIG: dict[str, Any] = {
     "client_id": "",
     "client_secret": "",
     "streamlink_token": "",
-    "ad_handling": "silence",
     "auto_raid": True,
     "log_level": "GLOBAL",
     "access_token": "",
@@ -196,7 +195,6 @@ def config_mock() -> Mock:
         "client_id": "",
         "client_secret": "",
         "streamlink_token": "",
-        "ad_handling": "silence",
         "auto_raid": True,
         "log_level": "GLOBAL",
     }.get(key, default)

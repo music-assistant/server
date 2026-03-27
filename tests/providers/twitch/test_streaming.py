@@ -152,7 +152,6 @@ async def test_streamlink_token_passed_as_header(provider: TwitchProvider) -> No
 
     provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
         "streamlink_token": "test_oauth_token",
-        "ad_handling": "silence",
         "log_level": "GLOBAL",
     }.get(key, default)
 
@@ -175,7 +174,6 @@ async def test_streamlink_token_omitted_when_empty(provider: TwitchProvider) -> 
 
     provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
         "streamlink_token": "",
-        "ad_handling": "silence",
         "log_level": "GLOBAL",
     }.get(key, default)
 
@@ -195,7 +193,6 @@ async def test_invalid_streamlink_token_stream_still_plays(provider: TwitchProvi
 
     provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
         "streamlink_token": "invalid_expired_token",
-        "ad_handling": "silence",
         "log_level": "GLOBAL",
     }.get(key, default)
 

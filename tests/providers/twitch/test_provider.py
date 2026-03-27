@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, Mock, patch
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.providers.twitch import (
-    CONF_AD_HANDLING,
     CONF_AUTO_RAID,
     SUPPORTED_FEATURES,
     TwitchProvider,
@@ -25,7 +24,6 @@ async def test_setup_returns_provider_instance(
         "client_id": "test",
         "client_secret": "test",
         "streamlink_token": "",
-        "ad_handling": "silence",
         "auto_raid": True,
         "log_level": "GLOBAL",
         "access_token": "test_token",
@@ -129,26 +127,11 @@ async def test_handle_async_init_no_token_skips(provider: TwitchProvider) -> Non
 # --- Config Entries ---
 
 
-async def test_config_entries_includes_ad_handling(mass_mock: Mock) -> None:
-    """get_config_entries() includes ad_handling config entry."""
-    entries = await get_config_entries(mass_mock)
-    keys = {e.key for e in entries}
-    assert CONF_AD_HANDLING in keys
-
-
 async def test_config_entries_includes_auto_raid(mass_mock: Mock) -> None:
     """get_config_entries() includes auto_raid config entry."""
     entries = await get_config_entries(mass_mock)
     keys = {e.key for e in entries}
     assert CONF_AUTO_RAID in keys
-
-
-async def test_ad_handling_is_string_with_options(mass_mock: Mock) -> None:
-    """ad_handling config entry is STRING type with options."""
-    entries = await get_config_entries(mass_mock)
-    entry = next(e for e in entries if e.key == CONF_AD_HANDLING)
-    assert entry.type == ConfigEntryType.STRING
-    assert len(entry.options) >= 2
 
 
 async def test_auto_raid_is_boolean(mass_mock: Mock) -> None:
