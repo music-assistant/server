@@ -441,14 +441,6 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
-        # silence urllib3 InsecureRequestWarning when certificate verification is disabled
-        # this is expected when connecting to Plex servers using their wildcard certificates
-        # that don't validate against LAN IP addresses
-        warnings.filterwarnings(
-            "ignore",
-            category=urllib3.exceptions.InsecureRequestWarning,
-            module="urllib3.connectionpool",
-        )
         _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
 
         def connect() -> PlexServer:
@@ -476,15 +468,22 @@ class PlexProvider(MusicProvider):
                     f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
                     f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
                 )
-                if token == AUTH_TOKEN_UNAUTH:
-                    # Doing local connection, not via plex.tv.
-                    plex_server = PlexServer(plex_url, session=session)
-                else:
-                    plex_server = PlexServer(
-                        plex_url,
-                        token,
-                        session=session,
+                # silence urllib3 InsecureRequestWarning from Plex connections
+                # using wildcard certificates that don't validate against LAN IPs
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=urllib3.exceptions.InsecureRequestWarning,
                     )
+                    if token == AUTH_TOKEN_UNAUTH:
+                        # Doing local connection, not via plex.tv.
+                        plex_server = PlexServer(plex_url, session=session)
+                    else:
+                        plex_server = PlexServer(
+                            plex_url,
+                            token,
+                            session=session,
+                        )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
