@@ -1334,6 +1334,7 @@ class LocalFileSystemProvider(MusicProvider):
                         item_id=podcast_path,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
+                        in_library=True,
                     )
                 },
             ),
