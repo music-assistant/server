@@ -97,6 +97,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.FAVORITE_PLAYLISTS_EDIT,
