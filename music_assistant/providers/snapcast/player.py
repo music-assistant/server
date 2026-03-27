@@ -191,11 +191,24 @@ class SnapCastPlayer(Player):
         # not guaranteed that the client respects it
         await self.snap_client.set_volume(volume_level)
 
+    async def play(self) -> None:
+        """Send PLAY (unpause) command to given player."""
+        await self.mass.players._handle_cmd_resume(
+            self.player_id, self.active_source, self.current_media
+        )
+
+    async def pause(self) -> None:
+        """Send PAUSE command to given player."""
+        if ma_stream := self.active_snap_ma_stream:
+            ma_stream.request_stop_stream()
+        self.poke_player_update()
+
     async def stop(self) -> None:
         """Send STOP command to given player."""
         player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
         assert player_group is not None  # for type checking
-        await player_group.set_stream("default")
+        stable_stream_ref = self.snap_provider._get_stable_stream_reference(player_group.stream)
+        await player_group.set_stream(stable_stream_ref)
         if ma_stream := self.active_snap_ma_stream:
             ma_stream.request_stop_stream()
             return
@@ -235,6 +248,7 @@ class SnapCastPlayer(Player):
         ]
 
         curr_stream_id = player_group.stream
+        stable_stream_ref = self.snap_provider._get_stable_stream_reference(curr_stream_id)
         sync_group_player: Player | None = None
         if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
             media = curr_ma_stream.media
@@ -257,25 +271,50 @@ class SnapCastPlayer(Player):
                     id_to_remove in curr_ma_player_ids
                     and id_to_remove not in sync_group_player.group_members
                 ):
-                    await self.snap_provider.isolate_player_to_dedicated_group(
-                        id_to_remove, target_stream_id="default"
+                    moved_to_fallback = await self.snap_provider.move_player_to_fallback_group(
+                        id_to_remove
                     )
+                    if not moved_to_fallback:
+                        await self.snap_provider.isolate_player_to_dedicated_group(
+                            id_to_remove, target_stream_id=stable_stream_ref
+                        )
 
             # split remaining group into individual groups,
             # keeps the current stream, set this group to default stream
             await self.snap_provider.isolate_player_to_dedicated_group(
                 target_player_id=self.player_id,
                 target_stream_id="default",
-                others_stream_id=curr_stream_id,
+                others_stream_id=stable_stream_ref,
             )
+            await self.snap_provider.move_player_to_fallback_group(self.player_id)
         else:
+            leader_handoff = bool(
+                sync_group_player and self.player_id not in sync_group_player.group_members
+            )
             for player_id in player_ids_to_remove or []:
                 if player_id not in curr_ma_player_ids:
                     continue
-                await self.snap_provider.isolate_player_to_dedicated_group(
-                    player_id, target_stream_id="default"
+                keep_on_current_stream = bool(
+                    sync_group_player
+                    and player_id in sync_group_player.group_members
+                    and player_id != self.player_id
                 )
+                if keep_on_current_stream:
+                    await self.snap_provider.isolate_player_to_dedicated_group(
+                        player_id, target_stream_id=stable_stream_ref
+                    )
+                else:
+                    moved_to_fallback = await self.snap_provider.move_player_to_fallback_group(
+                        player_id
+                    )
+                    if not moved_to_fallback:
+                        await self.snap_provider.isolate_player_to_dedicated_group(
+                            player_id, target_stream_id=stable_stream_ref
+                        )
                 curr_ma_player_ids.remove(player_id)
+
+            if leader_handoff:
+                await self.snap_provider.move_player_to_fallback_group(self.player_id)
 
         for ma_id in player_ids_to_add or []:
             if (

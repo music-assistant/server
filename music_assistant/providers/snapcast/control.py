@@ -360,7 +360,7 @@ if __name__ == "__main__":
 
     log_format_stderr = "%(asctime)s %(module)s %(levelname)s: %(message)s"
     log_level = logging.INFO
-    logger = logging.getLogger("meta_mass")
+    logger = logging.getLogger("snapcast_control")
     logger.propagate = False
     logger.setLevel(log_level)
 

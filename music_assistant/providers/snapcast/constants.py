@@ -10,6 +10,7 @@ from music_assistant.constants import create_sample_rates_config_entry
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
+CONF_EXTERNAL_DEDICATED_FALLBACK_GROUP = "snapcast_external_dedicated_fallback_group"
 CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
 CONF_SERVER_CHUNK_MS = "snapcast_server_built_in_chunk_ms"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"

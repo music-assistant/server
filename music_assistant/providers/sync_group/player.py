@@ -424,6 +424,7 @@ class SyncGroupPlayer(Player):
                 )
             if self.sync_leader and member_id == self.sync_leader.player_id:
                 leader_removed = True
+                self._attr_group_members.remove(member_id)
                 continue
             if member_id == self.player_id:
                 raise PlayerCommandFailed(
@@ -435,7 +436,6 @@ class SyncGroupPlayer(Player):
         if self.sync_leader and leader_removed and self._attr_group_members:
             # we removed the current sync leader, but we still have members in the group
             # we need to select a new leader and re-form the syncgroup with it
-            old_leader_id = self.sync_leader.player_id
             self.logger.info(
                 "Removing current sync leader %s from group %s while it is active, "
                 "dissolving the current syncgroup and will re-form it with a new leader",
@@ -445,9 +445,6 @@ class SyncGroupPlayer(Player):
             await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await asyncio.sleep(1)
             await self._dissolve_syncgroup()
-            # remove the old leader from the group members list so it won't be re-selected
-            if old_leader_id in self._attr_group_members:
-                self._attr_group_members.remove(old_leader_id)
             if was_playing and self._attr_group_members:
                 await asyncio.sleep(2)
                 await self.play()

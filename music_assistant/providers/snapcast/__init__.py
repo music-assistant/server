@@ -17,6 +17,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.providers.snapcast.constants import (
     CONF_CATEGORY_BUILT_IN,
+    CONF_EXTERNAL_DEDICATED_FALLBACK_GROUP,
     CONF_HELP_LINK,
     CONF_SERVER_BUFFER_SIZE,
     CONF_SERVER_CHUNK_MS,
@@ -180,6 +181,19 @@ async def get_config_entries(
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
             advanced=local_snapserver_present,
+        ),
+        ConfigEntry(
+            key=CONF_EXTERNAL_DEDICATED_FALLBACK_GROUP,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            label="Dedicated fallback group",
+            required=False,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            advanced=True,
+            description=(
+                "Optional existing Snapserver group name to move removed clients back to "
+                "(for example: Media). Leave empty to disable."
+            ),
         ),
         ConfigEntry(
             key=CONF_STREAM_IDLE_THRESHOLD,

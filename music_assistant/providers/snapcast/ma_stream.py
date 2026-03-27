@@ -11,11 +11,12 @@ Snapcast control script (used by the built-in Snapcast server integration).
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 import urllib.parse
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -46,12 +47,16 @@ class SnapcastMAStream:
     control script to communicate with Music Assistant.
     """
 
+    StreamLifecycleState = Literal["created", "attached", "unresolved", "destroyed"]
+
     def __init__(
         self,
         provider: SnapCastProvider,
         media: PlayerMedia,
         stream_name: str,
+        stream_display_name: str | None = None,
         source_id: str | None = None,
+        queue_id: str | None = None,
         filter_settings_owner: str | None = None,
         use_cntrl_script: bool = False,
         destroy_on_stop: bool = False,
@@ -68,14 +73,16 @@ class SnapcastMAStream:
         """
         self.media = media
         self.stream_name = stream_name
+        self.stream_display_name = stream_display_name or stream_name
         self.snap_stream: SnapstreamProto | None = None
 
         self._provider = provider
         self._logger = provider.logger
         self._mass = provider.mass
         self._source_id = source_id
+        self._queue_id = queue_id
         self._use_cntrl_script = use_cntrl_script
-        self._cntrl_queue_id = source_id if use_cntrl_script else None
+        self._cntrl_queue_id = queue_id if use_cntrl_script else None
         self._filter_settings_owner = filter_settings_owner
         self._destroy_on_stop = destroy_on_stop
 
@@ -83,6 +90,7 @@ class SnapcastMAStream:
         self._destroyed = False
         self._setup_done = False
         self._is_streaming = False
+        self._is_paused = False
         self._restart_requested: bool = False
         self._stop_requested: bool = False
         self._streaming_started_at: float | None = None
@@ -95,11 +103,17 @@ class SnapcastMAStream:
         self._stop_timer: asyncio.Handle | None = None
         self._stop_timer_started_at: float | None = None
         self._filter_settings: list[str] | None = None
+        self._lifecycle_state: SnapcastMAStream.StreamLifecycleState | None = None
 
     @property
     def source_id(self) -> str | None:
         """Return the source id this stream was created for."""
         return self._source_id
+
+    @property
+    def queue_id(self) -> str | None:
+        """Return the queue id this stream was created for, if queue-backed."""
+        return self._queue_id
 
     @property
     def stream_id(self) -> str | None:
@@ -112,6 +126,16 @@ class SnapcastMAStream:
     def is_streaming(self) -> bool:
         """Return True if the FFmpeg streaming task is currently running."""
         return self._is_streaming
+
+    @property
+    def is_paused(self) -> bool:
+        """Return True if the stream is intentionally paused."""
+        return self._is_paused
+
+    @property
+    def lifecycle_state(self) -> SnapcastMAStream.StreamLifecycleState | None:
+        """Return the latest high-level Snapcast stream lifecycle state."""
+        return self._lifecycle_state
 
     @property
     def playback_started_at(self) -> float | None:
@@ -138,7 +162,7 @@ class SnapcastMAStream:
         async with self._lifecycle_lock:
             if self._destroyed:
                 raise RuntimeError("Session is destroyed")
-            if self._setup_done:
+            if self._setup_done and not await self._reset_incompatible_registration_if_needed():
                 return
             if self._provider._snapserver is None:
                 raise RuntimeError("Snapserver needs to be setup first")
@@ -164,6 +188,7 @@ class SnapcastMAStream:
         await self.wait_for_stopped()
         await self._remove_snap_source()
         await self._stop_socket_server()
+        self._set_lifecycle_state("destroyed")
 
     async def start_stream(self, allow_restart: bool = False) -> None:
         """Start streaming the configured media to the Snapcast source.
@@ -181,6 +206,7 @@ class SnapcastMAStream:
 
             self._stop_requested = False
             self._restart_requested = False
+            self._is_paused = False
             self._stop_streamer_evt.clear()
             self._streamer_started_evt.clear()
             self._streamer_task = self._mass.create_task(self._streamer_task_impl())
@@ -228,13 +254,27 @@ class SnapcastMAStream:
         This is cooperative: the streamer task will stop when it observes the stop event.
         Any pending inactivity stop timer is canceled.
         """
+        self._is_paused = False
+        self._request_stream_end()
+
+    def request_pause_stream(self) -> None:
+        """Request the streamer task to pause while preserving resume state."""
+        self._is_paused = True
+        self._request_stream_end()
+
+    def _request_stream_end(self) -> None:
+        """Request the current streamer run to end."""
         self._stop_requested = True
         self._restart_requested = False  # explicit stop cancels any pending restart
         self._stop_streamer_evt.set()
+        self._cancel_stop_timer()
 
+    def _cancel_stop_timer(self) -> None:
+        """Cancel any pending inactivity stop timer."""
         self._stop_timer_started_at = None
         if self._stop_timer:
             self._stop_timer.cancel()
+            self._stop_timer = None
 
     def set_in_use(self, in_use: bool) -> None:
         """Mark the stream as in-use or idle.
@@ -294,10 +334,10 @@ class SnapcastMAStream:
                 DEFAULT_SNAPCAST_FORMAT,
                 DEFAULT_SNAPCAST_FORMAT,
             )
-        audio_source = self._mass.streams.get_stream(
-            self.media, DEFAULT_SNAPCAST_FORMAT, self._filter_settings_owner
-        )
         try:
+            audio_source = self._mass.streams.get_stream(
+                self.media, DEFAULT_SNAPCAST_FORMAT, self._filter_settings_owner
+            )
             async with FFMpeg(
                 audio_input=audio_source,
                 input_format=DEFAULT_SNAPCAST_FORMAT,
@@ -346,7 +386,9 @@ class SnapcastMAStream:
                 while True:
                     stream_is_idle = False
                     with suppress(KeyError):
-                        snap_stream = self._provider._snapserver.stream(self.stream_name)
+                        if self.snap_stream is None:
+                            break
+                        snap_stream = self._provider._snapserver.stream(self.snap_stream.identifier)
                         stream_is_idle = snap_stream.status == "idle"
                     if self._mass.closing or stream_is_idle:
                         break
@@ -425,22 +467,19 @@ class SnapcastMAStream:
         """Create a Snapcast TCP source for this stream (or reuse an existing one)."""
         # prefer to reuse existing stream if possible
         if self.snap_stream:
+            self._set_lifecycle_state("attached", detail="reusing registered stream reference")
             return
 
-        # The control script is used only for music streams in the builtin server
-        extra_args = ""
-        if (cntrl_queue_id := self._cntrl_queue_id) is not None:
-            # Create socket server for control script communication
-            socket_path = self._socket_path
-            if socket_path is None:
-                raise RuntimeError("socket_path needs to be set if cntrl_queue_id is set")
-            extra_args = (
-                f"&controlscript={urllib.parse.quote_plus('control.py')}"
-                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(cntrl_queue_id)}%20"
-                f"--socket={urllib.parse.quote_plus(socket_path)}%20"
-                f"--streamserver-ip={self._mass.streams.publish_ip}%20"
-                f"--streamserver-port={self._mass.streams.publish_port}"
-            )
+        if existing_stream := self._find_existing_snapstream(require_idle=True):
+            if self._snapstream_matches_expected_registration(existing_stream):
+                self._attach_existing_snapstream(
+                    existing_stream,
+                    detail="reused idle Snapserver stream",
+                )
+                return
+            await self._remove_conflicting_snapstream(existing_stream)
+
+        extra_args = self._build_control_script_query_args()
 
         attempts = 50
         while attempts:
@@ -453,37 +492,97 @@ class SnapcastMAStream:
                 # (like 24 bits bit depth) does not seem to work at all!
                 f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
                 f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
-                f"{extra_args}&name={self.stream_name}"
+                f"{extra_args}&name={urllib.parse.quote_plus(self.stream_display_name)}"
             )
             if result is None or "id" not in result:
-                # if the port is already taken, the result will be an error
-                self._logger.warning(result)
-                continue
-            ## Do we need to synchronize the snapserver repr first?
-            self.snap_stream = self._provider._snapserver.stream(result["id"])
+                error_msg = self._extract_stream_add_error(result)
+                if self._is_duplicate_stream_name_error(error_msg):
+                    if existing_stream := self._find_existing_snapstream():
+                        if self._snapstream_matches_expected_registration(existing_stream):
+                            self._attach_existing_snapstream(
+                                existing_stream,
+                                detail="attached after duplicate stream-name response",
+                            )
+                            return
+                    self._set_lifecycle_state("unresolved", detail=error_msg)
+                    raise RuntimeError(error_msg)
+                if self._is_retryable_stream_add_error(error_msg):
+                    self._logger.warning(
+                        "Retryable Snapcast stream create failure for %s (%s): %s",
+                        self.stream_name,
+                        self.stream_display_name,
+                        error_msg,
+                    )
+                    continue
+                self._set_lifecycle_state("unresolved", detail=error_msg)
+                raise RuntimeError(error_msg)
+            self.snap_stream = None
+            if hasattr(self._provider._snapserver, "stream"):
+                self.snap_stream = self._provider._snapserver.stream(result["id"])
+            if self.snap_stream is None:
+                self.snap_stream = self._find_existing_snapstream(stream_ref=result["id"])
+            if self.snap_stream is None:
+                error_msg = f"Unable to attach created Snapcast stream {result['id']}"
+                self._set_lifecycle_state("unresolved", detail=error_msg)
+                raise RuntimeError(error_msg)
             self.snap_stream.set_callback(self._snap_on_stream_update)
+            self._set_lifecycle_state("created", snap_stream=self.snap_stream)
             return
 
         if self._socket_server:
             await self._stop_socket_server()
 
         msg = "Unable to create stream - No free port found?"
+        self._set_lifecycle_state("unresolved", detail=msg)
         raise RuntimeError(msg)
+
+    def _build_control_script_query_args(self) -> str:
+        """Build optional Snapserver control script query parameters for this stream."""
+        if (cntrl_queue_id := self._cntrl_queue_id) is not None:
+            socket_path = self._socket_path
+            if socket_path is None:
+                raise RuntimeError("socket_path needs to be set if cntrl_queue_id is set")
+            return (
+                f"&controlscript={urllib.parse.quote_plus('control.py')}"
+                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(cntrl_queue_id)}%20"
+                f"--socket={urllib.parse.quote_plus(socket_path)}%20"
+                f"--streamserver-ip={self._mass.streams.publish_ip}%20"
+                f"--streamserver-port={self._mass.streams.publish_port}"
+            )
+
+        if self._queue_id is not None and not self._provider._use_builtin_server:
+            return (
+                f"&controlscript={urllib.parse.quote_plus('mass_bridge.py')}"
+                f"&controlscriptparams=--stream={urllib.parse.quote_plus(self.stream_display_name)}"
+            )
+
+        return ""
+
+    async def _reset_incompatible_registration_if_needed(self) -> bool:
+        """Remove an existing Snapserver registration if it no longer matches this stream."""
+        if self.snap_stream is None:
+            return False
+        if self._snapstream_matches_expected_registration(self.snap_stream):
+            return False
+        await self._remove_conflicting_snapstream(self.snap_stream)
+        self.snap_stream = None
+        self._setup_done = False
+        return True
 
     async def _remove_snap_source(self) -> None:
         """Remove the Snapcast source created for this stream and detach groups."""
         if self._mass.closing or self.snap_stream is None:
             return
 
-        for snap_group in self._provider._snapserver.groups:
-            if snap_group.stream != self.snap_stream.identifier:
-                continue
-            self._logger.debug(f"Set stream of group {snap_group.name} to default.")
-            await snap_group.set_stream("default")
+        if self._provider._use_builtin_server:
+            for snap_group in self._provider._snapserver.groups:
+                if snap_group.stream != self.snap_stream.identifier:
+                    continue
+                self._logger.debug(f"Set stream of group {snap_group.name} to default.")
+                await snap_group.set_stream("default")
 
         with suppress(KeyError, AttributeError):
-            snap_stream = self._provider._snapserver.stream(self.stream_name)
-            await self._provider._snapserver.stream_remove_stream(snap_stream.identifier)
+            await self._provider._snapserver.stream_remove_stream(self.snap_stream.identifier)
 
         if self._socket_server:
             await self._stop_socket_server()
@@ -510,6 +609,138 @@ class SnapcastMAStream:
             if snap_group.stream != self.snap_stream.identifier:
                 continue
             self._provider.poke_group_members(snap_group)
+
+    def _find_existing_snapstream(
+        self,
+        stream_ref: str | None = None,
+        require_idle: bool = False,
+    ) -> SnapstreamProto | None:
+        """Find an existing Snapserver stream by id or visible stream name."""
+        candidate_refs = {
+            ref
+            for ref in (stream_ref, self.stream_name, self.stream_display_name)
+            if ref is not None
+        }
+        for snap_stream in getattr(self._provider._snapserver, "streams", []):
+            if require_idle and getattr(snap_stream, "status", None) != "idle":
+                continue
+            visible_name = self._get_snapstream_visible_name(snap_stream)
+            if (
+                getattr(snap_stream, "identifier", None) in candidate_refs
+                or getattr(snap_stream, "friendly_name", None) in candidate_refs
+                or visible_name in candidate_refs
+            ):
+                return cast("SnapstreamProto", snap_stream)
+        return None
+
+    async def _remove_conflicting_snapstream(self, snap_stream: SnapstreamProto) -> None:
+        """Remove an incompatible existing Snapserver stream registration."""
+        if self._provider._use_builtin_server:
+            for snap_group in self._provider._snapserver.groups:
+                if snap_group.stream != getattr(snap_stream, "identifier", None):
+                    continue
+                await snap_group.set_stream("default")
+
+        with suppress(KeyError, AttributeError):
+            await self._provider._snapserver.stream_remove_stream(snap_stream.identifier)
+
+    def _snapstream_matches_expected_registration(self, snap_stream: SnapstreamProto) -> bool:
+        """Return True if an existing Snapserver stream matches this stream's control config."""
+        return (
+            self._get_snapstream_control_script_name(snap_stream)
+            == self._expected_control_script_name()
+        )
+
+    def _expected_control_script_name(self) -> str | None:
+        """Return the expected control script basename for this stream, if any."""
+        if self._cntrl_queue_id is not None:
+            return "control.py"
+        if self._queue_id is not None and not self._provider._use_builtin_server:
+            return "mass_bridge.py"
+        return None
+
+    def _get_snapstream_control_script_name(self, snap_stream: SnapstreamProto) -> str | None:
+        """Extract the configured control script basename from a Snapserver stream."""
+        raw_uri = getattr(snap_stream, "_stream", {}).get("uri", {}).get("raw")
+        if not raw_uri:
+            return None
+        parsed = urllib.parse.urlparse(raw_uri)
+        controlscript = urllib.parse.parse_qs(parsed.query).get("controlscript")
+        if not controlscript:
+            return None
+        return os.path.basename(urllib.parse.unquote_plus(controlscript[0]))
+
+    def _attach_existing_snapstream(
+        self,
+        snap_stream: SnapstreamProto,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        """Attach this MA stream to an already existing Snapserver stream."""
+        self.snap_stream = snap_stream
+        self.snap_stream.set_callback(self._snap_on_stream_update)
+        self._set_lifecycle_state("attached", snap_stream=snap_stream, detail=detail)
+
+    def _set_lifecycle_state(
+        self,
+        state: StreamLifecycleState,
+        *,
+        snap_stream: SnapstreamProto | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Persist and log a human-readable lifecycle transition."""
+        self._lifecycle_state = state
+        stream_id = getattr(snap_stream or self.snap_stream, "identifier", None)
+        detail_suffix = f" ({detail})" if detail else ""
+        self._logger.info(
+            "Snapcast stream lifecycle=%s stream_name=%s display_name=%s stream_id=%s%s",
+            state,
+            self.stream_name,
+            self.stream_display_name,
+            stream_id,
+            detail_suffix,
+        )
+
+    def _extract_stream_add_error(self, result: Any) -> str:
+        """Normalize an add-stream error payload into a single readable message."""
+        if result is None:
+            return "Empty response from Snapserver while creating stream"
+        if isinstance(result, dict):
+            parts = [
+                str(result.get("message") or "").strip(),
+                str(result.get("data") or "").strip(),
+            ]
+            error_msg = " ".join(part for part in parts if part)
+            return error_msg or str(result)
+        return str(result)
+
+    def _is_duplicate_stream_name_error(self, error_msg: str) -> bool:
+        """Return True if the add-stream error indicates a duplicate visible stream name."""
+        error_msg = error_msg.lower()
+        return "already exists" in error_msg and "stream" in error_msg
+
+    def _is_retryable_stream_add_error(self, error_msg: str) -> bool:
+        """Return True if the add-stream failure is retryable on another random port."""
+        error_msg = error_msg.lower()
+        retryable_markers = (
+            "address already in use",
+            "bind failed",
+            "eaddrinuse",
+            "port is already in use",
+            "failed to bind",
+        )
+        return any(marker in error_msg for marker in retryable_markers)
+
+    def _get_snapstream_visible_name(self, snap_stream: SnapstreamProto) -> str | None:
+        """Extract the configured visible name from a Snapserver stream object."""
+        raw_uri = getattr(snap_stream, "_stream", {}).get("uri", {}).get("raw")
+        if not raw_uri:
+            return None
+        parsed = urllib.parse.urlparse(raw_uri)
+        name = urllib.parse.parse_qs(parsed.query).get("name")
+        if not name:
+            return None
+        return urllib.parse.unquote_plus(name[0])
 
     async def _start_socket_server(self) -> str:
         """Get or create a socket server for the given queue.
