@@ -960,7 +960,7 @@ class TwitchProvider(MusicProvider):
             return []
 
         folder = RecommendationFolder(
-            name="Live Channels",
+            name="Twitch Live Channels",
             item_id=f"{self.instance_id}_live_channels",
             provider=self.instance_id,
             icon="mdi-broadcast",

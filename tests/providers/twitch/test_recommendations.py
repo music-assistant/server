@@ -46,7 +46,7 @@ async def test_recommendations_returns_live_channels_folder(provider: TwitchProv
     assert len(result) == 1
     folder = result[0]
     assert isinstance(folder, RecommendationFolder)
-    assert folder.name == "Live Channels"
+    assert folder.name == "Twitch Live Channels"
     assert len(folder.items) > 0
     assert all(isinstance(item, Radio) for item in folder.items)
 
@@ -122,7 +122,7 @@ async def test_recommendations_folder_metadata(provider: TwitchProvider) -> None
     result = await provider.recommendations()
     assert len(result) == 1
     folder = result[0]
-    assert folder.name == "Live Channels"
+    assert folder.name == "Twitch Live Channels"
     assert folder.icon == "mdi-broadcast"
     assert folder.provider == provider.instance_id
     assert folder.item_id == f"{provider.instance_id}_live_channels"
