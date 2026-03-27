@@ -588,7 +588,7 @@ class SpotifyProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
-        uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/tracks"
+        uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/items"
 
         # Liked songs always require global session
         # For other playlists, call get_playlist first to trigger the fallback logic
@@ -682,7 +682,7 @@ class SpotifyProvider(MusicProvider):
         """Add track(s) to playlist."""
         track_uris = [f"spotify:track:{track_id}" for track_id in prov_track_ids]
         data = {"uris": track_uris}
-        await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
+        await self._post_data(f"playlists/{prov_playlist_id}/items", data=data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -690,14 +690,14 @@ class SpotifyProvider(MusicProvider):
         """Remove track(s) from playlist."""
         track_uris = []
         for pos in positions_to_remove:
-            uri = f"playlists/{prov_playlist_id}/tracks"
+            uri = f"playlists/{prov_playlist_id}/items"
             spotify_result = await self._get_data(uri, limit=1, offset=pos - 1)
             for item in spotify_result["items"]:
                 if not (item and item["track"] and item["track"]["id"]):
                     continue
                 track_uris.append({"uri": f"spotify:track:{item['track']['id']}"})
         data = {"tracks": track_uris}
-        await self._delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
+        await self._delete_data(f"playlists/{prov_playlist_id}/items", data=data)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""

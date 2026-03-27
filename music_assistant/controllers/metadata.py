@@ -125,12 +125,7 @@ LOCALES = {
 }
 
 DEFAULT_LANGUAGE = "en_US"
-REFRESH_INTERVAL_ARTISTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_ALBUMS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_TRACKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_AUDIOBOOKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PODCASTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PLAYLISTS = 60 * 60 * 24 * 14  # 14 days
+REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 MISSING_ARTIST_ARTWORK_SCAN_TASK_ID = "metadata_missing_artist_artwork_scan"
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
@@ -328,28 +323,28 @@ class MetaDataController(CoreController):
                     )
             return item
 
-    def schedule_update_metadata(self, uri: str) -> None:
-        """Schedule metadata update for given MediaItem uri."""
-        if "library" not in uri:
+    def schedule_update_metadata(self, item: MediaItemType) -> None:
+        """Schedule metadata update for given MediaItem."""
+        if item.provider != "library":
+            # this shouldn't happen but just in case.
             return
-        task_id = self._get_metadata_lookup_task_id(uri)
-
-        async def handle_lookup() -> None:
-            item = await self.mass.music.get_item_by_uri(uri)
-            item_name = getattr(item, "name", uri)
-            update_current_task_progress_text(f"Refreshing metadata for {item_name}")
-            await self.update_metadata(cast("MediaItemType", item))
+        last_refresh = item.metadata.last_refresh or 0
+        needs_update = (time() - last_refresh) > REFRESH_INTERVAL
+        if not needs_update:
+            return
+        assert item.uri is not None
+        task_id = self._get_metadata_lookup_task_id(item.uri)
+        _item = item
 
         self.mass.tasks.run_background_task(
             task_id=task_id,
-            name="Update metadata",
-            handler=handle_lookup,
+            name=f"Update metadata for {item.name}",
+            handler=lambda: self.update_metadata(_item),
             translation_key="background_task.update_metadata",
             metadata={
                 "task_domain": "metadata_lookup",
-                "item_uri": uri,
+                "item_uri": item.uri,
             },
-            remove_on_finish=True,
         )
 
     async def get_image_data_for_item(
@@ -600,7 +595,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an artist."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL_ARTISTS
+        needs_refresh = (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -662,7 +657,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an album."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL_ALBUMS
+        needs_refresh = (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -715,7 +710,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a track."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL_TRACKS
+        needs_refresh = (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -744,7 +739,7 @@ class MetaDataController(CoreController):
 
         # collect metadata from all [metadata] providers
         # Only fetch metadata from these sources if force_refresh is set OR
-        # if the track needs a refresh (based on REFRESH_INTERVAL_TRACKS) AND
+        # if the track needs a refresh (based on REFRESH_INTERVAL) AND
         # online metadata is enabled.
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
@@ -769,9 +764,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a playlist."""
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (
-            time() - (playlist.metadata.last_refresh or 0)
-        ) > REFRESH_INTERVAL_PLAYLISTS
+        needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
         self.logger.debug("Updating metadata for Playlist %s", playlist.name)
@@ -847,9 +840,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an audiobook."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (
-            time() - (audiobook.metadata.last_refresh or 0)
-        ) > REFRESH_INTERVAL_AUDIOBOOKS
+        needs_refresh = (time() - (audiobook.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -895,7 +886,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a podcast."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (podcast.metadata.last_refresh or 0)) > REFRESH_INTERVAL_PODCASTS
+        needs_refresh = (time() - (podcast.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -1023,7 +1014,7 @@ class MetaDataController(CoreController):
     async def _scan_missing_artist_artwork(self) -> None:
         """Refresh metadata for a small batch of artists missing artwork."""
         update_current_task_progress_text("Searching for artists with missing artwork")
-        refresh_before = int(time() - REFRESH_INTERVAL_ARTISTS)
+        refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
             f"(json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]') "
@@ -1059,7 +1050,7 @@ class MetaDataController(CoreController):
     async def _refresh_playlist_metadata_batch(self) -> None:
         """Refresh metadata for a small batch of library playlists."""
         update_current_task_progress_text("Searching for playlists needing metadata refresh")
-        refresh_before = int(time() - REFRESH_INTERVAL_PLAYLISTS)
+        refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before}"

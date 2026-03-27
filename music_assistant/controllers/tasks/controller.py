@@ -232,7 +232,6 @@ class TasksController(CoreController):
         allow_cancel: bool = True,
         priority: bool = False,
         max_log_lines: int = DEFAULT_TASK_LOG_LINES,
-        remove_on_finish: bool = False,
     ) -> BackgroundTask:
         """Create and queue a long running background task.
 
@@ -251,7 +250,6 @@ class TasksController(CoreController):
             so it runs before lower-priority tasks. Use this for user-initiated actions that
             should not be delayed by background work such as metadata refreshes.
         :param max_log_lines: Maximum number of log lines to retain for this task.
-        :param remove_on_finish: Automatically remove the task from history when it finishes.
         """
         resolved_task_id = task_id or uuid4().hex
         if existing := self._tasks.get(resolved_task_id):
@@ -275,7 +273,6 @@ class TasksController(CoreController):
             handler=handler,
             priority=priority,
             max_log_lines=max_log_lines,
-            remove_on_finish=remove_on_finish,
         )
         self._tasks[task_info.id] = managed
         self._queue_task(managed, reset_logs=True, run_user_id=user_id)
@@ -536,8 +533,6 @@ class TasksController(CoreController):
         elif managed.is_scheduled:
             self._schedule_managed_task(managed)
             self._persist_scheduled_task_state(managed)
-        elif managed.remove_on_finish:
-            self._tasks.pop(task_info.id, None)
         trim_finished_history(self._tasks, MAX_FINISHED_TASK_HISTORY)
         self._schedule_task_update(force=True)
         self._start_pending_tasks()

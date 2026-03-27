@@ -25,7 +25,6 @@ class ManagedTask:
     current_task: asyncio.Task[Any] | None = None
     timer_delay: float | None = None
     priority: bool = False
-    remove_on_finish: bool = False
     removed: bool = False
     clear_persisted_state_on_remove: bool = True
 
