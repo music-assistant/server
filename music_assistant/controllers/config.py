@@ -1497,6 +1497,23 @@ class ConfigController:
                 values.pop("protocol_parent_id")
                 changed = True
 
+        # Remove orphaned stored_radios config from RadioBrowser provider instances
+        # now that LIBRARY_RADIOS support has been removed from the provider.
+        # TODO: remove after 2.8 release
+        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
+            if provider_config.get("domain") != "radiobrowser":
+                continue
+            if not (values := provider_config.get("values")):
+                continue
+            for key in (
+                "stored_radios",
+                "library_sync_radios",
+                "provider_sync_interval_radios",
+                "library_sync_back",
+            ):
+                if values.pop(key, None) is not None:
+                    changed = True
+
         if changed:
             await self._async_save()
 
@@ -1551,6 +1568,9 @@ class ConfigController:
                 self.set_provider_default_name(
                     prov_instance.instance_id, prov_instance.default_name
                 )
+            if "name" in changed_keys:
+                # signal providers updated so frontends refresh the provider name
+                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
         elif config.enabled:
             # provider is enabled but not available, try to load it
             await self.mass.load_provider_config(config)

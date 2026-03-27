@@ -1,7 +1,7 @@
 {
   "type": "player",
   "domain": "heos",
-  "stage": "beta",
+  "stage": "stable",
   "name": "HEOS",
   "description": "Play to Denon & Marantz devices via HEOS.",
   "codeowners": [

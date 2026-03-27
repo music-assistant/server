@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
     ItemMapping,
+    MediaItem,
     MediaItemImage,
     MediaItemType,
     PodcastEpisode,
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 HLS_CONTENT_TYPES = ("application/vnd.apple.mpegurl",)
+FIELD_SEPARATOR = "||"
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -69,6 +71,37 @@ class ImageInfo:
 
 
 @dataclass
+class ArtistInfo:
+    """Artist metadata stored as #EXTARTIST in M3U files."""
+
+    name: str
+    provider_domain: str
+    item_id: str
+    provider_instance: str
+
+
+@dataclass
+class AlbumInfo:
+    """Album metadata stored as #EXTALBUM in M3U files."""
+
+    name: str
+    provider_domain: str
+    item_id: str
+    provider_instance: str
+    version: str = ""
+
+
+@dataclass
+class PodcastInfo:
+    """Podcast metadata stored as #EXTPODCAST in M3U files."""
+
+    name: str
+    provider_domain: str
+    item_id: str
+    provider_instance: str
+
+
+@dataclass
 class PlaylistItem:
     """Single entry in an M3U playlist. Used for both parsing and generation."""
 
@@ -80,6 +113,9 @@ class PlaylistItem:
     metadata: dict[str, str] | None = None
     providers: list[ProviderMappingInfo] = field(default_factory=list)
     images: list[ImageInfo] = field(default_factory=list)
+    artists: list[ArtistInfo] = field(default_factory=list)
+    album: AlbumInfo | None = None
+    podcast: PodcastInfo | None = None
 
     @property
     def is_url(self) -> bool:
@@ -103,11 +139,12 @@ def parse_extinf_title(title: str | None) -> tuple[str | None, str | None]:
     return None, title.strip()
 
 
-def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
-    """Parse M3U/M3U8 data into a list of PlaylistItem entries.
+def parse_m3u(m3u_data: str) -> list[PlaylistItem]:  # noqa: PLR0915
+    """
+    Parse M3U/M3U8 data into a list of PlaylistItem entries.
 
     Supports standard tags (#EXTINF, #EXT-X-STREAM-INF, #EXT-X-KEY) and
-    Music Assistant extensions (#EXTMA, #EXTPROV, #EXTIMG).
+    Music Assistant extensions (#EXTMA, #EXTPROV, #EXTIMG etc.).
     """
     m3u_lines = m3u_data.splitlines()
     playlist: list[PlaylistItem] = []
@@ -120,6 +157,9 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
     metadata: dict[str, str] | None = None
     providers: list[ProviderMappingInfo] = []
     images: list[ImageInfo] = []
+    artists: list[ArtistInfo] = []
+    album: AlbumInfo | None = None
+    podcast: PodcastInfo | None = None
 
     for line in m3u_lines:
         line = line.strip()  # noqa: PLW2901
@@ -143,6 +183,13 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
         elif line.startswith("#EXTIMG:"):
             if img_info := _parse_extimg_line(line):
                 images.append(img_info)
+        elif line.startswith("#EXTARTIST:"):
+            if artist_info := _parse_extartist_line(line):
+                artists.append(artist_info)
+        elif line.startswith("#EXTALBUM:"):
+            album = _parse_extalbum_line(line)
+        elif line.startswith("#EXTPODCAST:"):
+            podcast = _parse_extpodcast_line(line)
         elif line.startswith("#"):
             continue
         elif line:
@@ -157,6 +204,9 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
                     metadata=metadata,
                     providers=providers,
                     images=images,
+                    artists=artists,
+                    album=album,
+                    podcast=podcast,
                 )
             )
             # reset accumulators
@@ -166,6 +216,9 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
             metadata = None
             providers = []
             images = []
+            artists = []
+            album = None
+            podcast = None
 
     return playlist
 
@@ -267,19 +320,46 @@ def generate_m3u(
     :param items: Entries to write. Only fields that are set are emitted.
     """
     lines: list[str] = ["#EXTM3U", f"#PLAYLIST:{playlist_name}"]
+    sep = FIELD_SEPARATOR
     for item in items:
         if item.metadata:
-            pairs = ",".join(f"{k}={v}" for k, v in item.metadata.items())
+            pairs = sep.join(f"{k}={v}" for k, v in item.metadata.items())
             lines.append(f"#EXTMA:{pairs}")
         for prov in item.providers:
-            lines.append(
-                f"#EXTPROV:{prov.domain}|{prov.item_id}"
-                f"|{prov.instance_id}|{prov.content_type}"
-                f"|{prov.sample_rate}|{prov.bit_depth}|{prov.bit_rate}"
-            )
+            fields = [
+                prov.domain,
+                prov.item_id,
+                prov.instance_id,
+                prov.content_type,
+                str(prov.sample_rate),
+                str(prov.bit_depth),
+                str(prov.bit_rate),
+            ]
+            lines.append(f"#EXTPROV:{sep.join(fields)}")
+        for artist in item.artists:
+            fields = [artist.name, artist.provider_domain, artist.item_id, artist.provider_instance]
+            lines.append(f"#EXTARTIST:{sep.join(fields)}")
+        if item.album:
+            fields = [
+                item.album.name,
+                item.album.provider_domain,
+                item.album.item_id,
+                item.album.provider_instance,
+                item.album.version,
+            ]
+            lines.append(f"#EXTALBUM:{sep.join(fields)}")
+        if item.podcast:
+            fields = [
+                item.podcast.name,
+                item.podcast.provider_domain,
+                item.podcast.item_id,
+                item.podcast.provider_instance,
+            ]
+            lines.append(f"#EXTPODCAST:{sep.join(fields)}")
         for img in item.images:
             remotely = "true" if img.remotely_accessible else "false"
-            lines.append(f"#EXTIMG:{img.type}|{img.path}|{img.provider}|{remotely}")
+            fields = [img.type, img.path, img.provider, remotely]
+            lines.append(f"#EXTIMG:{sep.join(fields)}")
         if item.title is not None and item.length is not None:
             lines.append(f"#EXTINF:{item.length},{item.title}")
         lines.append(item.path)
@@ -294,7 +374,7 @@ def generate_m3u(
 def construct_media_item_from_playlist_item(
     item: PlaylistItem,
     mass: MusicAssistant,
-) -> MediaItemType:
+) -> MediaItemType | None:
     """Construct a MediaItem from a PlaylistItem's stored metadata.
 
     Resolves provider mappings by instance_id first (free dict lookup),
@@ -308,17 +388,98 @@ def construct_media_item_from_playlist_item(
         media_type = MediaType(metadata.get("media_type", "track"))
     except ValueError:
         media_type = MediaType.TRACK
-    artist_name, track_name = parse_extinf_title(item.title)
-    name = track_name or item.path
+    name = metadata.get("name") or item.title or item.path
     try:
         duration = int(item.length) if item.length else 0
     except ValueError:
         duration = 0
 
-    # resolve provider mappings: try instance_id, fall back to domain
-    # always include the mapping; mark available=False if provider is not loaded
+    provider_mappings = _resolve_provider_mappings(item, mass)
+    external_ids = _collect_external_ids(metadata)
+
+    first_provider = next(
+        (pm for pm in provider_mappings if pm.available),
+        next(iter(provider_mappings), None),
+    )
+    item_provider = first_provider.provider_domain if first_provider else "builtin"
+    item_id = first_provider.item_id if first_provider else item.path.rsplit("/", 1)[-1]
+
+    media_item: MediaItemType
+    if media_type == MediaType.RADIO:
+        media_item = Radio(
+            item_id=item_id,
+            provider=item_provider,
+            name=name,
+            provider_mappings=provider_mappings,
+            external_ids=external_ids,
+        )
+    elif media_type == MediaType.PODCAST_EPISODE:
+        if not item.podcast:
+            return None
+        p_provider = item.podcast.provider_domain or item_provider
+        p_item_id = item.podcast.item_id or item.podcast.name
+        podcast_mapping = ItemMapping(
+            item_id=p_item_id,
+            provider=p_provider,
+            name=item.podcast.name,
+            media_type=MediaType.PODCAST,
+        )
+        media_item = PodcastEpisode(
+            item_id=item_id,
+            provider=item_provider,
+            name=name,
+            duration=duration,
+            position=0,
+            provider_mappings=provider_mappings,
+            podcast=podcast_mapping,
+            external_ids=external_ids,
+        )
+    elif media_type == MediaType.AUDIOBOOK:
+        media_item = Audiobook(
+            item_id=item_id,
+            provider=item_provider,
+            name=name,
+            duration=duration,
+            provider_mappings=provider_mappings,
+            authors=UniqueList(
+                metadata.get("authors", "").split("; ") if metadata.get("authors") else []
+            ),
+            narrators=UniqueList(
+                metadata.get("narrators", "").split("; ") if metadata.get("narrators") else []
+            ),
+            external_ids=external_ids,
+        )
+    else:
+        media_item = _construct_track(
+            item,
+            metadata,
+            item_id,
+            item_provider,
+            name,
+            duration,
+            provider_mappings,
+            external_ids,
+        )
+
+    for img in item.images:
+        try:
+            image_type = ImageType(img.type)
+        except ValueError:
+            continue
+        media_item.metadata.add_image(
+            MediaItemImage(
+                type=image_type,
+                path=img.path,
+                provider=img.provider,
+                remotely_accessible=img.remotely_accessible,
+            )
+        )
+    return media_item
+
+
+def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[ProviderMapping]:
+    """Resolve provider mappings from playlist item, checking loaded providers."""
     provider_mappings: set[ProviderMapping] = set()
-    audio_format = AudioFormat()
     for prov_info in item.providers:
         prov = None
         if prov_info.instance_id:
@@ -340,104 +501,143 @@ def construct_media_item_from_playlist_item(
                 audio_format=audio_format,
             )
         )
+    return provider_mappings
 
+
+def _collect_external_ids(metadata: dict[str, str]) -> set[tuple[ExternalID, str]]:
+    """Collect external IDs (ISRC, MusicBrainz) from metadata dict."""
     external_ids: set[tuple[ExternalID, str]] = set()
     if isrc := metadata.get("isrc"):
         external_ids.add((ExternalID.ISRC, isrc))
     if mbid := metadata.get("mbid"):
         external_ids.add((ExternalID.MB_RECORDING, mbid))
+    return external_ids
 
-    # use first available provider domain as the item's provider, or "builtin" as fallback
-    first_provider = next(
-        (pm for pm in provider_mappings if pm.available),
-        next(iter(provider_mappings), None),
+
+def _construct_track(
+    item: PlaylistItem,
+    metadata: dict[str, str],
+    item_id: str,
+    item_provider: str,
+    name: str,
+    duration: int,
+    provider_mappings: set[ProviderMapping],
+    external_ids: set[tuple[ExternalID, str]],
+) -> Track:
+    """Construct a Track from playlist item data, including artists and album."""
+    artists: UniqueList[Artist | ItemMapping] = UniqueList()
+    for artist_info in item.artists:
+        artist_provider = artist_info.provider_domain or item_provider
+        artist_item_id = artist_info.item_id or artist_info.name
+        artists.append(
+            ItemMapping(
+                item_id=artist_item_id,
+                provider=artist_provider,
+                name=artist_info.name,
+                media_type=MediaType.ARTIST,
+            )
+        )
+    album_mapping: ItemMapping | None = None
+    if item.album:
+        album_provider = item.album.provider_domain or item_provider
+        album_item_id = item.album.item_id or item.album.name
+        album_mapping = ItemMapping(
+            item_id=album_item_id,
+            provider=album_provider,
+            name=item.album.name,
+            version=item.album.version,
+            media_type=MediaType.ALBUM,
+        )
+    return Track(
+        item_id=item_id,
+        provider=item_provider,
+        name=name,
+        version=metadata.get("version", ""),
+        duration=duration,
+        artists=artists,
+        album=album_mapping,
+        provider_mappings=provider_mappings,
+        external_ids=external_ids,
     )
-    item_provider = first_provider.provider_domain if first_provider else "builtin"
-    item_instance = first_provider.provider_instance if first_provider else "builtin"
 
-    media_item: MediaItemType
-    if media_type == MediaType.RADIO:
-        media_item = Radio(
-            item_id=item.path,
-            provider=item_provider,
-            name=name,
-            provider_mappings=provider_mappings,
-            external_ids=external_ids,
+
+# --------------------------------------------------------------------------- #
+#  Media item to playlist dataclass helpers                                    #
+# --------------------------------------------------------------------------- #
+
+
+def collect_artist_infos(full_item: MediaItem) -> list[ArtistInfo]:
+    """Extract artist info from a media item for M3U serialization."""
+    artist_infos: list[ArtistInfo] = []
+    if not hasattr(full_item, "artists") or not full_item.artists:
+        return artist_infos
+    for artist in full_item.artists:
+        prov_mappings = getattr(artist, "provider_mappings", None)
+        if prov_mappings:
+            first_mapping = next(iter(prov_mappings))
+            a_domain = first_mapping.provider_domain
+            a_item_id = first_mapping.item_id
+            a_instance = first_mapping.provider_instance
+        else:
+            a_domain = artist.provider
+            a_item_id = artist.item_id
+            a_instance = artist.provider
+        artist_infos.append(
+            ArtistInfo(
+                name=artist.name,
+                provider_domain=a_domain,
+                item_id=a_item_id,
+                provider_instance=a_instance,
+            )
         )
-    elif media_type == MediaType.PODCAST_EPISODE:
-        podcast_name = metadata.get("podcast", "")
-        media_item = PodcastEpisode(
-            item_id=item.path,
-            provider=item_provider,
-            name=name,
-            duration=duration,
-            position=0,
-            provider_mappings=provider_mappings,
-            podcast=ItemMapping(
-                item_id=podcast_name,
-                provider=item_provider,
-                name=podcast_name,
-                media_type=MediaType.PODCAST,
-            ),
-            external_ids=external_ids,
-        )
-    elif media_type == MediaType.AUDIOBOOK:
-        media_item = Audiobook(
-            item_id=item.path,
-            provider=item_provider,
-            name=name,
-            duration=duration,
-            provider_mappings=provider_mappings,
-            authors=UniqueList(
-                metadata.get("authors", "").split("; ") if metadata.get("authors") else []
-            ),
-            narrators=UniqueList(
-                metadata.get("narrators", "").split("; ") if metadata.get("narrators") else []
-            ),
-            external_ids=external_ids,
-        )
+    return artist_infos
+
+
+def collect_album_info(full_item: MediaItem) -> AlbumInfo | None:
+    """Extract album info from a media item for M3U serialization."""
+    if not hasattr(full_item, "album") or not full_item.album:
+        return None
+    album = full_item.album
+    prov_mappings = getattr(album, "provider_mappings", None)
+    if prov_mappings:
+        first_mapping = next(iter(prov_mappings))
+        al_domain = first_mapping.provider_domain
+        al_item_id = first_mapping.item_id
+        al_instance = first_mapping.provider_instance
     else:
-        artists: UniqueList[Artist | ItemMapping] = UniqueList()
-        if artist_name:
-            artists.append(
-                Artist(
-                    item_id=artist_name,
-                    provider=item_provider,
-                    name=artist_name,
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id=artist_name,
-                            provider_domain=item_provider,
-                            provider_instance=item_instance,
-                            available=False,
-                        )
-                    },
-                )
-            )
-        media_item = Track(
-            item_id=item.path,
-            provider=item_provider,
-            name=name,
-            duration=duration,
-            artists=artists,
-            provider_mappings=provider_mappings,
-            external_ids=external_ids,
-        )
+        al_domain = album.provider
+        al_item_id = album.item_id
+        al_instance = album.provider
+    return AlbumInfo(
+        name=album.name,
+        provider_domain=al_domain,
+        item_id=al_item_id,
+        provider_instance=al_instance,
+        version=getattr(album, "version", "") or "",
+    )
 
-    for img in item.images:
-        try:
-            image_type = ImageType(img.type)
-        except ValueError:
-            continue
-        media_item.metadata.add_image(
-            MediaItemImage(
-                type=image_type,
-                path=img.path,
-                provider=img.provider,
-                remotely_accessible=img.remotely_accessible,
-            )
-        )
-    return media_item
+
+def collect_podcast_info(full_item: MediaItem) -> PodcastInfo | None:
+    """Extract podcast info from a media item for M3U serialization."""
+    if not hasattr(full_item, "podcast") or not full_item.podcast:
+        return None
+    podcast = full_item.podcast
+    prov_mappings = getattr(podcast, "provider_mappings", None)
+    if prov_mappings:
+        first_mapping = next(iter(prov_mappings))
+        p_domain = first_mapping.provider_domain
+        p_item_id = first_mapping.item_id
+        p_instance = first_mapping.provider_instance
+    else:
+        p_domain = podcast.provider
+        p_item_id = podcast.item_id
+        p_instance = podcast.provider
+    return PodcastInfo(
+        name=podcast.name,
+        provider_domain=p_domain,
+        item_id=p_item_id,
+        provider_instance=p_instance,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -466,10 +666,10 @@ def _parse_hls_key(line: str, current_key: str | None) -> str | None:
 
 
 def _parse_extma_line(line: str) -> dict[str, str]:
-    """Parse #EXTMA into a metadata dict (comma-separated key=value pairs)."""
+    """Parse #EXTMA into a metadata dict (double-pipe-separated key=value pairs)."""
     raw = line.split("#EXTMA:", 1)[1]
     metadata: dict[str, str] = {}
-    for pair in raw.split(","):
+    for pair in raw.split(FIELD_SEPARATOR):
         if "=" not in pair:
             continue
         k, v = pair.split("=", 1)
@@ -478,9 +678,9 @@ def _parse_extma_line(line: str) -> dict[str, str]:
 
 
 def _parse_extprov_line(line: str) -> ProviderMappingInfo | None:
-    """Parse #EXTPROV (pipe-separated: domain|item_id|instance_id|content_type|sr|bd|br)."""
-    parts = line.split("#EXTPROV:", 1)[1].strip().split("|")
-    if len(parts) < 2:
+    """Parse #EXTPROV (double-pipe-separated, 2 required + 5 optional fields)."""
+    parts = line.split("#EXTPROV:", 1)[1].strip().split(FIELD_SEPARATOR)
+    if len(parts) < 2 or len(parts) > 7:
         return None
     try:
         return ProviderMappingInfo(
@@ -492,18 +692,58 @@ def _parse_extprov_line(line: str) -> ProviderMappingInfo | None:
             bit_depth=int(parts[5]) if len(parts) > 5 and parts[5] else 0,
             bit_rate=int(parts[6]) if len(parts) > 6 and parts[6] else 0,
         )
-    except (ValueError, IndexError):
+    except ValueError:
         return None
 
 
 def _parse_extimg_line(line: str) -> ImageInfo | None:
-    """Parse #EXTIMG (pipe-separated: type|path|provider|remotely_accessible)."""
-    parts = line.split("#EXTIMG:", 1)[1].strip().split("|")
-    if len(parts) < 3:
+    """Parse #EXTIMG (double-pipe-separated, expects 4 fields)."""
+    parts = line.split("#EXTIMG:", 1)[1].strip().split(FIELD_SEPARATOR)
+    if len(parts) != 4:
         return None
     return ImageInfo(
         type=parts[0],
         path=parts[1],
         provider=parts[2],
-        remotely_accessible=parts[3].lower() == "true" if len(parts) > 3 else False,
+        remotely_accessible=parts[3].lower() == "true",
+    )
+
+
+def _parse_extartist_line(line: str) -> ArtistInfo | None:
+    """Parse #EXTARTIST (double-pipe-separated, expects 4 fields)."""
+    parts = line.split("#EXTARTIST:", 1)[1].strip().split(FIELD_SEPARATOR)
+    if len(parts) != 4 or not parts[0]:
+        return None
+    return ArtistInfo(
+        name=parts[0],
+        provider_domain=parts[1],
+        item_id=parts[2],
+        provider_instance=parts[3],
+    )
+
+
+def _parse_extalbum_line(line: str) -> AlbumInfo | None:
+    """Parse #EXTALBUM (double-pipe-separated, expects 5 fields)."""
+    parts = line.split("#EXTALBUM:", 1)[1].strip().split(FIELD_SEPARATOR)
+    if len(parts) != 5 or not parts[0]:
+        return None
+    return AlbumInfo(
+        name=parts[0],
+        provider_domain=parts[1],
+        item_id=parts[2],
+        provider_instance=parts[3],
+        version=parts[4],
+    )
+
+
+def _parse_extpodcast_line(line: str) -> PodcastInfo | None:
+    """Parse #EXTPODCAST (double-pipe-separated, expects 4 fields)."""
+    parts = line.split("#EXTPODCAST:", 1)[1].strip().split(FIELD_SEPARATOR)
+    if len(parts) != 4 or not parts[0]:
+        return None
+    return PodcastInfo(
+        name=parts[0],
+        provider_domain=parts[1],
+        item_id=parts[2],
+        provider_instance=parts[3],
     )

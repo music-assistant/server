@@ -472,12 +472,38 @@ class DLNAPlayer(Player):
         """Send VOLUME_SET command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_set_volume_level(volume_level / 100)
+        self.mass.call_later(
+            0.25,
+            self._poll_volume_state,
+            task_id=f"dlna_poll_volume_{self.player_id}",
+        )
 
     @catch_request_errors
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_mute_volume(muted)
+        await self._poll_volume_state()
+
+    async def _poll_volume_state(self) -> None:
+        """Poll the device for current volume/mute state and update player.
+
+        Some DLNA devices don't send RenderingControl events for
+        volume/mute changes initiated via UPnP actions, and the library
+        skips polling RC state variables when subscribed to events.
+        This forces a targeted poll to keep state in sync.
+        """
+        if not self.device:
+            return
+        actions: list[str] = []
+        if self.device.has_volume_level:
+            actions.append("GetVolume")
+        if self.device.has_volume_mute:
+            actions.append("GetMute")
+        if not actions:
+            return
+        await self.device._async_poll_state_variables("RC", actions, InstanceID=0, Channel="Master")
+        await self._update_player()
 
     async def poll(self) -> None:
         """Poll player for state updates."""

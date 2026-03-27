@@ -283,7 +283,7 @@ class ChromecastPlayer(Player):
             # Non-blocking disconnect: close socket, don't wait for thread.
             # Socket threads are daemon threads and die on process exit.
             # Blocking disconnect can stall shutdown if threads are slow to exit.
-            self.cc.disconnect(blocking=False)
+            self.cc.disconnect(0)
         else:
             await asyncio.to_thread(self.cc.disconnect, 10)
 
@@ -300,7 +300,7 @@ class ChromecastPlayer(Player):
         if not (current_media := self.current_media):
             return
         if not (
-            "/flow/" in self._attr_current_media.uri
+            "/flow/" in current_media.uri
             or self.current_media.media_type
             in (
                 MediaType.RADIO,
@@ -477,10 +477,13 @@ class ChromecastPlayer(Player):
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
-            if not (group_player := self.mass.players.get_player(self.active_cast_group)):
+            player_obj = self.mass.players.get_player(self.active_cast_group)
+            if not player_obj:
                 return
-            if not isinstance(group_player, ChromecastPlayer):
+            # Now assert/check the type to satisfy MyPy
+            if not isinstance(player_obj, ChromecastPlayer):
                 return
+            group_player = player_obj
             status = group_player.cc.media_controller.status
 
         # player state

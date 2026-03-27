@@ -27,6 +27,7 @@ from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
+    MediaItem,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
@@ -46,10 +47,18 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.tasks.context import (
+    get_current_task_id,
+    report_current_task_failure,
+    update_current_task_progress_text,
+)
 from music_assistant.helpers.playlists import (
     ImageInfo,
     PlaylistItem,
     ProviderMappingInfo,
+    collect_album_info,
+    collect_artist_infos,
+    collect_podcast_info,
     construct_media_item_from_playlist_item,
     generate_m3u,
     parse_m3u,
@@ -154,8 +163,13 @@ class BuiltinProvider(MusicProvider):
         await super().loaded_in_mass()
         # migrate old-style playlists in the background to avoid blocking startup
         # TODO: remove after MA 2.9
-        if self.mass.config.get(CONF_KEY_PLAYLISTS, []):
-            self.mass.create_task(self._migrate_playlists())
+        self.mass.tasks.register_scheduled_task(
+            task_id="migrate_builtin_playlists",
+            name="Builtin provider playlist migration",
+            handler=self._migrate_playlists,
+            schedule=TaskSchedule.hourly(every=24),
+            initial_delay=60,
+        )
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -384,6 +398,8 @@ class BuiltinProvider(MusicProvider):
     ) -> list[PlaylistPlayableItem]:
         """Get playlist tracks (paginated, 500 items per page)."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
+            if page > 0:
+                return []
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
         return await self._get_user_playlist_tracks(prov_playlist_id, page)
 
@@ -705,6 +721,8 @@ class BuiltinProvider(MusicProvider):
         falls back to a library lookup by domain.
         """
         media_item = construct_media_item_from_playlist_item(item, self.mass)
+        if media_item is None:
+            return None
         # if at least one provider mapping is available, we're done
         if any(pm.available for pm in media_item.provider_mappings):
             return media_item
@@ -718,9 +736,9 @@ class BuiltinProvider(MusicProvider):
                 )
                 if library_item is not None:
                     return library_item
-            except (InvalidDataError, KeyError):
+            except (InvalidDataError, KeyError, NotImplementedError):
                 continue
-        # return with unavailable mappings so the item still shows in the playlist
+        # return unresolved media item so the entry still shows in the playlist
         return media_item
 
     async def _get_user_playlist_tracks(
@@ -767,15 +785,18 @@ class BuiltinProvider(MusicProvider):
             async with semaphore:
                 try:
                     media_item = await self._resolve_playlist_item(item)
-                    if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
-                        playlist_item = cast("PlaylistPlayableItem", media_item)
-                        playlist_item.position = index
-                        return playlist_item
-                    self.logger.warning(
-                        "Unsupported media type in playlist %s: %s",
-                        prov_playlist_id,
-                        type(media_item),
-                    )
+                    if media_item is None:
+                        return None
+                    if media_item.media_type not in PLAYLIST_MEDIA_TYPES:
+                        self.logger.warning(
+                            "Unsupported media type in playlist %s: %s",
+                            prov_playlist_id,
+                            type(media_item),
+                        )
+                        return None
+                    playlist_item = cast("PlaylistPlayableItem", media_item)
+                    playlist_item.position = index
+                    return playlist_item
                 except (
                     MediaNotFoundError,
                     InvalidDataError,
@@ -806,24 +827,26 @@ class BuiltinProvider(MusicProvider):
     async def _build_m3u_entry_from_uri(self, uri: str) -> PlaylistItem:
         """Fetch a media item by URI and convert it to a PlaylistItem with full metadata."""
         full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
-        if not hasattr(full_item, "provider_mappings"):
+        if not isinstance(full_item, MediaItem):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)
 
-        # build EXTINF title
-        title = full_item.name
+        # build M3U-compliant EXTINF title
         if hasattr(full_item, "artists") and full_item.artists:
             artist_names = ", ".join(a.name for a in full_item.artists)
-            title = f"{artist_names} - {title}"
+            title = f"{artist_names} - {full_item.name}"
+        elif hasattr(full_item, "podcast") and full_item.podcast:
+            title = f"{full_item.podcast.name} - {full_item.name}"
+        else:
+            title = full_item.name
 
         duration = getattr(full_item, "duration", None) or 0
 
         # build EXTMA metadata
-        metadata: dict[str, str] = {"media_type": full_item.media_type.value}
-        if hasattr(full_item, "album") and full_item.album:
-            metadata["album"] = full_item.album.name
-        if hasattr(full_item, "podcast") and full_item.podcast:
-            metadata["podcast"] = full_item.podcast.name
+        metadata: dict[str, str] = {
+            "media_type": full_item.media_type.value,
+            "name": full_item.name,
+        }
         if hasattr(full_item, "authors") and full_item.authors:
             metadata["authors"] = "; ".join(full_item.authors)
         if hasattr(full_item, "narrators") and full_item.narrators:
@@ -838,14 +861,13 @@ class BuiltinProvider(MusicProvider):
         # collect one provider mapping per domain (highest quality)
         prov_infos: list[ProviderMappingInfo] = []
         seen_domains: set[str] = set()
+        if not full_item.provider_mappings:
+            # this should not happen, but just in case
+            msg = f"No provider mappings found for: {uri}"
+            raise ProviderUnavailableError(msg)
         sorted_mappings = sorted(full_item.provider_mappings, key=lambda x: x.quality, reverse=True)
         for prov_mapping in sorted_mappings:
-            if not prov_mapping.available:
-                continue
-            item_prov = self.mass.get_provider(prov_mapping.provider_instance)
-            if not item_prov:
-                continue
-            domain = item_prov.domain
+            domain = prov_mapping.provider_domain
             if domain in seen_domains:
                 continue
             seen_domains.add(domain)
@@ -853,7 +875,7 @@ class BuiltinProvider(MusicProvider):
                 ProviderMappingInfo(
                     domain=domain,
                     item_id=prov_mapping.item_id,
-                    instance_id=item_prov.instance_id,
+                    instance_id=prov_mapping.provider_instance,
                     content_type=prov_mapping.audio_format.content_type.value,
                     sample_rate=prov_mapping.audio_format.sample_rate,
                     bit_depth=prov_mapping.audio_format.bit_depth,
@@ -861,13 +883,13 @@ class BuiltinProvider(MusicProvider):
                 )
             )
 
-        if not prov_infos:
-            msg = f"No available provider for: {uri}"
-            raise ProviderUnavailableError(msg)
-
         # primary URI = highest quality provider
         primary = prov_infos[0]
         primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
+
+        artist_infos = collect_artist_infos(full_item)
+        album_info = collect_album_info(full_item)
+        podcast_info = collect_podcast_info(full_item)
 
         # collect images
         images: list[ImageInfo] = []
@@ -889,6 +911,9 @@ class BuiltinProvider(MusicProvider):
             metadata=metadata,
             providers=prov_infos,
             images=images,
+            artists=artist_infos,
+            album=album_info,
+            podcast=podcast_info,
         )
 
     @staticmethod
@@ -900,16 +925,18 @@ class BuiltinProvider(MusicProvider):
         sanitized = sanitized.strip(" .")
         return sanitized or "untitled"
 
-    async def _migrate_playlists(self) -> None:
+    async def _migrate_playlists(self) -> None:  # noqa: PLR0915
         """Migrate old-style playlists (config + plain URI files) to M3U files."""
+        # migrate playlists stored in config to M3U files on disk with enriched metadata
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        if not stored_items:
-            return
-        self.logger.info("Migrating %d playlist(s) to M3U format...", len(stored_items))
         for stored_item in stored_items:
             # keep the original item_id as filename so library DB references stay valid
             playlist_id = stored_item["item_id"]
             playlist_name = stored_item["name"]
+            self.logger.info("Migrating playlist '%s' to M3U format...", playlist_name)
+            update_current_task_progress_text(
+                f"Migrating playlist '{playlist_name}' to M3U format..."
+            )
             old_file = os.path.join(self._playlists_dir, playlist_id)
             # read old URI file and enrich each entry with full metadata
             uris: list[str] = []
@@ -941,5 +968,56 @@ class BuiltinProvider(MusicProvider):
                 await asyncio.to_thread(os.remove, old_file)
             self.logger.debug("Migrated playlist '%s' -> %s.m3u", playlist_name, playlist_id)
         # clear old config entries
-        self.mass.config.set(CONF_KEY_PLAYLISTS, [])
-        self.logger.info("Playlist migration complete")
+        self.mass.config.remove(CONF_KEY_PLAYLISTS)
+        # fix (already migrated) user playlists that have unresolved URIs
+        # by re-saving them with enriched metadata
+        errors = 0
+        for filename in await asyncio.to_thread(os.listdir, self._playlists_dir):
+            if not filename.endswith(".m3u"):
+                continue
+            playlist_id = filename[:-4]  # strip .m3u extension
+            m3u_data = await self._read_m3u_file(playlist_id)
+            playlist = await self.get_playlist(playlist_id)
+            self.logger.debug("Checking playlist '%s' for unresolved entries...", playlist.name)
+            update_current_task_progress_text(f"Checking playlist '{playlist.name}'")
+            all_items = parse_m3u(m3u_data)
+            has_changes = False
+            for item in all_items:
+                force_migration = item.metadata and item.metadata.get("album") and not item.album
+                if item.title and item.providers and item.metadata and not force_migration:
+                    continue
+                self.logger.debug(
+                    "Found unresolved entry in playlist '%s': %s", playlist_id, item.path
+                )
+                try:
+                    enriched = await self._build_m3u_entry_from_uri(item.path)
+                    item.length = enriched.length
+                    item.title = enriched.title
+                    item.images = enriched.images
+                    item.providers = enriched.providers
+                    item.metadata = enriched.metadata
+                    item.album = enriched.album
+                    item.artists = enriched.artists
+                    item.podcast = enriched.podcast
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
+                    self.logger.warning(
+                        "Could not enrich playlist entry %s during migration: %s", item.path, err
+                    )
+                    report_current_task_failure(f"Could not enrich playlist entry: {item.path}")
+                    errors += 1
+                else:
+                    has_changes = True
+                    self.logger.debug(
+                        "Enriched playlist entry %s",
+                        item.path,
+                    )
+            if has_changes:
+                await self._write_m3u_file(playlist_id, playlist.name, list(all_items))
+                self.logger.info("Updated playlist '%s' with enriched metadata", playlist.name)
+            if errors > 25:
+                raise RuntimeError("Too many errors during playlist migration")
+        self.logger.info("Playlist migration completed with %d errors", errors)
+        # if there were no errors, we can safely unregister the migration task
+        if errors == 0 and (current_task_id := get_current_task_id()):
+            # defer unregistering the scheduled task to avoid cancelling the current task
+            self.mass.call_later(0, self.mass.tasks.unregister_scheduled_task, current_task_id)
