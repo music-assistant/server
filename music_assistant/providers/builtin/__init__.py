@@ -541,8 +541,8 @@ class BuiltinProvider(MusicProvider):
             return VARIOUS_ARTISTS_FANART
         return path
 
-    async def _resolve_playlist_url(self, url: str) -> str:
-        """Resolve a playlist URL to the actual stream URL.
+    async def _resolve_url(self, url: str) -> str:
+        """Resolve a URL to the actual stream URL.
 
         ffprobe cannot analyze PLS/M3U files directly as it sees them as text.
         This method extracts the actual audio stream URL from playlist files.
@@ -574,7 +574,7 @@ class BuiltinProvider(MusicProvider):
         )
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
-        resolved_url = await self._resolve_playlist_url(url)
+        resolved_url = await self._resolve_url(url)
         # parse info with ffprobe (and store in cache)
         media_info = await async_parse_tags(resolved_url)
         if "authSig" in url:
