@@ -162,8 +162,9 @@ def get_xml_soap_create_queue() -> tuple[str, str]:
 
 
 # DIDL-LITE
-def create_didl_metadata(media: PlayerMedia) -> str:
+def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
+    uri = url or media.uri
 
     def escape_metadata(data: str) -> str:
         """Escape didl metadata."""
@@ -179,22 +180,22 @@ def create_didl_metadata(media: PlayerMedia) -> str:
                 result += f"&#{unicode_code};"
         return result
 
-    ext = media.uri.split(".")[-1].split("?")[0]
+    ext = uri.split(".")[-1].split("?")[0]
     mime_type = get_mime_type(ext)
     image_url = media.image_url or MASS_LOGO_ONLINE
     if media.media_type in (MediaType.FLOW_STREAM, MediaType.RADIO) or not media.duration:
         # flow stream, radio or other duration-less stream
         # Use streaming-optimized DLNA flags to prevent buffering
-        title = media.title or media.uri
+        title = media.title or uri
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
             f'<item id="flowmode" parentID="0" restricted="1">'
             f"<dc:title>{escape_metadata(title)}</dc:title>"
             f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
-            f"<dc:queueItemId>{escape_metadata(media.uri)}</dc:queueItemId>"
+            f"<dc:queueItemId>{escape_metadata(uri)}</dc:queueItemId>"
             f"<dc:description>Music Assistant</dc:description>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
-            f'<res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escape_metadata(media.uri)}</res>'
+            f'<res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escape_metadata(uri)}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
@@ -212,8 +213,8 @@ def create_didl_metadata(media: PlayerMedia) -> str:
 
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'
-        f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.source_id or ""}">'
-        f"<dc:title>{escape_metadata(media.title or media.uri)}</dc:title>"
+        f'<item id="{media.queue_item_id or xmlescape(uri)}" restricted="true" parentID="{media.source_id or ""}">'
+        f"<dc:title>{escape_metadata(media.title or uri)}</dc:title>"
         f"<dc:creator>{escape_metadata(media.artist or '')}</dc:creator>"
         f"<upnp:album>{escape_metadata(media.album or '')}</upnp:album>"
         f"<upnp:artist>{escape_metadata(media.artist or '')}</upnp:artist>"
@@ -221,7 +222,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
         f"<dc:description>Music Assistant</dc:description>"
         f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(uri)}</res>'
         '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">RINCON_AssociatedZPUDN</desc>'
         "</item>"
         "</DIDL-Lite>"

@@ -35,6 +35,8 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_PRODUCTION_YEAR,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_TYPE,
+    ITEM_KEY_USER_DATA,
+    USER_DATA_KEY_IS_FAVORITE,
 )
 
 if TYPE_CHECKING:
@@ -133,6 +135,9 @@ def parse_track(
             )
         )
 
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
     return track
 
 
@@ -171,6 +176,9 @@ def parse_artist(
                 remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
 
     return artist
 
@@ -236,6 +244,9 @@ def parse_album(
             )
         )
 
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
     return album
 
 
@@ -273,5 +284,8 @@ def parse_playlist(
                 remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
 
     return playlist
