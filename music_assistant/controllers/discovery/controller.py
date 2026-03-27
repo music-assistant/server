@@ -150,12 +150,15 @@ class DiscoveryController(CoreController):
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""
         zeroconf_interfaces = str(config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
-        # IPv6 requires InterfaceChoice.All, so only enable when all interfaces are used.
-        use_all_interfaces = zeroconf_interfaces == "all"
-        return AsyncZeroconf(
-            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
-            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
-        )
+        if zeroconf_interfaces == "all":
+            # IPv6 requires InterfaceChoice.All, so only enable when all interfaces are used.
+            return AsyncZeroconf(ip_version=IPVersion.All, interfaces=InterfaceChoice.All)
+        if zeroconf_interfaces != "default":
+            # Comma-separated list of explicit interface IPs.
+            iface_list = [i.strip() for i in zeroconf_interfaces.split(",") if i.strip()]
+            if iface_list:
+                return AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=iface_list)
+        return AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.Default)
 
     async def _setup_mdns_browser(self) -> None:
         """Create the global mDNS browser for all subscribed provider types."""

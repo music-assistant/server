@@ -48,7 +48,7 @@ async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     # 2. Use the stream server's bind_ip directly. The stream server is on the same
     #    subnet as the players by design, so this should always be correct.
     bind_ip = str(mass.streams.bind_ip)
-    if bind_ip not in ("0.0.0.0", ""):
+    if bind_ip not in ("0.0.0.0", "::", ""):
         return bind_ip
 
     # 3. Only when bind_ip is 0.0.0.0 (e.g. Docker/OrbStack), use the routing table
