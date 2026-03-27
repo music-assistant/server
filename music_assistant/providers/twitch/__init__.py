@@ -823,6 +823,14 @@ class TwitchProvider(MusicProvider):
         try:
             if self._streamlink_session is None:
                 self._streamlink_session = Streamlink()
+                # Increase the segment queue deadline so the stream survives Twitch
+                # ad breaks without triggering "No new segments" timeout.  Default
+                # factor is 3 (≈15 s for 5 s target duration); 6 gives ≈30 s,
+                # enough for mid-stream ad transition gaps.
+                self._streamlink_session.set_option(
+                    "stream-segmented-queue-deadline",
+                    6,
+                )
                 streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
                 if streamlink_token:
                     self._streamlink_session.set_option(
