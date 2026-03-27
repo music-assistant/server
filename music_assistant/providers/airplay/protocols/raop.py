@@ -40,7 +40,7 @@ class RaopStream(AirPlayProtocol):
             raise RuntimeError(f"RAOP service not discovered for {self.player.display_name}")
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
-        if_ip = resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
+        if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
         extra_args += ["-if", if_ip]
         if self.player.config.get_value(CONF_ENCRYPTION, True):
             extra_args += ["-encrypt"]

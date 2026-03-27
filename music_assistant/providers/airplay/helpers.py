@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import platform
@@ -31,7 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
 
 
-def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
+async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     """Resolve best local interface IP for cliraop's -if argument.
 
     :param mass: The MusicAssistant instance.
@@ -49,25 +50,32 @@ def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     bind_ip = str(mass.streams.bind_ip)
     if bind_ip not in ("0.0.0.0", ""):
         return bind_ip
+
     # 3. Only when bind_ip is 0.0.0.0 (e.g. Docker/OrbStack), use the routing table
     #    to find the actual outbound interface for this specific target.
-    try:
-        is_ipv6_target = ip_address(target_ip).version == 6
-    except ValueError:
-        is_ipv6_target = False
-    route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
-    route_target: tuple[str, int] | tuple[str, int, int, int] = (
-        (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
-    )
-    with socket.socket(route_family, socket.SOCK_DGRAM) as _s:
+    #    Wrapped in asyncio.to_thread to avoid blocking the event loop.
+    def _routing_lookup() -> str:
         try:
-            _s.settimeout(1.0)
-            _s.connect(route_target)
-            routed_ip = str(_s.getsockname()[0])
-            if routed_ip and routed_ip not in ("0.0.0.0", ""):
-                return routed_ip
-        except OSError:
-            pass
+            is_ipv6_target = ip_address(target_ip).version == 6
+        except ValueError:
+            is_ipv6_target = False
+        route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
+        route_target: tuple[str, int] | tuple[str, int, int, int] = (
+            (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
+        )
+        with socket.socket(route_family, socket.SOCK_DGRAM) as _s:
+            try:
+                _s.settimeout(1.0)
+                _s.connect(route_target)
+                routed_ip = str(_s.getsockname()[0])
+                if routed_ip and routed_ip not in ("0.0.0.0", ""):
+                    return routed_ip
+            except OSError:
+                pass
+        return ""
+
+    if routed := await asyncio.to_thread(_routing_lookup):
+        return routed
     # 4. Fall back to publish_ip as a concrete, bindable address (Docker scenario).
     if publish_ip := str(mass.streams.publish_ip or ""):
         return publish_ip
