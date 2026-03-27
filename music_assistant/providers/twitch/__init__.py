@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    RecommendationFolder,
     SearchResults,
     UniqueList,
 )
@@ -57,6 +58,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 # Streamlink constants
@@ -260,15 +262,15 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_REFRESH_TOKEN, ""),
         ),
-        # Optional streamlink token
+        # Optional Twitch website token
         ConfigEntry(
             key=CONF_STREAMLINK_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Streamlink Auth Token (optional)",
-            description="Your Twitch OAuth token for Streamlink. If you have Twitch Turbo "
+            label="Twitch Website Token (optional)",
+            description="Your Twitch website auth token. If you have Twitch Turbo "
             "or are subscribed to a channel, this reduces ad frequency. "
-            "Extract from your browser cookies (auth-token cookie on twitch.tv) "
-            "or use the Twitch CLI: twitch token.",
+            "See the Streamlink Twitch plugin docs for how to extract this token: "
+            "https://streamlink.github.io/cli/plugins/twitch.html#authentication",
             required=False,
             value=values.get(CONF_STREAMLINK_TOKEN),
         ),
@@ -940,6 +942,31 @@ class TwitchProvider(MusicProvider):
             login = ch["broadcaster_login"]
             if login in live_by_login:
                 yield self._channel_to_radio(ch, live_by_login[login], profiles.get(login))
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's recommendations."""
+        if not self.is_authenticated or not self._user_id:
+            return []
+
+        channels, live_by_login, profiles = await self._get_followed_live_status()
+        live_radios = [
+            self._channel_to_radio(
+                ch, live_by_login[ch["broadcaster_login"]], profiles.get(ch["broadcaster_login"])
+            )
+            for ch in channels
+            if ch["broadcaster_login"] in live_by_login
+        ]
+        if not live_radios:
+            return []
+
+        folder = RecommendationFolder(
+            name="Live Channels",
+            item_id=f"{self.instance_id}_live_channels",
+            provider=self.instance_id,
+            icon="mdi-broadcast",
+        )
+        folder.items.extend(live_radios)
+        return [folder]
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id (channel login)."""
