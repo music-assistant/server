@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models import AudioCodec, MediaCommand
-from aiosendspin.models.types import PlaybackStateType
+from aiosendspin.models.types import PlaybackStateType, PlayerCommand
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -134,8 +135,8 @@ class SendspinPlayer(Player):
     _attr_type = PlayerType.PROTOCOL
 
     api: SendspinClient
-    unsub_event_cb: Callable[[], None]
-    unsub_group_event_cb: Callable[[], None]
+    unsub_event_cb: Callable[[], None] | None
+    unsub_group_event_cb: Callable[[], None] | None
     last_sent_artwork_url: str | None = None
     last_sent_artist_artwork_url: str | None = None
     playback_session: SendspinPlaybackSession
@@ -152,26 +153,86 @@ class SendspinPlayer(Player):
         sendspin_client = provider.server_api.get_client(player_id)
         assert sendspin_client is not None
         self.api = sendspin_client
-        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
-        self.unsub_event_cb = sendspin_client.add_event_listener(self.event_cb)
-        self.unsub_group_event_cb = sendspin_client.group.add_event_listener(self.group_event_cb)
-        if controller_role := self._controller_role:
-            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
-
+        self.unsub_event_cb = None
+        self.unsub_group_event_cb = None
         self.playback_session = SendspinPlaybackSession(self)
 
         self.logger = self.provider.logger.getChild(player_id)
-        # init some static variables
-        self._attr_name = sendspin_client.name
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
-            PlayerFeature.VOLUME_SET,
-            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.MULTI_DEVICE_DSP,
         }
+        # Keep volume/mute features of the first registration as a workaround for Cast.
+        if sendspin_client.info.player_support:
+            _supported_commands = sendspin_client.info.player_support.supported_commands
+            if PlayerCommand.VOLUME in _supported_commands:
+                self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+            if PlayerCommand.MUTE in _supported_commands:
+                self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
         self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
+        self._refresh_client_info(sendspin_client)
+        self._subscribe_client_callbacks()
+
+    def preserve_control_features_from(self, other: SendspinPlayer) -> None:
+        """Keep the first registration's volume/mute features as a workaround for Cast."""
+        for feature in (PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE):
+            if feature in other.supported_features:
+                self._attr_supported_features.add(feature)
+            else:
+                self._attr_supported_features.discard(feature)
+
+    def restore_bridge_identity(
+        self, previous_device_info: DeviceInfo, previous_type: PlayerType
+    ) -> None:
+        """Keep bridge players exposed as protocol bridges after client attach updates."""
+        if previous_type != PlayerType.PROTOCOL:
+            return
+        if not (
+            IdentifierType.CAST_UUID in previous_device_info.identifiers
+            or IdentifierType.AIRPLAY_ID in previous_device_info.identifiers
+        ):
+            return
+        refreshed_identifiers = dict(self._attr_device_info.identifiers)
+        self._attr_device_info = DeviceInfo(
+            model=previous_device_info.model,
+            manufacturer=previous_device_info.manufacturer,
+            software_version=self._attr_device_info.software_version,
+        )
+        for id_type, id_value in refreshed_identifiers.items():
+            self._attr_device_info.add_identifier(id_type, id_value)
+        self.is_web_player = False
+        self._attr_hidden_by_default = False
+        self._attr_expose_to_ha_by_default = True
+        self._attr_type = PlayerType.PROTOCOL
+
+    def _subscribe_client_callbacks(self) -> None:
+        """Subscribe to client and group events for the currently bound client."""
+        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
+        self.unsub_event_cb = self.api.add_event_listener(self.event_cb)
+        self.unsub_group_event_cb = self.api.group.add_event_listener(self.group_event_cb)
+        if controller_role := self._controller_role:
+            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
+
+    def _unsubscribe_client_callbacks(self) -> None:
+        """Unsubscribe any active client and group listeners."""
+        if self.unsub_event_cb is not None:
+            with suppress(Exception):
+                self.unsub_event_cb()
+            self.unsub_event_cb = None
+        if self.unsub_group_event_cb is not None:
+            with suppress(Exception):
+                self.unsub_group_event_cb()
+            self.unsub_group_event_cb = None
+
+    def _refresh_client_info(
+        self,
+        sendspin_client: SendspinClient,
+    ) -> None:
+        """Refresh player attributes from a Sendspin client hello/info payload."""
+        preserved_identifiers = dict(self._attr_device_info.identifiers)
+        self._attr_name = sendspin_client.name
         if device_info := sendspin_client.info.device_info:
             self._attr_device_info = DeviceInfo(
                 model=device_info.product_name or "Unknown model",
@@ -194,12 +255,15 @@ class SendspinPlayer(Player):
         else:
             self._attr_device_info = DeviceInfo()
             self.is_web_player = False
+        for id_type, id_value in preserved_identifiers.items():
+            self._attr_device_info.add_identifier(id_type, id_value)
         # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
         # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
-        if _mac := mac_from_bridge_client_id(player_id):
-            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
-        elif is_valid_mac_address(player_id):
-            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, player_id)
+        if IdentifierType.MAC_ADDRESS not in self._attr_device_info.identifiers:
+            if _mac := mac_from_bridge_client_id(self.player_id):
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
+            elif is_valid_mac_address(self.player_id):
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.player_id)
         if sendspin_client.info.player_support:
             for role in sendspin_client.roles_by_family("player"):
                 volume = role.get_player_volume()
@@ -310,7 +374,8 @@ class SendspinPlayer(Player):
                 self._attr_volume_muted = muted
                 self.update_state()
             case ClientGroupChangedEvent(new_group=new_group):
-                self.unsub_group_event_cb()
+                if self.unsub_group_event_cb is not None:
+                    self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
                 if controller_role := self._controller_role:
                     controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
@@ -690,5 +755,4 @@ class SendspinPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await self.playback_session.close()
         await super().on_unload()
-        self.unsub_event_cb()
-        self.unsub_group_event_cb()
+        self._unsubscribe_client_callbacks()

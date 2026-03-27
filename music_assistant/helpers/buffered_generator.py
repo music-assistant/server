@@ -21,6 +21,51 @@ DEFAULT_MIN_BUFFER_BEFORE_YIELD: Final = 5
 _ACTIVE_PRODUCER_TASKS: set[asyncio.Task[Any]] = set()
 
 
+async def _finalize_producer(
+    generator: AsyncGenerator[bytes, None],
+    completed_naturally: bool,
+    buffer: asyncio.Queue[bytes | None],
+    threshold_reached: asyncio.Event,
+    cancelled: asyncio.Event,
+) -> None:
+    """Release any waiting consumer and signal the end of the stream."""
+    threshold_reached.set()
+    # Close the upstream generator on any early-exit path, even if it already
+    # produced some chunks before the consumer stopped.
+    if not completed_naturally:
+        close_task = asyncio.create_task(close_async_generator(generator))
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            await close_task
+            raise
+    # Signal end of stream by putting None
+    # We must wait for space in the queue if needed, otherwise the consumer may
+    # hang waiting for data that will never come
+    if not cancelled.is_set():
+        await buffer.put(None)
+
+
+async def _shutdown_producer(
+    producer_task: asyncio.Task[None],
+    buffer: asyncio.Queue[bytes | None],
+    cancelled: asyncio.Event,
+) -> None:
+    """Stop the producer task without blocking indefinitely on a slow source."""
+    # Signal the producer to stop
+    cancelled.set()
+    # Drain the queue to unblock the producer if it's waiting on put()
+    empty_queue(buffer)
+    # Wait for the producer to finish cleanly with a timeout to prevent blocking
+    with contextlib.suppress(asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(producer_task), timeout=1.0)
+    # Force-cancel producer if still stuck on a slow read to prevent resource leaks
+    if not producer_task.done():
+        producer_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
+            await asyncio.wait_for(producer_task, timeout=1.0)
+
+
 async def buffered(
     generator: AsyncGenerator[bytes, None],
     buffer_size: int = DEFAULT_BUFFER_SIZE,
@@ -62,32 +107,32 @@ async def buffered(
         These warnings are filtered out in the main logging configuration.
         """
         nonlocal producer_error
-        generator_consumed = False
+        completed_naturally = False
+        stopped_early = False
         try:
             async for chunk in generator:
-                generator_consumed = True
                 if cancelled.is_set():
                     # Consumer has stopped, exit cleanly
+                    stopped_early = True
                     break
                 await buffer.put(chunk)
                 if not threshold_reached.is_set() and buffer.qsize() >= min_buffer_before_yield:
                     threshold_reached.set()
                 # Yield to event loop every chunk to prevent blocking
                 await asyncio.sleep(0)
+            completed_naturally = not stopped_early
         except Exception as err:
             producer_error = err
             if isinstance(err, asyncio.CancelledError):
                 raise
         finally:
-            threshold_reached.set()
-            # Clean up the generator if needed
-            if not generator_consumed:
-                await close_async_generator(generator)
-            # Signal end of stream by putting None
-            # We must wait for space in the queue if needed, otherwise the consumer may
-            # hang waiting for data that will never come
-            if not cancelled.is_set():
-                await buffer.put(None)
+            await _finalize_producer(
+                generator=generator,
+                completed_naturally=completed_naturally,
+                buffer=buffer,
+                threshold_reached=threshold_reached,
+                cancelled=cancelled,
+            )
 
     # Start the producer task
     loop = asyncio.get_running_loop()
@@ -115,13 +160,7 @@ async def buffered(
             yield data
 
     finally:
-        # Signal the producer to stop
-        cancelled.set()
-        # Drain the queue to unblock the producer if it's waiting on put()
-        empty_queue(buffer)
-        # Wait for the producer to finish cleanly with a timeout to prevent blocking
-        with contextlib.suppress(asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(producer_task), timeout=1.0)
+        await asyncio.shield(_shutdown_producer(producer_task, buffer, cancelled))
 
 
 def use_buffer(

@@ -175,7 +175,7 @@ class AudioBuffer:
             Bytes containing one second of audio data
 
         Raises:
-            AudioBufferEOF: If EOF is reached before chunk is available
+            AudioBufferEOF: If EOF is reached or the buffer was intentionally cleared
             AudioError: If chunk has been discarded
             Exception: Any exception that occurred in the producer task
         """
@@ -186,6 +186,8 @@ class AudioBuffer:
             # Check if producer had an error - raise immediately
             if self._producer_error:
                 raise self._producer_error
+            if self.cancelled:
+                raise AudioBufferEOF
 
             # Check if the chunk was already discarded
             if chunk_number < self._discarded_chunks:
@@ -201,6 +203,8 @@ class AudioBuffer:
                 # Check if producer had an error - raise immediately
                 if self._producer_error:
                     raise self._producer_error
+                if self.cancelled:
+                    raise AudioBufferEOF
                 if self._eof_received:
                     raise AudioBufferEOF
                 await self._data_available.wait()
