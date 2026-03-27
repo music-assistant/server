@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
 import requests
+import urllib3.exceptions
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -442,7 +444,11 @@ class PlexProvider(MusicProvider):
         # silence urllib3 InsecureRequestWarning when certificate verification is disabled
         # this is expected when connecting to Plex servers using their wildcard certificates
         # that don't validate against LAN IP addresses
-        logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
+        warnings.filterwarnings(
+            "ignore",
+            category=urllib3.exceptions.InsecureRequestWarning,
+            module="urllib3.connectionpool",
+        )
         _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
 
         def connect() -> PlexServer:
