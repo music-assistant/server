@@ -652,6 +652,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     details=file_item.checksum,
+                    in_library=True,
                 )
             },
         )

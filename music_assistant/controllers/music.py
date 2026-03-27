@@ -108,7 +108,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 34
+DB_SCHEMA_VERSION: Final[int] = 35
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -2699,6 +2699,14 @@ class MusicController(CoreController):
             await self._database.execute(
                 f"UPDATE {DB_TABLE_GENRES} SET is_default = 1 WHERE translation_key IS NOT NULL;"
             )
+        if prev_version <= 34:
+            # fix filesystem playlists missing in_library flag
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE media_type = 'playlist' "
+                "AND provider_domain IN ('filesystem_local', 'filesystem_smb', 'filesystem_nfs');"
+            )
+
         # save changes
         await self._database.commit()
 
