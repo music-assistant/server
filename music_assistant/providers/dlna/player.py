@@ -447,9 +447,11 @@ class DLNAPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         assert self.device is not None  # for type checking
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        # some strict DLNA require the metadata to correspond with the url
+        media.uri = url
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         try:
             await self.device.async_set_next_transport_uri(url, title, didl_metadata)
         except UpnpError:
