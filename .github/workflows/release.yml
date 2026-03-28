@@ -14,6 +14,7 @@ on:
         options:
           - stable
           - beta
+          - rc
           - nightly
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
@@ -40,9 +41,9 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  BASE_IMAGE_VERSION_STABLE: "1.4.11"
-  BASE_IMAGE_VERSION_BETA: "1.4.11"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.4.11"
+  BASE_IMAGE_VERSION_STABLE: "1.4.12"
+  BASE_IMAGE_VERSION_BETA: "1.4.12"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.4.12"
 
 permissions:
   contents: read
@@ -59,9 +60,9 @@ jobs:
         run: |
           CHANNEL="${{ inputs.channel }}"
 
-          if [ "$CHANNEL" = "stable" ]; then
+          if [ "$CHANNEL" = "stable" ] || [ "$CHANNEL" = "rc" ]; then
             echo "branch=stable" >> $GITHUB_OUTPUT
-            echo "Using stable branch for stable release"
+            echo "Using stable branch for $CHANNEL release"
           else
             echo "branch=dev" >> $GITHUB_OUTPUT
             echo "Using dev branch for $CHANNEL release"
@@ -98,6 +99,7 @@ jobs:
           # Regex patterns for each channel
           STABLE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
           BETA_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$'
+          RC_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+rc[0-9]+$'
           NIGHTLY_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$'
 
           # Validate version format matches channel
@@ -117,6 +119,14 @@ jobs:
               fi
               echo "is_prerelease=true" >> $GITHUB_OUTPUT
               echo "base_image_version=${{ env.BASE_IMAGE_VERSION_BETA }}" >> $GITHUB_OUTPUT
+              ;;
+            rc)
+              if ! [[ "$VERSION" =~ $RC_PATTERN ]]; then
+                echo "Error: RC channel requires version format: X.Y.ZrcN (e.g., 1.2.3rc1)"
+                exit 1
+              fi
+              echo "is_prerelease=true" >> $GITHUB_OUTPUT
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> $GITHUB_OUTPUT
               ;;
             nightly)
               if ! [[ "$VERSION" =~ $NIGHTLY_PATTERN ]]; then
@@ -204,6 +214,26 @@ jobs:
             beta)
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
               ;;
+            rc)
+              # RC1 diffs against latest beta, RC2+ diffs against previous RC
+              VERSION="${{ inputs.version }}"
+              if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
+                BASE_VER="${BASH_REMATCH[1]}"
+                RC_NUM="${BASH_REMATCH[2]}"
+                if [ "$RC_NUM" -gt 1 ]; then
+                  # RC2+: diff against previous RC
+                  PREV_RC_NUM=$((RC_NUM - 1))
+                  PREV_TAG="${BASE_VER}rc${PREV_RC_NUM}"
+                  # Verify tag exists, fall back to latest beta if not
+                  if ! git tag -l "$PREV_TAG" | grep -q .; then
+                    PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
+                  fi
+                else
+                  # RC1: diff against latest beta
+                  PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
+                fi
+              fi
+              ;;
             nightly)
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' | head -n 1)
               ;;
@@ -253,6 +283,15 @@ jobs:
               TITLE="$BASE BETA $BETA_NUM"
             else
               TITLE="$VERSION BETA"
+            fi
+          elif [[ "$CHANNEL" == "rc" ]]; then
+            # Extract base version and RC number from X.Y.ZrcN
+            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
+              BASE="${BASH_REMATCH[1]}"
+              RC_NUM="${BASH_REMATCH[2]}"
+              TITLE="$BASE RC $RC_NUM"
+            else
+              TITLE="$VERSION RC"
             fi
           else
             # Stable release - just use the version
@@ -354,6 +393,10 @@ jobs:
               # For beta: add beta tag
               TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:beta"
               ;;
+            rc)
+              # For RC: add beta rolling tag (RC updates the beta addon)
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:beta"
+              ;;
             nightly)
               # For nightly: add nightly tag
               TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:nightly"
@@ -396,6 +439,10 @@ jobs:
             beta)
               echo "folder=music_assistant_beta" >> $GITHUB_OUTPUT
               echo "Updating beta add-on"
+              ;;
+            rc)
+              echo "folder=music_assistant_beta" >> $GITHUB_OUTPUT
+              echo "Updating beta add-on (RC release)"
               ;;
             nightly)
               echo "folder=music_assistant_nightly" >> $GITHUB_OUTPUT
@@ -529,7 +576,7 @@ jobs:
           event-type: frontend-update
           client-payload: |
             {
-              "channel": "${{ inputs.channel }}",
+              "channel": "${{ inputs.channel == 'rc' && 'beta' || inputs.channel }}",
               "frontend_version": "${{ steps.frontend.outputs.version }}"
             }
 

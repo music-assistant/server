@@ -15,9 +15,9 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
-from music_assistant.providers.airplay.helpers import ntp_to_unix_time, unix_time_to_ntp
 
 from .constants import CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT, StreamingProtocol
+from .helpers import get_final_output_format, ntp_to_unix_time, unix_time_to_ntp
 from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
@@ -55,6 +55,7 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
+        self.silence_padding: float = 0.0
         self._first_chunk_received = asyncio.Event()
         # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples
         # Chunks from streams controller are ~1 second each (pcm_sample_size bytes)
@@ -254,17 +255,21 @@ class AirPlayStreamSession:
         silence_inserted = 0.0
 
         await asyncio.sleep(grace_period)
-        while not self._first_chunk_received.is_set() and silence_inserted < max_silence_padding:
-            silence_duration = 0.1
-            silence_bytes = int(pcm_sample_size * silence_duration)
-            silence_chunk = bytes(silence_bytes)
-            has_running_clients = await self._write_chunk_to_all_players(silence_chunk)
-            if not has_running_clients:
-                break
-            self.seconds_streamed += silence_duration
-            silence_inserted += silence_duration
-            await asyncio.sleep(0.05)
-
+        try:
+            while (
+                not self._first_chunk_received.is_set() and silence_inserted < max_silence_padding
+            ):
+                silence_duration = 0.1
+                silence_bytes = int(pcm_sample_size * silence_duration)
+                silence_chunk = bytes(silence_bytes)
+                has_running_clients = await self._write_chunk_to_all_players(silence_chunk)
+                if not has_running_clients:
+                    break
+                self.seconds_streamed += silence_duration
+                silence_inserted += silence_duration
+                await asyncio.sleep(0.05)
+        finally:
+            self.silence_padding = silence_inserted
         if silence_inserted > 0:
             self.prov.logger.warning(
                 "Inserted %.1fs silence padding while waiting for audio source",
@@ -377,8 +382,8 @@ class AirPlayStreamSession:
         filter_params = get_player_filter_params(
             self.mass,
             airplay_player.player_id,
-            self.pcm_format,
-            airplay_player.stream.pcm_format,
+            input_format=self.pcm_format,
+            output_format=get_final_output_format(airplay_player.stream.pcm_format, airplay_player),
         )
         cli_proc = airplay_player.stream._cli_proc
         assert cli_proc

@@ -8,11 +8,13 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
+from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream
+from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
@@ -20,9 +22,16 @@ from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.sendspin.bridge_role import (
+    BRIDGE_BIT_DEPTH,
+    BRIDGE_CHANNELS,
+    BRIDGE_SAMPLE_RATE,
+    BridgePlayerRole,
+)
 
 if TYPE_CHECKING:
     from .player import SendspinPlayer
+    from .provider import SendspinProvider
 
 
 # Same sample format expressed in both MA and Sendspin type systems.
@@ -79,6 +88,10 @@ class _BufferedFfmpegProcessor:
     async def push(self, pcm: bytes) -> None:
         await self._ffmpeg.write(pcm)
 
+    async def write_eof(self) -> None:
+        """Signal no more input, causing ffmpeg to flush its internal buffers."""
+        await self._ffmpeg.write_eof()
+
     @property
     def produced_output_us(self) -> int:
         """Return cumulative output duration currently drained from ffmpeg."""
@@ -94,6 +107,8 @@ class _BufferedFfmpegProcessor:
             missing = target_bytes - len(self._output_buffer)
             read_size = max(self._read_quantum_bytes, missing)
             chunk = await self._ffmpeg.readexactly(read_size)
+            if not chunk:
+                break
             self._output_buffer.extend(chunk)
 
         out = bytes(self._output_buffer[:target_bytes])
@@ -274,6 +289,7 @@ class SendspinPlaybackSession:
         self._member_pipelines: dict[str, _MemberPipeline] = {}
         self._push_stream: PushStream | None = None
         self._playback_running = False
+        self._producer_eof_sent = False
         self._timeline_start_us: int | None = None
         self._first_commit_monotonic_us: int | None = None
         self._produced_audio_us = 0
@@ -371,27 +387,31 @@ class SendspinPlaybackSession:
         """Add a member to the group with DSP-aware lifecycle handling."""
         async with self._state_lock:
             if player_id in self._members:
-                self.pending_join_members.discard(player_id)
                 return
+            self.pending_join_members.add(player_id)
             # Preserve any channel pre-resolved during add_client so join-time
             # role requirements and prepared audio stay on the same channel.
             self._preassigned_channels.setdefault(player_id, uuid4())
-        self.pending_join_members.add(player_id)
         try:
             await self._start_join_catchup(player_id)
-            async with self._state_lock:
-                self._members.add(player_id)
-                self._mapping_dirty = True
         except Exception:
+            async with self._state_lock:
+                self.pending_join_members.discard(player_id)
             await self._release_player_channel(player_id)
             raise
-        finally:
+        # Promote to full member even if already pending to avoid losing
+        # the join when a cancelled task clears our pending flag.
+        async with self._state_lock:
+            if player_id not in self.pending_join_members:
+                return
+            self._members.add(player_id)
+            self._mapping_dirty = True
             self.pending_join_members.discard(player_id)
 
     async def remove_member(self, player_id: str) -> None:
         """Remove a member from the group and clean up per-member playback state."""
-        self.pending_join_members.discard(player_id)
         async with self._state_lock:
+            self.pending_join_members.discard(player_id)
             self._members.discard(player_id)
             self._mapping_dirty = True
             self._pipeline_config_cache.pop(player_id, None)
@@ -403,6 +423,9 @@ class SendspinPlaybackSession:
         """Reconcile session members to exactly the provided set."""
         async with self._state_lock:
             current_members = set(self._members)
+            stale_pending = self.pending_join_members - member_ids
+        for player_id in stale_pending:
+            await self.remove_member(player_id)
         for player_id in current_members - member_ids:
             await self.remove_member(player_id)
         for player_id in member_ids - current_members:
@@ -410,7 +433,7 @@ class SendspinPlaybackSession:
 
     # -- Join catchup ----------------------------------------------------------
 
-    async def _start_join_catchup(self, player_id: str) -> None:
+    async def _start_join_catchup(self, player_id: str) -> None:  # noqa: PLR0915
         """Start dedicated join catchup processor fed from committed history."""
         async with self._state_lock:
             playback_active = self._playback_running and self._push_stream is not None
@@ -436,6 +459,11 @@ class SendspinPlaybackSession:
             await processor.close()
             return
         history_end_us = history_snapshot[-1].start_time_us + history_snapshot[-1].duration_us
+        writer_task: asyncio.Task[None] | None = None
+        drainer_task: asyncio.Task[None] | None = None
+        snapshot_task: asyncio.Task[None] | None = None
+        state: _JoinCatchupState | None = None
+        registered = False
 
         async def _writer() -> None:
             while True:
@@ -447,30 +475,43 @@ class SendspinPlaybackSession:
         async def _drainer() -> None:
             await processor.drain_forever()
 
-        writer_task = asyncio.create_task(_writer())
-        drainer_task = asyncio.create_task(_drainer())
-        self._attach_task_exception_logger(writer_task, f"join_writer:{player_id}")
-        self._attach_task_exception_logger(drainer_task, f"join_drainer:{player_id}")
+        try:
+            async with self._state_lock:
+                writer_task = asyncio.create_task(_writer())
+                drainer_task = asyncio.create_task(_drainer())
+                self._attach_task_exception_logger(writer_task, f"join_writer_{player_id}")
+                self._attach_task_exception_logger(drainer_task, f"join_drainer_{player_id}")
 
-        state = _JoinCatchupState(
-            processor=processor,
-            input_queue=input_queue,
-            writer_task=writer_task,
-            drainer_task=drainer_task,
-            history_end_us=history_end_us,
-        )
-        async with self._state_lock:
-            self._join_catchup[player_id] = state
-
-        async with self._state_lock:
-            current = self._join_catchup.get(player_id)
-            if current is not None and current.processor is processor:
-                current.snapshot_task = asyncio.create_task(
+                state = _JoinCatchupState(
+                    processor=processor,
+                    input_queue=input_queue,
+                    writer_task=writer_task,
+                    drainer_task=drainer_task,
+                    history_end_us=history_end_us,
+                )
+                self._join_catchup[player_id] = state
+                snapshot_task = asyncio.create_task(
                     self._feed_join_history(player_id, processor, history_snapshot)
                 )
-                self._attach_task_exception_logger(
-                    current.snapshot_task, f"join_snapshot:{player_id}"
-                )
+                self._attach_task_exception_logger(snapshot_task, f"join_snapshot_{player_id}")
+                state.snapshot_task = snapshot_task
+                registered = True
+        except BaseException:
+            if not registered:
+                # If registered, cleanup is handled via _stop_join_catchup/_clear_join_catchup.
+                async with self._state_lock:
+                    current = self._join_catchup.get(player_id)
+                    if current is state:
+                        self._join_catchup.pop(player_id, None)
+                for task in (snapshot_task, drainer_task, writer_task):
+                    if task is None:
+                        continue
+                    task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await task
+                with suppress(Exception):
+                    await processor.close()
+            raise
 
     async def _feed_join_history(
         self,
@@ -553,6 +594,9 @@ class SendspinPlaybackSession:
         state.drainer_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await state.drainer_task
+        if self._producer_eof_sent and pipeline.config.requires_transform:
+            with suppress(Exception):
+                await pipeline.processor.write_eof()
         if old_processor is not None and old_processor is not state.processor:
             with suppress(Exception):
                 await old_processor.close()
@@ -586,6 +630,7 @@ class SendspinPlaybackSession:
         async with self._state_lock:
             self._push_stream = push_stream
             self._playback_running = True
+            self._producer_eof_sent = False
             self._history.clear()
             self._produced_audio_us = 0
             self._timeline_start_us = None
@@ -598,51 +643,65 @@ class SendspinPlaybackSession:
         # Shadow deque mirroring pending_chunks for join-catchup backlog peeking.
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
+        last_elapsed_update_s = 0.0
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
             audio_source = self.player.mass.streams.get_stream(
                 media, _PCM_FORMAT, self.player.player_id
             )
-            async for chunk in audio_source:
-                if not chunk:
-                    continue
-                for slice_chunk in self._iter_pcm_slices(chunk, _PCM_FORMAT, _PRODUCER_SLICE_US):
-                    if not slice_chunk:
+            completed = False
+            try:
+                async for chunk in audio_source:
+                    if not chunk:
                         continue
-                    duration_us = self._duration_us(slice_chunk, _PCM_FORMAT)
-                    if duration_us <= 0:
-                        continue
-                    await self._refresh_member_mappings()
-                    pending = _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
-                    await pending_chunks.put(pending)
-                    pending_backlog.append(pending)
-                    pending_duration_us += duration_us
-                    join_pending_ids, pipelines = await self._snapshot_active_pipelines()
-                    transform_pipelines: list[_MemberPipeline] = []
-                    for member_id, pipeline in pipelines:
-                        if not pipeline.config.requires_transform:
+                    for slice_chunk in self._iter_pcm_slices(
+                        chunk, _PCM_FORMAT, _PRODUCER_SLICE_US
+                    ):
+                        if not slice_chunk:
                             continue
-                        if member_id in join_pending_ids:
+                        duration_us = self._duration_us(slice_chunk, _PCM_FORMAT)
+                        if duration_us <= 0:
                             continue
-                        transform_pipelines.append(pipeline)
-                    results = await asyncio.gather(
-                        *(
-                            self._transform_member_chunk(pipeline, slice_chunk)
-                            for pipeline in transform_pipelines
-                        ),
-                        return_exceptions=True,
-                    )
-                    for pipeline, result in zip(transform_pipelines, results, strict=True):
-                        if isinstance(result, BaseException):
-                            self.player.logger.warning(
-                                "Transform push failed for channel %s: %s",
-                                pipeline.channel_id,
-                                result,
-                            )
+                        await self._refresh_member_mappings()
+                        pending = _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
+                        await pending_chunks.put(pending)
+                        pending_backlog.append(pending)
+                        pending_duration_us += duration_us
+                        join_pending_ids, pipelines = await self._snapshot_active_pipelines()
+                        transform_pipelines: list[_MemberPipeline] = []
+                        for member_id, pipeline in pipelines:
+                            if not pipeline.config.requires_transform:
+                                continue
+                            if member_id in join_pending_ids:
+                                continue
+                            transform_pipelines.append(pipeline)
+                        results = await asyncio.gather(
+                            *(
+                                self._transform_member_chunk(pipeline, slice_chunk)
+                                for pipeline in transform_pipelines
+                            ),
+                            return_exceptions=True,
+                        )
+                        for pipeline, result in zip(transform_pipelines, results, strict=True):
+                            if isinstance(result, BaseException):
+                                self.player.logger.warning(
+                                    "Transform push failed for channel %s: %s",
+                                    pipeline.channel_id,
+                                    result,
+                                )
+                completed = True
+            finally:
+                if not completed:
+                    close_task = asyncio.create_task(audio_source.aclose())
+                    try:
+                        await asyncio.shield(close_task)
+                    except asyncio.CancelledError:
+                        await close_task
+                        raise
 
         async def _commit_pending_chunks() -> None:
-            nonlocal pending_duration_us
+            nonlocal pending_duration_us, last_elapsed_update_s
             while True:
                 pending = await pending_chunks.get()
                 if pending is None:
@@ -702,6 +761,13 @@ class SendspinPlaybackSession:
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
+                if self._timeline_start_us is not None:
+                    elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
+                    if elapsed_real_s - last_elapsed_update_s >= 1.0:
+                        last_elapsed_update_s = elapsed_real_s
+                        self.player._attr_elapsed_time = elapsed_real_s
+                        self.player._attr_elapsed_time_last_updated = time.time()
+                        self.player.update_state()
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
         self._attach_task_exception_logger(commit_task, "commit_pending_chunks")
@@ -711,6 +777,16 @@ class SendspinPlaybackSession:
             producer_stopped_cleanly = True
         finally:
             if producer_stopped_cleanly and not commit_task.done():
+                # Mark EOF so that catchup processors promoted after this
+                # point also get flushed (see _promote_join_catchup_processor).
+                self._producer_eof_sent = True
+                # Signal EOF to transform pipelines so ffmpeg flushes its
+                # internal buffers instead of blocking on the last read.
+                _, pipelines = await self._snapshot_active_pipelines()
+                for _, pipeline in pipelines:
+                    if pipeline.processor is not None and pipeline.config.requires_transform:
+                        with suppress(Exception):
+                            await pipeline.processor.write_eof()
                 # Producer finished normally; send a None sentinel so the
                 # consumer exits cleanly.  The queue may be full, so retry
                 # with a deadline before falling back to cancellation.
@@ -1013,12 +1089,13 @@ class SendspinPlaybackSession:
         if output_channels not in {"stereo", "left", "right", "mono"}:
             output_channels = "stereo"
         try:
+            output_format = self._get_member_output_format(player_id)
             filter_params = tuple(
                 get_player_filter_params(
                     self.player.mass,
                     player_id,
                     _PCM_FORMAT,
-                    _PCM_FORMAT,
+                    output_format,
                 )
             )
         except Exception:
@@ -1032,6 +1109,42 @@ class SendspinPlaybackSession:
             output_channels=output_channels,
             filter_params=filter_params,
         )
+
+    def _get_member_output_format(self, player_id: str) -> AudioFormat:
+        """
+        Return the actual output AudioFormat for a group member.
+
+        Derives the format from the member's sendspin player role (preferred codec
+        and format), falling back to the internal PCM format if unavailable.
+        """
+        provider = cast("SendspinProvider", self.player.provider)
+        client = provider.server_api.get_client(player_id)
+        if client is not None:
+            for role in client.roles_by_family("player"):
+                if isinstance(role, PlayerV1Role):
+                    preferred_fmt = role.preferred_format
+                    preferred_codec = role.preferred_codec
+                    if preferred_fmt is not None and preferred_codec is not None:
+                        if preferred_codec == SendspinAudioCodec.FLAC:
+                            content_type = ContentType.FLAC
+                        elif preferred_codec == SendspinAudioCodec.OPUS:
+                            content_type = ContentType.OPUS
+                        else:
+                            content_type = ContentType.from_bit_depth(preferred_fmt.bit_depth)
+                        return AudioFormat(
+                            content_type=content_type,
+                            sample_rate=preferred_fmt.sample_rate,
+                            bit_depth=preferred_fmt.bit_depth,
+                            channels=preferred_fmt.channels,
+                        )
+                elif isinstance(role, BridgePlayerRole):
+                    return AudioFormat(
+                        content_type=ContentType.from_bit_depth(BRIDGE_BIT_DEPTH),
+                        sample_rate=BRIDGE_SAMPLE_RATE,
+                        bit_depth=BRIDGE_BIT_DEPTH,
+                        channels=BRIDGE_CHANNELS,
+                    )
+        return _PCM_FORMAT
 
     def _get_or_create_preassigned_channel(self, player_id: str) -> UUID:
         """Return stable dedicated channel id for transform-required player."""
@@ -1123,7 +1236,9 @@ class SendspinPlaybackSession:
 
     def _stop_push_stream(self) -> None:
         """Stop the active PushStream."""
-        self.player.api.group.stop_stream()
+        ps = self._push_stream
+        if ps is not None and not ps.is_stopped:
+            ps.stop()
 
     def _resolve_channel_for_player(self, player_id: str) -> UUID:
         """Channel resolver callback for per-player routing."""

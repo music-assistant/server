@@ -350,6 +350,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             duration=0,  # Infinite duration for radio streams
         )
 
+    @use_cache(CACHE_CHANNELS)
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
         """Browse Digitally Incorporated radio services and channels."""
         self.logger.debug("%s: Browse called with path: %s", self.domain, path)
