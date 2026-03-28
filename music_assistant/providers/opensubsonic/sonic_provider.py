@@ -54,6 +54,7 @@ from .parsers import (
     parse_epsiode,
     parse_playlist,
     parse_podcast,
+    parse_structured_lyrics,
     parse_track,
 )
 
@@ -64,7 +65,8 @@ if TYPE_CHECKING:
     from libopensonic.media import ArtistID3 as SonicArtist
     from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicItem
-    from libopensonic.media import OpenSubsonicExtension, PodcastChannel
+    from libopensonic.media import Lyrics as SonicLyrics
+    from libopensonic.media import OpenSubsonicExtension, PodcastChannel, StructuredLyrics
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
@@ -98,6 +100,7 @@ class OpenSonicProvider(MusicProvider):
     _show_played: bool = True
     _reco_limit: int = 10
     _pagination_size: int = 200
+    _id_lyrics: bool = False
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
@@ -131,7 +134,8 @@ class OpenSonicProvider(MusicProvider):
             for entry in extensions:
                 if entry.name == "transcodeOffset" and not self._ignore_offset:
                     self._seek_support = True
-                    break
+                if entry.name == "songLyrics":
+                    self._id_lyrics = True
         except OSError:
             self.logger.info("Server does not support transcodeOffset, seeking in player provider")
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
@@ -232,7 +236,8 @@ class OpenSonicProvider(MusicProvider):
             tr = []
             for entry in answer.song:
                 self._set_loudness(entry)
-                tr.append(parse_track(self.logger, self.instance_id, entry))
+                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
+                tr.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
         else:
             tr = []
 
@@ -338,7 +343,8 @@ class OpenSonicProvider(MusicProvider):
                 if aid is not None and (album is None or album.item_id != aid):
                     album = await self.get_album(prov_album_id=aid)
                 self._set_loudness(entry)
-                yield parse_track(self.logger, self.instance_id, entry, album=album)
+                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
+                yield parse_track(self.logger, self.instance_id, entry, album=album, lyrics=lyrics)
             offset += count
             results = await self.conn.search3(
                 query=query,
@@ -370,7 +376,8 @@ class OpenSonicProvider(MusicProvider):
         if sonic_album.song:
             for sonic_song in sonic_album.song:
                 self._set_loudness(sonic_song)
-                tracks.append(parse_track(self.logger, self.instance_id, sonic_song))
+                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
+                tracks.append(parse_track(self.logger, self.instance_id, sonic_song, lyrics=lyrics))
         return tracks
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -425,7 +432,8 @@ class OpenSonicProvider(MusicProvider):
         else:
             album = await self.get_album(prov_album_id=aid)
         self._set_loudness(sonic_song)
-        return parse_track(self.logger, self.instance_id, sonic_song, album=album)
+        lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
+        return parse_track(self.logger, self.instance_id, sonic_song, album=album, lyrics=lyrics)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Return a list of all Albums by specified Artist."""
@@ -518,7 +526,10 @@ class OpenSonicProvider(MusicProvider):
             if aid is not None and (not album or album.item_id != aid):
                 album = await self.get_album(prov_album_id=aid)
             self._set_loudness(sonic_song)
-            track = parse_track(self.logger, self.instance_id, sonic_song, album=album)
+            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
+            track = parse_track(
+                self.logger, self.instance_id, sonic_song, album=album, lyrics=lyrics
+            )
             track.position = index
             result.append(track)
         return result
@@ -538,7 +549,8 @@ class OpenSonicProvider(MusicProvider):
         tracks = []
         for entry in songs:
             self._set_loudness(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry))
+            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
+            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
         return tracks
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -556,7 +568,8 @@ class OpenSonicProvider(MusicProvider):
         tracks = []
         for entry in songs:
             self._set_loudness(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry))
+            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
+            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
         return tracks
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
@@ -808,7 +821,10 @@ class OpenSonicProvider(MusicProvider):
         if starred.song:
             for sonic_song in starred.song[: self._reco_limit]:
                 self._set_loudness(sonic_song)
-                faves.items.append(parse_track(self.logger, self.instance_id, sonic_song))
+                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
+                faves.items.append(
+                    parse_track(self.logger, self.instance_id, sonic_song, lyrics=lyrics)
+                )
         return faves
 
     async def _new_recommendations(self) -> RecommendationFolder:
@@ -861,3 +877,27 @@ class OpenSonicProvider(MusicProvider):
             recos.append(played.result())
 
         return recos
+
+    async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
+        """Get lyrics for a track.
+
+        Fetches lyrics from Subsonic server. Returns the lyrics text in LRC format
+        if the Lyrics are synced (have time stamp info) or raw text if not
+        """
+        # Server doesn't support to newer lyrics retrieval, fall back to the old one
+        if not self._id_lyrics:
+            try:
+                ly: SonicLyrics = await self.conn.get_lyrics(track.title, track.artist)
+            except DataNotFoundError:
+                self.logger.debug("Lyrics not found for '%s' by '%s'", track.title, track.artist)
+                return None
+            return (ly.value, False)
+
+        try:
+            lyrics: list[StructuredLyrics] = await self.conn.get_lyrics_by_song_id(track.id)
+        except DataNotFoundError:
+            self.logger.debug("Lyrics not found for '%s'", track.id)
+            return None
+        if not lyrics:
+            return None
+        return parse_structured_lyrics(lyrics[0])
