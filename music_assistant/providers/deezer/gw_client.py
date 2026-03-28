@@ -33,7 +33,6 @@ class GWClient:
     """The GWClient class can be used to perform actions not being of the official API."""
 
     _arl_token: str
-    _api_token: str
     _gw_csrf_token: str | None
     _license: str | None
     _license_expiration_timestamp: int
@@ -44,9 +43,8 @@ class GWClient:
     ]
     user_country: str
 
-    def __init__(self, session: ClientSession, api_token: str, arl_token: str) -> None:
-        """Provide an aiohttp ClientSession and the deezer api_token."""
-        self._api_token = api_token
+    def __init__(self, session: ClientSession, arl_token: str) -> None:
+        """Provide an aiohttp ClientSession and the deezer ARL token."""
         self._arl_token = arl_token
         self.session = session
 
