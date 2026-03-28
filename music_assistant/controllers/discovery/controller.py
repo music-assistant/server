@@ -8,7 +8,7 @@ import inspect
 import logging
 import os
 from collections import defaultdict
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, ip_address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
@@ -163,7 +163,18 @@ class DiscoveryController(CoreController):
             # Comma-separated list of explicit interface IPs.
             iface_list = [i.strip() for i in zeroconf_interfaces.split(",") if i.strip()]
             if iface_list:
-                return AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=iface_list)
+                use_all_ip_versions = False
+                for iface in iface_list:
+                    try:
+                        use_all_ip_versions = ip_address(iface).version == 6
+                    except ValueError:
+                        continue
+                    if use_all_ip_versions:
+                        break
+                return AsyncZeroconf(
+                    ip_version=IPVersion.All if use_all_ip_versions else IPVersion.V4Only,
+                    interfaces=iface_list,
+                )
         return AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.Default)
 
     async def _setup_mdns_browser(self) -> None:
