@@ -8,20 +8,29 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
+from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream
+from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.sendspin.bridge_role import (
+    BRIDGE_BIT_DEPTH,
+    BRIDGE_CHANNELS,
+    BRIDGE_SAMPLE_RATE,
+    BridgePlayerRole,
+)
 
 if TYPE_CHECKING:
     from .player import SendspinPlayer
+    from .provider import SendspinProvider
 
 
 # Same sample format expressed in both MA and Sendspin type systems.
@@ -1079,11 +1088,12 @@ class SendspinPlaybackSession:
         if output_channels not in {"stereo", "left", "right", "mono"}:
             output_channels = "stereo"
         try:
+            output_format = self._get_member_output_format(player_id)
             filter_params = tuple(
                 self.player.mass.streams.audio.get_player_filter_params(
                     player_id,
                     _PCM_FORMAT,
-                    _PCM_FORMAT,
+                    output_format,
                 )
             )
         except Exception:
@@ -1097,6 +1107,42 @@ class SendspinPlaybackSession:
             output_channels=output_channels,
             filter_params=filter_params,
         )
+
+    def _get_member_output_format(self, player_id: str) -> AudioFormat:
+        """
+        Return the actual output AudioFormat for a group member.
+
+        Derives the format from the member's sendspin player role (preferred codec
+        and format), falling back to the internal PCM format if unavailable.
+        """
+        provider = cast("SendspinProvider", self.player.provider)
+        client = provider.server_api.get_client(player_id)
+        if client is not None:
+            for role in client.roles_by_family("player"):
+                if isinstance(role, PlayerV1Role):
+                    preferred_fmt = role.preferred_format
+                    preferred_codec = role.preferred_codec
+                    if preferred_fmt is not None and preferred_codec is not None:
+                        if preferred_codec == SendspinAudioCodec.FLAC:
+                            content_type = ContentType.FLAC
+                        elif preferred_codec == SendspinAudioCodec.OPUS:
+                            content_type = ContentType.OPUS
+                        else:
+                            content_type = ContentType.from_bit_depth(preferred_fmt.bit_depth)
+                        return AudioFormat(
+                            content_type=content_type,
+                            sample_rate=preferred_fmt.sample_rate,
+                            bit_depth=preferred_fmt.bit_depth,
+                            channels=preferred_fmt.channels,
+                        )
+                elif isinstance(role, BridgePlayerRole):
+                    return AudioFormat(
+                        content_type=ContentType.from_bit_depth(BRIDGE_BIT_DEPTH),
+                        sample_rate=BRIDGE_SAMPLE_RATE,
+                        bit_depth=BRIDGE_BIT_DEPTH,
+                        channels=BRIDGE_CHANNELS,
+                    )
+        return _PCM_FORMAT
 
     def _get_or_create_preassigned_channel(self, player_id: str) -> UUID:
         """Return stable dedicated channel id for transform-required player."""
