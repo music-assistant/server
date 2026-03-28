@@ -215,6 +215,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
     'item_id': 'mix_mix_123',
@@ -288,6 +289,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
     'item_id': 'aabbcc-1122-3344-5566',
