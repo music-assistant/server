@@ -1522,7 +1522,7 @@ def get_chunksize(
     return int((320000 / 8) * seconds)
 
 
-def get_bit_rate(fmt: AudioFormat) -> int | None:
+def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
         return int(fmt.bit_rate / 1000) if fmt.bit_rate >= 10000 else fmt.bit_rate
@@ -1618,8 +1618,8 @@ def get_player_filter_params(
         # later be able to show this to the user in the UI.
         player.extra_data["output_format"] = output_format
         if player.protocol_parent_id:
-            # For protocol players, we also save the input format on the parent player, since that's
-            # where the DSP is actually applied.
+            # For protocol players, we also save the output format on the parent player,
+            # since that's where the DSP is actually applied.
             parent_player = mass.players.get_player(player.protocol_parent_id)
             if parent_player:
                 parent_player.extra_data["output_format"] = output_format
