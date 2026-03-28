@@ -2838,29 +2838,41 @@ class PlayerQueuesController(CoreController):
                 None,
             )
             if dynamic_playlist is not None:
-                dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
-                if dynamic_tracks:
-                    queue_items = [
-                        QueueItem.from_media_item(queue.queue_id, x)
-                        for x in dynamic_tracks
-                        if x.available
-                    ]
-                    if queue_items:
-                        await self.load(
-                            queue.queue_id,
-                            queue_items,
-                            insert_at_index=len(self._queue_items[queue.queue_id]),
-                            keep_remaining=False,
-                            keep_played=True,
-                            shuffle=False,
-                        )
-                        if queue.current_index is not None and (
-                            next_item := self.get_next_item(queue.queue_id, queue.current_index)
-                        ):
-                            next_index = self.index_by_id(queue.queue_id, next_item.queue_item_id)
-                            if next_index is not None:
-                                await self.play_index(queue.queue_id, next_index)
-                                return
+                try:
+                    dynamic_tracks = await self.get_playlist_tracks(
+                        dynamic_playlist, start_item=None
+                    )
+                    if dynamic_tracks:
+                        queue_items = [
+                            QueueItem.from_media_item(queue.queue_id, x)
+                            for x in dynamic_tracks
+                            if x.available
+                        ]
+                        if queue_items:
+                            await self.load(
+                                queue.queue_id,
+                                queue_items,
+                                insert_at_index=len(self._queue_items[queue.queue_id]),
+                                keep_remaining=False,
+                                keep_played=True,
+                                shuffle=False,
+                            )
+                            if queue.current_index is not None and (
+                                next_item := self.get_next_item(queue.queue_id, queue.current_index)
+                            ):
+                                next_index = self.index_by_id(
+                                    queue.queue_id, next_item.queue_item_id
+                                )
+                                if next_index is not None:
+                                    await self.play_index(queue.queue_id, next_index)
+                                    return
+                except MusicAssistantError as err:
+                    self.logger.warning(
+                        "Failed to refresh dynamic playlist %s for queue %s: %s",
+                        getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                        queue.display_name,
+                        err,
+                    )
             # If the last item was a radio station, continue playing instead of clearing.
             # For track-based radio (Apple Music Artist Radio etc.) this fetches the next
             # track from the station; for live radio it would reconnect to the stream.
