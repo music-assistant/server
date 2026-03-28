@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastChannel as SonicPodcast
     from libopensonic.media import PodcastEpisode as SonicEpisode
+    from libopensonic.media import StructuredLyrics
 
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
@@ -64,11 +65,12 @@ def get_item_mapping(instance_id: str, media_type: MediaType, key: str, name: st
     )
 
 
-def parse_track(
+def parse_track(  # noqa: PLR0915
     logger: logging.Logger,
     instance_id: str,
     sonic_song: SonicSong,
     album: Album | ItemMapping | None = None,
+    lyrics: tuple[str, bool] | None = None,
 ) -> Track:
     """Parse an OpenSubsonic.Child into an MA Track."""
     # Unfortunately, the Song response type is not defined in the open subsonic spec so we have
@@ -85,6 +87,13 @@ def parse_track(
             )
 
     metadata: MediaItemMetadata = MediaItemMetadata()
+
+    if lyrics:
+        ly, synced = lyrics
+        if synced:
+            metadata.lrc_lyrics = ly
+        else:
+            metadata.lyrics = ly
 
     if sonic_song.explicit_status and sonic_song.explicit_status != "clean":
         metadata.explicit = True
@@ -515,3 +524,21 @@ def parse_epsiode(
         )
 
     return episode
+
+
+def parse_structured_lyrics(lyrics: StructuredLyrics) -> tuple[str, bool]:
+    """Parse the Open Subsonic Structured lyrics objest into MA Lyrics."""
+    lines: list[str] = []
+    if lyrics.synced:
+        offset: int = int(lyrics.offset) if lyrics.offset else 0
+        for line in lyrics.line:
+            if line.start is None:
+                raise InvalidDataError("Open Subsonic Synced lyric missing time index")
+            ms = int(line.start) + offset
+            dt = datetime.fromtimestamp(ms / 1000)
+            ts = dt.strftime("%M:%S.%f")[:-4]
+            lines.append(f"[{ts}]{line.value}")
+    else:
+        for line in lyrics.line:
+            lines.append(line.value)
+    return ("\n".join(lines), lyrics.synced)
