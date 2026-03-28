@@ -18,6 +18,8 @@ from deezer_python_gql.generated.get_made_for_me import (
 from deezer_python_gql.generated.get_recently_played import (
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeAlbum,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist,
+    GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow,
+    GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist,
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -735,7 +737,7 @@ class DeezerProvider(MusicProvider):
         return items
 
     async def _browse_recently_played(self) -> list[MediaItemType]:
-        """Fetch recently played items (albums, playlists, artists)."""
+        """Fetch recently played items (albums, playlists, artists, flows)."""
         result = await self.gql_client.get_recently_played(first=50)
         if not result:
             return []
@@ -750,6 +752,19 @@ class DeezerProvider(MusicProvider):
                 items.append(self._parse_playlist(node))
             elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist):
                 items.append(self._parse_artist(node))
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow):
+                cover = node.cover.urls[0] if node.cover and node.cover.urls else None
+                items.append(
+                    self._create_virtual_playlist(FLOW_PLAYLIST_ID, node.title, image_url=cover)
+                )
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig):
+                cover = self._get_flow_config_image(node)
+                playlist_id = f"{FLOW_CONFIG_PREFIX}{node.id}"
+                items.append(
+                    self._create_virtual_playlist(
+                        playlist_id, f"Flow: {node.title}", image_url=cover
+                    )
+                )
         return items
 
     @staticmethod
@@ -941,6 +956,19 @@ class DeezerProvider(MusicProvider):
                 items.append(self._parse_playlist(node))
             elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist):
                 items.append(self._parse_artist(node))
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow):
+                cover = node.cover.urls[0] if node.cover and node.cover.urls else None
+                items.append(
+                    self._create_virtual_playlist(FLOW_PLAYLIST_ID, node.title, image_url=cover)
+                )
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig):
+                cover = self._get_flow_config_image(node)
+                playlist_id = f"{FLOW_CONFIG_PREFIX}{node.id}"
+                items.append(
+                    self._create_virtual_playlist(
+                        playlist_id, f"Flow: {node.title}", image_url=cover
+                    )
+                )
         if items:
             result.append(
                 RecommendationFolder(
@@ -1026,11 +1054,22 @@ class DeezerProvider(MusicProvider):
 
     @use_cache(3600)
     async def _get_flow_tracks(self) -> list[Track]:
-        """Get cached Flow tracks."""
-        result = await self.gql_client.get_flow()
-        if result is None or result.flow is None:
-            return []
-        return [self._parse_track(ft.track) for ft in result.flow.tracks if ft.track is not None]
+        """Get Flow tracks by fetching multiple batches for a richer queue.
+
+        Each API call returns a fresh random batch. We fetch 4 batches
+        and deduplicate by track ID to build a larger playlist.
+        """
+        seen: set[str] = set()
+        tracks: list[Track] = []
+        for _ in range(4):
+            result = await self.gql_client.get_flow()
+            if result is None or result.flow is None:
+                break
+            for ft in result.flow.tracks:
+                if ft.track is not None and ft.track.id not in seen:
+                    seen.add(ft.track.id)
+                    tracks.append(self._parse_track(ft.track))
+        return tracks
 
     @use_cache(3600)
     async def _get_recommended_tracks(self) -> list[Track]:
@@ -1065,12 +1104,22 @@ class DeezerProvider(MusicProvider):
     async def _get_flow_config_tracks(self, config_id: str) -> list[Track]:
         """Get tracks for a mood/genre Flow config.
 
+        Fetches 4 batches from the API and deduplicates by track ID
+        to build a richer playlist. Each API call returns a fresh random batch.
+
         :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
         """
-        result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
-        if result is None:
-            return []
-        return [self._parse_track(ft.track) for ft in result.tracks if ft.track is not None]
+        seen: set[str] = set()
+        tracks: list[Track] = []
+        for _ in range(4):
+            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
+            if result is None:
+                break
+            for ft in result.tracks:
+                if ft.track is not None and ft.track.id not in seen:
+                    seen.add(ft.track.id)
+                    tracks.append(self._parse_track(ft.track))
+        return tracks
 
     @use_cache(3600)
     async def _get_smart_tracklist_tracks(self, tracklist_id: str) -> list[Track]:
@@ -1146,17 +1195,20 @@ class DeezerProvider(MusicProvider):
             config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
             result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
             name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-            return self._create_virtual_playlist(prov_playlist_id, name)
+            cover = self._get_flow_config_image(result) if result else None
+            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(GENRE_FLOW_PREFIX):
             config_id = prov_playlist_id.removeprefix(GENRE_FLOW_PREFIX)
             result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
             name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-            return self._create_virtual_playlist(prov_playlist_id, name)
+            cover = self._get_flow_config_image(result) if result else None
+            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
             config_id = prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
             result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
             name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-            return self._create_virtual_playlist(prov_playlist_id, name)
+            cover = self._get_flow_config_image(result) if result else None
+            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
             result = await self.gql_client.get_smart_tracklist(
@@ -1277,6 +1329,11 @@ class DeezerProvider(MusicProvider):
         )
         if hasattr(track, "isrc") and track.isrc:
             item.external_ids.add((ExternalID.ISRC, track.isrc))
+        if getattr(track, "is_favorite", None):
+            item.favorite = True
+        popularity = getattr(track, "popularity", None)
+        if popularity is not None:
+            item.metadata.popularity = int(popularity)
         return item
 
     def _parse_track_metadata(self, track: Any) -> MediaItemMetadata:
@@ -1324,7 +1381,14 @@ class DeezerProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
-        return Artist(
+        metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
+        bio = getattr(artist, "bio", None)
+        if bio:
+            metadata.description = bio.summary or getattr(bio, "full", None)
+        fans_count = getattr(artist, "fans_count", None)
+        if fans_count is not None:
+            metadata.popularity = int(fans_count)
+        item = Artist(
             item_id=artist.id,
             provider=self.instance_id,
             name=artist.name,
@@ -1336,8 +1400,11 @@ class DeezerProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 )
             },
-            metadata=MediaItemMetadata(images=images) if images else MediaItemMetadata(),
+            metadata=metadata,
         )
+        if getattr(artist, "is_favorite", None):
+            item.favorite = True
+        return item
 
     def _parse_album(self, album: Any) -> Album:
         """Parse a GQL album model to Music Assistant Album.
@@ -1378,7 +1445,7 @@ class DeezerProvider(MusicProvider):
             with contextlib.suppress(ValueError, TypeError):
                 year = datetime.fromisoformat(str(release_date)).year
 
-        return Album(
+        item = Album(
             album_type=album_type,
             item_id=album.id,
             provider=self.instance_id,
@@ -1397,8 +1464,16 @@ class DeezerProvider(MusicProvider):
             metadata=MediaItemMetadata(
                 explicit=getattr(album, "is_explicit", None),
                 images=images,
+                label=getattr(album, "label", None),
+                copyright=getattr(album, "copyright", None),
             ),
         )
+        fans_count = getattr(album, "fans_count", None)
+        if fans_count is not None:
+            item.metadata.popularity = int(fans_count)
+        if getattr(album, "is_favorite", None):
+            item.favorite = True
+        return item
 
     def _parse_playlist(self, playlist: Any, is_editable: bool = False) -> Playlist:
         """Parse a GQL playlist model to Music Assistant Playlist.
@@ -1424,7 +1499,14 @@ class DeezerProvider(MusicProvider):
             if not is_editable and playlist.owner.id == self._user_id:
                 is_editable = True
 
-        return Playlist(
+        fans_count = getattr(playlist, "fans_count", None)
+        metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
+        if fans_count is not None:
+            metadata.popularity = int(fans_count)
+        description = getattr(playlist, "description", None)
+        if description:
+            metadata.description = description
+        item = Playlist(
             item_id=playlist.id,
             provider=self.instance_id,
             name=playlist.title,
@@ -1437,10 +1519,13 @@ class DeezerProvider(MusicProvider):
                     is_unique=is_editable,
                 )
             },
-            metadata=MediaItemMetadata(images=images) if images else MediaItemMetadata(),
+            metadata=metadata,
             is_editable=is_editable,
             owner=owner_name,
         )
+        if getattr(playlist, "is_favorite", None) or is_editable:
+            item.favorite = True
+        return item
 
     # -- Helpers --
 
