@@ -6,12 +6,32 @@ asyncio.to_thread() from the async provider layer.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 from urllib.parse import quote_plus
 
 from music_assistant_models.errors import UnplayableMediaError
 
 from .constants import LIVE_STATUSES, YT_DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
+
+# Preferred audio format IDs in priority order (highest quality first).
+# Opus formats (WebM), then AAC (M4A).
+PREFERRED_AUDIO_FORMAT_IDS = [
+    251,  # Opus 160 kbps
+    250,  # Opus 70 kbps
+    249,  # Opus 50 kbps
+    141,  # AAC 256 kbps
+    140,  # AAC 128 kbps
+    139,  # AAC 48 kbps
+    171,  # Vorbis 128 kbps
+]
+
+# Number of retries for stream extraction.
+EXTRACT_RETRIES = 3
+EXTRACT_RETRY_DELAY = 1.0  # seconds
 
 
 def is_live_entry(entry: dict[str, Any]) -> bool:
@@ -210,7 +230,7 @@ def extract_playlist_videos(
 
 
 def extract_stream_or_live(yt_dlp: Any, ydl_opts: dict[str, Any], video_id: str) -> dict[str, Any]:
-    """Extract stream info in a single yt-dlp call, handling both VOD and live.
+    """Extract stream info with retries and multi-format fallback.
 
     Returns a dict with ``is_live`` set to True or False.
     For VOD, the dict also contains the selected audio stream format fields.
@@ -220,6 +240,34 @@ def extract_stream_or_live(yt_dlp: Any, ydl_opts: dict[str, Any], video_id: str)
     :param ydl_opts: Base yt-dlp options dict.
     :param video_id: YouTube video ID.
     """
+    last_err: Exception | None = None
+    for attempt in range(EXTRACT_RETRIES):
+        try:
+            return _extract_stream_or_live_once(yt_dlp, ydl_opts, video_id)
+        except (UnplayableMediaError, Exception) as err:
+            last_err = err
+            if attempt < EXTRACT_RETRIES - 1:
+                _LOGGER.warning(
+                    "Stream extraction attempt %d/%d failed for %s: %s — retrying",
+                    attempt + 1,
+                    EXTRACT_RETRIES,
+                    video_id,
+                    err,
+                )
+                time.sleep(EXTRACT_RETRY_DELAY * (attempt + 1))
+            else:
+                _LOGGER.error(
+                    "All %d stream extraction attempts failed for %s",
+                    EXTRACT_RETRIES,
+                    video_id,
+                )
+    raise UnplayableMediaError(str(last_err)) from last_err
+
+
+def _extract_stream_or_live_once(
+    yt_dlp: Any, ydl_opts: dict[str, Any], video_id: str
+) -> dict[str, Any]:
+    """Single attempt at stream extraction with multi-format fallback."""
     opts = {**ydl_opts}
     with yt_dlp.YoutubeDL(opts) as ydl:
         try:
@@ -232,14 +280,38 @@ def extract_stream_or_live(yt_dlp: Any, ydl_opts: dict[str, Any], video_id: str)
         if is_live_entry(info):
             return _extract_hls_manifest(info, video_id)
 
-        # Try m4a first, then any audio-only format, then best muxed format.
-        # Some restricted videos only serve muxed formats via the web client.
+        formats = info.get("formats") or []
+
+        # 1. Try preferred format IDs in priority order (proven reliable list).
+        formats_by_id: dict[int, dict[str, Any]] = {}
+        for fmt in formats:
+            fmt_id = fmt.get("format_id", "")
+            # format_id can be "251" or "251-drc"; extract the numeric part
+            numeric_id = fmt_id.split("-")[0] if isinstance(fmt_id, str) else fmt_id
+            try:
+                formats_by_id[int(numeric_id)] = fmt
+            except (ValueError, TypeError):
+                continue
+
+        for preferred_id in PREFERRED_AUDIO_FORMAT_IDS:
+            if preferred_id in formats_by_id:
+                fmt = formats_by_id[preferred_id]
+                if fmt.get("url"):
+                    _LOGGER.debug("Selected preferred format %d for %s", preferred_id, video_id)
+                    return {**fmt, "is_live": False}
+
+        # 2. Fall back to yt-dlp's format selector (handles edge cases).
         format_selector = ydl.build_format_selector("m4a/bestaudio/best")
-        stream_format = next(format_selector({"formats": info["formats"]}), None)
-        if not stream_format:
-            raise UnplayableMediaError(f"No audio stream found for {video_id}")
-        result: dict[str, Any] = {**stream_format, "is_live": False}
-        return result
+        stream_format = next(format_selector({"formats": formats}), None)
+        if stream_format and stream_format.get("url"):
+            _LOGGER.debug(
+                "Selected fallback format %s for %s",
+                stream_format.get("format_id"),
+                video_id,
+            )
+            return {**stream_format, "is_live": False}
+
+        raise UnplayableMediaError(f"No audio stream found for {video_id}")
 
 
 def _extract_hls_manifest(info: dict[str, Any], video_id: str) -> dict[str, Any]:

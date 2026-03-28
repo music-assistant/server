@@ -23,7 +23,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL, PlaylistPlayableItem
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import install_package
 from music_assistant.models.music_provider import MusicProvider
@@ -61,6 +61,10 @@ from .youtube_api import (
     api_search_playlists,
     api_search_videos,
 )
+
+# Type alias matching MA-server's PlaylistPlayableItem (Track | Radio | PodcastEpisode | Audiobook)
+# Defined locally to support MA versions that don't yet export it from constants
+PlaylistPlayableItem = Track
 
 
 class YouTubeProvider(MusicProvider):
@@ -446,24 +450,33 @@ class YouTubeProvider(MusicProvider):
     def _ydl_opts(self) -> dict[str, Any]:
         """Return base yt-dlp options for this provider instance."""
         has_cookies = self._netscape_cookies is not None
-        # With cookies the web client works (cookies provide auth);
-        # without cookies android_vr needs no token and returns the most formats.
-        # tv is always included as fallback for "made for kids" content.
-        player_client = ["web", "web_music", "tv"] if has_cookies else ["android_vr", "tv"]
         opts: dict[str, Any] = {
             "quiet": self.logger.level > logging.DEBUG,
             "verbose": self.logger.level == VERBOSE_LOG_LEVEL,
             "extractor_args": {
                 "youtube": {
-                    # android_vr returns direct audio URLs so DASH can be skipped;
-                    # the web client needs DASH for audio-only streams.
-                    "skip": ["translated_subs"] if has_cookies else ["translated_subs", "dash"],
-                    "player_client": player_client,
+                    "skip": ["translated_subs"],
                 },
             },
         }
         if has_cookies:
+            # With cookies: web_music is best for audio, web as fallback, tv
+            # for "made for kids" content.
+            opts["extractor_args"]["youtube"]["player_client"] = [
+                "web_music",
+                "web",
+                "tv",
+            ]
             opts["cookiefile"] = StringIO(self._netscape_cookies)
+        else:
+            # Without cookies: don't override player_client — let yt-dlp use
+            # its own defaults which the yt-dlp team keeps updated as YouTube
+            # changes client requirements. Web-based clients (mweb, web) need
+            # a PoToken without cookies, and android_vr gets throttled.
+            self.logger.debug(
+                "No cookies configured — using yt-dlp default player clients. "
+                "Configure cookies for more reliable playback."
+            )
         return opts
 
 

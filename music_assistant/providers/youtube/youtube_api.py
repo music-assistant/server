@@ -6,6 +6,7 @@ Falls back gracefully when the API is unavailable or quota is exceeded.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,23 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
 
 logger = logging.getLogger(__name__)
+
+# Simple rate limiter: maximum number of concurrent API requests and minimum
+# delay between requests to avoid bursting through quota.
+_MAX_CONCURRENT = 3
+_MIN_REQUEST_INTERVAL = 0.1  # seconds
+_MAX_RETRIES = 2
+
+_semaphore: asyncio.Semaphore | None = None
+_last_request_time: float = 0.0
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Return (and lazily create) the global concurrency semaphore."""
+    global _semaphore  # noqa: PLW0603
+    if _semaphore is None:
+        _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+    return _semaphore
 
 
 class YouTubeDataAPIError(Exception):
@@ -462,30 +480,55 @@ async def _api_get(
 ) -> dict[str, Any]:
     """Make a GET request to the YouTube Data API v3.
 
-    All HTTP and network errors are wrapped as YouTubeDataAPIError so callers
-    can fall back to yt-dlp with a single except clause.
+    Applies concurrency limiting, minimum inter-request delay, and retries on
+    429 (rate-limited) responses.  All HTTP and network errors are wrapped as
+    YouTubeDataAPIError so callers can fall back to yt-dlp with a single except
+    clause.
 
     :param http_session: aiohttp client session.
     :param endpoint: API endpoint path (e.g. "/search").
     :param params: Query parameters.
     """
+    global _last_request_time  # noqa: PLW0603
     url = f"{YT_DATA_API_BASE}{endpoint}"
-    try:
-        async with http_session.get(url, params=params) as response:
-            if response.status == 403:
-                data = await response.json()
-                error_reason = ""
-                for err in data.get("error", {}).get("errors", []):
-                    error_reason = err.get("reason", "")
-                logger.warning("YouTube Data API quota/auth error: %s", error_reason)
-                raise YouTubeDataAPIError(f"API forbidden: {error_reason}")
-            if not response.ok:
-                raise YouTubeDataAPIError(
-                    f"API request failed: {endpoint} returned {response.status}"
-                )
-            result: dict[str, Any] = await response.json()
-            return result
-    except YouTubeDataAPIError:
-        raise
-    except Exception as err:
-        raise YouTubeDataAPIError(f"API request error: {err}") from err
+
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            async with _get_semaphore():
+                # Enforce minimum delay between requests
+                now = asyncio.get_event_loop().time()
+                wait = _MIN_REQUEST_INTERVAL - (now - _last_request_time)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                _last_request_time = asyncio.get_event_loop().time()
+
+                async with http_session.get(url, params=params) as response:
+                    if response.status == 429:
+                        retry_after = float(response.headers.get("Retry-After", 1))
+                        if attempt < _MAX_RETRIES:
+                            logger.warning(
+                                "YouTube Data API rate-limited, retrying in %.1fs",
+                                retry_after,
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
+                        raise YouTubeDataAPIError("API rate-limited after retries")
+                    if response.status == 403:
+                        data = await response.json()
+                        error_reason = ""
+                        for err in data.get("error", {}).get("errors", []):
+                            error_reason = err.get("reason", "")
+                        logger.warning("YouTube Data API quota/auth error: %s", error_reason)
+                        raise YouTubeDataAPIError(f"API forbidden: {error_reason}")
+                    if not response.ok:
+                        raise YouTubeDataAPIError(
+                            f"API request failed: {endpoint} returned {response.status}"
+                        )
+                    result: dict[str, Any] = await response.json()
+                    return result
+        except YouTubeDataAPIError:
+            raise
+        except Exception as err:
+            raise YouTubeDataAPIError(f"API request error: {err}") from err
+
+    raise YouTubeDataAPIError("API request failed after retries")
