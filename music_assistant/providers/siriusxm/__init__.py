@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    SearchResults,
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
@@ -53,6 +54,7 @@ CONF_SXM_REGION = "sxm_region"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.SEARCH,
 }
 
 
@@ -205,6 +207,28 @@ class SiriusXMProvider(MusicProvider):
         for channel in self._channels_by_id.values():
             if channel.is_favorite:
                 yield self._parse_radio(channel)
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform search on SiriusXM channels."""
+        results = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return results
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+        radios: list[Radio] = []
+        for channel in self._channels:
+            if search_query_lower in channel.name.lower():
+                radios.append(self._parse_radio(channel))
+                if len(radios) >= limit:
+                    break
+        results.radio = radios
+        return results
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_radio(self, prov_radio_id: str) -> Radio:

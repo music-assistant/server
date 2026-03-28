@@ -7,6 +7,7 @@ import contextlib
 import logging
 import threading
 from typing import TYPE_CHECKING, cast
+from uuid import UUID
 
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneManager
@@ -106,7 +107,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Discovery callbacks
 
-    def _on_chromecast_discovered(self, uuid: str, _: object) -> None:
+    def _on_chromecast_discovered(self, uuid: UUID, _: str) -> None:
         """
         Handle Chromecast discovered callback.
 
@@ -122,7 +123,7 @@ class ChromecastProvider(PlayerProvider):
             disc_info: CastInfo = self.browser.devices[uuid]
 
             if disc_info.uuid is None:
-                self.logger.error("Discovered chromecast without uuid %s", disc_info)
+                self.logger.error("Discovered chromecast without uuid %s", disc_info)  # type: ignore[unreachable]
                 return
 
             player_id = str(disc_info.uuid)
@@ -192,9 +193,13 @@ class ChromecastProvider(PlayerProvider):
         finally:
             self._pending_discoveries.discard(player_id)
 
-    def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
+    def _on_chromecast_removed(
+        self,
+        uuid: UUID,
+        service: str,
+        cast_info: CastInfo,
+    ) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
-        player_id = str(service[1])
-        friendly_name = service[3]
-        self.logger.debug("Chromecast removed: %s - %s", friendly_name, player_id)
+        player_id = str(uuid)
+        self.logger.debug("Chromecast removed: %s - %s", cast_info.friendly_name, player_id)
         # we ignore this event completely as the Chromecast socket client handles this itself
