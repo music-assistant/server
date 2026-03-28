@@ -3,7 +3,7 @@
 import contextlib
 import hashlib
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from math import ceil
 from typing import Any
@@ -14,6 +14,11 @@ from deezer_python_gql import DeezerGQLClient
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
 from deezer_python_gql.generated.get_made_for_me import (
     GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist,
+)
+from deezer_python_gql.generated.get_recently_played import (
+    GetRecentlyPlayedMeRecentlyPlayedEdgesNodeAlbum,
+    GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist,
+    GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist,
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
@@ -31,6 +36,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -85,7 +91,11 @@ FLOW_PLAYLIST_ID = "flow"
 RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
 TOP_CHARTS_PLAYLIST_ID = "top_charts"
 MOOD_FLOW_PREFIX = "mood_flow_"
+GENRE_FLOW_PREFIX = "genre_flow_"
+FLOW_CONFIG_PREFIX = "flow_config_"
 SMART_TRACKLIST_PREFIX = "smart_tracklist_"
+HOT_TRACKS_PLAYLIST_ID = "hot_tracks"
+USER_TOP_TRACKS_PLAYLIST_ID = "user_top_tracks"
 
 # Page size for cursor-based pagination
 FAVORITES_PAGE_SIZE = 50
@@ -362,8 +372,18 @@ class DeezerProvider(MusicProvider):
             return await self._get_recommended_tracks()
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             return await self._get_chart_tracks()
+        if prov_playlist_id == HOT_TRACKS_PLAYLIST_ID:
+            return await self._get_hot_tracks()
+        if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
+            return await self._get_user_chart_tracks()
         if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
             config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
+            return await self._get_flow_config_tracks(config_id)
+        if prov_playlist_id.startswith(GENRE_FLOW_PREFIX):
+            config_id = prov_playlist_id.removeprefix(GENRE_FLOW_PREFIX)
+            return await self._get_flow_config_tracks(config_id)
+        if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
+            config_id = prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
             return await self._get_flow_config_tracks(config_id)
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
@@ -457,6 +477,293 @@ class DeezerProvider(MusicProvider):
             raise MediaNotFoundError(msg)
         return self._parse_playlist(playlist, is_editable=True)
 
+    # -- Browse --
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Deezer content.
+
+        Custom folders: Made For You, Explore, Recently Played.
+        Standard paths (artists, albums, tracks, playlists, recommendations) delegated to base.
+        """
+        path_parts = path.split("://")[1].split("/") if "://" in path else []
+        subpath = path_parts[0] if path_parts else None
+        sub_subpath = path_parts[1] if len(path_parts) > 1 else None
+
+        if subpath == "made_for_me":
+            if sub_subpath == "moods":
+                return await self._browse_mood_flows()
+            if sub_subpath == "genres":
+                return await self._browse_genre_flows()
+            if sub_subpath in ("your_top_artists", "your_top_albums"):
+                return await self._browse_user_charts_category(sub_subpath)
+            return await self._browse_made_for_me(path)
+
+        if subpath == "explore":
+            if sub_subpath:
+                return await self._browse_explore_category(sub_subpath)
+            return await self._browse_explore_root(path)
+
+        if subpath == "recently_played":
+            return await self._browse_recently_played()
+
+        if not subpath:
+            # Root: add custom folders alongside standard ones
+            # Filter out the Recommendations folder — our custom folders cover that content
+            base_items = [
+                item
+                for item in await super().browse(path)
+                if not (isinstance(item, BrowseFolder) and item.item_id == "recommendations")
+            ]
+            base = path if path.endswith("//") else path.rstrip("/") + "/"
+            base_items.extend(
+                [
+                    BrowseFolder(
+                        item_id="made_for_me",
+                        provider=self.instance_id,
+                        path=f"{base}made_for_me",
+                        name="Made For You",
+                    ),
+                    BrowseFolder(
+                        item_id="explore",
+                        provider=self.instance_id,
+                        path=f"{base}explore",
+                        name="Explore",
+                    ),
+                    BrowseFolder(
+                        item_id="recently_played",
+                        provider=self.instance_id,
+                        path=f"{base}recently_played",
+                        name="Recently Played",
+                    ),
+                ]
+            )
+            return base_items
+
+        # Standard paths handled by base class
+        return list(await super().browse(path))
+
+    # -- Browse helpers --
+
+    async def _browse_made_for_me(self, path: str) -> list[MediaItemType | BrowseFolder]:
+        """Return Made For You sub-items: Moods, Genres, Top stats, SmartTracklists."""
+        base = path if path.endswith("/") else path + "/"
+        items: list[MediaItemType | BrowseFolder] = [
+            BrowseFolder(
+                item_id="moods",
+                provider=self.instance_id,
+                path=f"{base}moods",
+                name="Moods",
+            ),
+            BrowseFolder(
+                item_id="genres",
+                provider=self.instance_id,
+                path=f"{base}genres",
+                name="Genres",
+            ),
+            self._create_virtual_playlist(USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks"),
+            self._create_virtual_playlist(HOT_TRACKS_PLAYLIST_ID, "Hot Tracks"),
+            BrowseFolder(
+                item_id="your_top_artists",
+                provider=self.instance_id,
+                path=f"{base}your_top_artists",
+                name="Your Top Artists",
+            ),
+            BrowseFolder(
+                item_id="your_top_albums",
+                provider=self.instance_id,
+                path=f"{base}your_top_albums",
+                name="Your Top Albums",
+            ),
+        ]
+        made_for_me = await self.gql_client.get_made_for_me(first=20)
+        if made_for_me and made_for_me.made_for_me:
+            for edge in made_for_me.made_for_me.edges:
+                if edge.node is None:
+                    continue
+                if isinstance(edge.node, GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist):
+                    cover = (
+                        edge.node.cover.urls[0]
+                        if edge.node.cover and edge.node.cover.urls
+                        else None
+                    )
+                    items.append(
+                        self._create_virtual_playlist(
+                            f"{SMART_TRACKLIST_PREFIX}{edge.node.id}",
+                            edge.node.title,
+                            image_url=cover,
+                        )
+                    )
+        return items
+
+    async def _browse_mood_flows(self) -> list[Playlist]:
+        """Fetch mood flow configs and return as virtual playlists."""
+        flow_configs = await self.gql_client.get_flow_configs(moods_first=50, genres_first=0)
+        if not flow_configs or not flow_configs.flow_configs:
+            return []
+        playlists: list[Playlist] = []
+        for edge in flow_configs.flow_configs.moods.edges:
+            if edge.node is None:
+                continue
+            cover = self._get_flow_config_image(edge.node)
+            playlists.append(
+                self._create_virtual_playlist(
+                    f"{MOOD_FLOW_PREFIX}{edge.node.id}",
+                    f"Flow: {edge.node.title}",
+                    image_url=cover,
+                )
+            )
+        return playlists
+
+    async def _browse_genre_flows(self) -> list[Playlist]:
+        """Fetch genre flow configs and return as virtual playlists."""
+        flow_configs = await self.gql_client.get_flow_configs(moods_first=0, genres_first=50)
+        if not flow_configs or not flow_configs.flow_configs:
+            return []
+        playlists: list[Playlist] = []
+        for edge in flow_configs.flow_configs.genres.edges:
+            if edge.node is None:
+                continue
+            cover = self._get_flow_config_image(edge.node)
+            playlists.append(
+                self._create_virtual_playlist(
+                    f"{GENRE_FLOW_PREFIX}{edge.node.id}",
+                    f"Flow: {edge.node.title}",
+                    image_url=cover,
+                )
+            )
+        return playlists
+
+    async def _browse_all_flows(self) -> list[Playlist]:
+        """Fetch all available Deezer flows via search and return as virtual playlists."""
+        result = await self.gql_client.search_flows(query="flow", first=100)
+        if not result:
+            return []
+        playlists: list[Playlist] = []
+        for edge in result.results.flow_configs.edges:
+            if edge.node is None:
+                continue
+            cover = self._get_flow_config_image(edge.node)
+            playlists.append(
+                self._create_virtual_playlist(
+                    f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
+                    f"Flow: {edge.node.title}",
+                    image_url=cover,
+                )
+            )
+        return playlists
+
+    async def _browse_explore_root(self, path: str) -> list[MediaItemType | BrowseFolder]:
+        """Return Explore section: charts, top content, all flows."""
+        base = path if path.endswith("/") else path + "/"
+        charts_cover = None
+        charts = await self.gql_client.get_charts(tracks_first=1)
+        if charts and charts.country and charts.country.tracks:
+            for edge in charts.country.tracks.edges:
+                if edge.node and edge.node.album and edge.node.album.cover:
+                    if edge.node.album.cover.urls:
+                        charts_cover = edge.node.album.cover.urls[0]
+                    break
+        return [
+            self._create_virtual_playlist(
+                TOP_CHARTS_PLAYLIST_ID, "Top Tracks", image_url=charts_cover
+            ),
+            BrowseFolder(
+                item_id="top_albums",
+                provider=self.instance_id,
+                path=f"{base}top_albums",
+                name="Top Albums",
+            ),
+            BrowseFolder(
+                item_id="top_artists",
+                provider=self.instance_id,
+                path=f"{base}top_artists",
+                name="Top Artists",
+            ),
+            BrowseFolder(
+                item_id="top_playlists",
+                provider=self.instance_id,
+                path=f"{base}top_playlists",
+                name="Top Playlists",
+            ),
+            BrowseFolder(
+                item_id="all_flows",
+                provider=self.instance_id,
+                path=f"{base}all_flows",
+                name="All Flows",
+            ),
+        ]
+
+    async def _browse_explore_category(self, category: str) -> list[MediaItemType]:
+        """Fetch items for an Explore sub-category."""
+        if category == "all_flows":
+            return list(await self._browse_all_flows())
+        items: list[MediaItemType] = []
+        if category in ("top_albums", "top_artists", "top_playlists"):
+            charts = await self.gql_client.get_charts(tracks_first=0)
+            if not charts or not charts.country:
+                return []
+            country = charts.country
+            if category == "top_albums" and country.albums:
+                for edge in country.albums.edges:
+                    if edge.node is not None:
+                        items.append(self._parse_album(edge.node))
+            elif category == "top_artists" and country.artists:
+                for edge in country.artists.edges:
+                    if edge.node is not None:
+                        items.append(self._parse_artist(edge.node))
+            elif category == "top_playlists" and country.playlists:
+                for edge in country.playlists.edges:
+                    if edge.node is not None:
+                        items.append(self._parse_playlist(edge.node))
+        return items
+
+    async def _browse_user_charts_category(self, category: str) -> list[MediaItemType]:
+        """Fetch user chart items (top artists/albums)."""
+        result = await self.gql_client.get_user_charts()
+        if not result:
+            return []
+        charts = result.charts
+        items: list[MediaItemType] = []
+        if category == "your_top_artists" and charts.artists:
+            for edge in charts.artists.edges:
+                if edge.node is not None:
+                    items.append(self._parse_artist(edge.node))
+        elif category == "your_top_albums" and charts.albums:
+            for edge in charts.albums.edges:
+                if edge.node is not None:
+                    items.append(self._parse_album(edge.node))
+        return items
+
+    async def _browse_recently_played(self) -> list[MediaItemType]:
+        """Fetch recently played items (albums, playlists, artists)."""
+        result = await self.gql_client.get_recently_played(first=50)
+        if not result:
+            return []
+        items: list[MediaItemType] = []
+        for edge in result.recently_played.edges:
+            node = edge.node
+            if node is None:
+                continue
+            if isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeAlbum):
+                items.append(self._parse_album(node))
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist):
+                items.append(self._parse_playlist(node))
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist):
+                items.append(self._parse_artist(node))
+        return items
+
+    @staticmethod
+    def _get_flow_config_image(node: object) -> str | None:
+        """Extract the square icon URL from a FlowConfig node's visuals."""
+        visuals = getattr(node, "visuals", None)
+        if not visuals:
+            return None
+        icon = getattr(visuals, "hardware_square_icon", None)
+        if not icon:
+            return None
+        urls = getattr(icon, "urls", None)
+        return urls[0] if urls else None
+
     # -- Recommendations --
 
     @use_cache(3600)  # Cache for 1 hour
@@ -464,9 +771,10 @@ class DeezerProvider(MusicProvider):
         """Get Deezer's recommendations including Flow and personalized content."""
         result: list[RecommendationFolder] = []
         await self._add_made_for_you(result)
-        await self._add_charts_and_hot(result)
+        await self._add_recommended_tracks(result)
         await self._add_new_releases_and_artists(result)
         await self._add_flow_configs(result)
+        await self._add_recently_played(result)
         return result
 
     async def _add_made_for_you(self, result: list[RecommendationFolder]) -> None:
@@ -521,21 +829,8 @@ class DeezerProvider(MusicProvider):
                 )
             )
 
-    async def _add_charts_and_hot(self, result: list[RecommendationFolder]) -> None:
-        """Add Charts & Hot Tracks section to recommendations."""
-        chart_items: list[Playlist] = []
-        charts = await self.gql_client.get_charts(tracks_first=50)
-        if charts and charts.country and charts.country.tracks:
-            chart_cover = None
-            for edge in charts.country.tracks.edges[:1]:
-                if edge.node and edge.node.album and edge.node.album.cover:
-                    if edge.node.album.cover.urls:
-                        chart_cover = edge.node.album.cover.urls[0]
-            chart_items.append(
-                self._create_virtual_playlist(
-                    TOP_CHARTS_PLAYLIST_ID, "Top Charts", image_url=chart_cover
-                )
-            )
+    async def _add_recommended_tracks(self, result: list[RecommendationFolder]) -> None:
+        """Add Recommended Tracks section with tracks rendered directly."""
         recs = await self.gql_client.get_recommendations(
             playlists_first=0,
             artist_playlists_first=0,
@@ -543,23 +838,16 @@ class DeezerProvider(MusicProvider):
             artists_first=0,
             hot_tracks_limit=50,
         )
-        if recs and recs.recommendations and recs.recommendations.hot_tracks:
-            rec_cover = None
-            for ht in recs.recommendations.hot_tracks[:1]:
-                if ht.album and ht.album.cover and ht.album.cover.urls:
-                    rec_cover = ht.album.cover.urls[0]
-            chart_items.append(
-                self._create_virtual_playlist(
-                    RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended Tracks", image_url=rec_cover
-                )
-            )
-        if chart_items:
+        if not recs or not recs.recommendations.hot_tracks:
+            return
+        track_items: list[Track] = [self._parse_track(ht) for ht in recs.recommendations.hot_tracks]
+        if track_items:
             result.append(
                 RecommendationFolder(
-                    item_id="charts_and_hot",
+                    item_id="recommended_tracks",
                     provider=self.instance_id,
-                    name="Charts & Hot Tracks",
-                    items=UniqueList(chart_items),
+                    name="Recommended Tracks",
+                    items=UniqueList(track_items),
                 )
             )
 
@@ -636,6 +924,32 @@ class DeezerProvider(MusicProvider):
                         items=UniqueList(flow_playlists),
                     )
                 )
+
+    async def _add_recently_played(self, result: list[RecommendationFolder]) -> None:
+        """Add Recently Played section to recommendations."""
+        recently_played = await self.gql_client.get_recently_played(first=20)
+        if not recently_played:
+            return
+        items: list[MediaItemType] = []
+        for edge in recently_played.recently_played.edges:
+            node = edge.node
+            if node is None:
+                continue
+            if isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeAlbum):
+                items.append(self._parse_album(node))
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist):
+                items.append(self._parse_playlist(node))
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist):
+                items.append(self._parse_artist(node))
+        if items:
+            result.append(
+                RecommendationFolder(
+                    item_id="recently_played",
+                    provider=self.instance_id,
+                    name="Recently Played",
+                    items=UniqueList(items),
+                )
+            )
 
     # -- Similar tracks (via GW API) --
 
@@ -773,6 +1087,32 @@ class DeezerProvider(MusicProvider):
             self._parse_track(edge.node) for edge in result.tracks.edges if edge.node is not None
         ]
 
+    @use_cache(3600)
+    async def _get_hot_tracks(self) -> list[Track]:
+        """Get recommended hot tracks."""
+        recs = await self.gql_client.get_recommendations(
+            playlists_first=0,
+            artist_playlists_first=0,
+            new_releases_first=0,
+            artists_first=0,
+            hot_tracks_limit=50,
+        )
+        if recs is None or recs.recommendations.hot_tracks is None:
+            return []
+        return [self._parse_track(ht) for ht in recs.recommendations.hot_tracks]
+
+    @use_cache(3600)
+    async def _get_user_chart_tracks(self) -> list[Track]:
+        """Get the user's most listened tracks."""
+        result = await self.gql_client.get_user_charts(tracks_first=50)
+        if not result or not result.charts.tracks:
+            return []
+        return [
+            self._parse_track(edge.node)
+            for edge in result.charts.tracks.edges
+            if edge.node is not None
+        ]
+
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def _get_regular_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
         """Get tracks for regular Deezer playlists (cached)."""
@@ -798,8 +1138,22 @@ class DeezerProvider(MusicProvider):
             )
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             return self._create_virtual_playlist(TOP_CHARTS_PLAYLIST_ID, "Top Charts")
+        if prov_playlist_id == HOT_TRACKS_PLAYLIST_ID:
+            return self._create_virtual_playlist(HOT_TRACKS_PLAYLIST_ID, "Hot Tracks")
+        if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
+            return self._create_virtual_playlist(USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks")
         if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
             config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
+            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
+            name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
+            return self._create_virtual_playlist(prov_playlist_id, name)
+        if prov_playlist_id.startswith(GENRE_FLOW_PREFIX):
+            config_id = prov_playlist_id.removeprefix(GENRE_FLOW_PREFIX)
+            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
+            name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
+            return self._create_virtual_playlist(prov_playlist_id, name)
+        if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
+            config_id = prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
             result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
             name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
             return self._create_virtual_playlist(prov_playlist_id, name)
