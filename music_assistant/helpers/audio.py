@@ -59,9 +59,7 @@ from . import ssl as ssl_util
 from .audio_buffer import AudioBuffer
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
-from .ogg_handler import (
-    get_chained_ogg_stream,
-)
+from .ogg_handler import get_chained_ogg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
 from .util import detect_charset
@@ -1524,6 +1522,13 @@ def get_chunksize(
     return int((320000 / 8) * seconds)
 
 
+def get_bit_rate(fmt: AudioFormat) -> int:
+    """Get the (estimated) bit rate for a given AudioFormat, if known."""
+    if fmt.bit_rate:
+        return int(fmt.bit_rate / 1000) if fmt.bit_rate >= 10000 else fmt.bit_rate
+    return int((get_chunksize(fmt, seconds=1) / 1000) * 8)
+
+
 def is_grouping_preventing_dsp(player: Player) -> bool:
     """Check if grouping is preventing DSP from being applied to this leader/PlayerGroup.
 
@@ -1612,6 +1617,12 @@ def get_player_filter_params(
         # in the audio processing steps. We save this information to
         # later be able to show this to the user in the UI.
         player.extra_data["output_format"] = output_format
+        if player.protocol_parent_id:
+            # For protocol players, we also save the output format on the parent player,
+            # since that's where the DSP is actually applied.
+            parent_player = mass.players.get_player(player.protocol_parent_id)
+            if parent_player:
+                parent_player.extra_data["output_format"] = output_format
 
         limiter_enabled = is_output_limiter_enabled(mass, player)
 

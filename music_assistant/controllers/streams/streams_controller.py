@@ -67,6 +67,7 @@ from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesA
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
+    get_bit_rate,
     get_buffered_media_stream,
     get_chunksize,
     get_media_stream,
@@ -1970,12 +1971,14 @@ class StreamsController(CoreController):
             output_sample_rate = min(48000, output_sample_rate)
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
-        return AudioFormat(
+        fmt = AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
             bit_depth=output_bit_depth,
             channels=1 if output_channels_str != "stereo" else 2,
         )
+        fmt.bit_rate = get_bit_rate(fmt)
+        return fmt
 
     async def _select_flow_format(
         self,
