@@ -6,12 +6,17 @@ import uuid
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from math import ceil
-from typing import Any
 
 from aiohttp import ClientTimeout
 from Crypto.Cipher import Blowfish
 from deezer_python_gql import DeezerGQLClient
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
+from deezer_python_gql.generated.fragments import (
+    AlbumFields,
+    ArtistFields,
+    PlaylistFields,
+    TrackFields,
+)
 from deezer_python_gql.generated.get_made_for_me import (
     GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist,
 )
@@ -1268,30 +1273,26 @@ class DeezerProvider(MusicProvider):
 
     # -- Parse methods (GQL Pydantic models → MA models) --
 
-    def _parse_track(self, track: Any, position: int = 0) -> Track:
+    def _parse_track(self, track: TrackFields, position: int = 0) -> Track:
         """Parse a GQL track model to Music Assistant Track.
 
-        Accepts any GQL track-like object (TrackFields, GetTrackTrack, album/playlist
-        track edge nodes, search results, artist top tracks, etc.).
-
-        :param track: A GQL track model with at least id, title, duration.
+        :param track: A GQL track model inheriting from TrackFields.
         :param position: Position in a track list (for playlist ordering).
         """
         artists: UniqueList[Artist | ItemMapping] = UniqueList()
-        if hasattr(track, "contributors") and track.contributors:
-            for edge in track.contributors.edges:
-                if edge.node is not None:
-                    artists.append(
-                        ItemMapping(
-                            media_type=MediaType.ARTIST,
-                            item_id=edge.node.id,
-                            provider=self.instance_id,
-                            name=edge.node.name,
-                        )
+        for edge in track.contributors.edges:
+            if edge.node is not None:
+                artists.append(
+                    ItemMapping(
+                        media_type=MediaType.ARTIST,
+                        item_id=edge.node.id,
+                        provider=self.instance_id,
+                        name=edge.node.name,
                     )
+                )
 
         album_mapping: ItemMapping | None = None
-        if hasattr(track, "album") and track.album is not None:
+        if track.album is not None:
             album_mapping = ItemMapping(
                 media_type=MediaType.ALBUM,
                 item_id=track.album.id,
@@ -1302,7 +1303,7 @@ class DeezerProvider(MusicProvider):
         name, version = parse_title_and_version(track.title)
         disc_number = 0
         track_number = position
-        if hasattr(track, "disk_info") and track.disk_info is not None:
+        if track.disk_info is not None:
             disc_number = track.disk_info.disk_number or 0
             track_number = track.disk_info.track_number or position
 
@@ -1327,31 +1328,26 @@ class DeezerProvider(MusicProvider):
             position=position,
             disc_number=disc_number,
         )
-        if hasattr(track, "isrc") and track.isrc:
+        if track.isrc:
             item.external_ids.add((ExternalID.ISRC, track.isrc))
-        if getattr(track, "is_favorite", None):
+        if track.is_favorite:
             item.favorite = True
-        popularity = getattr(track, "popularity", None)
-        if popularity is not None:
-            item.metadata.popularity = int(popularity)
+        if track.popularity is not None:
+            item.metadata.popularity = int(track.popularity)
         return item
 
-    def _parse_track_metadata(self, track: Any) -> MediaItemMetadata:
+    def _parse_track_metadata(self, track: TrackFields) -> MediaItemMetadata:
         """Parse track metadata (images, explicit flag, lyrics) from a GQL track model."""
-        metadata = MediaItemMetadata()
-        if hasattr(track, "is_explicit"):
-            metadata.explicit = track.is_explicit
-        if hasattr(track, "album") and track.album is not None:
-            cover = getattr(track.album, "cover", None)
-            if cover and cover.urls:
-                metadata.add_image(
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=cover.urls[0],
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
+        metadata = MediaItemMetadata(explicit=track.is_explicit)
+        if track.album is not None and track.album.cover and track.album.cover.urls:
+            metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=track.album.cover.urls[0],
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
+            )
         # Lyrics (only present on GetTrackTrack, not on fragment-based models)
         if hasattr(track, "lyrics") and track.lyrics is not None:
             if track.lyrics.text:
@@ -1366,13 +1362,10 @@ class DeezerProvider(MusicProvider):
                     metadata.lrc_lyrics = "\n".join(lrc_lines)
         return metadata
 
-    def _parse_artist(self, artist: Any) -> Artist:
-        """Parse a GQL artist model to Music Assistant Artist.
-
-        Accepts ArtistFields, GetArtistArtist, search result nodes, etc.
-        """
+    def _parse_artist(self, artist: ArtistFields) -> Artist:
+        """Parse a GQL artist model to Music Assistant Artist."""
         images: UniqueList[MediaItemImage] = UniqueList()
-        if hasattr(artist, "picture") and artist.picture and artist.picture.urls:
+        if artist.picture and artist.picture.urls:
             images.append(
                 MediaItemImage(
                     type=ImageType.THUMB,
@@ -1382,12 +1375,10 @@ class DeezerProvider(MusicProvider):
                 )
             )
         metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
-        bio = getattr(artist, "bio", None)
-        if bio:
-            metadata.description = bio.summary or getattr(bio, "full", None)
-        fans_count = getattr(artist, "fans_count", None)
-        if fans_count is not None:
-            metadata.popularity = int(fans_count)
+        if artist.bio:
+            metadata.description = artist.bio.summary or artist.bio.full
+        if artist.fans_count is not None:
+            metadata.popularity = int(artist.fans_count)
         item = Artist(
             item_id=artist.id,
             provider=self.instance_id,
@@ -1402,31 +1393,27 @@ class DeezerProvider(MusicProvider):
             },
             metadata=metadata,
         )
-        if getattr(artist, "is_favorite", None):
+        if artist.is_favorite:
             item.favorite = True
         return item
 
-    def _parse_album(self, album: Any) -> Album:
-        """Parse a GQL album model to Music Assistant Album.
-
-        Accepts AlbumFields, GetAlbumAlbum, search result nodes, artist album nodes, etc.
-        """
+    def _parse_album(self, album: AlbumFields) -> Album:
+        """Parse a GQL album model to Music Assistant Album."""
         name, version = parse_title_and_version(album.display_title)
         artists: UniqueList[Artist | ItemMapping] = UniqueList()
-        if hasattr(album, "contributors") and album.contributors:
-            for edge in album.contributors.edges:
-                if edge.node is not None:
-                    artists.append(
-                        ItemMapping(
-                            media_type=MediaType.ARTIST,
-                            item_id=edge.node.id,
-                            provider=self.instance_id,
-                            name=edge.node.name,
-                        )
+        for edge in album.contributors.edges:
+            if edge.node is not None:
+                artists.append(
+                    ItemMapping(
+                        media_type=MediaType.ARTIST,
+                        item_id=edge.node.id,
+                        provider=self.instance_id,
+                        name=edge.node.name,
                     )
+                )
 
         images: UniqueList[MediaItemImage] = UniqueList()
-        if hasattr(album, "cover") and album.cover and album.cover.urls:
+        if album.cover and album.cover.urls:
             images.append(
                 MediaItemImage(
                     type=ImageType.THUMB,
@@ -1436,14 +1423,13 @@ class DeezerProvider(MusicProvider):
                 )
             )
 
-        deezer_type = getattr(album, "type_", None)
+        deezer_type = album.type_
         album_type = self._map_album_type(deezer_type, name)
 
         year: int | None = None
-        release_date = getattr(album, "release_date", None)
-        if release_date:
+        if album.release_date:
             with contextlib.suppress(ValueError, TypeError):
-                year = datetime.fromisoformat(str(release_date)).year
+                year = datetime.fromisoformat(str(album.release_date)).year
 
         item = Album(
             album_type=album_type,
@@ -1462,29 +1448,26 @@ class DeezerProvider(MusicProvider):
                 )
             },
             metadata=MediaItemMetadata(
-                explicit=getattr(album, "is_explicit", None),
+                explicit=album.is_explicit,
                 images=images,
-                label=getattr(album, "label", None),
-                copyright=getattr(album, "copyright", None),
+                label=album.label,
+                copyright=album.copyright,
             ),
         )
-        fans_count = getattr(album, "fans_count", None)
-        if fans_count is not None:
-            item.metadata.popularity = int(fans_count)
-        if getattr(album, "is_favorite", None):
+        if album.fans_count is not None:
+            item.metadata.popularity = int(album.fans_count)
+        if album.is_favorite:
             item.favorite = True
         return item
 
-    def _parse_playlist(self, playlist: Any, is_editable: bool = False) -> Playlist:
+    def _parse_playlist(self, playlist: PlaylistFields, is_editable: bool = False) -> Playlist:
         """Parse a GQL playlist model to Music Assistant Playlist.
 
-        Accepts PlaylistFields, GetPlaylistPlaylist, search result nodes, etc.
-
-        :param playlist: A GQL playlist model with at least id, title.
+        :param playlist: A GQL playlist model inheriting from PlaylistFields.
         :param is_editable: Whether the current user owns this playlist.
         """
         images: UniqueList[MediaItemImage] = UniqueList()
-        if hasattr(playlist, "picture") and playlist.picture and playlist.picture.urls:
+        if playlist.picture and playlist.picture.urls:
             images.append(
                 MediaItemImage(
                     type=ImageType.THUMB,
@@ -1494,18 +1477,16 @@ class DeezerProvider(MusicProvider):
                 )
             )
         owner_name = "Unknown"
-        if hasattr(playlist, "owner") and playlist.owner:
+        if playlist.owner:
             owner_name = playlist.owner.name
             if not is_editable and playlist.owner.id == self._user_id:
                 is_editable = True
 
-        fans_count = getattr(playlist, "fans_count", None)
         metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
-        if fans_count is not None:
-            metadata.popularity = int(fans_count)
-        description = getattr(playlist, "description", None)
-        if description:
-            metadata.description = description
+        if playlist.fans_count is not None:
+            metadata.popularity = int(playlist.fans_count)
+        if playlist.description:
+            metadata.description = playlist.description
         item = Playlist(
             item_id=playlist.id,
             provider=self.instance_id,
@@ -1523,14 +1504,14 @@ class DeezerProvider(MusicProvider):
             is_editable=is_editable,
             owner=owner_name,
         )
-        if getattr(playlist, "is_favorite", None) or is_editable:
+        if playlist.is_favorite or is_editable:
             item.favorite = True
         return item
 
     # -- Helpers --
 
     @staticmethod
-    def _map_album_type(deezer_type: Any, title: str) -> AlbumType:
+    def _map_album_type(deezer_type: DeezerAlbumType | None, title: str) -> AlbumType:
         """Map Deezer album type to Music Assistant AlbumType."""
         inferred = infer_album_type(title, "")
         if inferred in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
@@ -1552,7 +1533,7 @@ class DeezerProvider(MusicProvider):
         return AlbumType.UNKNOWN
 
     @staticmethod
-    def _parse_date(date_value: Any) -> datetime:
+    def _parse_date(date_value: str | None) -> datetime:
         """Parse a date value from the GQL API to a timezone-aware datetime."""
         try:
             return datetime.fromisoformat(str(date_value))
