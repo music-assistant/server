@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
@@ -264,5 +263,5 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 await self._scan_recursive(item.relative_path, cur_filenames, file_checksums)
             else:
                 prev_checksum = file_checksums.get(item.relative_path)
-                if await asyncio.to_thread(self._process_item, item, prev_checksum):
+                if await self._process_item_async(item, prev_checksum):
                     cur_filenames.add(item.relative_path)
