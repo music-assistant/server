@@ -7,5 +7,5 @@
   "requirements": ["gql[all]==4.0.0"],
   "documentation": "https://music-assistant.io/music-providers/ard-audiothek/",
   "multi_instance": true,
-  "stage": "beta"
+  "stage": "stable"
 }

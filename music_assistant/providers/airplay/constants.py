@@ -105,6 +105,7 @@ BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.VOLUME_SET,
+    PlayerFeature.VOLUME_MUTE,
 }
 
 
