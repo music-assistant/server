@@ -1,0 +1,1 @@
+"""Snapcast provider tests."""
