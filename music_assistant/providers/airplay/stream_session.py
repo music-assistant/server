@@ -14,9 +14,9 @@ from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.ffmpeg import FFMpeg
-from music_assistant.providers.airplay.helpers import ntp_to_unix_time, unix_time_to_ntp
 
 from .constants import CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT, StreamingProtocol
+from .helpers import get_final_output_format, ntp_to_unix_time, unix_time_to_ntp
 from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
@@ -353,8 +353,8 @@ class AirPlayStreamSession:
             await ffmpeg.close()
         filter_params = self.mass.streams.audio.get_player_filter_params(
             airplay_player.player_id,
-            self.pcm_format,
-            airplay_player.stream.pcm_format,
+            input_format=self.pcm_format,
+            output_format=get_final_output_format(airplay_player.stream.pcm_format, airplay_player),
         )
         cli_proc = airplay_player.stream._cli_proc
         assert cli_proc
