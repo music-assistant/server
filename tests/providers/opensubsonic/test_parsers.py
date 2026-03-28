@@ -154,6 +154,9 @@ async def test_parse_track(example: pathlib.Path, snapshot: SnapshotAssertion) -
     parsed["external_ids"].sort()
     parsed["metadata"]["genres"].sort()
     parsed["metadata"]["performers"].sort()
+    if parsed.get("album"):
+        parsed["album"]["external_ids"].sort()
+        parsed["album"]["metadata"]["genres"].sort()
     assert snapshot == parsed
 
 
