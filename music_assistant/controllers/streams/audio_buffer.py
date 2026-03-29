@@ -171,6 +171,9 @@ class AudioBuffer:
         chunk_number = seek_position_ms // 1000
         while True:
             try:
+                # skip past evicted chunks (relevant for rolling buffers
+                # where the producer evicts independently)
+                chunk_number = max(chunk_number, self._discarded_chunks)
                 yield await self._get(chunk_number=chunk_number)
                 chunk_number += 1
             except AudioBufferEOF:
