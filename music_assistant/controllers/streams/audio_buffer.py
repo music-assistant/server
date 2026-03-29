@@ -18,7 +18,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
@@ -64,6 +64,7 @@ class AudioBuffer:
         pcm_format: AudioFormat,
         buffer_size: BufferSize = BufferSize.BALANCED,
         mode: BufferMode = BufferMode.SEEKABLE,
+        ready_threshold: int = 1,
     ) -> None:
         """
         Initialize AudioBuffer.
@@ -71,16 +72,19 @@ class AudioBuffer:
         :param pcm_format: The PCM audio format specification.
         :param buffer_size: Buffer size preset.
         :param mode: Buffer mode (SEEKABLE for tracks, ROLLING for radio).
+        :param ready_threshold: Seconds of audio to buffer before signaling ready.
         """
         self.pcm_format = pcm_format
         self.max_size_seconds = (
             RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
         )
         self.mode = mode
+        self._ready_threshold = ready_threshold
         self._chunks: deque[bytes] = deque()
         self._discarded_chunks = 0
         self._lock = asyncio.Lock()
         self._data_available = asyncio.Condition(self._lock)
+        self._space_available = asyncio.Condition(self._lock)
         self._eof_received = False
         self._producer_task: asyncio.Task[None] | None = None
         self._last_access_time: float = time.time()
@@ -266,6 +270,7 @@ class AudioBuffer:
             self.ready.clear()
             self._chunk_callbacks.clear()
             self._data_available.notify_all()
+            self._space_available.notify_all()
 
     @staticmethod
     async def get_buffer(
@@ -335,6 +340,12 @@ class AudioBuffer:
             channels=streamdetails.audio_format.channels,
         )
 
+        # use a higher ready threshold for dynamic normalization so FFmpeg's
+        # loudnorm filter has enough lookahead to produce smooth initial output
+        ready_threshold = (
+            5 if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC else 1
+        )
+
         LOGGER.debug(
             "get_buffer: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
             streamdetails.uri,
@@ -342,15 +353,15 @@ class AudioBuffer:
             buffer_size,
             seek_position_ms,
         )
-        audio_buffer = AudioBuffer(pcm_format, buffer_size, mode)
+        audio_buffer = AudioBuffer(pcm_format, buffer_size, mode, ready_threshold=ready_threshold)
         streamdetails.buffer = audio_buffer
 
         # attach analyze jobs for ahead-of-time processing
         if seek_position_ms == 0:
             # loudness analysis for all streams (tracks and radio)
             mass.streams.audio.attach_loudness_analyzer(audio_buffer, streamdetails)
-            # smart fades analysis only for seekable tracks
-            if mode == BufferMode.SEEKABLE:
+            # smart fades analysis only for music tracks (not podcasts/audiobooks)
+            if streamdetails.media_type == MediaType.TRACK:
                 mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
 
         # start filling from the media stream (seek in seconds for FFmpeg)
@@ -375,7 +386,12 @@ class AudioBuffer:
     # -- Private methods --
 
     async def _put(self, chunk: bytes) -> None:
-        """Put a 1-second chunk of PCM audio into the buffer. Discards oldest chunk if full."""
+        """
+        Put a 1-second chunk of PCM audio into the buffer.
+
+        ROLLING mode evicts the oldest chunk immediately when full.
+        SEEKABLE mode waits for the consumer to free space (backpressure).
+        """
         chunk_position = -1
         async with self._lock:
             if self._cancelled:
@@ -387,17 +403,14 @@ class AudioBuffer:
                 )
                 return
 
-            # evict oldest chunk when at capacity to prevent deadlock
+            # handle buffer at capacity:
+            # rolling mode evicts oldest chunk, seekable mode waits for consumer
             if len(self._chunks) >= self.max_size_seconds:
-                discarded = self._chunks.popleft()
-                self._discarded_chunks += 1
-                if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
-                    LOGGER.log(
-                        VERBOSE_LOG_LEVEL,
-                        "AudioBuffer._put: Discarded chunk %s (%s bytes) to make space",
-                        self._discarded_chunks - 1,
-                        len(discarded),
-                    )
+                if self.mode == BufferMode.ROLLING:
+                    self._chunks.popleft()
+                    self._discarded_chunks += 1
+                else:
+                    await self._wait_for_space()
 
             chunk_position = self._discarded_chunks + len(self._chunks)
             self._chunks.append(chunk)
@@ -410,7 +423,7 @@ class AudioBuffer:
                     len(self._chunks),
                 )
 
-            if not self.ready.is_set():
+            if not self.ready.is_set() and len(self._chunks) >= self._ready_threshold:
                 self.ready.set()
 
             self._data_available.notify_all()
@@ -432,6 +445,7 @@ class AudioBuffer:
             if not self.ready.is_set():
                 self.ready.set()
             self._data_available.notify_all()
+            self._space_available.notify_all()
 
         # notify chunk callbacks of EOF (empty bytes = no more data)
         total_chunks = self._discarded_chunks + len(self._chunks)
@@ -473,10 +487,33 @@ class AudioBuffer:
                     raise AudioBufferEOF
                 if self._eof_received:
                     raise AudioBufferEOF
+                # if the buffer is full and we need a chunk that hasn't arrived yet,
+                # the producer is blocked waiting for space — evict to unblock it
+                if len(self._chunks) >= self.max_size_seconds:
+                    self._chunks.popleft()
+                    self._discarded_chunks += 1
+                    buffer_index = chunk_number - self._discarded_chunks
+                    self._space_available.notify_all()
+                    continue
                 await self._data_available.wait()
                 buffer_index = chunk_number - self._discarded_chunks
 
-            return self._chunks[buffer_index]
+            result = self._chunks[buffer_index]
+
+            # free space for the producer when buffer is at capacity
+            if len(self._chunks) >= self.max_size_seconds:
+                self._chunks.popleft()
+                self._discarded_chunks += 1
+                self._space_available.notify_all()
+
+            return result
+
+    async def _wait_for_space(self) -> None:
+        """Wait until buffer has space. Must be called while holding _lock."""
+        while len(self._chunks) >= self.max_size_seconds:
+            if self._cancelled:
+                return
+            await self._space_available.wait()
 
     def _attach_producer_task(self, task: asyncio.Task[Any]) -> None:
         """Attach a background task that fills the buffer."""

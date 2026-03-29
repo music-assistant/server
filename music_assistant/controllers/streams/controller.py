@@ -139,9 +139,9 @@ class StreamsController(CoreController):
                 "- **Maximum**: Large buffer, "
                 "best performance for systems with plenty of memory.",
                 options=[
-                    ConfigValueOption("Minimal", BufferSize.MINIMAL),
-                    ConfigValueOption("Balanced", BufferSize.BALANCED),
-                    ConfigValueOption("Maximum", BufferSize.MAXIMUM),
+                    ConfigValueOption("Minimal", BufferSize.MINIMAL.value),
+                    ConfigValueOption("Balanced", BufferSize.BALANCED.value),
+                    ConfigValueOption("Maximum", BufferSize.MAXIMUM.value),
                 ],
                 required=False,
                 category="playback",
@@ -149,7 +149,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
                 type=ConfigEntryType.STRING,
-                default_value=VolumeNormalizationMode.FALLBACK_FIXED_GAIN,
+                default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
                 label="Volume normalization method for radio streams",
                 options=[
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)

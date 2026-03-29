@@ -85,11 +85,34 @@ async def test_put_and_get() -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_sets_ready() -> None:
-    """First put sets the ready event."""
+async def test_put_sets_ready_default_threshold() -> None:
+    """Ready event is set after 1 chunk with default threshold."""
     buf = AudioBuffer(TEST_PCM_FORMAT)
     assert not buf.ready.is_set()
     await buf._put(ONE_SECOND_CHUNK)
+    assert buf.ready.is_set()
+
+
+@pytest.mark.asyncio
+async def test_put_sets_ready_custom_threshold() -> None:
+    """Ready event is set after ready_threshold chunks are buffered."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, ready_threshold=3)
+    assert not buf.ready.is_set()
+    await buf._put(ONE_SECOND_CHUNK)
+    assert not buf.ready.is_set()
+    await buf._put(ONE_SECOND_CHUNK)
+    assert not buf.ready.is_set()
+    await buf._put(ONE_SECOND_CHUNK)
+    assert buf.ready.is_set()
+
+
+@pytest.mark.asyncio
+async def test_eof_sets_ready_below_threshold() -> None:
+    """EOF sets ready even when fewer than threshold chunks are buffered."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, ready_threshold=5)
+    await buf._put(ONE_SECOND_CHUNK)
+    assert not buf.ready.is_set()
+    await buf._set_eof()
     assert buf.ready.is_set()
 
 
@@ -322,12 +345,11 @@ async def test_callbacks_cleared_on_clear() -> None:
 
 
 @pytest.mark.asyncio
-async def test_buffer_discards_old_chunks() -> None:
-    """Adding to a full buffer discards the oldest chunk."""
-    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+async def test_rolling_buffer_evicts_on_put() -> None:
+    """ROLLING mode evicts the oldest chunk on put when full."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, mode=BufferMode.ROLLING)
     max_size = buf.max_size_seconds
 
-    # fill to capacity
     for i in range(max_size):
         await buf._put(_make_chunk(i))
 
@@ -339,9 +361,22 @@ async def test_buffer_discards_old_chunks() -> None:
     assert buf._discarded_chunks == 1
     assert buf.size_seconds == max_size
 
-    # the evicted chunk (0) is gone, chunk 1 is now first
-    chunk = await buf._get(chunk_number=1)
-    assert chunk == _make_chunk(1)
+
+@pytest.mark.asyncio
+async def test_seekable_buffer_backpressure() -> None:
+    """SEEKABLE mode waits on put when full, consumer frees space on get."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    max_size = buf.max_size_seconds
+
+    for i in range(max_size):
+        await buf._put(_make_chunk(i))
+
+    assert buf.size_seconds == max_size
+
+    # reading from a full buffer frees space for the producer
+    chunk = await buf._get(chunk_number=0)
+    assert chunk == _make_chunk(0)
+    assert buf._discarded_chunks == 1
 
 
 # -- get_stream passthrough --

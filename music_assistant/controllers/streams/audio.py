@@ -931,6 +931,9 @@ class StreamsAudio:
                     await self.mass.music.set_loudness(
                         item_id, provider, loudness, media_type=media_type
                     )
+                    # update the in-memory streamdetails so subsequent seeks
+                    # can use measurement-based normalization instead of dynamic
+                    streamdetails.loudness = loudness
                     self.logger.debug(
                         "Buffer loudness measurement for %s: %s LUFS",
                         streamdetails.uri,
@@ -1221,6 +1224,15 @@ class StreamsAudio:
         assert streamdetails
         filter_params: list[str] = []
 
+        # re-evaluate normalization mode: the background loudness analyzer may have
+        # updated streamdetails.loudness since get_stream_details was called
+        if streamdetails.queue_id:
+            core_config = await self.mass.config.get_core_config("streams")
+            player_settings = await self.mass.config.get_player_config(streamdetails.queue_id)
+            streamdetails.volume_normalization_mode = _get_normalization_mode(
+                core_config, player_settings, streamdetails
+            )
+
         # handle volume normalization
         gain_correct: float | None = None
         if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
@@ -1291,6 +1303,7 @@ class StreamsAudio:
         first_chunk_received = False
         bytes_received = 0
         finished = False
+        next_buffer_triggered = False
         stream_started_at = asyncio.get_event_loop().time()
         try:
             async for chunk in media_stream_gen:
@@ -1303,6 +1316,17 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
+                # trigger pre-buffering of the next track ~30 seconds before end
+                if (
+                    not next_buffer_triggered
+                    and streamdetails.duration
+                    and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
+                    and queue.next_item
+                    and (bytes_received / pcm_format.pcm_sample_size + seek_position)
+                    >= streamdetails.duration - 30
+                ):
+                    next_buffer_triggered = True
+                    self.mass.player_queues._prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
             finished = True

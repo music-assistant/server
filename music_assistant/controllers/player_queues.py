@@ -2153,17 +2153,24 @@ class PlayerQueuesController(CoreController):
         the buffer is warm when the next track starts playing.
         """
         queue = self._queues.get(queue_id)
-        if not queue or not queue.next_item or not queue.next_item.streamdetails:
+        if not queue or not queue.next_item:
             return
         next_item = queue.next_item
-        streamdetails = next_item.streamdetails
-        assert streamdetails is not None
         # check if buffer already exists and is valid
-        if streamdetails.buffer and streamdetails.buffer.is_valid():
+        if (
+            next_item.streamdetails
+            and next_item.streamdetails.buffer
+            and next_item.streamdetails.buffer.is_valid()
+        ):
             return
 
         async def _do_prepare() -> None:
             try:
+                # fetch streamdetails if not yet available
+                if not next_item.streamdetails:
+                    next_item.streamdetails = await self.mass.streams.audio.get_stream_details(
+                        queue_item=next_item
+                    )
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",
                     next_item.name,
@@ -2171,7 +2178,7 @@ class PlayerQueuesController(CoreController):
                 )
                 await AudioBuffer.get_buffer(
                     self.mass,
-                    streamdetails,
+                    next_item.streamdetails,
                     wait_ready=True,
                 )
             except (AudioError, MediaNotFoundError) as err:
@@ -2882,15 +2889,6 @@ class PlayerQueuesController(CoreController):
             fully_played = seconds_played >= duration - 10
 
         is_playing = is_current_item and queue.state == PlaybackState.PLAYING
-
-        # prepare the audio buffer for the next track ~30 seconds before end
-        if (
-            is_playing
-            and duration > 60
-            and seconds_played >= duration - 30
-            and item_to_report.media_type != MediaType.RADIO
-        ):
-            self._prepare_next_audio_buffer(queue.queue_id)
 
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.debug(
