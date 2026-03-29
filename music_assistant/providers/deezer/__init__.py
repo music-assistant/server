@@ -3,10 +3,10 @@
 import contextlib
 import hashlib
 import uuid
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from math import ceil
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 from aiohttp import ClientTimeout
@@ -177,51 +177,48 @@ class DeezerProvider(MusicProvider):
 
     # -- Library retrieval (cursor-paginated) --
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve all library artists from Deezer."""
+    async def _iter_favorites(
+        self,
+        fetch: Callable[..., Awaitable[Any]],
+        extract: Callable[..., Any],
+    ) -> AsyncGenerator[tuple[Any, Any], None]:
+        """Iterate paginated favorites, yielding (node, favorited_at) per item."""
         cursor: str | None = None
         while True:
-            result = await self.gql_client.get_favorite_artists(
-                first=FAVORITES_PAGE_SIZE, after=cursor
-            )
+            result = await fetch(first=FAVORITES_PAGE_SIZE, after=cursor)
             if result is None:
                 break
-            artists = result.user_favorites.artists
-            if artists is None:
+            connection = extract(result)
+            if connection is None:
                 break
-            for edge in artists.edges:
-                if edge.node is None:
-                    continue
-                item = self._parse_artist(edge.node)
-                if edge.favorited_at:
-                    item.date_added = self._parse_date(edge.favorited_at)
-                yield item
-            if not artists.page_info.has_next_page:
+            for edge in connection.edges:
+                if edge.node is not None:
+                    yield edge.node, edge.favorited_at
+            if not connection.page_info.has_next_page:
                 break
-            cursor = artists.page_info.end_cursor
+            cursor = connection.page_info.end_cursor
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+        """Retrieve all library artists from Deezer."""
+        async for node, favorited_at in self._iter_favorites(
+            self.gql_client.get_favorite_artists,
+            lambda r: r.user_favorites.artists,
+        ):
+            item = self._parse_artist(node)
+            if favorited_at:
+                item.date_added = self._parse_date(favorited_at)
+            yield item
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
-        cursor: str | None = None
-        while True:
-            result = await self.gql_client.get_favorite_albums(
-                first=FAVORITES_PAGE_SIZE, after=cursor
-            )
-            if result is None:
-                break
-            albums = result.user_favorites.albums
-            if albums is None:
-                break
-            for edge in albums.edges:
-                if edge.node is None:
-                    continue
-                item = self._parse_album(edge.node)
-                if edge.favorited_at:
-                    item.date_added = self._parse_date(edge.favorited_at)
-                yield item
-            if not albums.page_info.has_next_page:
-                break
-            cursor = albums.page_info.end_cursor
+        async for node, favorited_at in self._iter_favorites(
+            self.gql_client.get_favorite_albums,
+            lambda r: r.user_favorites.albums,
+        ):
+            item = self._parse_album(node)
+            if favorited_at:
+                item.date_added = self._parse_date(favorited_at)
+            yield item
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Deezer."""
@@ -267,26 +264,14 @@ class DeezerProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
-        cursor: str | None = None
-        while True:
-            result = await self.gql_client.get_favorite_tracks(
-                first=FAVORITES_PAGE_SIZE, after=cursor
-            )
-            if result is None:
-                break
-            tracks = result.user_favorites.tracks
-            if tracks is None:
-                break
-            for edge in tracks.edges:
-                if edge.node is None:
-                    continue
-                item = self._parse_track(edge.node)
-                if edge.favorited_at:
-                    item.date_added = self._parse_date(edge.favorited_at)
-                yield item
-            if not tracks.page_info.has_next_page:
-                break
-            cursor = tracks.page_info.end_cursor
+        async for node, favorited_at in self._iter_favorites(
+            self.gql_client.get_favorite_tracks,
+            lambda r: r.user_favorites.tracks,
+        ):
+            item = self._parse_track(node)
+            if favorited_at:
+                item.date_added = self._parse_date(favorited_at)
+            yield item
 
     # -- Search --
 
@@ -340,9 +325,7 @@ class DeezerProvider(MusicProvider):
         if result is None:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Deezer")
         item = self._parse_artist(result)
-        if hasattr(result, "url") and hasattr(result.url, "web_url"):
-            for pm in item.provider_mappings:
-                pm.url = result.url.web_url
+        self._apply_web_url(item, result)
         return item
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
@@ -352,9 +335,7 @@ class DeezerProvider(MusicProvider):
         if result is None:
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Deezer")
         item = self._parse_album(result)
-        if hasattr(result, "url") and hasattr(result.url, "web_url"):
-            for pm in item.provider_mappings:
-                pm.url = result.url.web_url
+        self._apply_web_url(item, result)
         return item
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
@@ -521,7 +502,7 @@ class DeezerProvider(MusicProvider):
             return await self._browse_explore_root(path)
 
         if subpath == "recently_played":
-            return await self._browse_recently_played()
+            return await self._get_recently_played_items()
 
         if not subpath:
             # Root: add custom folders alongside standard ones
@@ -595,6 +576,18 @@ class DeezerProvider(MusicProvider):
         items.extend(await self._get_smart_tracklist_playlists())
         return items
 
+    def _flow_configs_to_playlists(self, edges: Sequence[Any]) -> list[Playlist]:
+        """Convert FlowConfig edges to virtual playlists."""
+        return [
+            self._create_virtual_playlist(
+                f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
+                f"Flow: {edge.node.title}",
+                image_url=self._get_flow_config_image(edge.node),
+            )
+            for edge in edges
+            if edge.node is not None
+        ]
+
     async def _browse_flow_configs(self, category: str) -> list[Playlist]:
         """Fetch mood or genre flow configs and return as virtual playlists.
 
@@ -612,34 +605,14 @@ class DeezerProvider(MusicProvider):
             if is_moods
             else flow_configs.flow_configs.genres.edges
         )
-        return [
-            self._create_virtual_playlist(
-                f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
-                f"Flow: {edge.node.title}",
-                image_url=self._get_flow_config_image(edge.node),
-            )
-            for edge in edges
-            if edge.node is not None
-        ]
+        return self._flow_configs_to_playlists(edges)
 
     async def _browse_all_flows(self) -> list[Playlist]:
         """Fetch all available Deezer flows via search and return as virtual playlists."""
         result = await self.gql_client.search_flows(query="flow", first=100)
         if not result:
             return []
-        playlists: list[Playlist] = []
-        for edge in result.results.flow_configs.edges:
-            if edge.node is None:
-                continue
-            cover = self._get_flow_config_image(edge.node)
-            playlists.append(
-                self._create_virtual_playlist(
-                    f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
-                    f"Flow: {edge.node.title}",
-                    image_url=cover,
-                )
-            )
-        return playlists
+        return self._flow_configs_to_playlists(result.results.flow_configs.edges)
 
     async def _browse_explore_root(self, path: str) -> list[MediaItemType | BrowseFolder]:
         """Return Explore section: charts, top content, all flows."""
@@ -730,10 +703,6 @@ class DeezerProvider(MusicProvider):
         if not result:
             return []
         return self._parse_recently_played_edges(result.recently_played.edges)
-
-    async def _browse_recently_played(self) -> list[MediaItemType]:
-        """Fetch recently played items (albums, playlists, artists, flows)."""
-        return await self._get_recently_played_items()
 
     def _parse_recently_played_edges(
         self, edges: list[GetRecentlyPlayedMeRecentlyPlayedEdges]
@@ -899,25 +868,14 @@ class DeezerProvider(MusicProvider):
             ("mood_flows", "Deezer Mood Flows", flow_configs.flow_configs.moods.edges),
             ("genre_flows", "Deezer Genre Flows", flow_configs.flow_configs.genres.edges),
         ]:
-            flow_playlists: list[Playlist] = []
-            for edge in edges:
-                if edge.node is None:
-                    continue
-                cover = self._get_flow_config_image(edge.node)
-                flow_playlists.append(
-                    self._create_virtual_playlist(
-                        f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
-                        f"Flow: {edge.node.title}",
-                        image_url=cover,
-                    )
-                )
-            if flow_playlists:
+            playlists = self._flow_configs_to_playlists(edges)
+            if playlists:
                 result.append(
                     RecommendationFolder(
                         item_id=folder_id,
                         provider=self.instance_id,
                         name=folder_name,
-                        items=UniqueList(flow_playlists),
+                        items=UniqueList(playlists),
                     )
                 )
 
@@ -1441,6 +1399,13 @@ class DeezerProvider(MusicProvider):
         return item
 
     # -- Helpers --
+
+    @staticmethod
+    def _apply_web_url(item: Artist | Album, gql_result: object) -> None:
+        """Set web URL on provider mappings if available in the GQL result."""
+        if hasattr(gql_result, "url") and hasattr(gql_result.url, "web_url"):
+            for pm in item.provider_mappings:
+                pm.url = gql_result.url.web_url
 
     @staticmethod
     def _map_album_type(deezer_type: DeezerAlbumType | None, title: str) -> AlbumType:
