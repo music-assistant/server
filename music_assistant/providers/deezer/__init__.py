@@ -101,8 +101,6 @@ CONF_ARL_TOKEN = "arl_token"
 FLOW_PLAYLIST_ID = "flow"
 RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
 TOP_CHARTS_PLAYLIST_ID = "top_charts"
-MOOD_FLOW_PREFIX = "mood_flow_"
-GENRE_FLOW_PREFIX = "genre_flow_"
 FLOW_CONFIG_PREFIX = "flow_config_"
 SMART_TRACKLIST_PREFIX = "smart_tracklist_"
 USER_TOP_TRACKS_PLAYLIST_ID = "user_top_tracks"
@@ -402,9 +400,10 @@ class DeezerProvider(MusicProvider):
             return await self._get_chart_tracks()
         if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
             return await self._get_user_chart_tracks()
-        for prefix in (MOOD_FLOW_PREFIX, GENRE_FLOW_PREFIX, FLOW_CONFIG_PREFIX):
-            if prov_playlist_id.startswith(prefix):
-                return await self._get_flow_config_tracks(prov_playlist_id.removeprefix(prefix))
+        if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
+            return await self._get_flow_config_tracks(
+                prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
+            )
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
             return await self._get_smart_tracklist_tracks(tracklist_id)
@@ -613,10 +612,9 @@ class DeezerProvider(MusicProvider):
             if is_moods
             else flow_configs.flow_configs.genres.edges
         )
-        prefix = MOOD_FLOW_PREFIX if is_moods else GENRE_FLOW_PREFIX
         return [
             self._create_virtual_playlist(
-                f"{prefix}{edge.node.id}",
+                f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
                 f"Flow: {edge.node.title}",
                 image_url=self._get_flow_config_image(edge.node),
             )
@@ -897,19 +895,9 @@ class DeezerProvider(MusicProvider):
         flow_configs = await self.gql_client.get_flow_configs(moods_first=20, genres_first=20)
         if not flow_configs or not flow_configs.flow_configs:
             return
-        for folder_id, folder_name, edges, prefix in [
-            (
-                "mood_flows",
-                "Deezer Mood Flows",
-                flow_configs.flow_configs.moods.edges,
-                MOOD_FLOW_PREFIX,
-            ),
-            (
-                "genre_flows",
-                "Deezer Genre Flows",
-                flow_configs.flow_configs.genres.edges,
-                GENRE_FLOW_PREFIX,
-            ),
+        for folder_id, folder_name, edges in [
+            ("mood_flows", "Deezer Mood Flows", flow_configs.flow_configs.moods.edges),
+            ("genre_flows", "Deezer Genre Flows", flow_configs.flow_configs.genres.edges),
         ]:
             flow_playlists: list[Playlist] = []
             for edge in edges:
@@ -918,7 +906,7 @@ class DeezerProvider(MusicProvider):
                 cover = self._get_flow_config_image(edge.node)
                 flow_playlists.append(
                     self._create_virtual_playlist(
-                        f"{prefix}{edge.node.id}",
+                        f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
                         f"Flow: {edge.node.title}",
                         image_url=cover,
                     )
@@ -1152,14 +1140,12 @@ class DeezerProvider(MusicProvider):
             return self._create_virtual_playlist(TOP_CHARTS_PLAYLIST_ID, "Top Charts")
         if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
             return self._create_virtual_playlist(USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks")
-        # Mood, genre, and generic flow config prefixes all resolve the same way
-        for prefix in (MOOD_FLOW_PREFIX, GENRE_FLOW_PREFIX, FLOW_CONFIG_PREFIX):
-            if prov_playlist_id.startswith(prefix):
-                config_id = prov_playlist_id.removeprefix(prefix)
-                result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
-                name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-                cover = self._get_flow_config_image(result) if result else None
-                return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
+        if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
+            config_id = prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
+            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
+            name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
+            cover = self._get_flow_config_image(result) if result else None
+            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
             result = await self.gql_client.get_smart_tracklist(
