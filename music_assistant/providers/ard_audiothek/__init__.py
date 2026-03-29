@@ -320,12 +320,14 @@ class ARDAudiothek(MusicProvider):
             )
         return False, 0
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
         await self._update_progress()
 
-        return self._get_progress(item_id)
+        return *self._get_progress(item_id), None
 
     async def on_played(
         self,

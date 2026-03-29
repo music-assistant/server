@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import Any, cast
 
 import aiohttp
@@ -455,7 +456,9 @@ class SpotifyProvider(MusicProvider):
             raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
         return parse_podcast_episode(episode_obj, self)
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Get resume position for episode/audiobook from Spotify."""
         if media_type == MediaType.PODCAST_EPISODE:
             if not self.podcast_progress_sync_enabled:
@@ -479,7 +482,7 @@ class SpotifyProvider(MusicProvider):
             resume_point = episode_obj["resume_point"]
             fully_played = resume_point.get("fully_played", False)
             position_ms = resume_point.get("resume_position_ms", 0)
-            return fully_played, position_ms
+            return fully_played, position_ms, None
 
         if media_type == MediaType.AUDIOBOOK:
             if not self.audiobooks_supported:
@@ -510,7 +513,7 @@ class SpotifyProvider(MusicProvider):
                         fully_played = False
                         break
 
-                return fully_played, total_position_ms
+                return fully_played, total_position_ms, None
 
             except (MediaNotFoundError, ResourceTemporarilyUnavailable, aiohttp.ClientError) as e:
                 self.logger.debug(f"Failed to get audiobook resume position for {item_id}: {e}")
