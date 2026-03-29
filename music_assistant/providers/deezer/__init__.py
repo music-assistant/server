@@ -401,7 +401,7 @@ class DeezerProvider(MusicProvider):
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             return await self._get_chart_tracks()
         if prov_playlist_id == HOT_TRACKS_PLAYLIST_ID:
-            return await self._get_hot_tracks()
+            return await self._get_recommended_tracks()
         if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
             return await self._get_user_chart_tracks()
         if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
@@ -1134,11 +1134,6 @@ class DeezerProvider(MusicProvider):
         return [
             self._parse_track(edge.node) for edge in result.tracks.edges if edge.node is not None
         ]
-
-    @use_cache(3600)
-    async def _get_hot_tracks(self) -> list[Track]:
-        """Get recommended hot tracks."""
-        return await self._get_recommended_tracks()
 
     @use_cache(3600)
     async def _get_user_chart_tracks(self) -> list[Track]:
