@@ -1547,9 +1547,9 @@ class MusicController(CoreController):
             ma_fully_played = parse_optional_bool(db_entry["fully_played"])
             ma_timestamp = from_utc_timestamp(db_entry["timestamp"])
 
-        # Return the higher position to ensure users never lose progress
-        if provider_timestamp and provider_timestamp > ma_timestamp:
+        if provider_timestamp is not None and provider_timestamp > ma_timestamp:
             return provider_fully_played, provider_position_ms
+        # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:
             return ma_fully_played, ma_position_ms
         return provider_fully_played, provider_position_ms
