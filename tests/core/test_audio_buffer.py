@@ -405,3 +405,122 @@ async def test_rolling_mode_max_size() -> None:
     """ROLLING mode uses RADIO_BUFFER_SIZE."""
     buf = AudioBuffer(TEST_PCM_FORMAT, mode=BufferMode.ROLLING)
     assert buf.max_size_seconds == RADIO_BUFFER_SIZE
+
+
+# -- Ready threshold with seek offset --
+
+
+@pytest.mark.asyncio
+async def test_ready_accounts_for_seek_offset() -> None:
+    """Ready fires only after enough data past the seek point is buffered."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, ready_threshold=3)
+    # simulate get_buffer setting the offset for a seek to 100s
+    buf._discarded_chunks = 100
+    buf._ready_at_chunk = 100 + 3  # seek_chunk + threshold
+
+    await buf._put(ONE_SECOND_CHUNK)  # chunk 100
+    assert not buf.ready.is_set()
+    await buf._put(ONE_SECOND_CHUNK)  # chunk 101
+    assert not buf.ready.is_set()
+    await buf._put(ONE_SECOND_CHUNK)  # chunk 102
+    assert buf.ready.is_set()
+
+
+@pytest.mark.asyncio
+async def test_chunk_numbering_with_seek_offset() -> None:
+    """Chunks are numbered correctly when buffer starts at a seek offset."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    # simulate a buffer created for a seek to 300s
+    buf._discarded_chunks = 300
+
+    for i in range(5):
+        await buf._put(_make_chunk(i))
+
+    # chunk 300 should be the first chunk (value 0)
+    result = await buf._get(chunk_number=300)
+    assert result == _make_chunk(0)
+    # chunk 304 should be the fifth chunk (value 4)
+    result = await buf._get(chunk_number=304)
+    assert result == _make_chunk(4)
+
+
+@pytest.mark.asyncio
+async def test_is_valid_with_seek_offset() -> None:
+    """is_valid works correctly with a seek offset."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf._discarded_chunks = 300
+
+    for _ in range(10):
+        await buf._put(ONE_SECOND_CHUNK)
+
+    # positions before the offset are invalid (discarded)
+    assert not buf.is_valid(seek_position_ms=299_000)
+    # positions within the buffer are valid
+    assert buf.is_valid(seek_position_ms=300_000)
+    assert buf.is_valid(seek_position_ms=305_000)
+
+
+@pytest.mark.asyncio
+async def test_raw_stream_with_seek_offset() -> None:
+    """get_raw_stream works correctly when buffer has a seek offset."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf._discarded_chunks = 300
+
+    for i in range(5):
+        await buf._put(_make_chunk(i))
+    await buf._set_eof()
+
+    chunks = []
+    async for chunk in buf.get_raw_stream(seek_position_ms=300_000):
+        chunks.append(chunk)
+
+    assert len(chunks) == 5
+    assert chunks[0] == _make_chunk(0)
+    assert chunks[4] == _make_chunk(4)
+
+
+# -- Callback error isolation --
+
+
+@pytest.mark.asyncio
+async def test_failing_callback_does_not_break_fill() -> None:
+    """A failing chunk callback is removed without breaking the fill task."""
+    good_chunks: list[int] = []
+
+    def _bad_callback(_position: int, _data: bytes) -> None:
+        msg = "callback error"
+        raise RuntimeError(msg)
+
+    def _good_callback(position: int, data: bytes) -> None:
+        if data:
+            good_chunks.append(position)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf.register_chunk_callback(_bad_callback)
+    buf.register_chunk_callback(_good_callback)
+    buf.fill(_make_source(3), source_name="test")
+    await asyncio.sleep(0.1)
+
+    # bad callback removed after first failure, good callback received all chunks
+    assert _bad_callback not in buf._chunk_callbacks
+    assert len(good_chunks) == 3
+
+
+@pytest.mark.asyncio
+async def test_clear_sends_eof_to_callbacks() -> None:
+    """clear() sends an EOF signal to callbacks before removing them."""
+    received: list[bytes] = []
+
+    def _callback(_position: int, data: bytes) -> None:
+        received.append(data)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf.register_chunk_callback(_callback)
+    await buf._put(ONE_SECOND_CHUNK)
+    assert len(received) == 1  # data chunk
+
+    await buf.clear()
+    # should have received an EOF signal (empty bytes) during clear
+    assert len(received) == 2
+    assert received[-1] == b""
+    assert len(buf._chunk_callbacks) == 0

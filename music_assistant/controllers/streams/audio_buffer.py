@@ -80,6 +80,7 @@ class AudioBuffer:
         )
         self.mode = mode
         self._ready_threshold = ready_threshold
+        self._ready_at_chunk = ready_threshold  # updated by get_buffer to account for seek
         self._chunks: deque[bytes] = deque()
         self._discarded_chunks = 0
         self._lock = asyncio.Lock()
@@ -361,6 +362,13 @@ class AudioBuffer:
             seek_position_ms,
         )
         audio_buffer = AudioBuffer(pcm_format, buffer_size, mode, ready_threshold=ready_threshold)
+        # align chunk numbering with the actual stream start position so that
+        # get_raw_stream(seek_position_ms) requests the correct chunk number
+        audio_buffer._discarded_chunks = buffer_seek_seconds
+        # set the chunk number at which the buffer should signal ready,
+        # accounting for seek position so we have enough data past the seek point
+        seek_chunk = seek_position_ms // 1000
+        audio_buffer._ready_at_chunk = seek_chunk + ready_threshold
         streamdetails.buffer = audio_buffer
 
         # attach analyze jobs for ahead-of-time processing
@@ -430,7 +438,9 @@ class AudioBuffer:
                     len(self._chunks),
                 )
 
-            if not self.ready.is_set() and len(self._chunks) >= self._ready_threshold:
+            if not self.ready.is_set() and (
+                self._discarded_chunks + len(self._chunks) >= self._ready_at_chunk
+            ):
                 self.ready.set()
 
             self._data_available.notify_all()
@@ -504,9 +514,10 @@ class AudioBuffer:
                     raise AudioBufferEOF
                 if self._eof_received:
                     raise AudioBufferEOF
-                # if the buffer is full and we need a chunk that hasn't arrived yet,
-                # the producer is blocked waiting for space — evict to unblock it
-                if len(self._chunks) >= self.max_size_seconds:
+                # in seekable mode, if the buffer is full and we need a chunk that
+                # hasn't arrived yet, the producer is blocked — evict to unblock it
+                # (rolling mode never blocks in _put, so this is not needed there)
+                if self.mode == BufferMode.SEEKABLE and len(self._chunks) >= self.max_size_seconds:
                     self._chunks.popleft()
                     self._discarded_chunks += 1
                     buffer_index = chunk_number - self._discarded_chunks
@@ -517,8 +528,9 @@ class AudioBuffer:
 
             result = self._chunks[buffer_index]
 
-            # free space for the producer when buffer is at capacity
-            if len(self._chunks) >= self.max_size_seconds:
+            # in seekable mode, free space for the producer when buffer is at capacity
+            # (rolling mode handles eviction in _put, doing it here too causes duplicates)
+            if self.mode == BufferMode.SEEKABLE and len(self._chunks) >= self.max_size_seconds:
                 self._chunks.popleft()
                 self._discarded_chunks += 1
                 self._space_available.notify_all()
