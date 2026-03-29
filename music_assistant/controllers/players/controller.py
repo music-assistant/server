@@ -2818,7 +2818,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 category=CACHE_CATEGORY_PLAYER_POWER,
             )
         # handle external player control
-        elif player_control := self._controls.get(player.state.volume_control):
+        elif player_control := self._controls.get(player.state.power_control):
             control_name = player_control.name if player_control else player.state.power_control
             self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
             if not player_control or not player_control.supports_power:
