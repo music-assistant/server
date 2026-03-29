@@ -77,9 +77,9 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.players.controller import IN_QUEUE_COMMAND
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
@@ -1530,13 +1530,24 @@ class PlayerQueuesController(CoreController):
                 )
         # Fetch the streamdetails, which could raise in case of an unplayable item.
         # For example, YT Music returns Radio Items that are not playable.
-        queue_item.streamdetails = await get_stream_details(
-            mass=self.mass,
+        queue_item.streamdetails = await self.mass.streams.audio.get_stream_details(
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
             prefer_album_loudness=bool(playing_album_tracks),
         )
+
+        # pre-initialize the AudioBuffer so audio is ready
+        # when the player requests it. For the current/first track this ensures
+        # immediate playback start. For preloaded next tracks we skip this and
+        # initialize the buffer ~30s before the current track ends instead.
+        if is_start:
+            await AudioBuffer.get_buffer(
+                self.mass,
+                queue_item.streamdetails,
+                seek_position_ms=seek_position * 1000,
+                wait_ready=True,
+            )
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
         """Call when a player has (started) loading a track in the buffer."""
@@ -2135,6 +2146,40 @@ class PlayerQueuesController(CoreController):
             abort_existing=True,
         )
 
+    def _prepare_next_audio_buffer(self, queue_id: str) -> None:
+        """Prepare the AudioBuffer for the next track in the queue.
+
+        Called ~30 seconds before the current track ends to ensure
+        the buffer is warm when the next track starts playing.
+        """
+        queue = self._queues.get(queue_id)
+        if not queue or not queue.next_item or not queue.next_item.streamdetails:
+            return
+        next_item = queue.next_item
+        streamdetails = next_item.streamdetails
+        assert streamdetails is not None
+        # check if buffer already exists and is valid
+        if streamdetails.buffer and streamdetails.buffer.is_valid():
+            return
+
+        async def _do_prepare() -> None:
+            try:
+                self.logger.debug(
+                    "Preparing audio buffer for next track %s on queue %s",
+                    next_item.name,
+                    queue.display_name,
+                )
+                await AudioBuffer.get_buffer(
+                    self.mass,
+                    streamdetails,
+                    wait_ready=True,
+                )
+            except (AudioError, MediaNotFoundError) as err:
+                self.logger.debug("Failed to prepare next audio buffer: %s", err)
+
+        task_id = f"prepare_next_buffer_{queue_id}"
+        self.mass.create_task(_do_prepare, task_id=task_id, abort_existing=False)
+
     async def _resolve_media_items(
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
@@ -2554,7 +2599,7 @@ class PlayerQueuesController(CoreController):
 
         if "output_formats" in changed_keys:
             # refresh DSP details since they may have changed
-            dsp = get_stream_dsp_details(self.mass, queue_id)
+            dsp = self.mass.streams.audio.get_stream_dsp_details(queue_id)
             if queue.current_item and queue.current_item.streamdetails:
                 queue.current_item.streamdetails.dsp = dsp
             if queue.next_item and queue.next_item.streamdetails:
@@ -2837,6 +2882,16 @@ class PlayerQueuesController(CoreController):
             fully_played = seconds_played >= duration - 10
 
         is_playing = is_current_item and queue.state == PlaybackState.PLAYING
+
+        # prepare the audio buffer for the next track ~30 seconds before end
+        if (
+            is_playing
+            and duration > 60
+            and seconds_played >= duration - 30
+            and item_to_report.media_type != MediaType.RADIO
+        ):
+            self._prepare_next_audio_buffer(queue.queue_id)
+
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.debug(
                 "%s %s '%s' (%s) - Fully played: %s - Progress: %s (%s/%ss)",
@@ -2954,7 +3009,7 @@ class PlayerQueuesController(CoreController):
 
         :param queue_id: The queue ID to clean up.
         """
-        self.mass.streams.clear_crossfade_data(queue_id)
+        self.mass.streams.audio.clear_crossfade_data(queue_id)
 
         queue_items = self._queue_items.get(queue_id, [])
         buffers_cleared = 0
