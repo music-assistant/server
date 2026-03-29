@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from asyncio import TaskGroup
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from libopensonic import AsyncConnection as SonicConnection
@@ -725,7 +726,9 @@ class OpenSonicProvider(MusicProvider):
             comment="Music Assistant Bookmark",
         )
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """
         Get progress (resume point) details for the given Audiobook or Podcast episode.
 
@@ -747,9 +750,9 @@ class OpenSonicProvider(MusicProvider):
 
         for mark in bookmarks:
             if mark.entry.id == ep_id:
-                return (False, mark.position)
+                return (False, mark.position, None)
         # If we get here, there is no bookmark
-        return (False, 0)
+        return (False, 0, None)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
