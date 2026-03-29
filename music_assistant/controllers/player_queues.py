@@ -568,6 +568,25 @@ class PlayerQueuesController(CoreController):
                     queue.enqueued_media_items.append(media_item)
                     if len(queue.enqueued_media_items) > 10:
                         queue.enqueued_media_items.pop(0)
+                    if isinstance(media_item, Playlist) and getattr(
+                        media_item, "is_dynamic", False
+                    ):
+                        radio_source.append(media_item)
+                elif (
+                    isinstance(media_item, ItemMapping)
+                    and media_item.media_type == MediaType.PLAYLIST
+                ):
+                    # Resolve mapping to full playlist so dynamic playlists can hook into
+                    # existing radio_source refill behavior.
+                    try:
+                        mapped_playlist = await self.mass.music.playlists.get(
+                            media_item.item_id,
+                            media_item.provider,
+                        )
+                    except MusicAssistantError:
+                        mapped_playlist = None
+                    if mapped_playlist and getattr(mapped_playlist, "is_dynamic", False):
+                        radio_source.append(mapped_playlist)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -782,8 +801,6 @@ class PlayerQueuesController(CoreController):
         queue.radio_source = []
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
-        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
-        self._transitioning_players.discard(queue_id)
         queue.current_index = None
         queue.current_item = None
         queue.elapsed_time = 0
@@ -1409,16 +1426,6 @@ class PlayerQueuesController(CoreController):
         while True:
             next_index = self._get_next_index(queue_id, cur_index + idx)
             if next_index is None:
-                # For RADIO type items, treat them as a continuous source: clear the
-                # cached stream details and re-request the next track from the provider.
-                cur_item = self.get_item(queue_id, cur_index)
-                if cur_item is not None and cur_item.media_type == MediaType.RADIO:
-                    cur_item.streamdetails = None
-                    try:
-                        await self._load_item(cur_item, None)
-                    except (MediaNotFoundError, AudioError) as err:
-                        raise QueueEmpty("No more tracks available from radio station.") from err
-                    return cur_item
                 raise QueueEmpty("No more tracks left in the queue.")
             queue_item = self.get_item(queue_id, next_index)
             if queue_item is None:
@@ -1782,17 +1789,6 @@ class PlayerQueuesController(CoreController):
             media.album = (
                 album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
             )
-            # For track-based radio stations (e.g. Apple Music Artist Radio)
-            # stream_metadata carries the currently playing track's artist/title.
-            if (
-                queue_item.media_type == MediaType.RADIO
-                and queue_item.streamdetails
-                and (sm := queue_item.streamdetails.stream_metadata)
-            ):
-                if sm.title:
-                    media.title = sm.title
-                if sm.artist:
-                    media.artist = sm.artist
             if queue_item.image:
                 # the image format needs to be 500x500 jpeg for maximum compatibility with players
                 # we prefer the imageproxy on the streamserver here because this request is sent
@@ -2089,9 +2085,38 @@ class PlayerQueuesController(CoreController):
             "Filling radio tracks for queue %s",
             queue_id,
         )
-        tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
+        queue = self._queues[queue_id]
+        dynamic_playlist = next(
+            (
+                item
+                for item in reversed(queue.radio_source)
+                if isinstance(item, Playlist) and getattr(item, "is_dynamic", False)
+            ),
+            None,
+        )
+        if dynamic_playlist is not None:
+            try:
+                dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
+                queue_items = [
+                    QueueItem.from_media_item(queue_id, x) for x in dynamic_tracks if x.available
+                ]
+                if queue_items:
+                    await self.load(
+                        queue_id,
+                        queue_items,
+                        insert_at_index=len(self._queue_items[queue_id]) + 1,
+                    )
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Failed to refill dynamic playlist %s for queue %s: %s",
+                    getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                    queue.display_name,
+                    err,
+                )
+            return
+        radio_tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
-        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
+        queue_items = [QueueItem.from_media_item(queue_id, x) for x in radio_tracks if x.available]
         await self.load(
             queue_id,
             queue_items,
@@ -2832,11 +2857,20 @@ class PlayerQueuesController(CoreController):
             dynamic_playlist = next(
                 (
                     item
-                    for item in reversed(queue.enqueued_media_items)
+                    for item in reversed(queue.radio_source)
                     if isinstance(item, Playlist) and getattr(item, "is_dynamic", False)
                 ),
                 None,
             )
+            if dynamic_playlist is None:
+                dynamic_playlist = next(
+                    (
+                        item
+                        for item in reversed(queue.enqueued_media_items)
+                        if isinstance(item, Playlist) and getattr(item, "is_dynamic", False)
+                    ),
+                    None,
+                )
             if dynamic_playlist is not None:
                 try:
                     dynamic_tracks = await self.get_playlist_tracks(
@@ -2873,16 +2907,6 @@ class PlayerQueuesController(CoreController):
                         queue.display_name,
                         err,
                     )
-            # If the last item was a radio station, continue playing instead of clearing.
-            # For track-based radio (Apple Music Artist Radio etc.) this fetches the next
-            # track from the station; for live radio it would reconnect to the stream.
-            if prev_item and prev_item.media_type == MediaType.RADIO:
-                current_index = self.index_by_id(queue.queue_id, prev_item.queue_item_id)
-                if current_index is not None and queue.state == PlaybackState.IDLE and queue.active:
-                    # clear cached stream details so the provider fetches a fresh track
-                    prev_item.streamdetails = None
-                    await self.play_index(queue.queue_id, current_index)
-                    return
             self.logger.info("End of queue reached, clearing items")
             self.clear(queue.queue_id)
 
