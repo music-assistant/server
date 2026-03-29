@@ -787,7 +787,7 @@ class PlayerQueuesController(CoreController):
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
-        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
@@ -835,7 +835,7 @@ class PlayerQueuesController(CoreController):
             await self.mass.players.cmd_stop(queue_id)
         finally:
             IN_QUEUE_COMMAND.reset(token)
-        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -1554,9 +1554,7 @@ class PlayerQueuesController(CoreController):
         self._preload_next_item(queue_id, item_id)
         # clean up stale audio buffers for old queue items to prevent memory leaks
         if current_index is not None:
-            self.mass.create_task(
-                self.mass.streams.cleanup_stale_queue_buffers(queue_id, current_index)
-            )
+            self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
     def queue_buffer_completed(self, queue_id: str) -> None:
         """Call when the flow stream has finished generating all audio data for a queue.
@@ -2905,6 +2903,74 @@ class PlayerQueuesController(CoreController):
                 userid=queue.userid,
             ),
         )
+
+    async def _cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:
+        """Clean up audio buffers for queue items that are no longer needed.
+
+        This clears buffers for items at index <= current_index - 2, keeping only:
+        - The previous track (current_index - 1)
+        - The current track (current_index)
+        - The next track (current_index + 1, handled by preloading)
+
+        :param queue_id: The queue ID to clean up buffers for.
+        :param current_index: The current playing index in the queue.
+        """
+        if current_index < 2:
+            return  # Nothing to clean up yet
+
+        queue_items = self._queue_items.get(queue_id, [])
+        cleanup_threshold = current_index - 2
+        buffers_cleared = 0
+
+        for idx, item in enumerate(queue_items):
+            if idx > cleanup_threshold:
+                break  # No need to check further
+            if item.streamdetails and item.streamdetails.buffer:
+                self.logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Clearing stale audio buffer for queue item %s (index %d) in queue %s",
+                    item.name,
+                    idx,
+                    queue_id,
+                )
+                await item.streamdetails.buffer.clear()
+                item.streamdetails.buffer = None
+                buffers_cleared += 1
+
+        if buffers_cleared > 0:
+            self.logger.debug(
+                "Cleared %d stale audio buffer(s) for queue %s (items before index %d)",
+                buffers_cleared,
+                queue_id,
+                cleanup_threshold + 1,
+            )
+
+    async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
+        """Clean up all audio-related data for a queue when it is stopped or cleared.
+
+        This clears:
+        - All audio buffers attached to queue item streamdetails
+        - Any pending crossfade data for the queue
+
+        :param queue_id: The queue ID to clean up.
+        """
+        self.mass.streams.clear_crossfade_data(queue_id)
+
+        queue_items = self._queue_items.get(queue_id, [])
+        buffers_cleared = 0
+
+        for item in queue_items:
+            if item.streamdetails and item.streamdetails.buffer:
+                await item.streamdetails.buffer.clear()
+                item.streamdetails.buffer = None
+                buffers_cleared += 1
+
+        if buffers_cleared > 0:
+            self.logger.debug(
+                "Cleared %d audio buffer(s) for stopped/cleared queue %s",
+                buffers_cleared,
+                queue_id,
+            )
 
 
 async def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
