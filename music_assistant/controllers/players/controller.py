@@ -2817,9 +2817,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 provider=self.domain,
                 category=CACHE_CATEGORY_PLAYER_POWER,
             )
-        else:
-            # handle external player control
-            player_control = self._controls.get(player.state.power_control)
+        # handle external player control
+        elif player_control := self._controls.get(player.state.power_control):
             control_name = player_control.name if player_control else player.state.power_control
             self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
             if not player_control or not player_control.supports_power:
@@ -2833,6 +2832,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             else:
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
+        # handle protocol player power control
+        elif protocol_player := self.get_player(player.state.power_control):
+            self.logger.debug(
+                "Redirecting power command to protocol player %s",
+                protocol_player.provider.manifest.name,
+            )
+            await self._handle_cmd_power(protocol_player.player_id, powered, True)
+            if powered:
+                await wait_for_power_on(self.logger, protocol_player)
 
         # always trigger a state update to update the UI
         player.update_state()
