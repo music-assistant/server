@@ -1832,18 +1832,21 @@ class ConfigController:
         power_controls = [x for x in all_controls if x.supports_power]
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
+        auto_option = ConfigValueOption(
+            title="Auto-select (based on player capabilities)", value="auto"
+        )
         # work out player supported features
-        base_power_options: list[ConfigValueOption] = []
+        base_power_options: list[ConfigValueOption] = [auto_option]
         if player.supports_feature(PlayerFeature.POWER):
             base_power_options.append(
                 ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
             )
-        base_volume_options: list[ConfigValueOption] = []
+        base_volume_options: list[ConfigValueOption] = [auto_option]
         if player.supports_feature(PlayerFeature.VOLUME_SET):
             base_volume_options.append(
                 ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
             )
-        base_mute_options: list[ConfigValueOption] = []
+        base_mute_options: list[ConfigValueOption] = [auto_option]
         if player.supports_feature(PlayerFeature.VOLUME_MUTE):
             base_mute_options.append(
                 ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
@@ -1870,7 +1873,6 @@ class ConfigController:
                 # currently active for the player
                 # the power control will be added dynamically if the linked
                 # protocol becomes active and supports power control
-
         # append none+fake options
         base_power_options += [
             ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
@@ -1892,9 +1894,7 @@ class ConfigController:
                 key=CONF_POWER_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Power Control",
-                default_value=base_power_options[0].value
-                if base_power_options
-                else PLAYER_CONTROL_NONE,
+                default_value="auto",
                 required=False,
                 options=[
                     *base_power_options,
@@ -1907,9 +1907,7 @@ class ConfigController:
                 key=CONF_VOLUME_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Volume Control",
-                default_value=base_volume_options[0].value
-                if base_volume_options
-                else PLAYER_CONTROL_NONE,
+                default_value="auto",
                 required=True,
                 options=[
                     *base_volume_options,
@@ -1922,9 +1920,7 @@ class ConfigController:
                 key=CONF_MUTE_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Mute Control",
-                default_value=base_mute_options[0].value
-                if base_mute_options
-                else PLAYER_CONTROL_NONE,
+                default_value="auto",
                 required=True,
                 options=[
                     *base_mute_options,
