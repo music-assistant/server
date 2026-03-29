@@ -2101,11 +2101,15 @@ class PlayerQueuesController(CoreController):
                     QueueItem.from_media_item(queue_id, x) for x in dynamic_tracks if x.available
                 ]
                 if queue_items:
+                    cur_index = self._queues[queue_id].current_index or 0
                     await self.load(
                         queue_id,
                         queue_items,
-                        insert_at_index=len(self._queue_items[queue_id]) + 1,
+                        insert_at_index=cur_index + 1,
+                        keep_remaining=False,
+                        keep_played=True,
                     )
+                    return
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Failed to refill dynamic playlist %s for queue %s: %s",
@@ -2113,7 +2117,6 @@ class PlayerQueuesController(CoreController):
                     queue.display_name,
                     err,
                 )
-            return
         radio_tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in radio_tracks if x.available]
@@ -2883,10 +2886,11 @@ class PlayerQueuesController(CoreController):
                             if x.available
                         ]
                         if queue_items:
+                            cur_index = queue.current_index or 0
                             await self.load(
                                 queue.queue_id,
                                 queue_items,
-                                insert_at_index=len(self._queue_items[queue.queue_id]),
+                                insert_at_index=cur_index + 1,
                                 keep_remaining=False,
                                 keep_played=True,
                                 shuffle=False,
