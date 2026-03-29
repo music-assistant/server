@@ -83,6 +83,10 @@ SORT_KEYS = {
     "position_desc": "position DESC",
     "artist_name": "artists.search_name ASC",
     "artist_name_desc": "artists.search_name DESC",
+    "bpm": "CAST(json_extract(metadata, '$.bpm') AS INTEGER) ASC",
+    "bpm_desc": "CAST(json_extract(metadata, '$.bpm') AS INTEGER) DESC",
+    "key": "json_extract(metadata, '$.key') ASC",
+    "key_desc": "json_extract(metadata, '$.key') DESC",
     "random": "RANDOM()",
     "random_play_count": "RANDOM(), play_count ASC",
 }

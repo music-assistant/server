@@ -218,6 +218,12 @@ def parse_track(
     track.metadata.popularity = track_obj_data["popularity"]
     if "copyright" in track_obj_data:
         track.metadata.copyright = track_obj_data["copyright"]
+    if bpm := track_obj_data.get("bpm"):
+        track.metadata.bpm = int(bpm)
+    if (key := track_obj_data.get("key")) and key != "UNKNOWN":
+        track.metadata.key = key
+    if (key_scale := track_obj_data.get("keyScale")) and key_scale != "UNKNOWN":
+        track.metadata.key_scale = key_scale
     if lyrics and "lyrics" in lyrics:
         track.metadata.lyrics = lyrics["lyrics"]
     if lyrics and "subtitles" in lyrics:

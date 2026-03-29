@@ -23,6 +23,9 @@ class AudioAnalysisData(DataClassDictMixin):
     bpm: float | None = None
     beats: npt.NDArray[np.float64] | None = None
     downbeats: npt.NDArray[np.float64] | None = None
+    # Tonal
+    key: str | None = None  # e.g. "C", "F#", "Bb"
+    key_scale: str | None = None  # e.g. "MAJOR", "MINOR"
     # General
     duration: float | None = None
 

@@ -114,6 +114,9 @@ class TracksController(MediaControllerBase[Track]):
             provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
         )
+        # surface audio analysis BPM if no provider-supplied BPM exists
+        if track.metadata.bpm is None:
+            await self._enrich_bpm_from_audio_analysis(track)
         if not recursive and album_uri is None:
             # return early if we do not want recursive full details and no album uri is provided
             return track
@@ -518,6 +521,17 @@ class TracksController(MediaControllerBase[Track]):
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
         """
         return [item]
+
+    async def _enrich_bpm_from_audio_analysis(self, track: Track) -> None:
+        """Enrich track metadata with BPM from audio analysis if available."""
+        for prov_mapping in track.provider_mappings:
+            analysis = await self.mass.music.get_audio_analysis(
+                prov_mapping.item_id,
+                prov_mapping.provider_instance,
+            )
+            if analysis and analysis.bpm and analysis.bpm > 0:
+                track.metadata.bpm = int(round(analysis.bpm))
+                return
 
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""

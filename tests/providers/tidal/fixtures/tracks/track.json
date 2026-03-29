@@ -42,6 +42,9 @@
             ]
         },
         "popularity": 60,
+        "bpm": 120,
+        "key": "C",
+        "keyScale": "MINOR",
         "mixes": {
             "TRACK_MIX": "track_mix_id_456"
         },
