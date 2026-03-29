@@ -81,7 +81,6 @@ class AudioBuffer:
         self._discarded_chunks = 0
         self._lock = asyncio.Lock()
         self._data_available = asyncio.Condition(self._lock)
-        self._space_available = asyncio.Condition(self._lock)
         self._eof_received = False
         self._producer_task: asyncio.Task[None] | None = None
         self._last_access_time: float = time.time()
@@ -267,7 +266,6 @@ class AudioBuffer:
             self.ready.clear()
             self._chunk_callbacks.clear()
             self._data_available.notify_all()
-            self._space_available.notify_all()
 
     @staticmethod
     async def get_buffer(
@@ -302,7 +300,7 @@ class AudioBuffer:
         # reuse existing valid buffer
         existing_buffer: AudioBuffer | None = streamdetails.buffer
         if existing_buffer is not None:
-            if not existing_buffer.is_valid(seek_position_ms):
+            if existing_buffer.has_error or not existing_buffer.is_valid(seek_position_ms):
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
                     "get_buffer: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
@@ -377,26 +375,29 @@ class AudioBuffer:
     # -- Private methods --
 
     async def _put(self, chunk: bytes) -> None:
-        """Put a 1-second chunk of PCM audio into the buffer. Waits if full."""
+        """Put a 1-second chunk of PCM audio into the buffer. Discards oldest chunk if full."""
         chunk_position = -1
-        async with self._space_available:
-            while len(self._chunks) >= self.max_size_seconds and not self._eof_received:
-                if self._cancelled:
-                    return
-                if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
-                    LOGGER.log(
-                        VERBOSE_LOG_LEVEL,
-                        "AudioBuffer._put: Buffer full (%s/%s), waiting for space...",
-                        len(self._chunks),
-                        self.max_size_seconds,
-                    )
-                await self._space_available.wait()
+        async with self._lock:
+            if self._cancelled:
+                return
 
             if self._eof_received:
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL, "AudioBuffer._put: EOF already received, rejecting chunk"
                 )
                 return
+
+            # evict oldest chunk when at capacity to prevent deadlock
+            if len(self._chunks) >= self.max_size_seconds:
+                discarded = self._chunks.popleft()
+                self._discarded_chunks += 1
+                if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
+                    LOGGER.log(
+                        VERBOSE_LOG_LEVEL,
+                        "AudioBuffer._put: Discarded chunk %s (%s bytes) to make space",
+                        self._discarded_chunks - 1,
+                        len(discarded),
+                    )
 
             chunk_position = self._discarded_chunks + len(self._chunks)
             self._chunks.append(chunk)
@@ -431,7 +432,6 @@ class AudioBuffer:
             if not self.ready.is_set():
                 self.ready.set()
             self._data_available.notify_all()
-            self._space_available.notify_all()
 
         # notify chunk callbacks of EOF (empty bytes = no more data)
         total_chunks = self._discarded_chunks + len(self._chunks)
@@ -474,19 +474,6 @@ class AudioBuffer:
                 if self._eof_received:
                     raise AudioBufferEOF
                 await self._data_available.wait()
-                buffer_index = chunk_number - self._discarded_chunks
-
-            if len(self._chunks) >= self.max_size_seconds:
-                discarded = self._chunks.popleft()
-                self._discarded_chunks += 1
-                if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
-                    LOGGER.log(
-                        VERBOSE_LOG_LEVEL,
-                        "AudioBuffer._get: Discarded chunk %s (%s bytes) to free space",
-                        self._discarded_chunks - 1,
-                        len(discarded),
-                    )
-                self._space_available.notify_all()
                 buffer_index = chunk_number - self._discarded_chunks
 
             return self._chunks[buffer_index]

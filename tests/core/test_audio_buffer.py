@@ -323,7 +323,7 @@ async def test_callbacks_cleared_on_clear() -> None:
 
 @pytest.mark.asyncio
 async def test_buffer_discards_old_chunks() -> None:
-    """Reading from a full buffer discards the oldest chunk."""
+    """Adding to a full buffer discards the oldest chunk."""
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     max_size = buf.max_size_seconds
 
@@ -332,11 +332,16 @@ async def test_buffer_discards_old_chunks() -> None:
         await buf._put(_make_chunk(i))
 
     assert buf.size_seconds == max_size
+    assert buf._discarded_chunks == 0
 
-    # reading from a full buffer triggers discard of oldest chunk
-    chunk = await buf._get(chunk_number=max_size - 1)
-    assert chunk == _make_chunk(max_size - 1)
+    # adding one more chunk evicts the oldest
+    await buf._put(_make_chunk(max_size))
     assert buf._discarded_chunks == 1
+    assert buf.size_seconds == max_size
+
+    # the evicted chunk (0) is gone, chunk 1 is now first
+    chunk = await buf._get(chunk_number=1)
+    assert chunk == _make_chunk(1)
 
 
 # -- get_stream passthrough --
