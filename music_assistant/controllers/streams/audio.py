@@ -134,7 +134,17 @@ class StreamsAudio:
         self.mass = mass
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.streams.audio")
         self._crossfade_data: dict[str, CrossfadeData] = {}
-        self._smart_fades_mixer = SmartFadesMixer(mass.streams)
+        self._smart_fades_mixer: SmartFadesMixer | None = None
+
+    def setup(self) -> None:
+        """Set up the audio sub-controller (called after all core controllers are created)."""
+        self._smart_fades_mixer = SmartFadesMixer(self.mass.streams)
+
+    @property
+    def smart_fades_mixer(self) -> SmartFadesMixer:
+        """Return the smart fades mixer."""
+        assert self._smart_fades_mixer is not None, "StreamsAudio.setup() not called"
+        return self._smart_fades_mixer
 
     # --- Public methods ---
 
@@ -1590,7 +1600,7 @@ class StreamsAudio:
                         buffer, next_queue_item_pcm_format, pcm_format
                     )
                 # perform actual (smart fades) crossfade using mixer
-                crossfade_bytes = await self._smart_fades_mixer.mix(
+                crossfade_bytes = await self.smart_fades_mixer.mix(
                     fade_in_part=buffer,
                     fade_out_part=fade_out_data,
                     fade_in_streamdetails=cast("StreamDetails", next_queue_item.streamdetails),
@@ -1794,7 +1804,7 @@ class StreamsAudio:
                     remaining_bytes = buffer[crossfade_buffer_size:]
                     # Use the mixer to handle all crossfade logic
                     try:
-                        crossfade_part = await self._smart_fades_mixer.mix(
+                        crossfade_part = await self.smart_fades_mixer.mix(
                             fade_in_part=fadein_part,
                             fade_out_part=last_fadeout_part,
                             fade_in_streamdetails=queue_track.streamdetails,

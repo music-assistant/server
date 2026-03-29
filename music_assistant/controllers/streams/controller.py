@@ -247,6 +247,8 @@ class StreamsController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        # initialize the audio sub-controller (needs mass.streams to be set)
+        self.audio.setup()
         # copy log level to audio/ffmpeg loggers
         self.audio.logger.setLevel(self.logger.level)
         FFMPEG_LOGGER.setLevel(self.logger.level)
@@ -1112,7 +1114,7 @@ class StreamsController(CoreController):
         log_level = str(config.get_value(CONF_SMART_FADES_LOG_LEVEL))
         if log_level == "GLOBAL":
             self.smart_fades_analyzer.logger.setLevel(self.logger.level)
-            self.audio._smart_fades_mixer.logger.setLevel(self.logger.level)
+            self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
             self.smart_fades_analyzer.logger.setLevel(log_level)
-            self.audio._smart_fades_mixer.logger.setLevel(log_level)
+            self.audio.smart_fades_mixer.logger.setLevel(log_level)
