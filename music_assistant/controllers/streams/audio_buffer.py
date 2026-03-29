@@ -262,7 +262,7 @@ class AudioBuffer:
                 await self._inactivity_task
 
         # signal EOF to callbacks before clearing them so observers don't hang
-        for callback in self._chunk_callbacks:
+        for callback in list(self._chunk_callbacks):
             try:
                 callback(self._discarded_chunks + len(self._chunks), b"")
             except Exception:
@@ -437,12 +437,15 @@ class AudioBuffer:
 
         # notify chunk callbacks outside the lock
         if chunk_position >= 0 and self._chunk_callbacks:
+            failed: list[ChunkCallback] = []
             for callback in self._chunk_callbacks:
                 try:
                     callback(chunk_position, chunk)
                 except Exception:
                     LOGGER.exception("Chunk callback failed, removing it")
-                    self._chunk_callbacks.remove(callback)
+                    failed.append(callback)
+            for cb in failed:
+                self._chunk_callbacks.remove(cb)
 
     async def _set_eof(self) -> None:
         """Signal that no more data will be added to the buffer."""
@@ -460,8 +463,11 @@ class AudioBuffer:
 
         # notify chunk callbacks of EOF (empty bytes = no more data)
         total_chunks = self._discarded_chunks + len(self._chunks)
-        for callback in self._chunk_callbacks:
-            callback(total_chunks, b"")
+        for callback in list(self._chunk_callbacks):
+            try:
+                callback(total_chunks, b"")
+            except Exception:
+                LOGGER.exception("Chunk callback failed at EOF")
 
     async def _get(self, chunk_number: int = 0) -> bytes:
         """
