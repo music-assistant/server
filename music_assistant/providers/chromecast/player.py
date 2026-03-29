@@ -210,10 +210,10 @@ class ChromecastPlayer(Player):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
-        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         queuedata = {
             "type": "LOAD",
-            "media": self._create_cc_media_item(media),
+            "media": self._create_cc_media_item(media, stream_url),
         }
         # make sure that our media controller app is launched
         await self._launch_app()
@@ -225,7 +225,7 @@ class ChromecastPlayer(Player):
         """Handle enqueuing of the next item on the player."""
         next_item_id = None
         status = self.cc.media_controller.status
-        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         # lookup position of current track in cast queue
         cast_current_item_id = getattr(status, "current_item_id", 0)
         cast_queue_items = getattr(status, "items", [])
@@ -238,7 +238,7 @@ class ChromecastPlayer(Player):
                 continue
             next_item_id = item["itemId"]
             # check if the next queue item isn't already queued
-            if item.get("media", {}).get("customData", {}).get("uri") == media.uri:
+            if item.get("media", {}).get("customData", {}).get("uri") == stream_url:
                 return
         queuedata = {
             "type": "QUEUE_INSERT",
@@ -248,7 +248,7 @@ class ChromecastPlayer(Player):
                     "autoplay": True,
                     "startTime": 0,
                     "preloadTime": 0,
-                    "media": self._create_cc_media_item(media),
+                    "media": self._create_cc_media_item(media, stream_url),
                 }
             ],
         }
@@ -617,12 +617,12 @@ class ChromecastPlayer(Player):
                     if not group_media_controller:
                         continue
 
-    def _create_cc_media_item(self, media: PlayerMedia) -> dict[str, Any]:
+    def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
-        if media.media_type == MediaType.TRACK:
-            stream_type = STREAM_TYPE_BUFFERED
-        else:
+        if "/flow/" in stream_url or media.media_type != MediaType.TRACK or not media.duration:
             stream_type = STREAM_TYPE_LIVE
+        else:
+            stream_type = STREAM_TYPE_BUFFERED
         metadata = {
             "metadataType": 3,
             "albumName": media.album or "",
@@ -631,13 +631,14 @@ class ChromecastPlayer(Player):
             "title": media.title or "",
             "images": [{"url": media.image_url}] if media.image_url else None,
         }
+        file_ext = stream_url.split("?")[0].split(".")[-1].lower()
         return {
-            "contentId": media.uri,
+            "contentId": stream_url,
             "customData": {
                 "uri": media.uri,
-                "queue_item_id": media.uri,
+                "queue_item_id": media.queue_item_id or stream_url,
             },
-            "contentType": "audio/flac",
+            "contentType": f"audio/{file_ext}",
             "streamType": stream_type,
             "metadata": metadata,
             "duration": media.duration,
