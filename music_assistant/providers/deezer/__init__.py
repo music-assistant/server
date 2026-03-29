@@ -6,7 +6,9 @@ import uuid
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from math import ceil
+from typing import Protocol
 
+import httpx
 from aiohttp import ClientTimeout
 from Crypto.Cipher import Blowfish
 from deezer_python_gql import DeezerGQLClient
@@ -21,6 +23,7 @@ from deezer_python_gql.generated.get_made_for_me import (
     GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist,
 )
 from deezer_python_gql.generated.get_recently_played import (
+    GetRecentlyPlayedMeRecentlyPlayedEdges,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeAlbum,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow,
@@ -108,6 +111,18 @@ USER_TOP_TRACKS_PLAYLIST_ID = "user_top_tracks"
 FAVORITES_PAGE_SIZE = 50
 
 
+class _FlowConfigIcon(Protocol):
+    urls: list[str]
+
+
+class _FlowConfigVisuals(Protocol):
+    hardware_square_icon: _FlowConfigIcon | None
+
+
+class _HasVisuals(Protocol):
+    visuals: _FlowConfigVisuals
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -141,12 +156,14 @@ class DeezerProvider(MusicProvider):
     gql_client: DeezerGQLClient
     gw_client: GWClient
     _user_id: str
+    _http_client: httpx.AsyncClient
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
         arl_token = str(self.config.get_value(CONF_ARL_TOKEN))
 
-        self.gql_client = DeezerGQLClient(arl=arl_token)
+        self._http_client = httpx.AsyncClient()
+        self.gql_client = DeezerGQLClient(arl=arl_token, http_client=self._http_client)
         me = await self.gql_client.get_me()
         if me is None:
             msg = "Failed to authenticate with Deezer. Please check your ARL token."
@@ -155,6 +172,10 @@ class DeezerProvider(MusicProvider):
 
         self.gw_client = GWClient(self.mass.http_session, arl_token)
         await self.gw_client.setup()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        await self._http_client.aclose()
 
     # -- Library retrieval (cursor-paginated) --
 
@@ -746,8 +767,14 @@ class DeezerProvider(MusicProvider):
         result = await self.gql_client.get_recently_played(first=50)
         if not result:
             return []
+        return self._parse_recently_played_edges(result.recently_played.edges)
+
+    def _parse_recently_played_edges(
+        self, edges: list[GetRecentlyPlayedMeRecentlyPlayedEdges]
+    ) -> list[MediaItemType]:
+        """Parse recently played edges into MediaItemType list."""
         items: list[MediaItemType] = []
-        for edge in result.recently_played.edges:
+        for edge in edges:
             node = edge.node
             if node is None:
                 continue
@@ -773,16 +800,12 @@ class DeezerProvider(MusicProvider):
         return items
 
     @staticmethod
-    def _get_flow_config_image(node: object) -> str | None:
+    def _get_flow_config_image(node: _HasVisuals) -> str | None:
         """Extract the square icon URL from a FlowConfig node's visuals."""
-        visuals = getattr(node, "visuals", None)
-        if not visuals:
-            return None
-        icon = getattr(visuals, "hardware_square_icon", None)
-        if not icon:
-            return None
-        urls = getattr(icon, "urls", None)
-        return urls[0] if urls else None
+        icon = node.visuals.hardware_square_icon
+        if icon and icon.urls:
+            return icon.urls[0]
+        return None
 
     # -- Recommendations --
 
@@ -924,10 +947,7 @@ class DeezerProvider(MusicProvider):
             for edge in edges:
                 if edge.node is None:
                     continue
-                cover = None
-                vis = edge.node.visuals.hardware_square_icon
-                if vis and vis.urls:
-                    cover = vis.urls[0]
+                cover = self._get_flow_config_image(edge.node)
                 flow_playlists.append(
                     self._create_virtual_playlist(
                         f"{MOOD_FLOW_PREFIX}{edge.node.id}",
@@ -950,30 +970,7 @@ class DeezerProvider(MusicProvider):
         recently_played = await self.gql_client.get_recently_played(first=20)
         if not recently_played:
             return
-        items: list[MediaItemType] = []
-        for edge in recently_played.recently_played.edges:
-            node = edge.node
-            if node is None:
-                continue
-            if isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeAlbum):
-                items.append(self._parse_album(node))
-            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist):
-                items.append(self._parse_playlist(node))
-            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeArtist):
-                items.append(self._parse_artist(node))
-            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow):
-                cover = node.cover.urls[0] if node.cover and node.cover.urls else None
-                items.append(
-                    self._create_virtual_playlist(FLOW_PLAYLIST_ID, node.title, image_url=cover)
-                )
-            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig):
-                cover = self._get_flow_config_image(node)
-                playlist_id = f"{FLOW_CONFIG_PREFIX}{node.id}"
-                items.append(
-                    self._create_virtual_playlist(
-                        playlist_id, f"Flow: {node.title}", image_url=cover
-                    )
-                )
+        items = self._parse_recently_played_edges(recently_played.recently_played.edges)
         if items:
             result.append(
                 RecommendationFolder(
@@ -989,11 +986,8 @@ class DeezerProvider(MusicProvider):
     @use_cache(3600 * 24)  # Cache for 24 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        endpoint = "song.getSearchTrackMix"
-        tracks = (await self.gw_client._gw_api_call(endpoint, args={"SNG_ID": prov_track_id}))[
-            "results"
-        ]["data"][:limit]
-        return [await self.get_track(track["SNG_ID"]) for track in tracks]
+        track_ids = await self.gw_client.get_similar_track_ids(prov_track_id, limit=limit)
+        return [await self.get_track(tid) for tid in track_ids]
 
     # -- Streaming (unchanged, via GW API) --
 
@@ -1144,16 +1138,7 @@ class DeezerProvider(MusicProvider):
     @use_cache(3600)
     async def _get_hot_tracks(self) -> list[Track]:
         """Get recommended hot tracks."""
-        recs = await self.gql_client.get_recommendations(
-            playlists_first=0,
-            artist_playlists_first=0,
-            new_releases_first=0,
-            artists_first=0,
-            hot_tracks_limit=50,
-        )
-        if recs is None or recs.recommendations.hot_tracks is None:
-            return []
-        return [self._parse_track(ht) for ht in recs.recommendations.hot_tracks]
+        return await self._get_recommended_tracks()
 
     @use_cache(3600)
     async def _get_user_chart_tracks(self) -> list[Track]:
@@ -1196,24 +1181,14 @@ class DeezerProvider(MusicProvider):
             return self._create_virtual_playlist(HOT_TRACKS_PLAYLIST_ID, "Hot Tracks")
         if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
             return self._create_virtual_playlist(USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks")
-        if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
-            config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
-            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
-            name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-            cover = self._get_flow_config_image(result) if result else None
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
-        if prov_playlist_id.startswith(GENRE_FLOW_PREFIX):
-            config_id = prov_playlist_id.removeprefix(GENRE_FLOW_PREFIX)
-            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
-            name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-            cover = self._get_flow_config_image(result) if result else None
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
-        if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
-            config_id = prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
-            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
-            name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-            cover = self._get_flow_config_image(result) if result else None
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
+        # Mood, genre, and generic flow config prefixes all resolve the same way
+        for prefix in (MOOD_FLOW_PREFIX, GENRE_FLOW_PREFIX, FLOW_CONFIG_PREFIX):
+            if prov_playlist_id.startswith(prefix):
+                config_id = prov_playlist_id.removeprefix(prefix)
+                result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
+                name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
+                cover = self._get_flow_config_image(result) if result else None
+                return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
             result = await self.gql_client.get_smart_tracklist(

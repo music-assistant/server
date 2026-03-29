@@ -5,7 +5,6 @@ cookie based on the api_token.
 """
 
 import datetime
-import json
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
 from typing import Any, cast
@@ -128,47 +127,21 @@ class GWClient:
             raise DeezerGWError(msg, result_json["error"])
         return cast("dict[str, Any]", result_json)
 
-    async def get_user_radio(self, config_id: str) -> list[dict[str, Any]]:
-        """Get personalized Flow tracks for a specific mood or genre.
+    async def get_similar_track_ids(self, track_id: str, limit: int = 25) -> list[str]:
+        """Get a list of similar track IDs for a given track.
 
-        :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
+        :param track_id: The Deezer track ID (SNG_ID).
+        :param limit: Maximum number of similar tracks to return.
         """
-        result = await self._gw_api_call(
-            "radio.getUserRadio",
-            args={"config_id": config_id, "user_id": self._user_id},
-        )
-        if "data" not in result["results"]:
-            return []
-        return cast("list[dict[str, Any]]", result["results"]["data"])
-
-    async def get_home_flows(self) -> list[dict[str, Any]]:
-        """Discover available Flow variants from the Deezer home page."""
-        gateway_input = json.dumps(
-            {
-                "PAGE": "home",
-                "VERSION": "2.5",
-                "SUPPORT": {"filterable-grid": ["flow"]},
-            }
-        )
-        result = await self._gw_api_call(
-            "page.get",
-            params={"gateway_input": gateway_input},
-        )
-        sections = result["results"].get("sections", [])
-        for section in sections:
-            if section.get("layout") == "filterable-grid":
-                return cast("list[dict[str, Any]]", section["items"])
-        return []
-
-    async def get_song_data(self, track_id: str) -> dict[str, Any]:
-        """Get data such as the track token for a given track."""
-        return await self._gw_api_call("song.getData", args={"SNG_ID": track_id})
+        result = await self._gw_api_call("song.getSearchTrackMix", args={"SNG_ID": track_id})
+        tracks = result["results"].get("data", [])[:limit]
+        return [str(t["SNG_ID"]) for t in tracks]
 
     async def get_deezer_track_urls(self, track_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         """Get the URL for a given track id."""
         dz_license = await self._get_license()
 
-        song_results = await self.get_song_data(track_id)
+        song_results = await self._gw_api_call("song.getData", args={"SNG_ID": track_id})
 
         song_data = song_results["results"]
         # If the song has been replaced by a newer version, the old track will
