@@ -173,16 +173,16 @@ class StreamsAudio:
                 f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
             )
 
-        existing_buffer = None
         if queue_item.streamdetails and (
-            (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
-            > time.time()
-            or (
-                (existing_buffer := queue_item.streamdetails.buffer)
-                and existing_buffer.is_valid(seek_position * 1000)
+            # reuse if the buffer can serve this seek position (fast seek path)
+            (
+                queue_item.streamdetails.buffer
+                and queue_item.streamdetails.buffer.is_valid(seek_position * 1000)
             )
+            # or reuse if streamdetails hasn't expired yet (new buffer will be created)
+            or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
+            > time.time()
         ):
-            # already got a fresh/unused (or unexpired) streamdetails
             streamdetails = queue_item.streamdetails
         else:
             # need to (re)create streamdetails
