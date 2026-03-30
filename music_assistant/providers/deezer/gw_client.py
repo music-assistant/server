@@ -127,6 +127,35 @@ class GWClient:
             raise DeezerGWError(msg, result_json["error"])
         return cast("dict[str, Any]", result_json)
 
+    # Content support descriptor for page.get — tells the API which module types to return
+    _PAGE_SUPPORT: dict[str, Any] = {
+        "grid": ["channel", "album", "playlist", "artist"],
+        "horizontal-grid": ["channel", "album", "playlist", "artist"],
+        "slideshow": ["album", "playlist"],
+        "grid-preview-one": ["album", "playlist"],
+        "grid-preview-two": ["album", "playlist"],
+        "filterable-grid": ["album", "playlist"],
+        "large-card": ["album", "playlist"],
+    }
+
+    async def get_page(self, page: str, language: str = "en") -> dict[str, Any]:
+        """Fetch a content page from the Deezer page.get GW API.
+
+        :param page: The page path (e.g., 'channels/audiobooks').
+        :param language: Language code for localized content.
+        """
+        result = await self._gw_api_call(
+            "page.get",
+            args={
+                "PAGE": page,
+                "VERSION": "2.5",
+                "SUPPORT": self._PAGE_SUPPORT,
+                "LANG": language,
+                "OPTIONS": [],
+            },
+        )
+        return cast("dict[str, Any]", result["results"])
+
     async def get_similar_track_ids(self, track_id: str, limit: int = 25) -> list[str]:
         """Get a list of similar track IDs for a given track.
 

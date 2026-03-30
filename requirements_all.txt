@@ -27,7 +27,7 @@ certifi==2025.11.12
 chardet>=5.2.0
 colorlog==6.10.1
 cryptography==46.0.6
-deezer-python-gql>=0.5.1
+deezer-python-gql>=0.7.0
 defusedxml==0.7.1
 deno==2.7.4
 duration-parser==1.0.1
