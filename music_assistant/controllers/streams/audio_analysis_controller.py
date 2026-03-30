@@ -21,15 +21,7 @@ if TYPE_CHECKING:
 
 
 class AudioAnalysisController:
-    """Controller that distributes PCM chunks to all registered AudioAnalysisProviders.
-
-    This is a child controller owned by StreamsController. It coordinates analysis
-    across multiple providers, each of which can process audio independently.
-
-    Lifecycle is managed via closures registered on the AudioBuffer's chunk and
-    cancel callbacks. The controller does not expose process_pcm_chunk, finalize,
-    or cancel methods — those concerns live inside the closures built by start_analysis.
-    """
+    """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
     def __init__(self, streams: StreamsController) -> None:
         """Initialize the AudioAnalysisController.
@@ -59,10 +51,8 @@ class AudioAnalysisController:
     ) -> None:
         """Start analysis session for a track across all providers.
 
-        Builds closures that capture session state and registers them on the
-        audio buffer's chunk and cancel callbacks. The closures manage the full
-        lifecycle: feeding chunks to a background worker, finalizing providers
-        on EOF, and cancelling on buffer clear.
+        Starts an analysis session for the given track on all available
+        Audio Analysis providers.
 
         :param audio_buffer: The AudioBuffer to observe for PCM chunks.
         :param stream_details: The stream details for the item being analyzed.
@@ -153,7 +143,6 @@ class AudioAnalysisController:
                     provider.analysis_version,
                 )
                 continue
-
             try:
                 await provider.start_analysis(
                     session_id=session_key,
@@ -162,16 +151,14 @@ class AudioAnalysisController:
                 )
             except Exception as err:
                 self.logger.warning(
-                    "Failed to start analysis on provider %s: %s",
-                    provider.name,
-                    err,
+                    "Failed to start analysis on provider %s: %s", provider.name, err
                 )
             else:
                 provider_ids.add(provider.instance_id)
         return provider_ids
 
     def _finalize_providers(self, session_key: str) -> None:
-        """Fire-and-forget finalize to each provider in the session."""
+        """Finalize each provider in the session."""
         provider_ids = self._active_sessions.pop(session_key, None)
         if not provider_ids:
             return
@@ -181,7 +168,7 @@ class AudioAnalysisController:
                 self.mass.create_task(provider.finalize(session_key))
 
     def _cancel_providers(self, session_key: str) -> None:
-        """Fire-and-forget cancel to each provider in the session."""
+        """Cancel each provider in the session."""
         provider_ids = self._active_sessions.pop(session_key, None)
         if not provider_ids:
             return
