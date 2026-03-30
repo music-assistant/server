@@ -97,6 +97,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.FAVORITE_PLAYLISTS_EDIT,
@@ -612,10 +613,11 @@ class AppleMusicProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        self.logger.warning(
+        message = (
             "Removing tracks from playlists is not supported by the Apple Music "
             "API. Make sure to delete them using the Apple Music app."
         )
+        raise MusicAssistantError(message)
 
     @use_cache(3600 * 24)  # cache for 24 hours
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:

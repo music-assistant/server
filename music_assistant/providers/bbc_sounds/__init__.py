@@ -409,6 +409,7 @@ class BBCSoundsProvider(MusicProvider):
             return StreamMetadata(title=title, artist=None, image_url=station.image_url)
         return None
 
+    @use_cache(3600 * 6)  # Cache for 6 hours
     async def _station_list(self, include_local: bool = False) -> list[Radio]:
         """Get list of stations as Radios."""
         radio_list: list[Radio] = []
@@ -453,6 +454,7 @@ class BBCSoundsProvider(MusicProvider):
                 )
         return radio_list
 
+    @use_cache(3600)  # Cache for 1 hour
     async def _get_category(
         self, category_name: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -466,6 +468,7 @@ class BBCSoundsProvider(MusicProvider):
             ]
         return []
 
+    @use_cache(3600)  # Cache for 1 hour
     async def _get_collection(
         self, pid: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:

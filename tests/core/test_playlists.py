@@ -83,7 +83,7 @@ def test_m3u_extma_parsing() -> None:
     """Test that #EXTMA metadata is parsed into the metadata dict."""
     m3u_data = (
         "#EXTM3U\n"
-        "#EXTMA:media_type=track,isrc=USRC17607839,album=OK Computer\n"
+        "#EXTMA:media_type=track||isrc=USRC17607839||album=OK Computer\n"
         "#EXTINF:240,Radiohead - Everything In Its Right Place\n"
         "spotify://track/abc123\n"
     )
@@ -111,8 +111,8 @@ def test_m3u_extprov_parsing() -> None:
     """Test that #EXTPROV lines are parsed into provider mappings."""
     m3u_data = (
         "#EXTM3U\n"
-        "#EXTPROV:spotify|abc123|spotify_1|flac|96000|24|320\n"
-        "#EXTPROV:tidal|xyz789|tidal_1|flac|192000|24|0\n"
+        "#EXTPROV:spotify||abc123||spotify_1||flac||96000||24||320\n"
+        "#EXTPROV:tidal||xyz789||tidal_1||flac||192000||24||0\n"
         "#EXTINF:240,Radiohead - Everything In Its Right Place\n"
         "spotify://track/abc123\n"
     )
@@ -135,8 +135,8 @@ def test_m3u_extprov_parsing() -> None:
 
 
 def test_m3u_extprov_minimal() -> None:
-    """Test EXTPROV with only domain and item_id."""
-    m3u_data = "#EXTM3U\n#EXTPROV:spotify|abc123\n#EXTINF:120,Test\nspotify://track/abc123\n"
+    """Test EXTPROV with only the 2 required fields (domain and item_id)."""
+    m3u_data = "#EXTM3U\n#EXTPROV:spotify||abc123\n#EXTINF:120,Test\nspotify://track/abc123\n"
     result = parse_m3u(m3u_data)
     assert len(result[0].providers) == 1
     assert result[0].providers[0].domain == "spotify"
@@ -161,7 +161,7 @@ def test_m3u_extimg_parsing() -> None:
     """Test that #EXTIMG lines are parsed into image info."""
     m3u_data = (
         "#EXTM3U\n"
-        "#EXTIMG:thumb|https://img.example.com/abc.jpg|spotify|true\n"
+        "#EXTIMG:thumb||https://img.example.com/abc.jpg||spotify||true\n"
         "#EXTINF:120,Test\n"
         "spotify://track/abc123\n"
     )
@@ -176,7 +176,7 @@ def test_m3u_extimg_parsing() -> None:
 
 def test_m3u_extimg_not_remotely_accessible() -> None:
     """Test EXTIMG with remotely_accessible=false."""
-    m3u_data = "#EXTM3U\n#EXTIMG:thumb|/local/path.jpg|builtin|false\n#EXTINF:120,Test\ntest\n"
+    m3u_data = "#EXTM3U\n#EXTIMG:thumb||/local/path.jpg||builtin||false\n#EXTINF:120,Test\ntest\n"
     result = parse_m3u(m3u_data)
     assert result[0].images[0].remotely_accessible is False
 
@@ -185,8 +185,8 @@ def test_m3u_extimg_multiple() -> None:
     """Test multiple EXTIMG lines per entry."""
     m3u_data = (
         "#EXTM3U\n"
-        "#EXTIMG:thumb|https://thumb.jpg|spotify|true\n"
-        "#EXTIMG:fanart|https://fanart.jpg|spotify|true\n"
+        "#EXTIMG:thumb||https://thumb.jpg||spotify||true\n"
+        "#EXTIMG:fanart||https://fanart.jpg||spotify||true\n"
         "#EXTINF:120,Test\n"
         "spotify://track/abc123\n"
     )
@@ -239,7 +239,7 @@ def test_generate_m3u_with_metadata() -> None:
         ),
     ]
     result = generate_m3u("Test", items)
-    assert "#EXTMA:media_type=track,isrc=USRC123\n" in result
+    assert "#EXTMA:media_type=track||isrc=USRC123\n" in result
 
 
 def test_generate_m3u_with_providers() -> None:
@@ -263,7 +263,7 @@ def test_generate_m3u_with_providers() -> None:
         ),
     ]
     result = generate_m3u("Test", items)
-    assert "#EXTPROV:spotify|abc123|spotify_1|flac|96000|24|320\n" in result
+    assert "#EXTPROV:spotify||abc123||spotify_1||flac||96000||24||320\n" in result
 
 
 def test_generate_m3u_with_images() -> None:
@@ -284,7 +284,7 @@ def test_generate_m3u_with_images() -> None:
         ),
     ]
     result = generate_m3u("Test", items)
-    assert "#EXTIMG:thumb|https://img.jpg|spotify|true\n" in result
+    assert "#EXTIMG:thumb||https://img.jpg||spotify||true\n" in result
 
 
 def test_generate_m3u_empty() -> None:

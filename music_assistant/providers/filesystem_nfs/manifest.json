@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "filesystem_nfs",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Filesystem (NFS share)",
   "description": "Play music and audiobooks stored on NFS connected network drives.",
   "codeowners": ["@ozgav"],

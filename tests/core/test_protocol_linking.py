@@ -1,6 +1,8 @@
 """Tests for protocol player linking and universal player creation."""
 
 import logging
+from collections.abc import Awaitable
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -4613,6 +4615,226 @@ class TestUniversalPlayerMerging:
         # up1 should have no more links
         assert len(up1.linked_output_protocols) == 0
 
+    async def test_merge_preserves_moved_protocols_during_parent_cleanup(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Moved protocol ownership must survive the removed parent's permanent cleanup."""
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players/up_keep": {"enabled": True},
+            "players/up_remove": {"enabled": True},
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+            "players/dlna_cached": {
+                "enabled": True,
+                "provider": "dlna--test",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "up_remove"},
+            },
+        }
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        def config_remove(key: str) -> None:
+            config_store.pop(key, None)
+
+        scheduled_tasks: list[Awaitable[object]] = []
+
+        def capture_task(task: Awaitable[object]) -> None:
+            scheduled_tasks.append(task)
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+        mock_mass.config.remove = MagicMock(side_effect=config_remove)
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock(side_effect=capture_task)
+
+        keep = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_keep",
+            name="Keep",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["ap_keep"],
+        )
+        keep._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        keep._cache.clear()
+        keep.update_state(signal_event=False)
+        keep.set_initialized()
+
+        remove = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_remove",
+            name="Remove",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["dlna_live", "dlna_cached"],
+        )
+        remove._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        remove._cache.clear()
+        remove.update_state(signal_event=False)
+        remove.set_initialized()
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        ap_keep = MockPlayer(
+            airplay_provider,
+            "ap_keep",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_keep.set_initialized()
+
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna_live = MockPlayer(
+            dlna_provider,
+            "dlna_live",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        dlna_live.set_initialized()
+
+        controller._players = {
+            "up_keep": keep,
+            "up_remove": remove,
+            "ap_keep": ap_keep,
+            "dlna_live": dlna_live,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        controller._add_protocol_link(keep, ap_keep, "airplay")
+        controller._add_protocol_link(remove, dlna_live, "dlna")
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        assert dlna_live.protocol_parent_id == "up_keep"
+        assert config_store["players/dlna_cached/values/protocol_parent_id"] == "up_keep"
+        assert len(scheduled_tasks) == 1
+
+        await scheduled_tasks[0]
+
+        assert "up_remove" not in controller._players
+        assert dlna_live.protocol_parent_id == "up_keep"
+        assert "dlna_cached" in keep._protocol_player_ids
+        assert config_store["players/dlna_cached/values/protocol_parent_id"] == "up_keep"
+
+
+class TestUniversalPlayerReplacement:
+    """Tests for replacing a universal player with a native player."""
+
+    async def test_replace_preserves_moved_protocols_during_parent_cleanup(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Moved protocol ownership must survive the removed universal cleanup."""
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players/sonos_1": {"enabled": True},
+            "players/up_old": {"enabled": True},
+            "players/ap_live": {"enabled": True},
+            "players/dlna_cached": {
+                "enabled": True,
+                "provider": "dlna--test",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "up_old"},
+            },
+        }
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        def config_remove(key: str) -> None:
+            config_store.pop(key, None)
+
+        scheduled_tasks: list[Awaitable[object]] = []
+
+        def capture_task(task: Awaitable[object]) -> None:
+            scheduled_tasks.append(task)
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+        mock_mass.config.remove = MagicMock(side_effect=config_remove)
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock(side_effect=capture_task)
+
+        universal = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_old",
+            name="Old Universal",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["ap_live", "dlna_cached"],
+        )
+        universal._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        universal._cache.clear()
+        universal.update_state(signal_event=False)
+        universal.set_initialized()
+
+        native_provider = MockProvider("sonos", mass=mock_mass)
+        native = MockPlayer(
+            native_provider,
+            "sonos_1",
+            "Sonos",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native.set_initialized()
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        ap_live = MockPlayer(
+            airplay_provider,
+            "ap_live",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_live.set_initialized()
+
+        controller._players = {
+            "up_old": universal,
+            "sonos_1": native,
+            "ap_live": ap_live,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        controller._add_protocol_link(universal, ap_live, "airplay")
+
+        controller._check_replace_universal_player(native)
+
+        assert ap_live.protocol_parent_id == "sonos_1"
+        linked_ids = cast("list[str]", config_store["players/sonos_1/values/linked_protocol_ids"])
+        assert set(linked_ids) == {
+            "ap_live",
+            "dlna_cached",
+        }
+        assert config_store["players/dlna_cached/values/protocol_parent_id"] == "sonos_1"
+        assert len(scheduled_tasks) == 1
+
+        await scheduled_tasks[0]
+
+        assert "up_old" not in controller._players
+        assert ap_live.protocol_parent_id == "sonos_1"
+        assert config_store["players/dlna_cached/values/protocol_parent_id"] == "sonos_1"
+        linked_ids = cast("list[str]", config_store["players/sonos_1/values/linked_protocol_ids"])
+        assert set(linked_ids) == {
+            "ap_live",
+            "dlna_cached",
+        }
+
 
 class TestEndToEndDuplicateProtocol:
     """End-to-end integration tests for duplicate protocol → separate universal player flow.
@@ -5922,6 +6144,135 @@ class TestCleanupProtocolLinks:
         )
         # Verify in-memory parent cleared
         assert protocol_player.protocol_parent_id is None
+
+    def test_cleanup_native_parent_schedules_protocol_re_evaluation(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Permanent native parent removal should reset links and reschedule protocols."""
+        controller = PlayerController(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players/sonos_1": {"enabled": True},
+            "players/sonos_1/values/linked_protocol_ids": ["airplay_live", "dlna_cached"],
+            "players/airplay_live": {"enabled": True},
+            "players/dlna_cached": {"enabled": True},
+        }
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+
+        native_provider = MockProvider("sonos", mass=mock_mass)
+        parent = MockPlayer(
+            native_provider,
+            "sonos_1",
+            "Sonos",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        protocol_provider = MockProvider("airplay", mass=mock_mass)
+        protocol_player = MockPlayer(
+            protocol_provider,
+            "airplay_live",
+            "AirPlay Test",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_protocol_parent_id("sonos_1")
+
+        parent.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_live",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+
+        controller._players = {
+            "sonos_1": parent,
+            "airplay_live": protocol_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller._cleanup_protocol_links(parent)
+
+        assert protocol_player.protocol_parent_id is None
+        assert config_store["players/airplay_live/values/protocol_parent_id"] is None
+        assert config_store["players/dlna_cached/values/protocol_parent_id"] is None
+        mock_schedule.assert_called_once_with(protocol_player)
+
+    def test_cleanup_universal_parent_clears_cached_only_protocol_ids(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Universal cleanup should also clear cached protocol ids that are not active."""
+        controller = PlayerController(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players/up_test": {"enabled": True},
+            "players/airplay_live": {"enabled": True},
+            "players/dlna_cached": {"enabled": True},
+        }
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+
+        universal_provider = create_mock_universal_provider(mock_mass)
+        parent = UniversalPlayer(
+            provider=universal_provider,
+            player_id="up_test",
+            name="Test Universal",
+            device_info=DeviceInfo(),
+            protocol_player_ids=["airplay_live", "dlna_cached"],
+        )
+        parent.update_state(signal_event=False)
+
+        protocol_provider = MockProvider("airplay", mass=mock_mass)
+        protocol_player = MockPlayer(
+            protocol_provider,
+            "airplay_live",
+            "AirPlay Test",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_protocol_parent_id("up_test")
+
+        parent.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_live",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                )
+            ]
+        )
+
+        controller._players = {
+            "up_test": parent,
+            "airplay_live": protocol_player,
+        }
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller._cleanup_protocol_links(parent)
+
+        assert protocol_player.protocol_parent_id is None
+        assert config_store["players/airplay_live/values/protocol_parent_id"] is None
+        assert config_store["players/dlna_cached/values/protocol_parent_id"] is None
+        mock_schedule.assert_called_once_with(protocol_player)
 
 
 class TestStaleConfigMigration:

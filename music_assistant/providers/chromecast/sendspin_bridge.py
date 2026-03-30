@@ -336,7 +336,7 @@ class SendspinChromecastBridge:
         """
         # The Sendspin server runs on its own port (8927), NOT through
         # the MA webserver or streams server. Use publish_ip directly.
-        publish_ip = self.mass.streams.publish_ip
+        publish_ip = cast("str", self.mass.streams.publish_ip)
         server_url = f"ws://{format_ip_for_url(publish_ip)}:8927/sendspin"
         sync_delay = self._get_sync_delay()
         # The Cast receiver JS reads playerId (not clientId) from the config.
