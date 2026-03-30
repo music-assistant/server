@@ -55,6 +55,61 @@ class QueueCommandsMixin:
 
         def _collect_synced_keys(self, player_id: str) -> list[str]: ...
 
+    async def _fetch_full_play_queue(self, queue_id: str) -> PlayQueue | None:
+        """Fetch a complete PlayQueue, paginating past the server's per-request window cap.
+
+        The Plex server caps each response to ~200 items regardless of the requested
+        window size. We use playQueueTotalCount to detect truncation and keep fetching
+        forward pages until we have every item.
+
+        :param queue_id: The Plex PlayQueue ID to fetch.
+        :return: A PlayQueue whose items list contains all tracks, or None on failure.
+        """
+        page_size = 200
+        plex_server = self.provider._plex_server
+
+        def fetch_initial() -> PlayQueue:
+            # own=True transfers ownership of this queue to MA so we can control it fully.
+            return PlayQueue.get(plex_server, playQueueID=queue_id, own=True, window=page_size)
+
+        playqueue = await asyncio.to_thread(fetch_initial)
+
+        if not playqueue or not playqueue.items:
+            return playqueue
+
+        all_items = list(playqueue.items)
+        seen_ids = {item.playQueueItemID for item in all_items}
+
+        while len(all_items) < playqueue.playQueueTotalCount:
+            last_id = all_items[-1].playQueueItemID
+
+            def fetch_next(_last_id: int = last_id) -> PlayQueue:
+                # own=False — we already claimed ownership on the first fetch.
+                # includeBefore=False — only items strictly after center are returned.
+                return PlayQueue.get(
+                    plex_server,
+                    playQueueID=queue_id,
+                    own=False,
+                    center=_last_id,
+                    window=page_size,
+                    includeBefore=False,
+                )
+
+            next_page = await asyncio.to_thread(fetch_next)
+            if not next_page or not next_page.items:
+                break
+
+            new_items = [i for i in next_page.items if i.playQueueItemID not in seen_ids]
+            if not new_items:
+                break
+
+            all_items.extend(new_items)
+            seen_ids.update(i.playQueueItemID for i in new_items)
+
+        # Patch the cached items property on the PlayQueue object.
+        playqueue.__dict__["items"] = all_items
+        return playqueue
+
     async def _resolve_plex_item(self, key: str) -> Any:
         """Resolve a Plex key to a Music Assistant media item.
 
@@ -106,10 +161,7 @@ class QueueCommandsMixin:
 
             queue_id = queue_id_match.group(1)
 
-            def fetch_queue() -> PlayQueue:
-                return PlayQueue.get(self.provider._plex_server, playQueueID=queue_id, window=500)
-
-            playqueue = await asyncio.to_thread(fetch_queue)
+            playqueue = await self._fetch_full_play_queue(queue_id)
 
             if playqueue and playqueue.items:
                 selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0)
@@ -392,10 +444,7 @@ class QueueCommandsMixin:
 
             self.play_queue_version += 1
 
-            def fetch_queue() -> PlayQueue:
-                return PlayQueue.get(self.provider._plex_server, playQueueID=play_queue_id)
-
-            playqueue = await asyncio.to_thread(fetch_queue)
+            playqueue = await self._fetch_full_play_queue(play_queue_id)
 
             if not playqueue or not playqueue.items:
                 LOGGER.error("Failed to refresh play queue - queue is empty or not found")
