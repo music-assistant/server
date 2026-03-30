@@ -1329,6 +1329,10 @@ class StreamsAudio:
                     self.mass.player_queues._prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
+            # if we received no audio and the buffer has a producer error,
+            # the error was swallowed by the FFmpeg stdin feeder - re-raise it
+            if bytes_received == 0 and audio_buffer.has_error:
+                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True

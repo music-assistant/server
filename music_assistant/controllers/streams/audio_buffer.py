@@ -387,14 +387,13 @@ class AudioBuffer:
 
         if wait_ready:
             try:
-                await asyncio.wait_for(audio_buffer.ready.wait(), timeout=30)
+                await asyncio.wait_for(audio_buffer.ready.wait(), timeout=15)
             except TimeoutError:
-                LOGGER.warning("Timeout waiting for audio buffer ready for %s", streamdetails.uri)
-                if audio_buffer.has_error:
-                    raise AudioError(
-                        f"Audio buffer failed for {streamdetails.uri}: "
-                        f"{audio_buffer._producer_error}"
-                    )
+                raise AudioError("Timeout waiting for audio data") from audio_buffer._producer_error
+            # ready was signaled but check if it was due to a producer error
+            # (ready is also set by _notify_on_producer_error)
+            if audio_buffer.has_error:
+                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
 
         return audio_buffer
 

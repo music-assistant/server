@@ -1132,20 +1132,23 @@ class PlayerQueuesController(CoreController):
                     queue.current_item = queue_item
                     break
                 except (MediaNotFoundError, AudioError):
-                    # the requested index can not be played.
+                    item_name = queue_item.name if queue_item else "unknown"
                     if queue_item:
-                        self.logger.warning(
-                            "Skipping unplayable item %s (%s)",
-                            queue_item.name,
-                            queue_item.uri,
-                        )
                         queue_item.available = False
                     next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                     if next_index is None:
-                        raise MediaNotFoundError("No next item available")
+                        msg = f"Playback failed for {item_name} - no more tracks available"
+                        self.logger.error(msg)
+                        await self.stop(queue_id)
+                        raise MediaNotFoundError(msg)
+                    self.logger.warning(
+                        "Skipping unplayable item %s",
+                        item_name,
+                    )
                     index = next_index
             else:
                 # all attempts to find a playable item failed
+                await self.stop(queue_id)
                 raise MediaNotFoundError("No playable item found to start playback")
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
