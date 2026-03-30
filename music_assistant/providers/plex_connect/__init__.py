@@ -20,7 +20,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFea
 
 from music_assistant.models.plugin import PluginProvider
 
-from .player_remote import PlayerRemoteInstance
+from .server import PlayerRemoteInstance
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
