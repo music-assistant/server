@@ -1,0 +1,604 @@
+"""
+Audio buffer implementation for PCM audio streaming.
+
+AudioBuffer is the primary interface for all buffered audio streaming in Music Assistant.
+It stores raw decoded PCM audio (no filters applied) and provides methods to:
+- Fill the buffer from any async generator of audio chunks
+- Get raw or processed (filtered/resampled) audio streams
+- Seek within buffered audio
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections import deque
+from collections.abc import AsyncGenerator, Callable
+from contextlib import suppress
+from typing import TYPE_CHECKING, Any
+
+from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.errors import AudioError
+from music_assistant_models.media_items import AudioFormat
+
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.constants import (
+    BUFFER_SIZE_MAP,
+    CONF_BUFFER_SIZE,
+    CONF_BUFFER_SIZE_DEFAULT,
+    RADIO_BUFFER_SIZE,
+    SEEK_WAIT_THRESHOLD,
+    BufferMode,
+    BufferSize,
+)
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+
+if TYPE_CHECKING:
+    from music_assistant_models.streamdetails import StreamDetails
+
+    from music_assistant.mass import MusicAssistant
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
+
+# Callback signature for chunk observers: (chunk_position_seconds, pcm_data)
+# Empty bytes signals EOF (no more chunks will follow).
+ChunkCallback = Callable[[int, bytes], None]
+
+
+class AudioBufferEOF(Exception):
+    """Exception raised when the audio buffer reaches end-of-file."""
+
+
+class AudioBuffer:
+    """
+    Raw PCM audio buffer with seek support and optional filter processing.
+
+    Stores audio in the original sample rate and bit depth.
+    Use get_raw_stream() for unprocessed PCM and get_stream() for
+    filtered/resampled output.
+    """
+
+    def __init__(
+        self,
+        pcm_format: AudioFormat,
+        buffer_size: BufferSize = BufferSize.BALANCED,
+        mode: BufferMode = BufferMode.SEEKABLE,
+        ready_threshold: int = 1,
+    ) -> None:
+        """
+        Initialize AudioBuffer.
+
+        :param pcm_format: The PCM audio format specification.
+        :param buffer_size: Buffer size preset.
+        :param mode: Buffer mode (SEEKABLE for tracks, ROLLING for radio).
+        :param ready_threshold: Seconds of audio to buffer before signaling ready.
+        """
+        self.pcm_format = pcm_format
+        self.max_size_seconds = (
+            RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
+        )
+        self.mode = mode
+        self._ready_threshold = ready_threshold
+        self._ready_at_chunk = ready_threshold  # updated by get_buffer to account for seek
+        self._chunks: deque[bytes] = deque()
+        self._discarded_chunks = 0
+        self._lock = asyncio.Lock()
+        self._data_available = asyncio.Condition(self._lock)
+        self._space_available = asyncio.Condition(self._lock)
+        self._eof_received = False
+        self._producer_task: asyncio.Task[None] | None = None
+        self._last_access_time: float = time.time()
+        self._inactivity_task: asyncio.Task[None] | None = None
+        self._cancelled = False
+        self._producer_error: Exception | None = None
+        self.ready = asyncio.Event()
+        self._chunk_callbacks: list[ChunkCallback] = []
+
+    # -- Properties --
+
+    @property
+    def cancelled(self) -> bool:
+        """Return whether the buffer has been cancelled or cleared."""
+        if self._cancelled:
+            return True
+        return self._producer_task is not None and self._producer_task.cancelled()
+
+    @property
+    def has_error(self) -> bool:
+        """Return whether the producer encountered an error."""
+        return self._producer_error is not None
+
+    @property
+    def chunk_size_bytes(self) -> int:
+        """Return the size in bytes of one second of PCM audio."""
+        return self.pcm_format.pcm_sample_size
+
+    @property
+    def size_seconds(self) -> int:
+        """Return current size of the buffer in seconds."""
+        return len(self._chunks)
+
+    @property
+    def seconds_available(self) -> int:
+        """Return number of seconds of audio currently available."""
+        return len(self._chunks)
+
+    # -- Public methods --
+
+    def register_chunk_callback(self, callback: ChunkCallback) -> None:
+        """
+        Register a callback to receive raw PCM chunks as they are buffered.
+
+        The callback receives (chunk_position_seconds, pcm_data).
+        An empty pcm_data signals EOF. Callbacks must be non-blocking.
+
+        :param callback: Callable receiving (position_seconds, pcm_data).
+        """
+        self._chunk_callbacks.append(callback)
+
+    def is_valid(self, seek_position_ms: int = 0) -> bool:
+        """
+        Check if the buffer can serve the given seek position.
+
+        :param seek_position_ms: The position to seek to in milliseconds.
+        """
+        if self.cancelled:
+            return False
+
+        # reset inactivity timer — checking validity is activity
+        self._last_access_time = time.time()
+
+        seek_chunk = seek_position_ms // 1000
+
+        if seek_chunk < self._discarded_chunks:
+            return False
+
+        total_chunks = self._discarded_chunks + len(self._chunks)
+        if seek_chunk < total_chunks or self._eof_received:
+            return True
+
+        # chunk is ahead of what's buffered — check if close enough to wait
+        chunks_ahead = seek_chunk - total_chunks
+        return chunks_ahead <= SEEK_WAIT_THRESHOLD
+
+    async def get_raw_stream(self, seek_position_ms: int = 0) -> AsyncGenerator[bytes, None]:
+        """
+        Get raw (unprocessed) PCM audio from the buffer.
+
+        :param seek_position_ms: Starting position in milliseconds.
+        """
+        chunk_number = seek_position_ms // 1000
+        while True:
+            try:
+                yield await self._get(chunk_number=chunk_number)
+                chunk_number += 1
+            except AudioBufferEOF:
+                break
+
+    async def get_stream(
+        self,
+        output_format: AudioFormat,
+        seek_position_ms: int = 0,
+        filter_params: list[str] | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Get processed audio from the buffer.
+
+        Returns audio in the requested output format with optional filters applied.
+        If no processing is needed, yields directly from the buffer.
+
+        :param output_format: The desired output PCM format.
+        :param seek_position_ms: Starting position in milliseconds.
+        :param filter_params: FFmpeg filter parameters to apply.
+        """
+        needs_ffmpeg = bool(filter_params) or self.pcm_format != output_format
+
+        if not needs_ffmpeg:
+            async for chunk in self.get_raw_stream(seek_position_ms=seek_position_ms):
+                yield chunk
+            return
+
+        async for chunk in get_ffmpeg_stream(
+            audio_input=self.get_raw_stream(seek_position_ms=seek_position_ms),
+            input_format=self.pcm_format,
+            output_format=output_format,
+            filter_params=filter_params,
+        ):
+            yield chunk
+
+    def fill(self, audio_source: AsyncGenerator[bytes, None], source_name: str = "unknown") -> None:
+        """
+        Start filling the buffer from an async generator of PCM audio chunks.
+
+        :param audio_source: Async generator yielding 1-second PCM audio chunks.
+        :param source_name: Name for logging purposes.
+        """
+
+        async def _fill_task() -> None:
+            chunk_count = 0
+            status = "running"
+            try:
+                async for chunk in audio_source:
+                    chunk_count += 1
+                    await self._put(chunk)
+                    await asyncio.sleep(0)
+                await self._set_eof()
+            except asyncio.CancelledError:
+                status = "cancelled"
+                raise
+            except Exception:
+                status = "aborted with error"
+                raise
+            finally:
+                LOGGER.log(
+                    VERBOSE_LOG_LEVEL,
+                    "fill: %s (%s chunks) for %s",
+                    status,
+                    chunk_count,
+                    source_name,
+                )
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_fill_task())
+        self._attach_producer_task(task)
+
+    async def clear(self, cancel_inactivity_task: bool = True) -> None:
+        """Reset the buffer, clearing all data and cancelling active tasks."""
+        chunk_count = len(self._chunks)
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
+            "AudioBuffer.clear: Resetting buffer (had %s chunks, producer: %s)",
+            chunk_count,
+            self._producer_task is not None,
+        )
+        if self._producer_task and not self._producer_task.done():
+            self._producer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._producer_task
+
+        if cancel_inactivity_task and self._inactivity_task and not self._inactivity_task.done():
+            self._inactivity_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._inactivity_task
+
+        # signal EOF to callbacks before clearing them so observers don't hang
+        for callback in list(self._chunk_callbacks):
+            try:
+                callback(self._discarded_chunks + len(self._chunks), b"")
+            except Exception:
+                LOGGER.exception("Chunk callback failed during clear")
+
+        async with self._lock:
+            self._chunks = deque()
+            self._discarded_chunks = 0
+            self._eof_received = False
+            self._cancelled = True
+            self._producer_error = None
+            self.ready.clear()
+            self._chunk_callbacks.clear()
+            self._data_available.notify_all()
+            self._space_available.notify_all()
+
+    @staticmethod
+    async def get_buffer(
+        mass: MusicAssistant,
+        streamdetails: StreamDetails,
+        seek_position_ms: int = 0,
+        wait_ready: bool = False,
+    ) -> AudioBuffer:
+        """
+        Get or create an AudioBuffer for the given streamdetails.
+
+        Reuses an existing valid buffer if available.
+        Buffer size is determined from the streams controller configuration.
+
+        :param mass: The MusicAssistant instance.
+        :param streamdetails: The stream details for the media.
+        :param seek_position_ms: Position in milliseconds to start from.
+        :param wait_ready: If True, wait for the first chunk before returning.
+        """
+        # determine buffer size from config
+        buffer_size = BufferSize(
+            mass.config.get_raw_core_config_value(
+                "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
+            )
+        )
+        mode = (
+            BufferMode.ROLLING
+            if (not streamdetails.duration or not streamdetails.allow_seek)
+            else BufferMode.SEEKABLE
+        )
+
+        # reuse existing valid buffer
+        existing_buffer: AudioBuffer | None = streamdetails.buffer
+        if existing_buffer is not None:
+            if existing_buffer.has_error or not existing_buffer.is_valid(seek_position_ms):
+                LOGGER.log(
+                    VERBOSE_LOG_LEVEL,
+                    "get_buffer: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
+                    streamdetails.uri,
+                    seek_position_ms,
+                    existing_buffer._discarded_chunks,
+                )
+                buffer_to_clear = existing_buffer
+                streamdetails.buffer = None
+                await asyncio.shield(buffer_to_clear.clear())
+            else:
+                LOGGER.debug(
+                    "get_buffer: Reusing buffer for %s - "
+                    "available: %ss, seek_ms: %s, discarded: %s",
+                    streamdetails.uri,
+                    existing_buffer.seconds_available,
+                    seek_position_ms,
+                    existing_buffer._discarded_chunks,
+                )
+                return existing_buffer
+
+        # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
+        seek_seconds = seek_position_ms // 1000
+
+        # for large seeks without existing buffer, start at seek position
+        buffer_seek_seconds = seek_seconds if seek_seconds > 60 else 0
+
+        pcm_format = AudioFormat(
+            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
+            sample_rate=streamdetails.audio_format.sample_rate,
+            bit_depth=streamdetails.audio_format.bit_depth,
+            channels=streamdetails.audio_format.channels,
+        )
+
+        # use a higher ready threshold for dynamic normalization so FFmpeg's
+        # loudnorm filter has enough lookahead to produce smooth initial output
+        ready_threshold = (
+            5 if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC else 2
+        )
+
+        LOGGER.debug(
+            "get_buffer: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
+            streamdetails.uri,
+            mode,
+            buffer_size,
+            seek_position_ms,
+        )
+        audio_buffer = AudioBuffer(pcm_format, buffer_size, mode, ready_threshold=ready_threshold)
+        # align chunk numbering with the actual stream start position so that
+        # get_raw_stream(seek_position_ms) requests the correct chunk number
+        audio_buffer._discarded_chunks = buffer_seek_seconds
+        # set the chunk number at which the buffer should signal ready,
+        # accounting for seek position so we have enough data past the seek point
+        seek_chunk = seek_position_ms // 1000
+        audio_buffer._ready_at_chunk = seek_chunk + ready_threshold
+        streamdetails.buffer = audio_buffer
+
+        # attach analyze jobs for ahead-of-time processing
+        if seek_position_ms == 0:
+            # loudness analysis for all streams (tracks and radio)
+            mass.streams.audio.attach_loudness_analyzer(audio_buffer, streamdetails)
+            # smart fades analysis only for music tracks (not podcasts/audiobooks)
+            if streamdetails.media_type == MediaType.TRACK:
+                mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
+
+        # start filling from the media stream (seek in seconds for FFmpeg)
+        audio_source = mass.streams.audio.get_media_stream(
+            streamdetails, pcm_format, seek_position=buffer_seek_seconds, filter_params=None
+        )
+        audio_buffer.fill(audio_source, source_name=streamdetails.uri)
+
+        if wait_ready:
+            try:
+                await asyncio.wait_for(audio_buffer.ready.wait(), timeout=30)
+            except TimeoutError:
+                LOGGER.warning("Timeout waiting for audio buffer ready for %s", streamdetails.uri)
+                if audio_buffer.has_error:
+                    raise AudioError(
+                        f"Audio buffer failed for {streamdetails.uri}: "
+                        f"{audio_buffer._producer_error}"
+                    )
+
+        return audio_buffer
+
+    # -- Private methods --
+
+    async def _put(self, chunk: bytes) -> None:
+        """
+        Put a 1-second chunk of PCM audio into the buffer.
+
+        Waits for space when the buffer is full (backpressure).
+        """
+        chunk_position = -1
+        async with self._lock:
+            if self._cancelled:
+                return
+
+            if self._eof_received:
+                LOGGER.log(
+                    VERBOSE_LOG_LEVEL, "AudioBuffer._put: EOF already received, rejecting chunk"
+                )
+                return
+
+            # wait for the consumer to free space when buffer is full
+            await self._wait_for_space()
+
+            chunk_position = self._discarded_chunks + len(self._chunks)
+            self._chunks.append(chunk)
+            if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
+                LOGGER.log(
+                    VERBOSE_LOG_LEVEL,
+                    "AudioBuffer._put: Added chunk at position %s (size: %s bytes, buffer: %s)",
+                    chunk_position,
+                    len(chunk),
+                    len(self._chunks),
+                )
+
+            if not self.ready.is_set() and (
+                self._discarded_chunks + len(self._chunks) >= self._ready_at_chunk
+            ):
+                self.ready.set()
+
+            self._data_available.notify_all()
+
+        # notify chunk callbacks outside the lock
+        if chunk_position >= 0 and self._chunk_callbacks:
+            failed: list[ChunkCallback] = []
+            for callback in self._chunk_callbacks:
+                try:
+                    callback(chunk_position, chunk)
+                except Exception:
+                    LOGGER.exception("Chunk callback failed, removing it")
+                    failed.append(callback)
+            for cb in failed:
+                self._chunk_callbacks.remove(cb)
+
+    async def _set_eof(self) -> None:
+        """Signal that no more data will be added to the buffer."""
+        async with self._lock:
+            LOGGER.log(
+                VERBOSE_LOG_LEVEL,
+                "AudioBuffer._set_eof: Marking EOF (buffer has %s chunks)",
+                len(self._chunks),
+            )
+            self._eof_received = True
+            if not self.ready.is_set():
+                self.ready.set()
+            self._data_available.notify_all()
+            self._space_available.notify_all()
+
+        # notify chunk callbacks of EOF (empty bytes = no more data)
+        total_chunks = self._discarded_chunks + len(self._chunks)
+        for callback in list(self._chunk_callbacks):
+            try:
+                callback(total_chunks, b"")
+            except Exception:
+                LOGGER.exception("Chunk callback failed at EOF")
+
+    async def _get(self, chunk_number: int = 0) -> bytes:
+        """
+        Get one second of audio at the given chunk position.
+
+        Waits until the chunk is available. Discards old chunks when full.
+
+        :raises AudioBufferEOF: If EOF is reached or the buffer was cleared.
+        :raises AudioError: If the chunk has been discarded or the producer failed.
+        """
+        self._last_access_time = time.time()
+
+        async with self._data_available:
+            if self._producer_error and len(self._chunks) == 0:
+                raise self._producer_error
+            if self.cancelled:
+                raise AudioBufferEOF
+
+            if self.mode == BufferMode.ROLLING:
+                return await self._get_rolling()
+
+            return await self._get_seekable(chunk_number)
+
+    async def _get_rolling(self) -> bytes:
+        """
+        Pop the next chunk from the buffer (FIFO).
+
+        Must be called while holding _data_available lock.
+        """
+        while len(self._chunks) == 0:
+            if self._producer_error:
+                raise self._producer_error
+            if self.cancelled or self._eof_received:
+                raise AudioBufferEOF
+            await self._data_available.wait()
+
+        result = self._chunks.popleft()
+        self._discarded_chunks += 1
+        self._space_available.notify_all()
+        return result
+
+    async def _get_seekable(self, chunk_number: int) -> bytes:
+        """
+        Get a specific chunk by number from the buffer.
+
+        Must be called while holding _data_available lock.
+        """
+        if chunk_number < self._discarded_chunks:
+            msg = (
+                f"Chunk {chunk_number} has been discarded "
+                f"(buffer starts at {self._discarded_chunks})"
+            )
+            raise AudioError(msg)
+
+        buffer_index = chunk_number - self._discarded_chunks
+        while buffer_index >= len(self._chunks):
+            if self._producer_error:
+                raise self._producer_error
+            if self.cancelled or self._eof_received:
+                raise AudioBufferEOF
+            # if the buffer is full and we need a chunk that hasn't arrived yet,
+            # the producer is blocked waiting for space — evict to unblock it
+            if len(self._chunks) >= self.max_size_seconds:
+                self._chunks.popleft()
+                self._discarded_chunks += 1
+                buffer_index = chunk_number - self._discarded_chunks
+                self._space_available.notify_all()
+                continue
+            await self._data_available.wait()
+            buffer_index = chunk_number - self._discarded_chunks
+
+        result = self._chunks[buffer_index]
+
+        # free space for the producer when buffer is at capacity
+        if len(self._chunks) >= self.max_size_seconds:
+            self._chunks.popleft()
+            self._discarded_chunks += 1
+            self._space_available.notify_all()
+
+        return result
+
+    async def _wait_for_space(self) -> None:
+        """Wait until buffer has space. Must be called while holding _lock."""
+        while len(self._chunks) >= self.max_size_seconds:
+            if self._cancelled:
+                return
+            await self._space_available.wait()
+
+    def _attach_producer_task(self, task: asyncio.Task[Any]) -> None:
+        """Attach a background task that fills the buffer."""
+        self._producer_task = task
+
+        def _on_producer_done(t: asyncio.Task[Any]) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None and isinstance(exc, Exception):
+                self._producer_error = exc
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._notify_on_producer_error())
+
+        task.add_done_callback(_on_producer_done)
+
+        if self._inactivity_task is None or self._inactivity_task.done():
+            self._last_access_time = time.time()
+            loop = asyncio.get_running_loop()
+            self._inactivity_task = loop.create_task(self._monitor_inactivity())
+
+    async def _monitor_inactivity(self) -> None:
+        """Clear the buffer if inactive for 5 minutes."""
+        inactivity_timeout = 60 * 5
+        check_interval = 30
+        while True:
+            await asyncio.sleep(check_interval)
+            time_since_access = time.time() - self._last_access_time
+            if len(self._chunks) > 0 and time_since_access > inactivity_timeout:
+                LOGGER.log(
+                    VERBOSE_LOG_LEVEL,
+                    "AudioBuffer: No activity for %.1fs, clearing (%s chunks)",
+                    time_since_access,
+                    len(self._chunks),
+                )
+                break
+        await self.clear(cancel_inactivity_task=False)
+
+    async def _notify_on_producer_error(self) -> None:
+        """Notify waiting consumers that the producer has failed."""
+        async with self._lock:
+            if not self.ready.is_set():
+                self.ready.set()
+            self._data_available.notify_all()
