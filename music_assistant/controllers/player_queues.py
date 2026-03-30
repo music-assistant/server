@@ -558,8 +558,8 @@ class PlayerQueuesController(CoreController):
                     isinstance(media_item, ItemMapping)
                     and media_item.media_type == MediaType.PLAYLIST
                 ):
-                    # Resolve mapping once so playlist-specific logic can use
-                    # a full Playlist object without duplicating branches.
+                    # Resolve ItemMapping for a playlist so the full Playlist object
+                    # so we have access to details such as 'is_dynamic'
                     with suppress(MusicAssistantError):
                         media_item = await self.mass.music.playlists.get(
                             media_item.item_id,
