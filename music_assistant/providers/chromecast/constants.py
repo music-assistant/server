@@ -14,7 +14,7 @@ from music_assistant.providers.sendspin.constants import DEFAULT_SENDSPIN_STATIC
 
 MASS_APP_ID = "C35B0678"
 APP_MEDIA_RECEIVER = "CC1AD845"
-SENDSPIN_CAST_APP_ID = "938CBF87"
+SENDSPIN_CAST_APP_ID = "7D69F439"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
 
