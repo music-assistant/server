@@ -1528,8 +1528,7 @@ class PlayerQueuesController(CoreController):
                         *org_images,
                     ]
                 )
-        # Fetch the streamdetails, which could raise in case of an unplayable item.
-        # For example, YT Music returns Radio Items that are not playable.
+        # Fetch streamdetails (reuses existing if buffer is still valid for the seek).
         queue_item.streamdetails = await self.mass.streams.audio.get_stream_details(
             queue_item=queue_item,
             seek_position=seek_position,
