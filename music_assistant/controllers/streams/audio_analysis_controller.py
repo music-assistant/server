@@ -188,7 +188,9 @@ class AudioAnalysisController:
             if not provider_ids:
                 break
 
-            async def _process(pid: str, chunk: bytes = chunk) -> None:
+            pcm_data = chunk  # bind for closure (chunk is narrowed to bytes here)
+
+            async def _process(pid: str, pcm_data: bytes = pcm_data) -> None:
                 try:
                     provider = self.mass.get_provider(pid)
                     if not (
@@ -197,7 +199,7 @@ class AudioAnalysisController:
                         and provider.available
                     ):
                         return
-                    await provider.process_pcm_chunk(session_key, chunk)
+                    await provider.process_pcm_chunk(session_key, pcm_data)
                 except Exception as err:
                     self.logger.warning("Error processing PCM chunk on provider %s: %s", pid, err)
 
