@@ -51,7 +51,11 @@ def _try_increase_pipe_buffer(proc: asyncio.subprocess.Process) -> None:
         if stream is None:
             continue
         try:
-            pipe_handle = stream.transport.get_extra_info("pipe")  # type: ignore[union-attr]
+            # StreamWriter has .transport, StreamReader has ._transport
+            transport = getattr(stream, "transport", None) or getattr(stream, "_transport", None)
+            if transport is None:
+                continue
+            pipe_handle = transport.get_extra_info("pipe")
             if pipe_handle is not None:
                 fcntl.fcntl(pipe_handle.fileno(), f_setpipe_sz, target_size)
         except (OSError, AttributeError) as err:
