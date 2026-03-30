@@ -208,9 +208,12 @@ class QueueCommandsMixin:
 
                     await self._broadcast_timeline()
 
+                    # Use the queue's own shuffle flag as the authoritative state,
+                    # falling back to the request parameter if not set.
+                    effective_shuffle = playqueue.playQueueShuffled or shuffle
                     self.provider.mass.create_task(
                         self._load_remaining_queue_tracks(
-                            player_id, playqueue, selected_offset, shuffle
+                            player_id, playqueue, selected_offset, effective_shuffle
                         )
                     )
 
@@ -455,7 +458,6 @@ class QueueCommandsMixin:
                 LOGGER.error("No player assigned to this server")
                 return web.Response(status=500, text="No player assigned")
 
-            await self.provider.mass.player_queues.set_shuffle(player_id, False)
             ma_queue = self.provider.mass.player_queues.get(player_id)
             if not ma_queue:
                 LOGGER.error(f"MA queue not found for player {player_id}")
@@ -479,6 +481,11 @@ class QueueCommandsMixin:
                     f"replacing only items after current track"
                 )
                 await self._replace_remaining_queue(player_id, playqueue, current_index)
+
+            # Sync shuffle state from Plex to MA.
+            await self.provider.mass.player_queues.set_shuffle(
+                player_id, playqueue.playQueueShuffled
+            )
 
             LOGGER.info(
                 f"Refreshed play queue {play_queue_id} - now has {len(playqueue.items)} items"
