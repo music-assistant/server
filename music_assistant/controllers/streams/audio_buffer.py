@@ -41,9 +41,12 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
-# Callback signature for chunk observers: (chunk_position_seconds, pcm_data)
-# Empty bytes signals EOF (no more chunks will follow).
-ChunkCallback = Callable[[int, bytes], None]
+# Callback signature for chunk observers: (chunk_position_seconds, pcm_data, is_last_chunk)
+# When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
+ChunkCallback = Callable[[int, bytes, bool], None]
+
+# Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
+CancelCallback = Callable[[], None]
 
 
 class AudioBufferEOF(Exception):
@@ -94,6 +97,7 @@ class AudioBuffer:
         self._producer_error: Exception | None = None
         self.ready = asyncio.Event()
         self._chunk_callbacks: list[ChunkCallback] = []
+        self._cancel_callbacks: list[CancelCallback] = []
 
     # -- Properties --
 
@@ -130,12 +134,21 @@ class AudioBuffer:
         """
         Register a callback to receive raw PCM chunks as they are buffered.
 
-        The callback receives (chunk_position_seconds, pcm_data).
-        An empty pcm_data signals EOF. Callbacks must be non-blocking.
+        The callback receives (chunk_position_seconds, pcm_data, is_last_chunk).
+        When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
+        Callbacks must be non-blocking.
 
-        :param callback: Callable receiving (position_seconds, pcm_data).
+        :param callback: Callable receiving (position_seconds, pcm_data, is_last_chunk).
         """
         self._chunk_callbacks.append(callback)
+
+    def register_cancel_callback(self, callback: CancelCallback) -> None:
+        """
+        Register a callback to be invoked when the buffer is cancelled or cleared.
+
+        :param callback: Callable with no arguments, invoked on cancel.
+        """
+        self._cancel_callbacks.append(callback)
 
     def is_valid(self, seek_position_ms: int = 0) -> bool:
         """
@@ -262,12 +275,12 @@ class AudioBuffer:
             with suppress(asyncio.CancelledError):
                 await self._inactivity_task
 
-        # signal EOF to callbacks before clearing them so observers don't hang
-        for callback in list(self._chunk_callbacks):
+        # signal cancel to cancel callbacks before clearing them
+        for callback in list(self._cancel_callbacks):
             try:
-                callback(self._discarded_chunks + len(self._chunks), b"")
+                callback()
             except Exception:
-                LOGGER.exception("Chunk callback failed during clear")
+                LOGGER.exception("Cancel callback failed during clear")
 
         async with self._lock:
             self._chunks = deque()
@@ -277,6 +290,7 @@ class AudioBuffer:
             self._producer_error = None
             self.ready.clear()
             self._chunk_callbacks.clear()
+            self._cancel_callbacks.clear()
             self._data_available.notify_all()
             self._space_available.notify_all()
 
@@ -443,7 +457,7 @@ class AudioBuffer:
             failed: list[ChunkCallback] = []
             for callback in self._chunk_callbacks:
                 try:
-                    callback(chunk_position, chunk)
+                    callback(chunk_position, chunk, False)
                 except Exception:
                     LOGGER.exception("Chunk callback failed, removing it")
                     failed.append(callback)
@@ -464,11 +478,11 @@ class AudioBuffer:
             self._data_available.notify_all()
             self._space_available.notify_all()
 
-        # notify chunk callbacks of EOF (empty bytes = no more data)
+        # notify chunk callbacks of EOF (empty bytes with is_last_chunk=True)
         total_chunks = self._discarded_chunks + len(self._chunks)
         for callback in list(self._chunk_callbacks):
             try:
-                callback(total_chunks, b"")
+                callback(total_chunks, b"", True)
             except Exception:
                 LOGGER.exception("Chunk callback failed at EOF")
 

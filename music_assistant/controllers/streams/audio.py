@@ -878,11 +878,11 @@ class StreamsAudio:
         chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         chunks_received = 0
 
-        def _on_chunk(position_seconds: int, pcm_data: bytes) -> None:  # noqa: ARG001
+        def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
             nonlocal chunks_received
             if chunks_received >= max_duration_seconds:
                 return
-            if not pcm_data:
+            if is_last_chunk:
                 # EOF
                 chunk_queue.put_nowait(None)
                 return
