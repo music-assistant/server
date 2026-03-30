@@ -32,6 +32,7 @@ from .constants import (
     DEFAULT_LLM_MODEL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_TIMEOUT_SECONDS,
     DEFAULT_OPENAI_TTS_INSTRUCTIONS,
     DEFAULT_OPENAI_TTS_MODEL,
     DEFAULT_OPENAI_TTS_VOICE,
@@ -1489,6 +1490,7 @@ class AIRadioRuntimeMixin:
                 "content-type": "application/json",
                 "accept": accept,
             },
+            timeout=ClientTimeout(total=DEFAULT_OPENAI_TIMEOUT_SECONDS),
         ) as response:
             data = await response.read()
             if response.status >= 400:
