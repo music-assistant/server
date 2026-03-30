@@ -38,6 +38,7 @@ from .constants import (
     DEFAULT_SECTION_STORE_PATH,
     DEFAULT_TEMPERATURE,
     DEFAULT_TTS_PROVIDER,
+    DEFAULT_TTS_TIMEOUT_SECONDS,
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     VALID_WEB_SEARCH_MODES,
@@ -1415,10 +1416,12 @@ class AIRadioRuntimeMixin:
                 raise AIRadioError("No ElevenLabs voice_id configured")
             model_id = str(general.get("elevenlabs_model") or DEFAULT_ELEVENLABS_MODEL)
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
+            timeout_seconds = max(5, DEFAULT_TTS_TIMEOUT_SECONDS)
             async with self.mass.http_session.post(
                 url,
                 json={"text": text, "model_id": model_id},
                 headers={"xi-api-key": api_key, "accept": "audio/mpeg"},
+                timeout=ClientTimeout(total=timeout_seconds),
             ) as response:
                 data = await response.read()
                 if response.status >= 400:
