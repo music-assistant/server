@@ -645,7 +645,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def export_playlist(self, db_playlist_id: str | int) -> str:
         """Export a playlist to M3U8 format.
 
-        Only supported for the builtin provider.
+        Only supported for the builtin provider. If the playlist has multiple
+        provider mappings, the builtin mapping is selected explicitly.
 
         :param db_playlist_id: The library database ID of the playlist.
         """
@@ -654,15 +655,23 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist:
             msg = f"Playlist with id {db_id} not found"
             raise MediaNotFoundError(msg)
-        prov_instance, prov_item_id = self._select_provider_id(playlist)
-        provider = self.mass.get_provider(prov_instance)
-        if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError(f"Provider {prov_instance} is not available")
-        if provider.domain != "builtin":
-            msg = f"Playlist export is only supported for the builtin provider, not {provider.name}"
+        # find the builtin provider mapping explicitly
+        builtin_mapping = next(
+            (
+                m
+                for m in playlist.provider_mappings
+                if (prov := self.mass.get_provider(m.provider_instance))
+                and prov.domain == "builtin"
+            ),
+            None,
+        )
+        if not builtin_mapping:
+            msg = "Playlist export is only supported for playlists with a builtin provider mapping"
             raise InvalidDataError(msg)
-        builtin_prov = cast("BuiltinProvider", provider)
-        return await builtin_prov.export_playlist(prov_item_id)
+        builtin_prov = cast(
+            "BuiltinProvider", self.mass.get_provider(builtin_mapping.provider_instance)
+        )
+        return await builtin_prov.export_playlist(builtin_mapping.item_id)
 
     async def import_playlist(
         self,
