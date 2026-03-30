@@ -107,7 +107,7 @@ class QueueCommandsMixin:
             queue_id = queue_id_match.group(1)
 
             def fetch_queue() -> PlayQueue:
-                return PlayQueue.get(self.provider._plex_server, playQueueID=queue_id)
+                return PlayQueue.get(self.provider._plex_server, playQueueID=queue_id, window=10000)
 
             playqueue = await asyncio.to_thread(fetch_queue)
 
