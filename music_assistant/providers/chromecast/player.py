@@ -381,16 +381,13 @@ class ChromecastPlayer(Player):
         else:
             app_id = APP_MEDIA_RECEIVER
 
-        if self.cc.app_id == app_id:
-            return  # already active
+        if self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
+            return  # already active with a compatible media receiver app
 
         def launched_callback(success: bool, response: dict[str, Any] | None) -> None:  # noqa: ARG001
             self.mass.loop.call_soon_threadsafe(event.set)
 
         def launch() -> None:
-            # Quit the previous app before starting splash screen or media player
-            if self.cc.app_id is not None:
-                self.cc.quit_app()
             self.logger.debug("Launching App %s.", app_id)
             self.cc.socket_client.receiver_controller.launch_app(
                 app_id,

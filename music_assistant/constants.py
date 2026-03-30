@@ -936,8 +936,6 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
 
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from (inactive) protocol implementations
-    PlayerFeature.VOLUME_SET,
-    PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
     PlayerFeature.SET_MEMBERS,
 }
