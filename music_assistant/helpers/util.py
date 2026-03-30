@@ -774,9 +774,7 @@ def get_zeroconf_args(
     # On macOS/FreeBSD, zeroconf's IPVersion.All creates an AF_INET6 listen socket
     # that cannot join IPv4 multicast groups, silently breaking discovery of
     # IPv4-only devices. Fall back to V4Only on those platforms.
-    has_functional_dual_stack = not sys.platform.startswith(
-        "freebsd"
-    ) and not sys.platform.startswith("darwin")
+    has_functional_dual_stack = not sys.platform.startswith(("freebsd", "darwin"))
     if has_ipv4 and has_ipv6 and has_functional_dual_stack:
         ip_version = IPVersion.All
     elif has_ipv4:
