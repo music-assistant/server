@@ -392,6 +392,10 @@ class AudioBuffer:
             # smart fades analysis only for music tracks (not podcasts/audiobooks)
             if streamdetails.media_type == MediaType.TRACK:
                 mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
+                # audio analysis providers (beat tracking, key detection, etc.)
+                mass.create_task(
+                    mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
+                )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
