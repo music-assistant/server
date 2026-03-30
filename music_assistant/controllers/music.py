@@ -78,7 +78,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import UNSET, DatabaseConnection
-from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
+from music_assistant.helpers.datetime import (
+    from_utc_timestamp,
+    local_clock_time_to_utc,
+    utc_timestamp,
+)
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
@@ -108,7 +112,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 34
+DB_SCHEMA_VERSION: Final[int] = 35
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -1482,6 +1486,7 @@ class MusicController(CoreController):
         """
         provider_fully_played = False
         provider_position_ms = 0
+        provider_timestamp: datetime | None = None
 
         user: User | None = None
         if userid:
@@ -1520,12 +1525,14 @@ class MusicController(CoreController):
                 (
                     provider_fully_played,
                     provider_position_ms,
+                    provider_timestamp,
                 ) = await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
                 break  # Use first provider that returns data
 
         # Get MA's internal position from playlog
         ma_fully_played = False
         ma_position_ms = 0
+        ma_timestamp = from_utc_timestamp(0)
         params = {
             "media_type": media_item.media_type.value,
             "item_id": media_item.item_id,
@@ -1538,7 +1545,10 @@ class MusicController(CoreController):
         if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
             ma_fully_played = parse_optional_bool(db_entry["fully_played"])
+            ma_timestamp = from_utc_timestamp(db_entry["timestamp"])
 
+        if provider_timestamp is not None and provider_timestamp > ma_timestamp:
+            return provider_fully_played, provider_position_ms
         # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:
             return ma_fully_played, ma_position_ms
@@ -2699,6 +2709,14 @@ class MusicController(CoreController):
             await self._database.execute(
                 f"UPDATE {DB_TABLE_GENRES} SET is_default = 1 WHERE translation_key IS NOT NULL;"
             )
+        if prev_version <= 34:
+            # fix filesystem playlists missing in_library flag
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE media_type = 'playlist' "
+                "AND provider_domain IN ('filesystem_local', 'filesystem_smb', 'filesystem_nfs');"
+            )
+
         # save changes
         await self._database.commit()
 

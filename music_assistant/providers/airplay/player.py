@@ -166,10 +166,11 @@ class AirPlayPlayer(Player):
     @property
     def wait_start(self) -> int:
         """Get the time in ms to allow device to connect before starting stream."""
-        # TODO: make this value configurable ?
         if self.protocol == StreamingProtocol.AIRPLAY2:
-            return AIRPLAY2_CONNECT_TIME_MS
-        return RAOP_CONNECT_TIME_MS
+            base = AIRPLAY2_CONNECT_TIME_MS
+        else:
+            base = RAOP_CONNECT_TIME_MS
+        return int(base + self.output_buffer_duration_ms)
 
     async def get_config_entries(
         self,
@@ -179,7 +180,6 @@ class AirPlayPlayer(Player):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries: list[ConfigEntry] = []
         require_authentication = self._requires_pin_pairing() or self._requires_password_pairing()
-        self.logger.debug(f"Player requires authentication: {require_authentication}")
 
         # Handle pairing actions
         if action and require_authentication:
@@ -272,7 +272,6 @@ class AirPlayPlayer(Player):
                     "Try increasing value if playback is unreliable."
                 ),
                 category="protocol_generic",
-                depends_on=CONF_AIRPLAY_PROTOCOL,
                 advanced=True,
             ),
         ]

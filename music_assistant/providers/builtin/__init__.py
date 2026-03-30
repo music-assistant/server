@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Final, cast
+from urllib.parse import urlparse
 
 import aiofiles
 from music_assistant_models.background_task import TaskSchedule
@@ -54,12 +55,14 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.playlists import (
     ImageInfo,
+    IsHLSPlaylist,
     PlaylistItem,
     ProviderMappingInfo,
     collect_album_info,
     collect_artist_infos,
     collect_podcast_info,
     construct_media_item_from_playlist_item,
+    fetch_playlist,
     generate_m3u,
     parse_m3u,
     parse_m3u_playlist_name,
@@ -538,6 +541,31 @@ class BuiltinProvider(MusicProvider):
             return VARIOUS_ARTISTS_FANART
         return path
 
+    async def _resolve_url(self, url: str) -> str:
+        """Resolve a URL to the actual stream URL.
+
+        ffprobe cannot analyze PLS/M3U files directly as it sees them as text.
+        This method extracts the actual audio stream URL from playlist files.
+
+        :param url: The URL to check and potentially resolve.
+        :returns: The resolved stream URL, or the original URL if not a playlist.
+        """
+        parsed = urlparse(url)
+        path_lower = parsed.path.lower()
+        is_playlist = path_lower.endswith(".pls")
+        if not is_playlist:
+            return url
+
+        try:
+            playlist_items = await fetch_playlist(self.mass, url, raise_on_hls=False)
+            for item in playlist_items:
+                if item.is_url:
+                    return item.path
+        except (InvalidDataError, IsHLSPlaylist) as err:
+            self.logger.debug("Failed to resolve playlist URL %s: %s", url, err)
+
+        return url
+
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
         # do we have some cached info for this url ?
@@ -546,8 +574,9 @@ class BuiltinProvider(MusicProvider):
         )
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
+        resolved_url = await self._resolve_url(url)
         # parse info with ffprobe (and store in cache)
-        media_info = await async_parse_tags(url)
+        media_info = await async_parse_tags(resolved_url)
         if "authSig" in url:
             media_info.has_cover_image = False
         await self.mass.cache.set(

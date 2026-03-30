@@ -77,9 +77,9 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.players.controller import IN_QUEUE_COMMAND
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
@@ -787,7 +787,7 @@ class PlayerQueuesController(CoreController):
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
-        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
@@ -835,7 +835,7 @@ class PlayerQueuesController(CoreController):
             await self.mass.players.cmd_stop(queue_id)
         finally:
             IN_QUEUE_COMMAND.reset(token)
-        self.mass.create_task(self.mass.streams.cleanup_queue_audio_data(queue_id))
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -1132,20 +1132,23 @@ class PlayerQueuesController(CoreController):
                     queue.current_item = queue_item
                     break
                 except (MediaNotFoundError, AudioError):
-                    # the requested index can not be played.
+                    item_name = queue_item.name if queue_item else "unknown"
                     if queue_item:
-                        self.logger.warning(
-                            "Skipping unplayable item %s (%s)",
-                            queue_item.name,
-                            queue_item.uri,
-                        )
                         queue_item.available = False
                     next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                     if next_index is None:
-                        raise MediaNotFoundError("No next item available")
+                        msg = f"Playback failed for {item_name} - no more tracks available"
+                        self.logger.error(msg)
+                        await self.stop(queue_id)
+                        raise MediaNotFoundError(msg)
+                    self.logger.warning(
+                        "Skipping unplayable item %s",
+                        item_name,
+                    )
                     index = next_index
             else:
                 # all attempts to find a playable item failed
+                await self.stop(queue_id)
                 raise MediaNotFoundError("No playable item found to start playback")
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
@@ -1528,15 +1531,25 @@ class PlayerQueuesController(CoreController):
                         *org_images,
                     ]
                 )
-        # Fetch the streamdetails, which could raise in case of an unplayable item.
-        # For example, YT Music returns Radio Items that are not playable.
-        queue_item.streamdetails = await get_stream_details(
-            mass=self.mass,
+        # Fetch streamdetails (reuses existing if buffer is still valid for the seek).
+        queue_item.streamdetails = await self.mass.streams.audio.get_stream_details(
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
             prefer_album_loudness=bool(playing_album_tracks),
         )
+
+        # pre-initialize the AudioBuffer so audio is ready
+        # when the player requests it. For the current/first track this ensures
+        # immediate playback start. For preloaded next tracks we skip this and
+        # initialize the buffer ~30s before the current track ends instead.
+        if is_start:
+            await AudioBuffer.get_buffer(
+                self.mass,
+                queue_item.streamdetails,
+                seek_position_ms=seek_position * 1000,
+                wait_ready=True,
+            )
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
         """Call when a player has (started) loading a track in the buffer."""
@@ -1554,9 +1567,7 @@ class PlayerQueuesController(CoreController):
         self._preload_next_item(queue_id, item_id)
         # clean up stale audio buffers for old queue items to prevent memory leaks
         if current_index is not None:
-            self.mass.create_task(
-                self.mass.streams.cleanup_stale_queue_buffers(queue_id, current_index)
-            )
+            self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
     def queue_buffer_completed(self, queue_id: str) -> None:
         """Call when the flow stream has finished generating all audio data for a queue.
@@ -2137,6 +2148,47 @@ class PlayerQueuesController(CoreController):
             abort_existing=True,
         )
 
+    def _prepare_next_audio_buffer(self, queue_id: str) -> None:
+        """Prepare the AudioBuffer for the next track in the queue.
+
+        Called ~30 seconds before the current track ends to ensure
+        the buffer is warm when the next track starts playing.
+        """
+        queue = self._queues.get(queue_id)
+        if not queue or not queue.next_item:
+            return
+        next_item = queue.next_item
+        # check if buffer already exists and is valid
+        if (
+            next_item.streamdetails
+            and next_item.streamdetails.buffer
+            and next_item.streamdetails.buffer.is_valid()
+        ):
+            return
+
+        async def _do_prepare() -> None:
+            try:
+                # fetch streamdetails if not yet available
+                if not next_item.streamdetails:
+                    next_item.streamdetails = await self.mass.streams.audio.get_stream_details(
+                        queue_item=next_item
+                    )
+                self.logger.debug(
+                    "Preparing audio buffer for next track %s on queue %s",
+                    next_item.name,
+                    queue.display_name,
+                )
+                await AudioBuffer.get_buffer(
+                    self.mass,
+                    next_item.streamdetails,
+                    wait_ready=True,
+                )
+            except (AudioError, MediaNotFoundError) as err:
+                self.logger.debug("Failed to prepare next audio buffer: %s", err)
+
+        task_id = f"prepare_next_buffer_{queue_id}"
+        self.mass.create_task(_do_prepare, task_id=task_id, abort_existing=False)
+
     async def _resolve_media_items(
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
@@ -2556,7 +2608,7 @@ class PlayerQueuesController(CoreController):
 
         if "output_formats" in changed_keys:
             # refresh DSP details since they may have changed
-            dsp = get_stream_dsp_details(self.mass, queue_id)
+            dsp = self.mass.streams.audio.get_stream_dsp_details(queue_id)
             if queue.current_item and queue.current_item.streamdetails:
                 queue.current_item.streamdetails.dsp = dsp
             if queue.next_item and queue.next_item.streamdetails:
@@ -2794,7 +2846,7 @@ class PlayerQueuesController(CoreController):
             # we have a new item, so we need report the previous one
             is_current_item = False
             item_to_report = prev_state["current_item"]
-            seconds_played = int(prev_state["elapsed_time"])
+            seconds_played = int(prev_state["last_playing_elapsed_time"])
         else:
             # report on current item
             is_current_item = True
@@ -2839,6 +2891,7 @@ class PlayerQueuesController(CoreController):
             fully_played = seconds_played >= duration - 10
 
         is_playing = is_current_item and queue.state == PlaybackState.PLAYING
+
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.debug(
                 "%s %s '%s' (%s) - Fully played: %s - Progress: %s (%s/%ss)",
@@ -2905,6 +2958,74 @@ class PlayerQueuesController(CoreController):
                 userid=queue.userid,
             ),
         )
+
+    async def _cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:
+        """Clean up audio buffers for queue items that are no longer needed.
+
+        This clears buffers for items at index <= current_index - 2, keeping only:
+        - The previous track (current_index - 1)
+        - The current track (current_index)
+        - The next track (current_index + 1, handled by preloading)
+
+        :param queue_id: The queue ID to clean up buffers for.
+        :param current_index: The current playing index in the queue.
+        """
+        if current_index < 2:
+            return  # Nothing to clean up yet
+
+        queue_items = self._queue_items.get(queue_id, [])
+        cleanup_threshold = current_index - 2
+        buffers_cleared = 0
+
+        for idx, item in enumerate(queue_items):
+            if idx > cleanup_threshold:
+                break  # No need to check further
+            if item.streamdetails and item.streamdetails.buffer:
+                self.logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Clearing stale audio buffer for queue item %s (index %d) in queue %s",
+                    item.name,
+                    idx,
+                    queue_id,
+                )
+                await item.streamdetails.buffer.clear()
+                item.streamdetails.buffer = None
+                buffers_cleared += 1
+
+        if buffers_cleared > 0:
+            self.logger.debug(
+                "Cleared %d stale audio buffer(s) for queue %s (items before index %d)",
+                buffers_cleared,
+                queue_id,
+                cleanup_threshold + 1,
+            )
+
+    async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
+        """Clean up all audio-related data for a queue when it is stopped or cleared.
+
+        This clears:
+        - All audio buffers attached to queue item streamdetails
+        - Any pending crossfade data for the queue
+
+        :param queue_id: The queue ID to clean up.
+        """
+        self.mass.streams.audio.clear_crossfade_data(queue_id)
+
+        queue_items = self._queue_items.get(queue_id, [])
+        buffers_cleared = 0
+
+        for item in queue_items:
+            if item.streamdetails and item.streamdetails.buffer:
+                await item.streamdetails.buffer.clear()
+                item.streamdetails.buffer = None
+                buffers_cleared += 1
+
+        if buffers_cleared > 0:
+            self.logger.debug(
+                "Cleared %d audio buffer(s) for stopped/cleared queue %s",
+                buffers_cleared,
+                queue_id,
+            )
 
 
 async def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
