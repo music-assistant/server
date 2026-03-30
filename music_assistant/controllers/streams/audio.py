@@ -948,6 +948,11 @@ class StreamsAudio:
                 return
             self.logger.debug("Attached loudness analyzer to buffer for %s", streamdetails.uri)
             audio_buffer.register_chunk_callback(_on_chunk)
+
+            def _on_cancel() -> None:
+                chunk_queue.put_nowait(None)
+
+            audio_buffer.register_cancel_callback(_on_cancel)
             # start the FFmpeg analysis process
             await _run_analysis()
 

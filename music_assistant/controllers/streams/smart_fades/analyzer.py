@@ -125,6 +125,12 @@ class SmartFadesAnalyzer:
             )
             audio_buffer.register_chunk_callback(_on_chunk)
 
+            def _on_cancel() -> None:
+                outro_chunks.clear()
+                intro_chunks.clear()
+
+            audio_buffer.register_cancel_callback(_on_cancel)
+
         self.streams.mass.create_task(_attach)
 
     async def analyze(
