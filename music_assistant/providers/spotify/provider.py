@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    AudioError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -795,15 +796,23 @@ class SpotifyProvider(MusicProvider):
             current_seek_seconds = int(current_seek_ms // 1000)
 
             # Stream chapters starting from the calculated position
+            consecutive_failures = 0
             for i in range(start_chapter, len(chapter_uris)):
                 chapter_uri = chapter_uris[i]
                 chapter_seek = current_seek_seconds if i == start_chapter else 0
 
                 try:
+                    chunk_count = 0
                     async for chunk in self.streamer.stream_spotify_uri(chapter_uri, chapter_seek):
                         yield chunk
+                        chunk_count += 1
+                    if chunk_count > 0:
+                        consecutive_failures = 0
                 except Exception as e:
-                    self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
+                    self.logger.warning("Chapter %s streaming failed", i + 1)
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        raise AudioError("Audiobook streaming failed") from e
                     continue
         else:
             # Handle normal tracks and podcast episodes
