@@ -1099,11 +1099,9 @@ class StreamsController(CoreController):
     async def _periodic_garbage_collection(self) -> None:
         """Periodic garbage collection to free up memory from audio buffers and streams."""
         self.logger.log(VERBOSE_LOG_LEVEL, "Running periodic garbage collection...")
-        # Run garbage collection in executor to avoid blocking the event loop
-        # Since this runs periodically (not in response to subprocess cleanup),
-        # it's safe to run in a thread without causing thread-safety issues
-        loop = asyncio.get_running_loop()
-        collected = await loop.run_in_executor(None, gc.collect)
+        # Run gc.collect on the event loop thread to avoid thread-safety issues
+        # with StreamWriter.__del__ calling close() which requires the event loop thread
+        collected = gc.collect()
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Garbage collection completed, collected %d objects", collected
         )
