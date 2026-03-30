@@ -53,6 +53,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
@@ -1713,6 +1714,8 @@ class ConfigController:
                 # add flow mode entry for http-based players that do not already enforce it
                 if not player.requires_flow_mode:
                     default_entries.append(CONF_ENTRY_FLOW_MODE)
+        if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
+            default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries
         player_entries = await player.get_config_entries(action=action, values=values)
         players_keys = {entry.key for entry in player_entries}
