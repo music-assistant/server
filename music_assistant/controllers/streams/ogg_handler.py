@@ -1,4 +1,5 @@
-"""Handler for chained OGG streams used in internet radio.
+"""
+Handler for chained OGG streams used in internet radio.
 
 FFmpeg cannot handle chained OGG streams (multiple logical bitstreams). This module
 stitches them into a single continuous stream by skipping EOS/BOS boundaries and
@@ -350,21 +351,20 @@ async def get_chained_ogg_stream(
     url: str,
     metadata_callback: Callable[[dict[str, str]], Any] | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Yield continuous OGG data from a chained stream, stitching chain boundaries.
+    """
+    Yield continuous OGG data from a chained stream, stitching chain boundaries.
 
     :param mass: MusicAssistant instance.
     :param url: URL of the OGG radio stream.
     :param metadata_callback: Optional callback invoked on metadata changes.
     """
-    from music_assistant.helpers.audio import get_reconnecting_radio_stream  # noqa: PLC0415
-
     state = _ChainedOggState(metadata_callback)
     buffer = bytearray()
 
     LOGGER.debug("Starting chained OGG stream handler for %s", url)
 
     try:
-        async for chunk in get_reconnecting_radio_stream(mass, url):
+        async for chunk in mass.streams.audio.get_reconnecting_radio_stream(url):
             buffer.extend(chunk)
 
             while True:

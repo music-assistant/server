@@ -74,7 +74,6 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
-    CONF_ENTRY_SMART_FADES_MODE,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
@@ -93,12 +92,18 @@ from music_assistant.constants import (
     CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
     NON_HTTP_PROVIDERS,
+)
+from music_assistant.controllers.streams.constants import (
+    CONF_BUFFER_SIZE,
+    CONF_BUFFER_SIZE_DEFAULT,
+    BufferSize,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
@@ -1730,8 +1735,33 @@ class ConfigController:
 
         # some base entries for all player types
         # note that these may NOT be playback/audio related
+        buffer_size = self.get_raw_core_config_value(
+            "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
+        )
+        # smart crossfade needs a larger buffer for beat analysis
+        smart_fades_options = [
+            ConfigValueOption("Disabled", "disabled"),
+            ConfigValueOption("Standard Crossfade", "standard_crossfade"),
+        ]
+        if buffer_size != BufferSize.MINIMAL:
+            smart_fades_options.insert(1, ConfigValueOption("Smart Crossfade", "smart_crossfade"))
+
         entries += [
-            CONF_ENTRY_SMART_FADES_MODE,
+            ConfigEntry(
+                key=CONF_SMART_FADES_MODE,
+                type=ConfigEntryType.STRING,
+                label="Enable Smart Fades",
+                options=smart_fades_options,
+                default_value="disabled",
+                description="Select the crossfade mode to use when transitioning "
+                "between tracks.\n\n"
+                "- 'Smart Crossfade': Uses beat matching and EQ filters to create "
+                "smooth transitions between tracks.\n"
+                "- 'Standard Crossfade': Regular crossfade that crossfades the "
+                "last/first x-seconds of a track.",
+                category="playback",
+                requires_reload=True,
+            ),
             CONF_ENTRY_CROSSFADE_DURATION,
             # we allow volume normalization/output limiter here as it is a per-queue(player) setting
             CONF_ENTRY_VOLUME_NORMALIZATION,

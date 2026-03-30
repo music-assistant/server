@@ -42,7 +42,6 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     verify_ssl_certificate,
 )
 from music_assistant.helpers.api import parse_arguments
-from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
@@ -474,7 +473,9 @@ class WebserverController(CoreController):
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
+        async for chunk in self.mass.streams.get_preview_stream(
+            provider_instance_id_or_domain, item_id
+        ):
             await resp.write(chunk)
         return resp
 
