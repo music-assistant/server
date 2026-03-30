@@ -120,11 +120,7 @@ class AudioAnalysisController:
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker
             self._queues.pop(session_key, None)
-            self._dispatch_to_providers(
-                self._active_sessions.pop(session_key, None),
-                session_key,
-                finalize=True,
-            )
+            self._finalize_providers(session_key)
 
         def _on_cancel() -> None:
             self.logger.debug("Cancelling analysis session %s", session_key)
@@ -132,11 +128,7 @@ class AudioAnalysisController:
             worker = self._workers.pop(session_key, None)
             if worker is not None:
                 worker.cancel()
-            self._dispatch_to_providers(
-                self._active_sessions.pop(session_key, None),
-                session_key,
-                finalize=False,
-            )
+            self._cancel_providers(session_key)
 
         audio_buffer.register_chunk_callback(_on_chunk)
         audio_buffer.register_cancel_callback(_on_cancel)
@@ -172,22 +164,25 @@ class AudioAnalysisController:
                 provider_ids.add(provider.instance_id)
         return provider_ids
 
-    def _dispatch_to_providers(
-        self,
-        provider_ids: set[str] | None,
-        session_key: str,
-        *,
-        finalize: bool,
-    ) -> None:
-        """Fire-and-forget finalize or cancel to each provider."""
+    def _finalize_providers(self, session_key: str) -> None:
+        """Fire-and-forget finalize to each provider in the session."""
+        provider_ids = self._active_sessions.pop(session_key, None)
         if not provider_ids:
             return
-
         for provider_id in provider_ids:
             provider = self.mass.get_provider(provider_id)
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                coro = provider.finalize(session_key) if finalize else provider.cancel(session_key)
-                self.mass.create_task(coro)
+                self.mass.create_task(provider.finalize(session_key))
+
+    def _cancel_providers(self, session_key: str) -> None:
+        """Fire-and-forget cancel to each provider in the session."""
+        provider_ids = self._active_sessions.pop(session_key, None)
+        if not provider_ids:
+            return
+        for provider_id in provider_ids:
+            provider = self.mass.get_provider(provider_id)
+            if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
+                self.mass.create_task(provider.cancel(session_key))
 
     async def _chunk_worker(self, session_key: str, queue: asyncio.Queue[bytes | None]) -> None:
         """Background worker that processes queued PCM chunks sequentially."""
