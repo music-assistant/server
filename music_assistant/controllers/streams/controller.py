@@ -50,7 +50,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio
-from music_assistant.controllers.streams.audio_analysis_controller import AudioAnalysisController
+from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     CONF_BUFFER_SIZE,

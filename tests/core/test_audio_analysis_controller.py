@@ -14,7 +14,7 @@ from music_assistant_models.media_items import AudioFormat
 if not hasattr(ProviderType, "AUDIO_ANALYSIS"):
     ProviderType.AUDIO_ANALYSIS = "audio_analysis"  # type: ignore[attr-defined]
 
-from music_assistant.controllers.streams.audio_analysis_controller import (
+from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
