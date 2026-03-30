@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from contextlib import suppress
 from ipaddress import ip_address
 from typing import cast
 
@@ -382,6 +383,8 @@ class AirPlayProvider(PlayerProvider):
             await writer.drain()
         finally:
             writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
 
     def get_players(self) -> list[AirPlayPlayer]:
         """Return all airplay players belonging to this instance."""
