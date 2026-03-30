@@ -146,3 +146,48 @@ async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> N
 
     assert tokens == {}
     assert any("no location configured" in message for message in caplog.messages)
+
+
+def test_plan_sections_ignores_invalid_optional_chance() -> None:
+    """Treat non-numeric OPTIONAL chance values as zero during planning."""
+    runtime = DummyRuntime()
+    station = {
+        "sections": [
+            {
+                "id": "Song_Transition",
+                "name": "Song Transition",
+                "type": "ai_text",
+                "prompt": "Transition from <prev_songinfo> to <next_songinfo>",
+            }
+        ],
+        "section_order": [
+            {
+                "when": "between_songs",
+                "flow": [
+                    {
+                        "OPTIONAL": {
+                            "section": "Song_Transition",
+                            "chance": "not-a-number",
+                        }
+                    }
+                ],
+            }
+        ],
+        "general": {"timezone": "UTC"},
+    }
+    tracks = [
+        {"name": "A", "artist": "Artist A", "songinfo": "Artist A - A", "duration": 180},
+        {"name": "B", "artist": "Artist B", "songinfo": "Artist B - B", "duration": 180},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        tracks=tracks,
+        station=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={},
+    )
+
+    assert planned == []

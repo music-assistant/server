@@ -210,3 +210,26 @@ def test_normalize_station_rejects_non_meta_merge_section() -> None:
 
     with pytest.raises(InvalidDataError, match="must reference an ai_meta section"):
         storage._normalize_station(station)
+
+
+def test_normalize_station_rejects_non_numeric_optional_chance() -> None:
+    """Reject OPTIONAL flow entries with non-numeric chance values."""
+    storage = DummyStorage()
+    storage._sections = {"Song_Transition": _section("Song_Transition")}
+    station = _station(["Song_Transition"])
+    station["section_order"] = [
+        {
+            "when": "between_songs",
+            "flow": [
+                {
+                    "OPTIONAL": {
+                        "section": "Song_Transition",
+                        "chance": "invalid",
+                    }
+                }
+            ],
+        }
+    ]
+
+    with pytest.raises(InvalidDataError, match="OPTIONAL chance must be numeric"):
+        storage._normalize_station(station)

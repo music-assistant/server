@@ -383,6 +383,11 @@ class AIRadioStorageMixin:
                     if not isinstance(optional, dict):
                         raise InvalidDataError("OPTIONAL flow must be an object")
                     _ensure_known(str(optional.get("section", "")).strip())
+                    chance_raw = optional.get("chance", 0)
+                    try:
+                        float(chance_raw)
+                    except (TypeError, ValueError) as err:
+                        raise InvalidDataError("OPTIONAL chance must be numeric") from err
                     continue
                 if "ALTERNATIVE" in item:
                     alternative = item.get("ALTERNATIVE")

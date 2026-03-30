@@ -620,7 +620,7 @@ class AIRadioRuntimeMixin:
                         section_id = str(optional.get("section", "")).strip()
                         if not section_id:
                             continue
-                        chance_raw = float(optional.get("chance", 0))
+                        chance_raw = coerce_float(optional.get("chance"), 0.0)
                         chance = chance_raw / 100.0 if chance_raw > 1 else chance_raw
                         if rng.random() > chance:
                             continue
