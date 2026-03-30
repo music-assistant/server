@@ -1017,13 +1017,6 @@ class Player(ABC):
             # Check if the protocol player is actually available
             protocol_player = self.mass.players.get_player(linked.output_protocol_id)
             is_available = protocol_player.available if protocol_player else False
-            if protocol_player and not is_available:
-                self.logger.debug(
-                    "Protocol player %s (%s) is unavailable for %s",
-                    linked.output_protocol_id,
-                    linked.protocol_domain,
-                    self.display_name,
-                )
             # Use provider name if available, else domain title
             if protocol_player:
                 name = protocol_player.provider.name
