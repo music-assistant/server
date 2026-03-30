@@ -10,7 +10,10 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import ProviderType
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.audio_analysis_provider import (
+    AudioAnalysisAlreadyExists,
+    AudioAnalysisProvider,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -72,15 +75,6 @@ class AudioAnalysisController:
             self.logger.debug("No audio analysis providers available")
             return
 
-        # Only analyze from the start of a track (no seek)
-        if stream_details.seek_position > 0:
-            self.logger.debug(
-                "Not starting analysis for %s because seek position is %d",
-                stream_details.uri,
-                stream_details.seek_position,
-            )
-            return
-
         session_key = (
             f"{stream_details.provider}:{stream_details.media_type}:{stream_details.item_id}"
         )
@@ -93,7 +87,7 @@ class AudioAnalysisController:
             )
             return
 
-        provider_ids = await self._start_providers(
+        provider_ids = await self._start_analysis_on_providers(
             session_key, stream_details, audio_buffer.pcm_format, providers
         )
         if not provider_ids:
@@ -105,7 +99,7 @@ class AudioAnalysisController:
         self._queues[session_key] = queue
         self._workers[session_key] = self.mass.create_task(self._chunk_worker(session_key, queue))
 
-        # Build and register closures on the audio buffer
+        # Build and register closures for callbacks on the audio buffer
         finalized = False
 
         def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
@@ -147,20 +141,14 @@ class AudioAnalysisController:
         audio_buffer.register_chunk_callback(_on_chunk)
         audio_buffer.register_cancel_callback(_on_cancel)
 
-    async def _start_providers(
+    async def _start_analysis_on_providers(
         self,
         session_key: str,
         stream_details: StreamDetails,
         audio_format: AudioFormat,
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
-        """Call start_analysis on each provider, returning IDs of those that accepted.
-
-        :param session_key: The session key for this analysis.
-        :param stream_details: The stream details for the item being analyzed.
-        :param audio_format: PCM format of the audio stream.
-        :param providers: List of available analysis providers.
-        """
+        """Call start_analysis on each provider, returning IDs of those that accepted."""
         provider_ids: set[str] = set()
         for provider in providers:
             try:
@@ -169,13 +157,19 @@ class AudioAnalysisController:
                     stream_details=stream_details,
                     audio_format=audio_format,
                 )
-                provider_ids.add(provider.instance_id)
+            except AudioAnalysisAlreadyExists:
+                self.logger.debug(
+                    "Analysis already exists for provider %s, skipping",
+                    provider.name,
+                )
             except Exception as err:
                 self.logger.warning(
                     "Failed to start analysis on provider %s: %s",
                     provider.name,
                     err,
                 )
+            else:
+                provider_ids.add(provider.instance_id)
         return provider_ids
 
     def _dispatch_to_providers(
@@ -185,12 +179,7 @@ class AudioAnalysisController:
         *,
         finalize: bool,
     ) -> None:
-        """Fire-and-forget finalize or cancel to each provider.
-
-        :param provider_ids: Set of provider instance IDs to dispatch to.
-        :param session_key: The session key for this analysis.
-        :param finalize: If True, call finalize; otherwise call cancel.
-        """
+        """Fire-and-forget finalize or cancel to each provider."""
         if not provider_ids:
             return
 
@@ -201,11 +190,7 @@ class AudioAnalysisController:
                 self.mass.create_task(coro)
 
     async def _chunk_worker(self, session_key: str, queue: asyncio.Queue[bytes | None]) -> None:
-        """Background worker that processes queued PCM chunks sequentially.
-
-        :param session_key: The session key for this worker.
-        :param queue: Queue of PCM chunks (None sentinel signals shutdown).
-        """
+        """Background worker that processes queued PCM chunks sequentially."""
         while True:
             chunk = await queue.get()
             if chunk is None:

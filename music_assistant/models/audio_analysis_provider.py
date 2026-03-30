@@ -6,6 +6,8 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from music_assistant_models.errors import MusicAssistantError
+
 from .provider import Provider
 
 if TYPE_CHECKING:
@@ -16,6 +18,10 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
+
+
+class AudioAnalysisAlreadyExists(MusicAssistantError):
+    """Raised when audio analysis already exists for a track at the current version."""
 
 
 @dataclass
@@ -84,7 +90,9 @@ class AudioAnalysisProvider(Provider):
                 stored_version,
                 self.analysis_version,
             )
-            return
+            raise AudioAnalysisAlreadyExists(
+                f"Analysis for {stream_details.item_id} already at version {stored_version}"
+            )
 
         self._sessions[session_id] = AnalysisSessionData(
             stream_details=stream_details,
