@@ -114,7 +114,7 @@ class AudioAnalysisProvider(Provider):
         """
 
     @abstractmethod
-    async def finalize(self, session_id: str) -> None:
+    async def _finalize(self, session_id: str) -> None:
         """Finalize analysis and store results.
 
         Called when the track has finished streaming. Providers are responsible
@@ -122,6 +122,19 @@ class AudioAnalysisProvider(Provider):
 
         :param session_id: The analysis session ID.
         """
+
+    async def finalize(self, session_id: str) -> None:
+        """Finalize analysis and clean up session state.
+
+        Calls _finalize, then removes the session from _sessions.
+        The controller calls this method — providers override _finalize.
+
+        :param session_id: The analysis session ID.
+        """
+        try:
+            await self._finalize(session_id)
+        finally:
+            self._sessions.pop(session_id, None)
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""
