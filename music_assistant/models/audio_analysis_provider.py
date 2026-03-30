@@ -6,8 +6,6 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant_models.errors import MusicAssistantError
-
 from .provider import Provider
 
 if TYPE_CHECKING:
@@ -18,10 +16,6 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
-
-
-class AudioAnalysisAlreadyExists(MusicAssistantError):
-    """Raised when audio analysis already exists for a track at the current version."""
 
 
 @dataclass
@@ -68,32 +62,14 @@ class AudioAnalysisProvider(Provider):
     ) -> None:
         """Start analysis for a new session.
 
-        Called when a new track starts streaming. The default implementation
-        short-circuits if the stored analysis version matches the provider's
-        current version, then stores stream_details and audio_format in
-        self._sessions. Override to initialize richer per-session state,
-        but call super() first and check if the session was created.
+        Called when a new track starts streaming. The controller has already
+        verified that analysis is needed (version check passed). Override to
+        initialize richer per-session state, but call super() first.
 
         :param session_id: Session ID created by the AudioAnalysisController.
         :param stream_details: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
-        stored_version = await self.mass.music.get_audio_analysis_version(
-            stream_details.item_id,
-            stream_details.provider,
-            self.domain,
-        )
-        if stored_version is not None and stored_version >= self.analysis_version:
-            self.logger.debug(
-                "Skipping analysis for %s (stored version %d >= current %d)",
-                stream_details.item_id,
-                stored_version,
-                self.analysis_version,
-            )
-            raise AudioAnalysisAlreadyExists(
-                f"Analysis for {stream_details.item_id} already at version {stored_version}"
-            )
-
         self._sessions[session_id] = AnalysisSessionData(
             stream_details=stream_details,
             audio_format=audio_format,

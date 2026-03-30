@@ -66,6 +66,7 @@ def mock_mass(mock_provider: MagicMock) -> MagicMock:
     mass.create_task = MagicMock(side_effect=lambda coro: asyncio.ensure_future(coro))
     mass.get_providers = MagicMock(return_value=[mock_provider])
     mass.get_provider = MagicMock(return_value=mock_provider)
+    mass.music.get_audio_analysis_version = AsyncMock(return_value=None)
     return mass
 
 

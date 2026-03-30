@@ -10,10 +10,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import ProviderType
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.models.audio_analysis_provider import (
-    AudioAnalysisAlreadyExists,
-    AudioAnalysisProvider,
-)
+from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -140,19 +137,34 @@ class AudioAnalysisController:
         audio_format: AudioFormat,
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
-        """Call start_analysis on each provider, returning IDs of those that accepted."""
+        """Call start_analysis on each provider, returning IDs of those that accepted.
+
+        :param session_key: The session key for this analysis.
+        :param stream_details: The stream details for the item being analyzed.
+        :param audio_format: PCM format of the audio stream.
+        :param providers: List of available analysis providers.
+        """
         provider_ids: set[str] = set()
         for provider in providers:
+            stored_version = await self.mass.music.get_audio_analysis_version(
+                stream_details.item_id,
+                stream_details.provider,
+                provider.domain,
+            )
+            if stored_version is not None and stored_version >= provider.analysis_version:
+                self.logger.debug(
+                    "Analysis already exists for provider %s (version %d >= %d), skipping",
+                    provider.name,
+                    stored_version,
+                    provider.analysis_version,
+                )
+                continue
+
             try:
                 await provider.start_analysis(
                     session_id=session_key,
                     stream_details=stream_details,
                     audio_format=audio_format,
-                )
-            except AudioAnalysisAlreadyExists:
-                self.logger.debug(
-                    "Analysis already exists for provider %s, skipping",
-                    provider.name,
                 )
             except Exception as err:
                 self.logger.warning(
