@@ -857,6 +857,8 @@ class PlexRemoteControlServer:
         This is called when the play queue is modified (items added, removed, reordered).
         We need to sync the entire updated queue state to MA while preserving playback.
         """
+        # Set flag to prevent circular updates
+        self._updating_from_plex = True
         try:
             play_queue_id = request.query.get("playQueueID")
 
@@ -955,6 +957,8 @@ class PlexRemoteControlServer:
         except Exception as e:
             LOGGER.exception(f"Error handling refreshPlayQueue: {e}")
             return web.Response(status=500, text=str(e))
+        finally:
+            self._updating_from_plex = False
 
     async def handle_create_play_queue(self, request: web.Request) -> web.Response:
         """
