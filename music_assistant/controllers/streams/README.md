@@ -69,7 +69,7 @@ Supporting modules in `helpers/`:
 ### Buffer Modes
 
 - **SEEKABLE** (tracks): Maintains a deque of 1-second PCM chunks with seek support. Old chunks are discarded when the buffer reaches max size
-- **ROLLING** (radio/non-seekable): Short buffer (~10 seconds) that continuously discards old data
+- **ROLLING** (radio/non-seekable): Short FIFO buffer (~15 seconds) where the consumer pops chunks sequentially
 
 ### Key Methods
 
@@ -78,7 +78,7 @@ Supporting modules in `helpers/`:
 - `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
 - `AudioBuffer.register_chunk_callback()` - Register a callback to observe chunks as they are buffered
-- `AudioBuffer.ready` - Event set when the first chunk is available
+- `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 
 ### Buffer Lifecycle
 
@@ -134,7 +134,7 @@ AudioBuffer supports registering chunk callbacks that receive raw PCM data as it
 - Result stored for future volume normalization (avoids dynamic mode overhead)
 
 ### Smart Fades Beat Analysis
-- Attached automatically for seekable tracks
+- Attached automatically for music tracks (MediaType.TRACK only, not podcasts/audiobooks)
 - Collects first 45 seconds (intro) and last 45 seconds (outro) of audio
 - Triggers librosa beat detection in a background thread
 - Results cached for crossfade timing decisions
@@ -164,7 +164,7 @@ Key configuration entries (in streams controller config):
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `buffer_size` | String | `balanced` (>=4GB) / `minimal` (<4GB) | Audio buffer size preset |
-| `volume_normalization_radio` | String | `fallback_fixed_gain` | Normalization mode for radio |
+| `buffer_size` | String | Memory-dependent (`maximum` >=8GB, `balanced` >=4GB, `minimal` <4GB) | Audio buffer size preset |
+| `volume_normalization_radio` | String | `fallback_dynamic` | Normalization mode for radio |
 | `volume_normalization_tracks` | String | `fallback_dynamic` | Normalization mode for tracks |
 | `allow_crossfade_same_album` | Boolean | `false` | Whether to crossfade consecutive album tracks |
