@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import socket
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
@@ -769,9 +770,17 @@ def get_zeroconf_args(
                     has_ipv4 = True
                     interface_ips.append(ip_str)
 
-    # Determine IP version based on available addresses
-    if has_ipv4 and has_ipv6:
+    # Determine IP version based on available addresses.
+    # On macOS/FreeBSD, zeroconf's IPVersion.All creates an AF_INET6 listen socket
+    # that cannot join IPv4 multicast groups, silently breaking discovery of
+    # IPv4-only devices. Fall back to V4Only on those platforms.
+    has_functional_dual_stack = not sys.platform.startswith(
+        "freebsd"
+    ) and not sys.platform.startswith("darwin")
+    if has_ipv4 and has_ipv6 and has_functional_dual_stack:
         ip_version = IPVersion.All
+    elif has_ipv4:
+        ip_version = IPVersion.V4Only
     elif has_ipv6:
         ip_version = IPVersion.V6Only
     else:
