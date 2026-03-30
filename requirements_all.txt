@@ -63,6 +63,7 @@ python-fullykiosk==0.0.14
 python-slugify==8.0.4
 pytz==2025.2
 pywidevine==1.9.0
+qqmusic-api-python==0.4.1
 radios==0.3.2
 rokuecp==0.19.5
 shortuuid==1.0.13
