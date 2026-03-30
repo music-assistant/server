@@ -580,9 +580,7 @@ class PlayerQueuesController(CoreController):
                     queue.enqueued_media_items.append(media_item)
                     if len(queue.enqueued_media_items) > 10:
                         queue.enqueued_media_items.pop(0)
-                    if isinstance(media_item, Playlist) and getattr(
-                        media_item, "is_dynamic", False
-                    ):
+                    if isinstance(media_item, Playlist) and media_item.is_dynamic:
                         radio_source.append(media_item)
 
                 # handle default enqueue option if needed
@@ -1906,7 +1904,7 @@ class PlayerQueuesController(CoreController):
             "Fetching tracks to play for playlist %s",
             playlist.name,
         )
-        force_refresh = bool(getattr(playlist, "is_dynamic", False))
+        force_refresh = playlist.is_dynamic
         # TODO: Handle other sort options etc.
         async for playlist_track in self.mass.music.playlists.tracks(
             playlist.item_id,
@@ -2087,7 +2085,7 @@ class PlayerQueuesController(CoreController):
             (
                 item
                 for item in reversed(queue.radio_source)
-                if isinstance(item, Playlist) and getattr(item, "is_dynamic", False)
+                if isinstance(item, Playlist) and item.is_dynamic
             ),
             None,
         )
@@ -2858,7 +2856,7 @@ class PlayerQueuesController(CoreController):
                 (
                     item
                     for item in reversed(queue.radio_source)
-                    if isinstance(item, Playlist) and getattr(item, "is_dynamic", False)
+                    if isinstance(item, Playlist) and item.is_dynamic
                 ),
                 None,
             )
@@ -2867,7 +2865,7 @@ class PlayerQueuesController(CoreController):
                     (
                         item
                         for item in reversed(queue.enqueued_media_items)
-                        if isinstance(item, Playlist) and getattr(item, "is_dynamic", False)
+                        if isinstance(item, Playlist) and item.is_dynamic
                     ),
                     None,
                 )
