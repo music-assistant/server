@@ -11,6 +11,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from uuid import uuid4
 
 import pytest
 from music_assistant_models.enums import AlbumType, MediaType
@@ -19,6 +20,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    ProviderMapping,
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
@@ -35,6 +37,7 @@ from music_assistant.constants import (
     DEFAULT_GENRE_MAPPING,
 )
 from music_assistant.controllers.media.genres import GenreController
+from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
 
 # ---------------------------------------------------------------------------
@@ -76,13 +79,25 @@ def _make_genre(name: str, favorite: bool = False) -> Genre:
     )
 
 
+def _library_provider_mapping() -> set[ProviderMapping]:
+    """Create a provider mapping set with in_library=True and a unique provider_item_id."""
+    return {
+        ProviderMapping(
+            item_id=uuid4().hex,
+            provider_domain="library",
+            provider_instance="library",
+            in_library=True,
+        )
+    }
+
+
 async def _add_test_artist(mass: MusicAssistant, name: str) -> Artist:
     """Add a minimal artist to the library."""
     artist = Artist(
         item_id="0",
         provider="library",
         name=name,
-        provider_mappings=set(),
+        provider_mappings=_library_provider_mapping(),
     )
     return await mass.music.artists.add_item_to_library(artist)
 
@@ -94,7 +109,7 @@ async def _add_test_track(mass: MusicAssistant, name: str) -> Track:
         item_id="0",
         provider="library",
         name=name,
-        provider_mappings=set(),
+        provider_mappings=_library_provider_mapping(),
         artists=UniqueList([artist]),
     )
     return await mass.music.tracks.add_item_to_library(track)
@@ -106,7 +121,7 @@ async def _add_test_album(mass: MusicAssistant, name: str) -> Album:
         item_id="0",
         provider="library",
         name=name,
-        provider_mappings=set(),
+        provider_mappings=_library_provider_mapping(),
         album_type=AlbumType.ALBUM,
     )
     return await mass.music.albums.add_item_to_library(album)
@@ -221,16 +236,152 @@ class TestGenreCRUD:
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
 
     async def test_library_items_search(self, genre_ctrl: GenreController) -> None:
-        """Search 'country' returns only matching genres."""
-        await genre_ctrl.add_item_to_library(_make_genre("Country"))
+        """Search 'country' returns Country genre but not unrelated ones like Metal."""
         await genre_ctrl.add_item_to_library(_make_genre("Metal"))
         items = await genre_ctrl.library_items(search="country", hide_empty=False)
-        assert all("country" in g.name.lower() for g in items)
+        names = {g.name for g in items}
+        assert "country" in names
+        assert "Metal" not in names
+
+    async def test_library_items_hide_empty_true(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """hide_empty=True returns only genres with media mappings."""
+        mapped = await genre_ctrl.add_item_to_library(_make_genre("HideEmptyMapped"))
+        await genre_ctrl.add_item_to_library(_make_genre("HideEmptyUnmapped"))
+        track = await _add_test_track(mass, "HideEmpty Track")
+        await genre_ctrl.add_media_mapping(
+            int(mapped.item_id), MediaType.TRACK, track.item_id, "HideEmptyMapped"
+        )
+        items = await genre_ctrl.library_items(hide_empty=True)
+        names = {g.name for g in items}
+        assert "HideEmptyMapped" in names
+        assert "HideEmptyUnmapped" not in names
+
+    async def test_library_items_hide_empty_false(self, genre_ctrl: GenreController) -> None:
+        """hide_empty=False returns all genres regardless of mappings."""
+        await genre_ctrl.add_item_to_library(_make_genre("HideEmptyFalseGenre"))
+        items = await genre_ctrl.library_items(hide_empty=False)
+        names = {g.name for g in items}
+        assert "HideEmptyFalseGenre" in names
+
+    async def test_library_items_hide_empty_none_returns_default_genres(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """hide_empty=None (default) returns only default genres (translation_key IS NOT NULL).
+
+        Default genres are seeded via restore_default_genres (translation_key IS NOT NULL).
+        Non-default genres created via _find_genres_for_alias mirror the library scan path
+        and store translation_key=NULL in the DB.
+        """
+        await genre_ctrl.restore_default_genres()
+        scanned_name = "ScannedNonDefaultGenreXyz"
+        await genre_ctrl._find_genres_for_alias(scanned_name)
+
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        items = await genre_ctrl.library_items(hide_empty=None)
+        names = {g.name for g in items}
+        assert default_genre_name in names
+        assert scanned_name not in names
+
+    async def test_library_items_default_is_hide_empty_none(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Calling library_items() with no hide_empty arg behaves like hide_empty=None."""
+        await genre_ctrl.restore_default_genres()
+        await genre_ctrl._find_genres_for_alias("DefaultArgScannedGenreXyz")
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        items_default = await genre_ctrl.library_items()
+        items_none = await genre_ctrl.library_items(hide_empty=None)
+        assert {g.item_id for g in items_default} == {g.item_id for g in items_none}
+        names = {g.name for g in items_default}
+        assert default_genre_name in names
+        assert "DefaultArgScannedGenreXyz" not in names
 
     async def test_library_items_rejects_genre_param(self, genre_ctrl: GenreController) -> None:
         """library_items(genre=1) raises ValueError."""
         with pytest.raises(ValueError, match="genre parameter is not supported"):
             await genre_ctrl.library_items(genre=1)
+
+    async def test_library_items_media_type_filter(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """media_type filter returns all non-empty genres for that type, including non-defaults.
+
+        Verifies:
+        - Non-default genres (no translation_key) with mappings ARE returned — the default
+          translation_key IS NOT NULL filter is bypassed when media_type is set.
+        - Genres mapped only to another type are excluded.
+        - Default genres (with translation_key) that have no mapping for the type are excluded.
+        - A genre mapped to multiple types appears in results for each of those types.
+        - search composing with media_type works correctly.
+        - No mappings for the requested type returns an empty list.
+        """
+        track_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterTrackOnlyGenre"))
+        album_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterAlbumOnlyGenre"))
+        shared_genre = await genre_ctrl.add_item_to_library(_make_genre("MT_FilterSharedGenre"))
+
+        track = await _add_test_track(mass, "MT Filter Track")
+        album = await _add_test_album(mass, "MT Filter Album")
+        await genre_ctrl.add_media_mapping(
+            int(track_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterTrackOnlyGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(album_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterAlbumOnlyGenre"
+        )
+        # shared_genre is mapped to both tracks and albums
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.TRACK, track.item_id, "MT_FilterSharedGenre"
+        )
+        await genre_ctrl.add_media_mapping(
+            int(shared_genre.item_id), MediaType.ALBUM, album.item_id, "MT_FilterSharedGenre"
+        )
+
+        # Add a default genre (has translation_key) that has NO mappings for any type —
+        # it must not appear in media_type results even though hide_empty=None would normally
+        # include all defaults.
+        await genre_ctrl.restore_default_genres()
+
+        track_results = await genre_ctrl.library_items(media_type=MediaType.TRACK)
+        track_names = {g.name for g in track_results}
+        assert "MT_FilterTrackOnlyGenre" in track_names, (
+            "track-mapped genre missing from TRACK results"
+        )
+        assert "MT_FilterSharedGenre" in track_names, "shared genre missing from TRACK results"
+        assert "MT_FilterAlbumOnlyGenre" not in track_names, (
+            "album-only genre appeared in TRACK results"
+        )
+        # Unmapped default genres must not bleed through —
+        # media_type overrides the translation_key filter
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
+        assert default_genre_name not in track_names, (
+            "unmapped default genre appeared in TRACK results"
+        )
+
+        album_results = await genre_ctrl.library_items(media_type=MediaType.ALBUM)
+        album_names = {g.name for g in album_results}
+        assert "MT_FilterAlbumOnlyGenre" in album_names, (
+            "album-mapped genre missing from ALBUM results"
+        )
+        assert "MT_FilterSharedGenre" in album_names, "shared genre missing from ALBUM results"
+        assert "MT_FilterTrackOnlyGenre" not in album_names, (
+            "track-only genre appeared in ALBUM results"
+        )
+
+        # search composes correctly with media_type
+        search_results = await genre_ctrl.library_items(
+            media_type=MediaType.TRACK, search="MT_FilterShared"
+        )
+        search_names = {g.name for g in search_results}
+        assert "MT_FilterSharedGenre" in search_names
+        assert "MT_FilterTrackOnlyGenre" not in search_names
+
+        # No mappings for the requested type returns an empty list
+        playlist_results = await genre_ctrl.library_items(media_type=MediaType.PLAYLIST)
+        playlist_names = {g.name for g in playlist_results}
+        assert "MT_FilterTrackOnlyGenre" not in playlist_names
+        assert "MT_FilterAlbumOnlyGenre" not in playlist_names
+        assert "MT_FilterSharedGenre" not in playlist_names
 
     async def test_library_count(self, genre_ctrl: GenreController) -> None:
         """Returns correct count; favorite_only=True filters."""
@@ -476,10 +627,11 @@ class TestSyncMediaItemGenres:
     ) -> None:
         """New genre created, mapping exists."""
         track = await _add_test_track(mass, "Sync Track 1")
-        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Psytrance"})
+        unique_genre = "SzTestSyncGenreXYZ"
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {unique_genre})
         rows = await mass.music.database.get_rows_from_query(
             f"SELECT * FROM {DB_TABLE_GENRES} WHERE name = :name",
-            {"name": "Psytrance"},
+            {"name": unique_genre},
             limit=1,
         )
         assert len(rows) == 1
@@ -812,12 +964,14 @@ class TestRestoreDefaultGenres:
     """Tests for restore_default_genres."""
 
     async def test_restore_partial_on_empty(self, genre_ctrl: GenreController) -> None:
-        """Creates genres from DEFAULT_GENRE_MAPPING with self-aliases."""
+        """Partial restore on pre-seeded DB returns empty (nothing to add)."""
+        # Genres are already seeded during startup (_setup_database), so a partial
+        # restore is idempotent and returns no new genres.
         created = await genre_ctrl.restore_default_genres(full_restore=False)
-        assert len(created) > 0
-        for genre in created[:3]:
-            assert genre.genre_aliases is not None
-            assert genre.name in genre.genre_aliases
+        assert len(created) == 0
+        # Verify the default genres are actually present
+        count = await genre_ctrl.library_count()
+        assert count >= len(DEFAULT_GENRE_MAPPING)
 
     async def test_restore_partial_idempotent(self, genre_ctrl: GenreController) -> None:
         """Second call returns empty list (no duplicates)."""
@@ -984,20 +1138,17 @@ class TestQueryMethods:
         assert int(mapped.item_id) in result_ids
         assert int(unmapped.item_id) not in result_ids
 
-    async def test_library_items_hide_empty_default(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
-    ) -> None:
-        """Default (hide_empty=True) excludes unmapped genres."""
-        mapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterMapped"))
-        unmapped = await genre_ctrl.add_item_to_library(_make_genre("DefaultFilterUnmapped"))
-        track = await _add_test_track(mass, "DefaultFilter Track")
-        await genre_ctrl.add_media_mapping(
-            mapped.item_id, MediaType.TRACK, track.item_id, "DefaultFilterMapped"
-        )
+    async def test_library_items_hide_empty_default(self, genre_ctrl: GenreController) -> None:
+        """Default (hide_empty=None) returns only default genres (translation_key IS NOT NULL)."""
+        await genre_ctrl.restore_default_genres()
+        scanned = await genre_ctrl._find_genres_for_alias("DefaultFilterScannedXyz")
+        assert scanned
+
+        default_genre_name = DEFAULT_GENRE_MAPPING[0]["genre"]
         results = await genre_ctrl.library_items()
-        result_ids = {int(g.item_id) for g in results}
-        assert int(mapped.item_id) in result_ids
-        assert int(unmapped.item_id) not in result_ids
+        names = {g.name for g in results}
+        assert default_genre_name in names
+        assert "DefaultFilterScannedXyz" not in names
 
     async def test_library_items_show_all(
         self, mass: MusicAssistant, genre_ctrl: GenreController
@@ -1046,8 +1197,11 @@ class TestGenreLookupAndScanner:
         Regression test: a bare "pop" tag must not fan out to Rock/Punk/etc. that
         accumulated "pop" as a side-effect alias, when a dedicated Pop genre exists.
         """
-        pop_genre = await genre_ctrl.add_item_to_library(_make_genre("Pop"))
-        rock_genre = await genre_ctrl.add_item_to_library(_make_genre("Rock"))
+        # Use the pre-seeded Pop and Rock genres (seeded during startup).
+        pop_items = await genre_ctrl.library_items(search="Pop", hide_empty=False)
+        rock_items = await genre_ctrl.library_items(search="Rock", hide_empty=False)
+        pop_genre = next(g for g in pop_items if g.name == "pop")
+        rock_genre = next(g for g in rock_items if g.name == "rock")
         # Simulate "pop" being written as a secondary alias on Rock (the bug scenario)
         await genre_ctrl.add_alias(rock_genre.item_id, "pop")
 
@@ -1241,8 +1395,8 @@ class TestCleanupStaleMappings:
     async def test_empty_nondefault_genre_deleted(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Non-default genre (translation_key IS NULL) with no mappings is deleted."""
-        # _find_genres_for_alias creates genres without translation_key
+        """Non-default genre (is_default = 0) with no mappings is deleted."""
+        # _find_genres_for_alias creates genres with is_default = 0
         found = await genre_ctrl._find_genres_for_alias("CsNonDefault1XYZ99")
         assert len(found) == 1
         genre_id = found[0]
@@ -1905,3 +2059,182 @@ class TestPropagateGenreMappings:
         assert len(final_rows) == 1
         assert final_rows[0]["is_derived"] == 0
         assert final_rows[0]["alias"] == "TransitionGenre"
+
+
+# ===================================================================
+# Group N: Genre Media Counts (4 tests)
+# ===================================================================
+
+
+class TestGetGenreMediaCounts:
+    """Tests for get_genre_media_counts."""
+
+    async def test_empty_ids_returns_empty(self, genre_ctrl: GenreController) -> None:
+        """Empty input returns empty dict without hitting the database."""
+        result = await genre_ctrl.get_genre_media_counts([])
+        assert result == {}
+
+    async def test_all_media_types_present_with_zero_default(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Result contains every MEDIA_TABLES media type, defaulting to 0."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CountDefaults"))
+        gid = genre.item_id
+        result = await genre_ctrl.get_genre_media_counts([gid])
+        assert gid in result
+        expected_keys = {"track", "album", "artist", "playlist", "radio", "audiobook", "podcast"}
+        assert set(result[gid].keys()) == expected_keys
+        assert all(v == 0 for v in result[gid].values())
+
+    async def test_counts_track_mappings(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Track mappings are reflected in the track count; other types remain 0."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("CountTracks"))
+        track1 = await _add_test_track(mass, "CountTrack1")
+        track2 = await _add_test_track(mass, "CountTrack2")
+        gid = genre.item_id
+        await genre_ctrl.add_media_mapping(gid, MediaType.TRACK, track1.item_id, "CountTracks")
+        await genre_ctrl.add_media_mapping(gid, MediaType.TRACK, track2.item_id, "CountTracks")
+        result = await genre_ctrl.get_genre_media_counts([gid])
+        assert result[gid]["track"] == 2
+        assert result[gid]["album"] == 0
+
+    async def test_counts_multiple_genres_independently(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Counts for multiple genre IDs are computed independently."""
+        g1 = await genre_ctrl.add_item_to_library(_make_genre("MultiCountA"))
+        g2 = await genre_ctrl.add_item_to_library(_make_genre("MultiCountB"))
+        track = await _add_test_track(mass, "MultiCount Track")
+        album = await _add_test_album(mass, "MultiCount Album")
+        await genre_ctrl.add_media_mapping(
+            g1.item_id, MediaType.TRACK, track.item_id, "MultiCountA"
+        )
+        await genre_ctrl.add_media_mapping(
+            g2.item_id, MediaType.ALBUM, album.item_id, "MultiCountB"
+        )
+        result = await genre_ctrl.get_genre_media_counts([g1.item_id, g2.item_id])
+        assert result[g1.item_id]["track"] == 1
+        assert result[g1.item_id]["album"] == 0
+        assert result[g2.item_id]["album"] == 1
+        assert result[g2.item_id]["track"] == 0
+
+
+# ===================================================================
+# Group O: Global Genre Exclusion (9 tests)
+# ===================================================================
+
+# Two distinct default entries with a translation_key for the tests below.
+_tk_entries = [e for e in DEFAULT_GENRE_MAPPING if e.get("translation_key")]
+assert len(_tk_entries) >= 2, (
+    "DEFAULT_GENRE_MAPPING must contain at least two entries with a translation_key "
+    "for global genre exclusion tests"
+)
+_DEFAULT_ENTRY_A = _tk_entries[0]  # used for deletion-only test
+_DEFAULT_ENTRY_B = _tk_entries[1]  # used for delete-then-restore test
+
+
+class TestGlobalGenreExclusion:
+    """Tests for the global genre exclusion API and scanner guard."""
+
+    async def test_delete_sets_is_excluded_flag(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """remove_item_from_library sets is_excluded = 1 on the genre row."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("GblExcl1"))
+        genre_id = int(genre.item_id)
+        await genre_ctrl.remove_item_from_library(genre_id)
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row is not None
+        assert row["is_excluded"] == 1
+
+    async def test_get_exclusions_lists_deleted_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """get_global_genre_exclusions includes a genre after it is deleted."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("GblExcl2"))
+        await genre_ctrl.remove_item_from_library(int(genre.item_id))
+        exclusions = await genre_ctrl.get_global_genre_exclusions()
+        names = {e["name"] for e in exclusions}
+        assert "GblExcl2" in names
+
+    async def test_default_genre_exclusion_preserves_translation_key(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Excluding a default genre preserves its translation_key on the row."""
+        tk = _DEFAULT_ENTRY_A["translation_key"]
+        search_name = create_safe_string(_DEFAULT_ENTRY_A["genre"], True, True)
+        db_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"search_name": search_name})
+        assert db_row is not None, "default genre must be seeded at startup"
+        await genre_ctrl.remove_item_from_library(int(db_row["item_id"]))
+        excl_row = await mass.music.database.get_row(
+            DB_TABLE_GENRES, {"item_id": int(db_row["item_id"]), "is_excluded": 1}
+        )
+        assert excl_row is not None
+        assert excl_row["translation_key"] == tk
+
+    async def test_scanner_guard_blocks_excluded_name(self, genre_ctrl: GenreController) -> None:
+        """_find_genres_for_alias returns [] for a globally excluded genre name."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("GblExclScan"))
+        await genre_ctrl.remove_item_from_library(int(genre.item_id))
+        result = await genre_ctrl._find_genres_for_alias("GblExclScan")
+        assert result == []
+
+    async def test_restore_custom_genre_is_not_default(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Restoring a custom (non-default) genre leaves is_default as 0."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("GblExclCustom"))
+        genre_id = int(genre.item_id)
+        await genre_ctrl.remove_item_from_library(genre_id)
+        restored = await genre_ctrl.remove_global_genre_exclusion(genre_id)
+        db_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert db_row is not None
+        assert db_row["is_excluded"] == 0
+        assert db_row["is_default"] == 0
+        assert int(restored.item_id) == genre_id
+
+    async def test_restore_default_genre_translation_key_preserved(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Restoring a default genre retains the correct translation_key (row was never deleted)."""
+        tk = _DEFAULT_ENTRY_B["translation_key"]
+        search_name = create_safe_string(_DEFAULT_ENTRY_B["genre"], True, True)
+        db_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"search_name": search_name})
+        assert db_row is not None, "default genre must be seeded at startup"
+        genre_id = int(db_row["item_id"])
+        await genre_ctrl.remove_item_from_library(genre_id)
+        await genre_ctrl.remove_global_genre_exclusion(genre_id)
+        restored_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert restored_row is not None
+        assert restored_row["is_excluded"] == 0
+        assert restored_row["translation_key"] == tk
+
+    async def test_restore_clears_exclusion_flag(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """is_excluded is set back to 0 after a successful restore."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("GblExclClean"))
+        genre_id = int(genre.item_id)
+        await genre_ctrl.remove_item_from_library(genre_id)
+        await genre_ctrl.remove_global_genre_exclusion(genre_id)
+        row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert row is not None
+        assert row["is_excluded"] == 0
+
+    async def test_restore_nonexistent_raises_key_error(self, genre_ctrl: GenreController) -> None:
+        """remove_global_genre_exclusion raises KeyError for an unknown genre id."""
+        with pytest.raises(KeyError):
+            await genre_ctrl.remove_global_genre_exclusion(999_999_999)
+
+    async def test_merge_does_not_exclude_source_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """merge_genres hard-deletes the source: it must not appear in the exclusion list."""
+        source = await genre_ctrl.add_item_to_library(_make_genre("GblMergeSource"))
+        target = await genre_ctrl.add_item_to_library(_make_genre("GblMergeTarget"))
+        await genre_ctrl.merge_genres([source.item_id], target.item_id)
+        exclusions = await genre_ctrl.get_global_genre_exclusions()
+        names = {e["name"] for e in exclusions}
+        assert "GblMergeSource" not in names

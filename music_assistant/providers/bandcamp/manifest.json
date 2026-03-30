@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "bandcamp",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Bandcamp",
   "description": "Stream music from Bandcamp's catalog.",
   "codeowners": ["@ALERTua"],

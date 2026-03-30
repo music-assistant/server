@@ -81,8 +81,10 @@ class LibrespotStreamer:
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
-                        if "Unable to read audio file" in line:
-                            # if this happens, we should stop the process to avoid hanging
+                        if "unable to" in line.lower() or "skipping" in line.lower():
+                            # if librespot reports a fatal error (e.g. unable to load
+                            # or read audio), stop the process to avoid hanging
+                            # indefinitely as it won't produce any audio output
                             await librespot_proc.close()
                     else:
                         logger.log(VERBOSE_LOG_LEVEL, "[librespot] %s", line)

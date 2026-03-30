@@ -5,10 +5,12 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+import pkgutil
 from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
+from functools import cache
 from types import NoneType, UnionType
 from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
@@ -23,6 +25,8 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 # Cache for resolved type alias strings to avoid repeated imports
 _TYPE_ALIAS_CACHE: dict[str, Any] = {}
+_MODEL_TYPE_CACHE: dict[str, Any] = {}
+_MAX_TYPE_HINT_RESOLVE_ATTEMPTS = 32
 
 
 def _resolve_string_type(type_str: str) -> Any:
@@ -63,6 +67,92 @@ def _resolve_string_type(type_str: str) -> Any:
         # Cache the string to avoid repeated failed attempts
         _TYPE_ALIAS_CACHE[type_str] = type_str
         return type_str
+
+
+@cache
+def _get_model_module_names() -> tuple[str, ...]:
+    """Return all module names from the music_assistant_models package."""
+    try:
+        music_assistant_models = importlib.import_module("music_assistant_models")
+    except ImportError:
+        return ()
+    try:
+        return tuple(
+            mod.name
+            for mod in pkgutil.walk_packages(
+                music_assistant_models.__path__, prefix="music_assistant_models."
+            )
+        )
+    except Exception:
+        return ()
+
+
+def _resolve_model_type(name: str) -> Any | None:
+    """Resolve a type from the music_assistant_models package by name."""
+    if name in _MODEL_TYPE_CACHE:
+        return _MODEL_TYPE_CACHE[name]
+
+    try:
+        music_assistant_models = importlib.import_module("music_assistant_models")
+    except ImportError:
+        _MODEL_TYPE_CACHE[name] = None
+        return None
+
+    if hasattr(music_assistant_models, name):
+        resolved = getattr(music_assistant_models, name)
+        _MODEL_TYPE_CACHE[name] = resolved
+        return resolved
+
+    for module_name in _get_model_module_names():
+        try:
+            module = importlib.import_module(module_name)
+            if hasattr(module, name):
+                resolved = getattr(module, name)
+                _MODEL_TYPE_CACHE[name] = resolved
+                return resolved
+        except ImportError:
+            continue
+
+    _MODEL_TYPE_CACHE[name] = None
+    return None
+
+
+def _extract_name_error_symbol(error: NameError) -> str | None:
+    """Extract the missing symbol name from NameError messages."""
+    msg = str(error)
+    if "name '" in msg and "' is not defined" in msg:
+        return msg.split("name '", 1)[1].split("'", 1)[0]
+    return None
+
+
+def _get_type_hints_for_api_command(func: Callable[..., Any]) -> dict[str, Any]:
+    """Get type hints for API command handlers with fallback for model types.
+
+    We need this because API command handlers are often declared in controllers with
+    type-only imports under TYPE_CHECKING (to avoid runtime cycles), e.g.:
+      from typing import TYPE_CHECKING
+      if TYPE_CHECKING:
+          from music_assistant_models.background_task import BackgroundTask
+
+    Without this fallback, get_type_hints() raises NameError when evaluating
+    forward refs like "BackgroundTask" at runtime during API registration.
+    """
+    globalns = dict(getattr(func, "__globals__", {}))
+    localns: dict[str, Any] = {}
+    for _attempt in range(_MAX_TYPE_HINT_RESOLVE_ATTEMPTS):
+        try:
+            return get_type_hints(func, globalns=globalns, localns=localns)
+        except NameError as err:
+            missing_name = _extract_name_error_symbol(err)
+            if not missing_name:
+                raise
+            resolved = _resolve_model_type(missing_name)
+            if resolved is None:
+                raise
+            globalns[missing_name] = resolved
+            continue
+    msg = f"Exceeded type hint resolution attempts for API command {func.__qualname__}"
+    raise RuntimeError(msg)
 
 
 def _resolve_generic_type_args(
@@ -207,7 +297,7 @@ class APICommandHandler:
             None for any authenticated user.
         :param alias: Whether this is an alias for backward compatibility (default: False).
         """
-        type_hints = get_type_hints(func)
+        type_hints = _get_type_hints_for_api_command(func)
         # workaround for generic typevar ItemCls that needs to be resolved
         # to the real media item type. TODO: find a better way to do this
         # without this hack

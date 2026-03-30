@@ -7,6 +7,7 @@ import contextlib
 import logging
 import threading
 from typing import TYPE_CHECKING, cast
+from uuid import UUID
 
 import pychromecast
 from pychromecast.controllers.multizone import MultizoneManager
@@ -59,7 +60,7 @@ class ChromecastProvider(PlayerProvider):
                 remove_callback=self._on_chromecast_removed,
                 update_callback=self._on_chromecast_discovered,
             ),
-            self.mass.aiozc.zeroconf,
+            self.mass.discovery.aiozc.zeroconf,
             known_hosts=manual_ip_config,
         )
         self._discovery_running = False
@@ -106,7 +107,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Discovery callbacks
 
-    def _on_chromecast_discovered(self, uuid: str, _: object) -> None:
+    def _on_chromecast_discovered(self, uuid: UUID, _: str) -> None:
         """
         Handle Chromecast discovered callback.
 
@@ -122,7 +123,7 @@ class ChromecastProvider(PlayerProvider):
             disc_info: CastInfo = self.browser.devices[uuid]
 
             if disc_info.uuid is None:
-                self.logger.error("Discovered chromecast without uuid %s", disc_info)
+                self.logger.error("Discovered chromecast without uuid %s", disc_info)  # type: ignore[unreachable]
                 return
 
             player_id = str(disc_info.uuid)
@@ -153,7 +154,7 @@ class ChromecastProvider(PlayerProvider):
             self.logger.debug("Discovered new chromecast %s", disc_info)
 
             cast_info = ChromecastInfo.from_cast_info(disc_info)
-            cast_info.fill_out_missing_chromecast_info(self.mass.aiozc.zeroconf)
+            cast_info.fill_out_missing_chromecast_info(self.mass.discovery.aiozc.zeroconf)
             if cast_info.is_dynamic_group:
                 self.logger.debug("Discovered a dynamic cast group which will be ignored.")
                 return
@@ -165,7 +166,7 @@ class ChromecastProvider(PlayerProvider):
             # create new Chromecast instance
             chromecast = pychromecast.get_chromecast_from_cast_info(
                 disc_info,
-                self.mass.aiozc.zeroconf,
+                self.mass.discovery.aiozc.zeroconf,
             )
             # create and register the new ChromeCastPlayer
             asyncio.run_coroutine_threadsafe(
@@ -192,9 +193,13 @@ class ChromecastProvider(PlayerProvider):
         finally:
             self._pending_discoveries.discard(player_id)
 
-    def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
+    def _on_chromecast_removed(
+        self,
+        uuid: UUID,
+        service: str,
+        cast_info: CastInfo,
+    ) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
-        player_id = str(service[1])
-        friendly_name = service[3]
-        self.logger.debug("Chromecast removed: %s - %s", friendly_name, player_id)
+        player_id = str(uuid)
+        self.logger.debug("Chromecast removed: %s - %s", cast_info.friendly_name, player_id)
         # we ignore this event completely as the Chromecast socket client handles this itself
