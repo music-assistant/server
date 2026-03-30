@@ -197,7 +197,11 @@ class AudioAnalysisController:
                 self.mass.create_task(provider.cancel(session_key))
 
     async def _chunk_worker(self, session_key: str, queue: asyncio.Queue[bytes | None]) -> None:
-        """Background worker that processes queued PCM chunks sequentially."""
+        """Background worker that processes queued PCM chunks concurrently across providers.
+
+        :param session_key: The session key for this worker.
+        :param queue: Queue of PCM chunks (None sentinel signals shutdown).
+        """
         while True:
             chunk = await queue.get()
             if chunk is None:
@@ -207,17 +211,19 @@ class AudioAnalysisController:
             if not provider_ids:
                 break
 
-            for provider_id in provider_ids:
-                provider = self.mass.get_provider(provider_id)
+            async def _process(pid: str, chunk: bytes = chunk) -> None:
+                provider = self.mass.get_provider(pid)
                 if not (
                     provider and isinstance(provider, AudioAnalysisProvider) and provider.available
                 ):
-                    continue
+                    return
                 try:
                     await provider.process_pcm_chunk(session_key, chunk)
                 except Exception as err:
                     self.logger.warning(
                         "Error processing PCM chunk on provider %s: %s",
-                        provider_id,
+                        pid,
                         err,
                     )
+
+            await asyncio.gather(*[_process(pid) for pid in provider_ids])
