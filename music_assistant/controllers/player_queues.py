@@ -2186,8 +2186,7 @@ class PlayerQueuesController(CoreController):
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
 
-        task_id = f"prepare_next_buffer_{queue_id}"
-        self.mass.create_task(_do_prepare, task_id=task_id, abort_existing=False)
+        self.mass.create_task(_do_prepare)
 
     async def _resolve_media_items(
         self,
