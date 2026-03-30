@@ -180,7 +180,6 @@ class AirPlayPlayer(Player):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries: list[ConfigEntry] = []
         require_authentication = self._requires_pin_pairing() or self._requires_password_pairing()
-        self.logger.debug(f"Player requires authentication: {require_authentication}")
 
         # Handle pairing actions
         if action and require_authentication:
