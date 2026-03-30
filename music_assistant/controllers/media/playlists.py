@@ -27,6 +27,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.playlists import (
+    PlaylistItem,
+    generate_m3u,
+    media_item_to_playlist_item,
+)
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
@@ -645,8 +650,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def export_playlist(self, db_playlist_id: str | int) -> str:
         """Export a playlist to M3U8 format.
 
-        Only supported for the builtin provider. If the playlist has multiple
-        provider mappings, the builtin mapping is selected explicitly.
+        Works with any library playlist regardless of provider. Fetches
+        the playlist's tracks, converts each to a PlaylistItem, and
+        generates an M3U8 string with full metadata.
 
         :param db_playlist_id: The library database ID of the playlist.
         """
@@ -655,23 +661,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist:
             msg = f"Playlist with id {db_id} not found"
             raise MediaNotFoundError(msg)
-        # find the builtin provider mapping explicitly
-        builtin_mapping = next(
-            (
-                m
-                for m in playlist.provider_mappings
-                if (prov := self.mass.get_provider(m.provider_instance))
-                and prov.domain == "builtin"
-            ),
-            None,
-        )
-        if not builtin_mapping:
-            msg = "Playlist export is only supported for playlists with a builtin provider mapping"
-            raise InvalidDataError(msg)
-        builtin_prov = cast(
-            "BuiltinProvider", self.mass.get_provider(builtin_mapping.provider_instance)
-        )
-        return await builtin_prov.export_playlist(builtin_mapping.item_id)
+        items: list[PlaylistItem] = []
+        async for track in self.tracks(
+            item_id=str(db_id),
+            provider_instance_id_or_domain="library",
+        ):
+            items.append(media_item_to_playlist_item(track))
+        return generate_m3u(playlist.name, items)
 
     async def import_playlist(
         self,

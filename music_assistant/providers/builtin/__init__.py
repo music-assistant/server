@@ -24,7 +24,6 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -56,16 +55,13 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.playlists import (
-    ImageInfo,
     IsHLSPlaylist,
     PlaylistItem,
     ProviderMappingInfo,
-    collect_album_info,
-    collect_artist_infos,
-    collect_podcast_info,
     construct_media_item_from_playlist_item,
     fetch_playlist,
     generate_m3u,
+    media_item_to_playlist_item,
     parse_extinf_title,
     parse_m3u,
     parse_m3u_playlist_name,
@@ -472,23 +468,6 @@ class BuiltinProvider(MusicProvider):
         # create empty M3U file with header
         await self._write_m3u_file(playlist_id, name, [])
         return await self.get_playlist(playlist_id)
-
-    async def export_playlist(self, prov_playlist_id: str) -> str:
-        """Export a user-created playlist to M3U8 format.
-
-        Playlists are already stored as rich M3U files with full metadata,
-        so this simply reads and returns the stored file content.
-
-        :param prov_playlist_id: The provider-side playlist ID.
-        """
-        if prov_playlist_id in BUILTIN_PLAYLISTS:
-            msg = "Cannot export builtin/system playlists"
-            raise InvalidDataError(msg)
-        m3u_data = await self._read_m3u_file(prov_playlist_id)
-        if not m3u_data:
-            msg = f"Playlist {prov_playlist_id} not found or empty"
-            raise MediaNotFoundError(msg)
-        return m3u_data
 
     async def export_radios(self) -> str:
         """Export all stored radio stations to M3U8 format."""
@@ -1197,91 +1176,7 @@ class BuiltinProvider(MusicProvider):
         if not isinstance(full_item, MediaItem):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)
-
-        # build M3U-compliant EXTINF title
-        if hasattr(full_item, "artists") and full_item.artists:
-            artist_names = ", ".join(a.name for a in full_item.artists)
-            title = f"{artist_names} - {full_item.name}"
-        elif hasattr(full_item, "podcast") and full_item.podcast:
-            title = f"{full_item.podcast.name} - {full_item.name}"
-        else:
-            title = full_item.name
-
-        duration = getattr(full_item, "duration", None) or 0
-
-        # build EXTMA metadata
-        metadata: dict[str, str] = {
-            "media_type": full_item.media_type.value,
-            "name": full_item.name,
-        }
-        if hasattr(full_item, "authors") and full_item.authors:
-            metadata["authors"] = "; ".join(full_item.authors)
-        if hasattr(full_item, "narrators") and full_item.narrators:
-            metadata["narrators"] = "; ".join(full_item.narrators)
-        if full_item.version:
-            metadata["version"] = full_item.version
-        if isrc := full_item.get_external_id(ExternalID.ISRC):
-            metadata["isrc"] = isrc
-        if mbid := full_item.get_external_id(ExternalID.MB_RECORDING):
-            metadata["mbid"] = mbid
-
-        # collect one provider mapping per domain (highest quality)
-        prov_infos: list[ProviderMappingInfo] = []
-        seen_domains: set[str] = set()
-        if not full_item.provider_mappings:
-            # this should not happen, but just in case
-            msg = f"No provider mappings found for: {uri}"
-            raise ProviderUnavailableError(msg)
-        sorted_mappings = sorted(full_item.provider_mappings, key=lambda x: x.quality, reverse=True)
-        for prov_mapping in sorted_mappings:
-            domain = prov_mapping.provider_domain
-            if domain in seen_domains:
-                continue
-            seen_domains.add(domain)
-            prov_infos.append(
-                ProviderMappingInfo(
-                    domain=domain,
-                    item_id=prov_mapping.item_id,
-                    instance_id=prov_mapping.provider_instance,
-                    content_type=prov_mapping.audio_format.content_type.value,
-                    sample_rate=prov_mapping.audio_format.sample_rate,
-                    bit_depth=prov_mapping.audio_format.bit_depth,
-                    bit_rate=prov_mapping.audio_format.bit_rate or 0,
-                )
-            )
-
-        # primary URI = highest quality provider
-        primary = prov_infos[0]
-        primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
-
-        artist_infos = collect_artist_infos(full_item)
-        album_info = collect_album_info(full_item)
-        podcast_info = collect_podcast_info(full_item)
-
-        # collect images
-        images: list[ImageInfo] = []
-        if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
-            for img in full_item.metadata.images:
-                images.append(
-                    ImageInfo(
-                        type=img.type.value,
-                        path=img.path,
-                        provider=img.provider,
-                        remotely_accessible=img.remotely_accessible,
-                    )
-                )
-
-        return PlaylistItem(
-            path=primary_uri,
-            title=title,
-            length=str(duration),
-            metadata=metadata,
-            providers=prov_infos,
-            images=images,
-            artists=artist_infos,
-            album=album_info,
-            podcast=podcast_info,
-        )
+        return media_item_to_playlist_item(full_item)
 
     @staticmethod
     def _sanitize_playlist_id(name: str) -> str:
