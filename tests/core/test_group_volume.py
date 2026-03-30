@@ -1149,7 +1149,7 @@ class TestPluginCallbackIsolation:
     async def test_individual_child_vol_does_not_fire_plugin_callback(
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
-        """Individual child volume change in a group must NOT fire plugin on_volume."""
+        """Non-max child volume change in a group must NOT fire plugin on_volume."""
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
         group_player, children = _setup_group(
             controller, mock_mass, provider, child_configs={"child_a": 80, "child_b": 40}
@@ -1164,13 +1164,13 @@ class TestPluginCallbackIsolation:
         controller._initialize_group_ratios(group_player)
         # group_vol=80, child_a ratio=1.0, child_b ratio=0.5
 
-        child_a = children["child_a"]
-        await controller._handle_cmd_volume_set(child_a.player_id, 60)
+        child_b = children["child_b"]
+        await controller._handle_cmd_volume_set(child_b.player_id, 60)
 
         on_volume_mock.assert_not_called()
 
         ratios = group_player.extra_data[ATTR_GROUP_CHILD_RATIOS]
-        assert ratios["child_a"] == pytest.approx(60 / 80)
+        assert ratios["child_b"] == pytest.approx(60 / 80)
 
     async def test_overflow_rescale_fires_plugin_callback_with_group_vol(
         self, controller: PlayerController, mock_mass: MagicMock
@@ -1334,3 +1334,89 @@ class TestPluginCallbackIsolation:
 
         result = controller._update_child_ratio_in_group(children["child_a"], group_player, 50)
         assert result == 50
+
+    async def test_deflation_lowers_group_vol_and_rescales_ratios(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """Lowering the loudest child should deflate group_vol and rescale sibling ratios."""
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        group_player, children = _setup_group(
+            controller, mock_mass, provider, child_configs={"child_a": 80, "child_b": 40}
+        )
+        controller._initialize_group_ratios(group_player)
+        # group_vol=80, child_a ratio=1.0, child_b ratio=0.5
+
+        result = controller._update_child_ratio_in_group(children["child_a"], group_player, 60)
+
+        assert result == 60
+        assert group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] == 60
+        ratios = group_player.extra_data[ATTR_GROUP_CHILD_RATIOS]
+        assert ratios["child_a"] == pytest.approx(1.0)
+        # child_b ratio rescaled in float: 0.5 * (80 / 60) = 0.6667
+        assert ratios["child_b"] == pytest.approx(0.5 * (80 / 60))
+
+    async def test_deflation_fires_plugin_callback(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """Deflation (max child lowered) must fire plugin on_volume with the new group vol."""
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        group_player, children = _setup_group(
+            controller, mock_mass, provider, child_configs={"child_a": 80, "child_b": 40}
+        )
+        for p in controller._players.values():
+            p.set_initialized()
+            p.volume_set = AsyncMock()  # type: ignore[method-assign]
+
+        plugin_source, on_volume_mock = _make_mock_plugin_source(group_player.player_id)
+        _patch_plugin_source(controller, plugin_source)
+
+        controller._initialize_group_ratios(group_player)
+        # group_vol=80, child_a ratio=1.0, child_b ratio=0.5
+
+        await controller._handle_cmd_volume_set(children["child_a"].player_id, 60)
+
+        on_volume_mock.assert_called_once_with(60)
+
+    async def test_non_max_child_decrease_no_deflation(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """Lowering a non-max child should not change group_vol (returns None)."""
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        group_player, children = _setup_group(
+            controller, mock_mass, provider, child_configs={"child_a": 80, "child_b": 40}
+        )
+        controller._initialize_group_ratios(group_player)
+        # group_vol=80, child_a ratio=1.0, child_b ratio=0.5
+
+        result = controller._update_child_ratio_in_group(children["child_b"], group_player, 20)
+
+        assert result is None
+        assert group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] == 80
+        ratios = group_player.extra_data[ATTR_GROUP_CHILD_RATIOS]
+        assert ratios["child_b"] == pytest.approx(20 / 80)
+        assert ratios["child_a"] == pytest.approx(1.0)
+
+    async def test_deflation_preserves_sibling_ratios_in_float(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """Deflation rescales sibling ratios via float math, not from integer hardware vols."""
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        group_player, children = _setup_group(
+            controller,
+            mock_mass,
+            provider,
+            child_configs={"child_a": 100, "child_b": 33, "child_c": 17},
+        )
+        controller._initialize_group_ratios(group_player)
+        # group_vol=100, child_a=1.0, child_b=0.33, child_c=0.17
+
+        original_ratio_b = group_player.extra_data[ATTR_GROUP_CHILD_RATIOS]["child_b"]
+        original_ratio_c = group_player.extra_data[ATTR_GROUP_CHILD_RATIOS]["child_c"]
+
+        result = controller._update_child_ratio_in_group(children["child_a"], group_player, 70)
+
+        assert result == 70
+        ratios = group_player.extra_data[ATTR_GROUP_CHILD_RATIOS]
+        # Sibling ratios should be old_ratio * (100 / 70), NOT hardware_vol / 70
+        assert ratios["child_b"] == pytest.approx(original_ratio_b * (100 / 70))
+        assert ratios["child_c"] == pytest.approx(original_ratio_c * (100 / 70))

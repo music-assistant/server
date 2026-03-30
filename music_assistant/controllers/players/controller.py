@@ -1576,25 +1576,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # handle DSP reload of the leader when grouping/ungrouping
         if ATTR_GROUP_MEMBERS in changed_values:
-            prev_group_members, new_group_members = changed_values[ATTR_GROUP_MEMBERS]
-            self._handle_group_dsp_change(player, prev_group_members or [], new_group_members)
-            data_owner = self._resolve_group_data_owner(player)
-            if data_owner.player_id == player.player_id:
-                self._update_group_ratios_on_membership_change(
-                    player, prev_group_members or [], new_group_members or []
-                )
-            else:
-                self.logger.debug(
-                    "[GroupVolume] skipping ratio update for %s (canonical owner is %s)",
-                    player.player_id,
-                    data_owner.player_id,
-                )
-            # Removed group members also need to be updated since they are no longer part
-            # of this group and are available for playback again
-            removed_members = set(prev_group_members or []) - set(new_group_members or [])
-            for _removed_player_id in removed_members:
-                if removed_player := self.get_player(_removed_player_id):
-                    removed_player.update_state()
+            self._handle_group_members_changed(player, changed_values[ATTR_GROUP_MEMBERS])
 
         # detect when active_source changes to
         # something external while we have a grouped protocol active
@@ -2010,84 +1992,99 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     ) -> int | None:
         """Update a child player's ratio in its parent group after an individual volume change.
 
-        Handles three cases:
-        - Normal: volume_level <= group_vol, ratio = volume_level / group_vol.
-        - Overflow: volume_level > group_vol, raise group_vol, rescale other ratios.
-        - Overflow from zero: group_vol == 0, raise group_vol, zero other ratios.
+        Maintains the invariant that group_vol = max(child_volumes) by handling:
+        - Normal: new max unchanged, just update this child's ratio.
+        - Overflow: child vol raises the max, rescale sibling ratios upward.
+        - Deflation: child vol lowers the max, rescale sibling ratios downward.
+        - All-zero: all children at zero, accept ratio loss.
+
+        Sibling ratios are rescaled in float math (old_ratio * old_group_vol / new_max)
+        to avoid compounding integer rounding errors.
 
         :param player: The child player whose volume was changed.
         :param group_player: The parent group player.
         :param volume_level: The new volume level (desired hardware output).
-        :return: The new group_vol if overflow occurred, None otherwise.
+        :return: The new group_vol if it changed (overflow or deflation), None otherwise.
         """
         group_vol = group_player.extra_data.get(ATTR_GROUP_VOLUME_LEVEL)
         ratios: dict[str, float] = group_player.extra_data.get(ATTR_GROUP_CHILD_RATIOS, {})
 
-        if group_vol is not None and group_vol > 0:
-            old_ratio = ratios.get(player.player_id)
-            if volume_level > group_vol:
-                old_group_vol = group_vol
-                group_vol = volume_level
-                group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = group_vol
-                for cid, old_r in list(ratios.items()):
-                    if cid != player.player_id:
-                        ratios[cid] = (old_group_vol * old_r) / group_vol
-                ratios[player.player_id] = 1.0
-                group_player._cache.clear()
-                self.logger.debug(
-                    "[GroupVolume]   OVERFLOW rescale in group %s (%s): "
-                    "child_vol=%d > old_group_vol=%d -> new_group_vol=%d, "
-                    "child ratio=1.0 (was %.4f), rescaled ratios=%s",
-                    group_player.state.name,
-                    group_player.player_id,
-                    volume_level,
-                    old_group_vol,
-                    group_vol,
-                    old_ratio if old_ratio is not None else float("nan"),
-                    {k: f"{v:.4f}" for k, v in ratios.items()},
-                )
-                group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
-                self._persist_group_volume_data(group_player)
-                return group_vol
-            new_ratio = volume_level / group_vol
-            ratios[player.player_id] = new_ratio
+        if group_vol is None:
             self.logger.debug(
-                "[GroupVolume]   individual vol change -> updating ratio in "
-                "group %s (%s): child_vol=%d / group_vol=%d = %.4f (was %.4f)",
-                group_player.state.name,
+                "[GroupVolume]   skipping ratio update in group %s (group_vol not initialized)",
                 group_player.player_id,
-                volume_level,
-                group_vol,
-                new_ratio,
-                old_ratio if old_ratio is not None else float("nan"),
             )
-            group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
-            self._persist_group_volume_data(group_player)
             return None
-        if group_vol is not None and group_vol == 0 and volume_level > 0:
-            group_vol = volume_level
-            group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = group_vol
+
+        # Compute new max across all children, substituting volume_level for the changed child
+        new_max = volume_level
+        for child in self.iter_group_members(group_player, only_powered=True, exclude_self=False):
+            if child.player_id == player.player_id:
+                continue
+            if child.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
+            new_max = max(new_max, child.state.volume_level or 0)
+
+        old_ratio = ratios.get(player.player_id)
+
+        if new_max == 0:
+            group_vol_changed = group_vol != 0
+            group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = 0
             for cid in ratios:
-                if cid != player.player_id:
-                    ratios[cid] = 0.0
-            ratios[player.player_id] = 1.0
+                ratios[cid] = 0.0
             group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
             group_player._cache.clear()
             self.logger.debug(
-                "[GroupVolume]   OVERFLOW from zero in group %s (%s): "
-                "child_vol=%d -> new_group_vol=%d, other ratios zeroed",
+                "[GroupVolume]   all children at zero in group %s (%s): "
+                "group_vol %d -> 0, all ratios zeroed",
                 group_player.state.name,
                 group_player.player_id,
-                volume_level,
                 group_vol,
             )
             self._persist_group_volume_data(group_player)
-            return group_vol
+            return 0 if group_vol_changed else None
+
+        if new_max != group_vol:
+            old_group_vol = group_vol
+            group_player.extra_data[ATTR_GROUP_VOLUME_LEVEL] = new_max
+            ratios[player.player_id] = volume_level / new_max
+            for cid, old_r in list(ratios.items()):
+                if cid != player.player_id:
+                    ratios[cid] = old_r * (old_group_vol / new_max)
+            group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
+            group_player._cache.clear()
+            direction = "OVERFLOW" if new_max > old_group_vol else "DEFLATION"
+            self.logger.debug(
+                "[GroupVolume]   %s rescale in group %s (%s): "
+                "child_vol=%d, old_group_vol=%d -> new_group_vol=%d, "
+                "child ratio=%.4f (was %.4f), rescaled ratios=%s",
+                direction,
+                group_player.state.name,
+                group_player.player_id,
+                volume_level,
+                old_group_vol,
+                new_max,
+                volume_level / new_max,
+                old_ratio if old_ratio is not None else float("nan"),
+                {k: f"{v:.4f}" for k, v in ratios.items()},
+            )
+            self._persist_group_volume_data(group_player)
+            return new_max
+
+        new_ratio = volume_level / group_vol
+        ratios[player.player_id] = new_ratio
         self.logger.debug(
-            "[GroupVolume]   skipping ratio update in group %s (group_vol=%s)",
+            "[GroupVolume]   individual vol change -> updating ratio in "
+            "group %s (%s): child_vol=%d / group_vol=%d = %.4f (was %.4f)",
+            group_player.state.name,
             group_player.player_id,
+            volume_level,
             group_vol,
+            new_ratio,
+            old_ratio if old_ratio is not None else float("nan"),
         )
+        group_player.extra_data[ATTR_GROUP_CHILD_RATIOS] = ratios
+        self._persist_group_volume_data(group_player)
         return None
 
     def _load_persisted_group_volume_data(self, group_player: Player) -> bool:
@@ -2748,6 +2745,34 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # trigger player update to ensure the source is set
         self.trigger_player_update(player.player_id)
 
+    def _handle_group_members_changed(
+        self,
+        player: Player,
+        group_members_change: tuple[Any, Any],
+    ) -> None:
+        """Handle all side effects when a player's group_members attribute changes.
+
+        :param player: The group player whose membership changed.
+        :param group_members_change: Tuple of (prev_group_members, new_group_members).
+        """
+        prev_group_members, new_group_members = group_members_change
+        self._handle_group_dsp_change(player, prev_group_members or [], new_group_members)
+        data_owner = self._resolve_group_data_owner(player)
+        if data_owner.player_id == player.player_id:
+            self._update_group_ratios_on_membership_change(
+                player, prev_group_members or [], new_group_members or []
+            )
+        else:
+            self.logger.debug(
+                "[GroupVolume] skipping ratio update for %s (canonical owner is %s)",
+                player.player_id,
+                data_owner.player_id,
+            )
+        removed_members = set(prev_group_members or []) - set(new_group_members or [])
+        for _removed_player_id in removed_members:
+            if removed_player := self.get_player(_removed_player_id):
+                removed_player.update_state()
+
     def _handle_group_dsp_change(
         self, player: Player, prev_group_members: list[str], new_group_members: list[str]
     ) -> None:
@@ -3348,19 +3373,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
             if parent_group is not None:
                 # Player is in a group: update ratio only, skip plugin callback.
-                # If overflow raised the group volume, notify plugin with the NEW group vol.
-                overflow_vol = self._update_child_ratio_in_group(player, parent_group, volume_level)
-                if overflow_vol is not None:
+                # If group_vol changed (overflow or deflation), notify plugin.
+                new_group_vol = self._update_child_ratio_in_group(
+                    player, parent_group, volume_level
+                )
+                if new_group_vol is not None:
                     if ps := self._get_active_plugin_source(parent_group):
                         if ps.on_volume:
                             self.logger.debug(
-                                "[GroupVolume]   overflow raised group_vol -> firing plugin "
+                                "[GroupVolume]   group_vol changed -> firing plugin "
                                 "on_volume(%d) for group %s (plugin=%s)",
-                                overflow_vol,
+                                new_group_vol,
                                 parent_group.player_id,
                                 ps.id,
                             )
-                            await ps.on_volume(overflow_vol)
+                            await ps.on_volume(new_group_vol)
             # Standalone player: fire plugin callback
             elif plugin_source := self._get_active_plugin_source(player):
                 if plugin_source.on_volume:
