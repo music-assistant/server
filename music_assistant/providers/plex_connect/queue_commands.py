@@ -9,6 +9,7 @@ import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
 from aiohttp import web
 from music_assistant_models.enums import QueueOption
@@ -54,6 +55,8 @@ class QueueCommandsMixin:
         ) -> None: ...
 
         def _collect_synced_keys(self, player_id: str) -> list[str]: ...
+
+        async def _create_plex_playqueue_from_ma(self) -> None: ...
 
     async def _fetch_full_play_queue(self, queue_id: str) -> PlayQueue | None:
         """Fetch a complete PlayQueue, paginating past the server's per-request window cap.
@@ -109,6 +112,81 @@ class QueueCommandsMixin:
         # Patch the cached items property on the PlayQueue object.
         playqueue.__dict__["items"] = all_items
         return playqueue
+
+    def _source_key_from_play_queue_uri(self, source_uri: str) -> str | None:
+        """Extract a Plex library key from a playQueueSourceURI string.
+
+        Plex encodes the source as ``library:///directory/ENCODED_PATH``. We decode it
+        to a plain library path that :meth:`_resolve_plex_item` can use.
+
+        :param source_uri: The playQueueSourceURI from a Plex PlayQueue.
+        :return: A Plex library key (e.g. ``/library/playlists/5329``), or None if unparsable.
+        """
+        prefix = "library:///directory/"
+        if not source_uri.startswith(prefix):
+            return None
+
+        path = unquote(source_uri[len(prefix) :]).lstrip("/")
+        if not path:
+            return None
+
+        path = "/" + path.split("?")[0]
+
+        for suffix in ("/children", "/allLeaves", "/items"):
+            if path.endswith(suffix):
+                path = path[: -len(suffix)]
+                break
+
+        return path if path and path != "/" else None
+
+    async def _play_from_shuffled_source(
+        self,
+        player_id: str,
+        source_uri: str,
+        offset: int,
+    ) -> bool:
+        """Load a shuffled PlayQueue's source in original order, then defer shuffle to MA.
+
+        When Plex reports a shuffled PlayQueue the items are already in Plex's shuffled
+        order. Loading them directly would cause MA to shuffle an already-shuffled list.
+        Instead we parse the source URI, load the source collection unshuffled into MA,
+        and schedule a deferred task that applies MA's own shuffle and then recreates the
+        Plex PlayQueue so Plexamp sees the new order.
+
+        :param player_id: The Music Assistant player ID.
+        :param source_uri: The playQueueSourceURI from the Plex PlayQueue.
+        :param offset: Starting position in milliseconds.
+        :return: True if handled, False if the caller should fall back to regular loading.
+        """
+        source_key = self._source_key_from_play_queue_uri(source_uri)
+        if not source_key:
+            return False
+
+        try:
+            LOGGER.info(f"Shuffled queue detected — loading source in original order: {source_key}")
+            source_media = await self._resolve_plex_item(source_key)
+            await self.provider.mass.player_queues.play_media(
+                queue_id=player_id,
+                media=source_media,
+                option=QueueOption.REPLACE,
+            )
+            if offset > 0:
+                await self._seek_to_offset_after_playback(player_id, offset)
+            await self._broadcast_timeline()
+
+            async def _apply_shuffle_deferred() -> None:
+                await self.provider.mass.player_queues.set_shuffle(player_id, True)
+                await asyncio.sleep(0.2)
+                await self._create_plex_playqueue_from_ma()
+                synced_keys = self._collect_synced_keys(player_id)
+                self._last_synced_ma_queue_length = len(synced_keys)
+                self._last_synced_ma_queue_keys = synced_keys
+
+            self.provider.mass.create_task(_apply_shuffle_deferred())
+            return True
+        except Exception as e:
+            LOGGER.debug(f"Could not resolve source for shuffled queue, falling back: {e}")
+            return False
 
     async def _resolve_plex_item(self, key: str) -> Any:
         """Resolve a Plex key to a Music Assistant media item.
@@ -166,6 +244,14 @@ class QueueCommandsMixin:
             if playqueue and playqueue.items:
                 selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0)
                 LOGGER.info(f"PlayQueue selected item offset: {selected_offset}")
+
+                # When Plex reports a shuffled queue, load the original source into MA
+                # unshuffled and let MA apply its own shuffle, then propagate back to Plex.
+                if playqueue.playQueueShuffled and getattr(playqueue, "playQueueSourceURI", None):
+                    if await self._play_from_shuffled_source(
+                        player_id, playqueue.playQueueSourceURI, offset
+                    ):
+                        return
 
                 self.play_queue_item_ids = {}
 
@@ -314,8 +400,9 @@ class QueueCommandsMixin:
                     option=QueueOption.REPLACE,
                 )
 
-            if shuffle:
-                await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
+            # Always sync shuffle state so that a previously enabled MA shuffle
+            # does not reorder an unshuffled Plex queue.
+            await self.provider.mass.player_queues.set_shuffle(player_id, shuffle)
 
             if offset > 0:
                 await self._seek_to_offset_after_playback(player_id, offset)
