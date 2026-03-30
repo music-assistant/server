@@ -19,6 +19,7 @@ from music_assistant.controllers.streams.audio_analysis_controller import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.models.audio_analysis_provider import (
+    AnalysisSessionData,
     AudioAnalysisProvider,
 )
 
@@ -360,3 +361,49 @@ async def test_provider_error_during_start(
     prov_ok.finalize.assert_called_once()
     prov_fail.process_pcm_chunk.assert_not_called()
     prov_fail.finalize.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_version_check_skips_provider(
+    controller: AudioAnalysisController,
+    mock_mass: MagicMock,
+    mock_stream_details: MagicMock,
+    mock_provider: MagicMock,
+) -> None:
+    """Controller skips provider when stored version >= provider version."""
+    mock_provider.analysis_version = 1
+    mock_provider.domain = "test_aa"
+    mock_mass.get_providers.return_value = [mock_provider]
+    mock_mass.music.get_audio_analysis_version = AsyncMock(return_value=1)
+
+    audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    await controller.start_analysis(audio_buffer, mock_stream_details)
+
+    mock_provider.start_analysis.assert_not_called()
+    assert not controller._active_sessions
+
+
+@pytest.mark.asyncio
+async def test_finalize_cleans_up_provider_sessions() -> None:
+    """Verify provider._sessions is cleaned up after finalize, even if _finalize raises."""
+    provider = MagicMock(spec=AudioAnalysisProvider)
+    provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize = AsyncMock()
+
+    await AudioAnalysisProvider.finalize(provider, "test_session")
+
+    provider._finalize.assert_called_once_with("test_session")
+    assert "test_session" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_finalize_cleans_up_sessions_on_error() -> None:
+    """Verify provider._sessions is cleaned up even when _finalize raises."""
+    provider = MagicMock(spec=AudioAnalysisProvider)
+    provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize = AsyncMock(side_effect=RuntimeError("analysis failed"))
+
+    with pytest.raises(RuntimeError, match="analysis failed"):
+        await AudioAnalysisProvider.finalize(provider, "test_session")
+
+    assert "test_session" not in provider._sessions

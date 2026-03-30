@@ -137,13 +137,7 @@ class AudioAnalysisController:
         audio_format: AudioFormat,
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
-        """Call start_analysis on each provider, returning IDs of those that accepted.
-
-        :param session_key: The session key for this analysis.
-        :param stream_details: The stream details for the item being analyzed.
-        :param audio_format: PCM format of the audio stream.
-        :param providers: List of available analysis providers.
-        """
+        """Call start_analysis on each provider, returning IDs of those that accepted."""
         provider_ids: set[str] = set()
         for provider in providers:
             stored_version = await self.mass.music.get_audio_analysis_version(
@@ -197,11 +191,7 @@ class AudioAnalysisController:
                 self.mass.create_task(provider.cancel(session_key))
 
     async def _chunk_worker(self, session_key: str, queue: asyncio.Queue[bytes | None]) -> None:
-        """Background worker that processes queued PCM chunks concurrently across providers.
-
-        :param session_key: The session key for this worker.
-        :param queue: Queue of PCM chunks (None sentinel signals shutdown).
-        """
+        """Background worker that processes queued PCM chunks concurrently across providers."""
         while True:
             chunk = await queue.get()
             if chunk is None:
@@ -212,18 +202,16 @@ class AudioAnalysisController:
                 break
 
             async def _process(pid: str, chunk: bytes = chunk) -> None:
-                provider = self.mass.get_provider(pid)
-                if not (
-                    provider and isinstance(provider, AudioAnalysisProvider) and provider.available
-                ):
-                    return
                 try:
+                    provider = self.mass.get_provider(pid)
+                    if not (
+                        provider
+                        and isinstance(provider, AudioAnalysisProvider)
+                        and provider.available
+                    ):
+                        return
                     await provider.process_pcm_chunk(session_key, chunk)
                 except Exception as err:
-                    self.logger.warning(
-                        "Error processing PCM chunk on provider %s: %s",
-                        pid,
-                        err,
-                    )
+                    self.logger.warning("Error processing PCM chunk on provider %s: %s", pid, err)
 
             await asyncio.gather(*[_process(pid) for pid in provider_ids])
