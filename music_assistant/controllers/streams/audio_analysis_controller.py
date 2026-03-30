@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -105,9 +106,14 @@ class AudioAnalysisController:
         self._workers[session_key] = self.mass.create_task(self._chunk_worker(session_key, queue))
 
         # Build and register closures on the audio buffer
+        finalized = False
 
         def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
+            nonlocal finalized
+            if finalized:
+                return
             if is_last_chunk:
+                finalized = True
                 queue.put_nowait(None)
                 self.mass.create_task(_finalize_session())
                 return
@@ -117,7 +123,8 @@ class AudioAnalysisController:
             """Await the worker, then dispatch finalize to each provider."""
             worker = self._workers.pop(session_key, None)
             if worker is not None:
-                await worker
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
             self._queues.pop(session_key, None)
             self._dispatch_to_providers(
                 self._active_sessions.pop(session_key, None),
