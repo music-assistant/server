@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import ProviderMapping, Radio, Track
 
 from music_assistant.constants import DB_TABLE_RADIOS
@@ -23,6 +24,7 @@ from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.providers.builtin import BuiltinProvider
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -38,6 +40,27 @@ class RadioController(MediaControllerBase[Radio]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/radio_versions", self.versions)
+        self.mass.register_api_command(f"music/{api_base}/export_radios", self.export_radios)
+        self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
+
+    async def export_radios(self) -> str:
+        """Export all builtin radio stations to M3U8 format."""
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+        return await builtin_prov.export_radios()
+
+    async def import_radios(self, m3u_data: str) -> int:
+        """Import radio stations from M3U8 format.
+
+        :param m3u_data: The M3U8 data as a string.
+        """
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+        return await builtin_prov.import_radios(m3u_data)
 
     async def versions(
         self,
