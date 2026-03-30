@@ -14,12 +14,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
 from music_assistant.models.player import DeviceInfo, Player
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import PlayerFeature
-
     from .provider import UniversalPlayerProvider
 
 
@@ -68,38 +65,6 @@ class UniversalPlayer(Player):
             for pid in self._protocol_player_ids
         )
 
-    def _get_control_target(
-        self, required_feature: PlayerFeature, require_active: bool = False
-    ) -> Player | None:
-        """Get the best player to send control commands to.
-
-        Prefers the active output protocol, otherwise uses the first available
-        protocol player that supports the needed feature.
-        """
-        # If we have an active protocol, use that
-        if (
-            self.active_output_protocol
-            and self.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
-            and required_feature in protocol_player.supported_features
-        ):
-            return protocol_player
-
-        # If require_active is set, and no active protocol found, return None
-        if require_active:
-            return None
-
-        # Otherwise, use the first available linked protocol
-        for protocol_player_id in self._protocol_player_ids:
-            if (
-                (protocol_player := self.mass.players.get_player(protocol_player_id))
-                and protocol_player.available
-                and required_feature in protocol_player.supported_features
-            ):
-                return protocol_player
-
-        return None
-
     def add_protocol_player(self, protocol_player_id: str) -> None:
         """Add a protocol player to this universal player."""
         if protocol_player_id not in self._protocol_player_ids:
@@ -109,38 +74,3 @@ class UniversalPlayer(Player):
         """Remove a protocol player from this universal player."""
         if protocol_player_id in self._protocol_player_ids:
             self._protocol_player_ids.remove(protocol_player_id)
-
-    def _get_preferred_protocol_player(self) -> Player | None:
-        """
-        Get the preferred protocol player for this universal player.
-
-        Selection priority:
-        1. Active output protocol (if set and available)
-        2. User's preferred output protocol (from settings), fallback to highest
-           priority if preferred is not available
-        """
-        # 1. Active output protocol takes precedence
-        if (
-            self.active_output_protocol
-            and self.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
-            and protocol_player.available
-        ):
-            return protocol_player
-
-        # 2. User's preferred output protocol (with fallback to highest priority)
-        preferred = self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
-        )
-        if preferred and (protocol_player := self.mass.players.get_player(str(preferred))):
-            if protocol_player.available:
-                return protocol_player
-
-        # Fallback: if user's preferred protocol is not available,
-        # use the highest priority available protocol
-        for protocol in sorted(self.linked_output_protocols, key=lambda x: x.priority):
-            if protocol_player := self.mass.players.get_player(protocol.output_protocol_id):
-                if protocol_player.available:
-                    return protocol_player
-
-        return None
