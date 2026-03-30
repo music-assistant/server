@@ -554,6 +554,18 @@ class PlayerQueuesController(CoreController):
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
 
+                if (
+                    isinstance(media_item, ItemMapping)
+                    and media_item.media_type == MediaType.PLAYLIST
+                ):
+                    # Resolve mapping once so playlist-specific logic can use
+                    # a full Playlist object without duplicating branches.
+                    with suppress(MusicAssistantError):
+                        media_item = await self.mass.music.playlists.get(
+                            media_item.item_id,
+                            media_item.provider,
+                        )
+
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
@@ -572,21 +584,6 @@ class PlayerQueuesController(CoreController):
                         media_item, "is_dynamic", False
                     ):
                         radio_source.append(media_item)
-                elif (
-                    isinstance(media_item, ItemMapping)
-                    and media_item.media_type == MediaType.PLAYLIST
-                ):
-                    # Resolve mapping to full playlist so dynamic playlists can hook into
-                    # existing radio_source refill behavior.
-                    try:
-                        mapped_playlist = await self.mass.music.playlists.get(
-                            media_item.item_id,
-                            media_item.provider,
-                        )
-                    except MusicAssistantError:
-                        mapped_playlist = None
-                    if mapped_playlist and getattr(mapped_playlist, "is_dynamic", False):
-                        radio_source.append(mapped_playlist)
 
                 # handle default enqueue option if needed
                 if option is None:
