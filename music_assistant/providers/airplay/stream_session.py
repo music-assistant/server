@@ -13,7 +13,6 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
-from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT, StreamingProtocol
@@ -55,8 +54,6 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        self.silence_padding: float = 0.0
-        self._first_chunk_received = asyncio.Event()
         # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples
         # Chunks from streams controller are ~1 second each (pcm_sample_size bytes)
         # Keep 8 seconds of buffer for late joiners (maxlen=10 for safety with variable sizes)
@@ -200,16 +197,9 @@ class AirPlayStreamSession:
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Stream audio to all players."""
         pcm_sample_size = self.pcm_format.pcm_sample_size
-        watchdog_task = asyncio.create_task(self._silence_watchdog(pcm_sample_size))
         stream_error: BaseException | None = None
         try:
             async for chunk in audio_source:
-                if not self._first_chunk_received.is_set():
-                    watchdog_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await watchdog_task
-                    self._first_chunk_received.set()
-
                 if not self.sync_clients:
                     break
 
@@ -230,10 +220,6 @@ class AirPlayStreamSession:
                 exc_info=err,
             )
         finally:
-            if not watchdog_task.done():
-                watchdog_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await watchdog_task
             if stream_error:
                 self.prov.logger.warning(
                     "Stream ended prematurely due to error - notifying players"
@@ -246,34 +232,6 @@ class AirPlayStreamSession:
                     if x.stream and x.stream.running
                 ],
                 return_exceptions=True,
-            )
-
-    async def _silence_watchdog(self, pcm_sample_size: int) -> None:
-        """Insert silence if audio source is slow to deliver first chunk."""
-        grace_period = 0.2
-        max_silence_padding = 5.0
-        silence_inserted = 0.0
-
-        await asyncio.sleep(grace_period)
-        try:
-            while (
-                not self._first_chunk_received.is_set() and silence_inserted < max_silence_padding
-            ):
-                silence_duration = 0.1
-                silence_bytes = int(pcm_sample_size * silence_duration)
-                silence_chunk = bytes(silence_bytes)
-                has_running_clients = await self._write_chunk_to_all_players(silence_chunk)
-                if not has_running_clients:
-                    break
-                self.seconds_streamed += silence_duration
-                silence_inserted += silence_duration
-                await asyncio.sleep(0.05)
-        finally:
-            self.silence_padding = silence_inserted
-        if silence_inserted > 0:
-            self.prov.logger.warning(
-                "Inserted %.1fs silence padding while waiting for audio source",
-                silence_inserted,
             )
 
     async def _write_chunk_to_all_players(self, chunk: bytes) -> bool:
@@ -379,8 +337,7 @@ class AirPlayStreamSession:
         # Start ffmpeg to feed audio to CLI stdin
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()
-        filter_params = get_player_filter_params(
-            self.mass,
+        filter_params = self.mass.streams.audio.get_player_filter_params(
             airplay_player.player_id,
             input_format=self.pcm_format,
             output_format=get_final_output_format(airplay_player.stream.pcm_format, airplay_player),
