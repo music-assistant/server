@@ -20,6 +20,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     is_request_from_ingress,
 )
+from music_assistant.helpers.util import format_ip_for_url
 
 if TYPE_CHECKING:
     import aiohttp
@@ -49,8 +50,13 @@ class SendspinProxyHandler:
         # If the server binds to 0.0.0.0 (all interfaces), use localhost for efficiency
         # Otherwise use the actual bind IP in case it's configured to a specific interface
         bind_ip = self.mass.streams.bind_ip
-        connect_ip = "127.0.0.1" if bind_ip == "0.0.0.0" else bind_ip
-        return f"ws://{connect_ip}:8927/sendspin"
+        if bind_ip == "0.0.0.0":
+            # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
+            publish_ip = str(self.mass.streams.publish_ip)
+            connect_ip = "::1" if ":" in publish_ip else "127.0.0.1"
+        else:
+            connect_ip = bind_ip
+        return f"ws://{format_ip_for_url(connect_ip)}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
         """
