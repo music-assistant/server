@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderType,
+    QueueOption,
     TaskStatus,
 )
 from music_assistant_models.errors import (
@@ -31,6 +32,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
@@ -812,6 +814,93 @@ class MusicController(CoreController):
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
         return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
+
+    @api_command("music/spotify_recommendations")
+    async def get_spotify_recommendations(
+        self,
+        seed_track_uris: list[str] | None = None,
+        seed_artist_uris: list[str] | None = None,
+        seed_genres: list[str] | None = None,
+        limit: int = 25,
+        audio_features: dict[str, float | int] | None = None,
+        queue_id: str | None = None,
+        queue_option: QueueOption = QueueOption.REPLACE,
+    ) -> list[Track]:
+        """Get track recommendations from Spotify's recommendations API.
+
+        Accepts MA item URIs as seeds (resolved to Spotify IDs internally).
+        At least one seed must be provided; total seeds cannot exceed 5.
+        If queue_id is given the tracks are also enqueued on that player queue.
+
+        :param seed_track_uris: MA track URIs to seed recommendations (e.g. "spotify://track/xyz").
+        :param seed_artist_uris: MA artist URIs to seed recommendations.
+        :param seed_genres: Genre names to seed recommendations (e.g. ["pop", "electronic"]).
+        :param limit: Number of tracks to return (1-100, default 25).
+        :param audio_features: Audio feature constraints passed to Spotify's API, e.g.
+            {"target_energy": 0.8, "min_tempo": 120, "max_valence": 0.6}.
+        :param queue_id: Player queue ID. When provided, tracks are enqueued after retrieval.
+        :param queue_option: How to add tracks to the queue (default: REPLACE).
+        """
+        # Lazily import to avoid circular dependency at module level
+        from music_assistant.providers.spotify.provider import SpotifyProvider  # noqa: PLC0415
+
+        spotify_prov: SpotifyProvider | None = next(
+            (p for p in self.providers if isinstance(p, SpotifyProvider)), None
+        )
+        if spotify_prov is None:
+            raise UnsupportedFeaturedException("Spotify provider is not available")
+
+        async def resolve_to_spotify_id(uri: str, media_type_label: str) -> str | None:
+            try:
+                item = await self.get_item_by_uri(uri)
+            except MusicAssistantError:
+                self.logger.warning("Could not resolve %s URI %s", media_type_label, uri)
+                return None
+            for mapping in item.provider_mappings:  # type: ignore[union-attr]
+                if mapping.provider_domain == "spotify":
+                    return mapping.item_id
+            self.logger.warning("No Spotify mapping found for %s URI %s", media_type_label, uri)
+            return None
+
+        seed_tracks = [
+            sid
+            for uri in (seed_track_uris or [])
+            if (sid := await resolve_to_spotify_id(uri, "track")) is not None
+        ]
+        seed_artists = [
+            sid
+            for uri in (seed_artist_uris or [])
+            if (sid := await resolve_to_spotify_id(uri, "artist")) is not None
+        ]
+
+        tracks = await spotify_prov.get_recommendations(
+            seed_tracks=seed_tracks or None,
+            seed_artists=seed_artists or None,
+            seed_genres=seed_genres or None,
+            limit=limit,
+            audio_features=audio_features,
+        )
+
+        if queue_id and tracks:
+            await self.mass.player_queues.play_media(
+                queue_id=queue_id,
+                media=tracks,
+                option=queue_option,
+            )
+
+        return tracks
+
+    @api_command("music/spotify_recommendation_genres")
+    async def get_spotify_recommendation_genres(self) -> list[str]:
+        """Return the list of genre seeds available for use with music/spotify_recommendations."""
+        from music_assistant.providers.spotify.provider import SpotifyProvider  # noqa: PLC0415
+
+        spotify_prov: SpotifyProvider | None = next(
+            (p for p in self.providers if isinstance(p, SpotifyProvider)), None
+        )
+        if spotify_prov is None:
+            raise UnsupportedFeaturedException("Spotify provider is not available")
+        return await spotify_prov.get_available_genre_seeds()
 
     @api_command("music/item")
     async def get_item(

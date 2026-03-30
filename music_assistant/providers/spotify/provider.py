@@ -362,6 +362,23 @@ class SpotifyProvider(MusicProvider):
         track_obj = await self._get_data(f"tracks/{prov_track_id}")
         return parse_track(track_obj, self)
 
+    async def get_tracks_batch(self, prov_track_ids: list[str]) -> list[Track]:
+        """Get multiple tracks by ID in a single batch request.
+
+        Uses Spotify's /tracks?ids=... endpoint which accepts up to 50 IDs per request,
+        significantly reducing API calls and rate limit impact vs individual fetches.
+
+        :param prov_track_ids: List of Spotify track IDs to fetch.
+        """
+        result: list[Track] = []
+        for i in range(0, len(prov_track_ids), 50):
+            chunk = prov_track_ids[i : i + 50]
+            data = await self._get_data("tracks", ids=",".join(chunk))
+            for track_obj in data.get("tracks", []):
+                if track_obj:
+                    result.append(parse_track(track_obj, self))
+        return result
+
     @use_cache()
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
@@ -687,6 +704,12 @@ class SpotifyProvider(MusicProvider):
         track_uris = [f"spotify:track:{track_id}" for track_id in prov_track_ids]
         data = {"uris": track_uris}
         await self._post_data(f"playlists/{prov_playlist_id}/items", data=data)
+        # Invalidate the etag cache for this playlist's tracks so the next read fetches
+        # fresh data from Spotify rather than returning the now-stale cached result.
+        await self.mass.cache.clear(
+            key_filter=f"playlists/{prov_playlist_id}/items",
+            provider_filter=self.instance_id,
+        )
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -721,6 +744,59 @@ class SpotifyProvider(MusicProvider):
         items = await self._get_data(
             endpoint, seed_tracks=prov_track_id, limit=limit, use_global_session=True
         )
+        return [parse_track(item, self) for item in items["tracks"] if (item and item["id"])]
+
+    @use_cache(86400 * 7)  # 7 days - genre seeds are stable
+    async def get_available_genre_seeds(self) -> list[str]:
+        """Retrieve the list of genre seeds available for Spotify recommendations."""
+        result = await self._get_data(
+            "recommendations/available-genre-seeds", use_global_session=True
+        )
+        return cast("list[str]", result.get("genres", []))
+
+    async def get_recommendations(
+        self,
+        seed_tracks: list[str] | None = None,
+        seed_artists: list[str] | None = None,
+        seed_genres: list[str] | None = None,
+        limit: int = 25,
+        audio_features: dict[str, float | int] | None = None,
+    ) -> list[Track]:
+        """Retrieve track recommendations from Spotify based on seeds and audio features.
+
+        Wraps Spotify's /recommendations endpoint with full parameter support.
+        The recommendations endpoint is only available via the global (MA) session.
+        https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
+
+        :param seed_tracks: Up to 5 Spotify track IDs to seed recommendations.
+        :param seed_artists: Up to 5 Spotify artist IDs to seed recommendations.
+        :param seed_genres: Up to 5 genre strings to seed recommendations.
+        :param limit: Number of tracks to return (1-100).
+        :param audio_features: Optional audio feature constraints, e.g.
+            {"target_energy": 0.8, "min_tempo": 120, "max_valence": 0.6}.
+            Supported prefixes: target_, min_, max_.
+            Supported attributes: acousticness, danceability, energy, instrumentalness,
+            liveness, loudness, popularity, speechiness, tempo, valence.
+        """
+        total_seeds = len(seed_tracks or []) + len(seed_artists or []) + len(seed_genres or [])
+        if total_seeds == 0:
+            msg = "At least one seed (track, artist, or genre) must be provided."
+            raise ValueError(msg)
+        if total_seeds > 5:
+            msg = "Total seeds (tracks + artists + genres) cannot exceed 5."
+            raise ValueError(msg)
+
+        kwargs: dict[str, Any] = {"limit": min(limit, 100), "use_global_session": True}
+        if seed_tracks:
+            kwargs["seed_tracks"] = ",".join(seed_tracks)
+        if seed_artists:
+            kwargs["seed_artists"] = ",".join(seed_artists)
+        if seed_genres:
+            kwargs["seed_genres"] = ",".join(seed_genres)
+        if audio_features:
+            kwargs.update(audio_features)
+
+        items = await self._get_data("recommendations", **kwargs)
         return [parse_track(item, self) for item in items["tracks"] if (item and item["id"])]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
