@@ -650,10 +650,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def export_playlist(self, db_playlist_id: str | int) -> str:
         """Export a playlist to M3U8 format.
 
-        Works with any library playlist regardless of provider. Fetches
-        the playlist's tracks, converts each to a PlaylistItem, and
-        generates an M3U8 string with full metadata.
-
         :param db_playlist_id: The library database ID of the playlist.
         """
         db_id = int(db_playlist_id)

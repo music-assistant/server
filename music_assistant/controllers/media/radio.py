@@ -18,6 +18,7 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.playlists import generate_m3u, media_item_to_playlist_item
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
@@ -44,12 +45,10 @@ class RadioController(MediaControllerBase[Radio]):
         self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
 
     async def export_radios(self) -> str:
-        """Export all builtin radio stations to M3U8 format."""
-        provider = self.mass.get_provider("builtin")
-        if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError("Builtin provider is not available")
-        builtin_prov = cast("BuiltinProvider", provider)
-        return await builtin_prov.export_radios()
+        """Export all library radio stations to M3U8 format."""
+        radios = await self.library_items(limit=10000, offset=0)
+        items = [media_item_to_playlist_item(radio) for radio in radios]
+        return generate_m3u("Radio Stations", items)
 
     async def import_radios(self, m3u_data: str) -> int:
         """Import radio stations from M3U8 format.
