@@ -345,21 +345,26 @@ async def test_callbacks_cleared_on_clear() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rolling_buffer_evicts_on_put() -> None:
-    """ROLLING mode evicts the oldest chunk on put when full."""
+async def test_rolling_buffer_fifo() -> None:
+    """ROLLING mode works as a FIFO — get pops the oldest chunk."""
     buf = AudioBuffer(TEST_PCM_FORMAT, mode=BufferMode.ROLLING)
-    max_size = buf.max_size_seconds
 
-    for i in range(max_size):
+    for i in range(5):
         await buf._put(_make_chunk(i))
 
-    assert buf.size_seconds == max_size
-    assert buf._discarded_chunks == 0
+    assert buf.size_seconds == 5
 
-    # adding one more chunk evicts the oldest
-    await buf._put(_make_chunk(max_size))
+    # get pops the oldest chunk and frees space
+    result = await buf._get(chunk_number=0)
+    assert result == _make_chunk(0)
+    assert buf.size_seconds == 4
     assert buf._discarded_chunks == 1
-    assert buf.size_seconds == max_size
+
+    # next get returns the next chunk
+    result = await buf._get(chunk_number=1)
+    assert result == _make_chunk(1)
+    assert buf.size_seconds == 3
+    assert buf._discarded_chunks == 2
 
 
 @pytest.mark.asyncio

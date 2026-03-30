@@ -171,9 +171,6 @@ class AudioBuffer:
         chunk_number = seek_position_ms // 1000
         while True:
             try:
-                # skip past evicted chunks (relevant for rolling buffers
-                # where the producer evicts independently)
-                chunk_number = max(chunk_number, self._discarded_chunks)
                 yield await self._get(chunk_number=chunk_number)
                 chunk_number += 1
             except AudioBufferEOF:
@@ -354,7 +351,7 @@ class AudioBuffer:
         # use a higher ready threshold for dynamic normalization so FFmpeg's
         # loudnorm filter has enough lookahead to produce smooth initial output
         ready_threshold = (
-            5 if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC else 1
+            5 if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC else 2
         )
 
         LOGGER.debug(
@@ -407,8 +404,7 @@ class AudioBuffer:
         """
         Put a 1-second chunk of PCM audio into the buffer.
 
-        ROLLING mode evicts the oldest chunk immediately when full.
-        SEEKABLE mode waits for the consumer to free space (backpressure).
+        Waits for space when the buffer is full (backpressure).
         """
         chunk_position = -1
         async with self._lock:
@@ -421,14 +417,8 @@ class AudioBuffer:
                 )
                 return
 
-            # handle buffer at capacity:
-            # rolling mode evicts oldest chunk, seekable mode waits for consumer
-            if len(self._chunks) >= self.max_size_seconds:
-                if self.mode == BufferMode.ROLLING:
-                    self._chunks.popleft()
-                    self._discarded_chunks += 1
-                else:
-                    await self._wait_for_space()
+            # wait for the consumer to free space when buffer is full
+            await self._wait_for_space()
 
             chunk_position = self._discarded_chunks + len(self._chunks)
             self._chunks.append(chunk)
@@ -499,46 +489,68 @@ class AudioBuffer:
             if self.cancelled:
                 raise AudioBufferEOF
 
-            if chunk_number < self._discarded_chunks:
-                if self.mode == BufferMode.ROLLING:
-                    chunk_number = self._discarded_chunks
-                else:
-                    msg = (
-                        f"Chunk {chunk_number} has been discarded "
-                        f"(buffer starts at {self._discarded_chunks})"
-                    )
-                    raise AudioError(msg)
+            if self.mode == BufferMode.ROLLING:
+                return await self._get_rolling()
 
-            buffer_index = chunk_number - self._discarded_chunks
-            while buffer_index >= len(self._chunks):
-                if self._producer_error:
-                    raise self._producer_error
-                if self.cancelled:
-                    raise AudioBufferEOF
-                if self._eof_received:
-                    raise AudioBufferEOF
-                # in seekable mode, if the buffer is full and we need a chunk that
-                # hasn't arrived yet, the producer is blocked — evict to unblock it
-                # (rolling mode never blocks in _put, so this is not needed there)
-                if self.mode == BufferMode.SEEKABLE and len(self._chunks) >= self.max_size_seconds:
-                    self._chunks.popleft()
-                    self._discarded_chunks += 1
-                    buffer_index = chunk_number - self._discarded_chunks
-                    self._space_available.notify_all()
-                    continue
-                await self._data_available.wait()
-                buffer_index = chunk_number - self._discarded_chunks
+            return await self._get_seekable(chunk_number)
 
-            result = self._chunks[buffer_index]
+    async def _get_rolling(self) -> bytes:
+        """
+        Pop the next chunk from the buffer (FIFO).
 
-            # in seekable mode, free space for the producer when buffer is at capacity
-            # (rolling mode handles eviction in _put, doing it here too causes duplicates)
-            if self.mode == BufferMode.SEEKABLE and len(self._chunks) >= self.max_size_seconds:
+        Must be called while holding _data_available lock.
+        """
+        while len(self._chunks) == 0:
+            if self._producer_error:
+                raise self._producer_error
+            if self.cancelled or self._eof_received:
+                raise AudioBufferEOF
+            await self._data_available.wait()
+
+        result = self._chunks.popleft()
+        self._discarded_chunks += 1
+        self._space_available.notify_all()
+        return result
+
+    async def _get_seekable(self, chunk_number: int) -> bytes:
+        """
+        Get a specific chunk by number from the buffer.
+
+        Must be called while holding _data_available lock.
+        """
+        if chunk_number < self._discarded_chunks:
+            msg = (
+                f"Chunk {chunk_number} has been discarded "
+                f"(buffer starts at {self._discarded_chunks})"
+            )
+            raise AudioError(msg)
+
+        buffer_index = chunk_number - self._discarded_chunks
+        while buffer_index >= len(self._chunks):
+            if self._producer_error:
+                raise self._producer_error
+            if self.cancelled or self._eof_received:
+                raise AudioBufferEOF
+            # if the buffer is full and we need a chunk that hasn't arrived yet,
+            # the producer is blocked waiting for space — evict to unblock it
+            if len(self._chunks) >= self.max_size_seconds:
                 self._chunks.popleft()
                 self._discarded_chunks += 1
+                buffer_index = chunk_number - self._discarded_chunks
                 self._space_available.notify_all()
+                continue
+            await self._data_available.wait()
+            buffer_index = chunk_number - self._discarded_chunks
 
-            return result
+        result = self._chunks[buffer_index]
+
+        # free space for the producer when buffer is at capacity
+        if len(self._chunks) >= self.max_size_seconds:
+            self._chunks.popleft()
+            self._discarded_chunks += 1
+            self._space_available.notify_all()
+
+        return result
 
     async def _wait_for_space(self) -> None:
         """Wait until buffer has space. Must be called while holding _lock."""

@@ -34,7 +34,7 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
 }
 
 # Buffer size for radio streams (short rolling buffer)
-RADIO_BUFFER_SIZE: Final[int] = 10
+RADIO_BUFFER_SIZE: Final[int] = 15
 
 
 # Configuration keys
