@@ -702,7 +702,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             prov_playlist_id = playlist.item_id
             user = get_current_user()
             self.mass.tasks.run_background_task(
-                name=f"Match imported playlist tracks: {db_playlist.name}",
+                name=f"Import playlist {db_playlist.name}",
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
                     prov_playlist_id, match_providers
                 ),
