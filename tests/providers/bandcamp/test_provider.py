@@ -695,19 +695,18 @@ async def test_get_artist_toptracks_success(provider: BandcampProvider) -> None:
 
 async def test_get_library_artists_success(provider: BandcampProvider) -> None:
     """Test successful library artists retrieval."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(item_type="band", item_id=100, band_id=100),
         Mock(item_type="album", item_id=200, band_id=300),
     ]
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_artist.return_value = Mock()
 
         artists = [artist async for artist in provider.get_library_artists()]
@@ -725,18 +724,17 @@ async def test_get_library_artists_no_identity(provider: BandcampProvider) -> No
 
 async def test_get_library_albums_success(provider: BandcampProvider) -> None:
     """Test successful library albums retrieval."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(item_type="album", item_id=456, band_id=123),
     ]
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = Mock()
 
         albums = [album async for album in provider.get_library_albums()]
@@ -873,8 +871,7 @@ async def test_browse_standard_subpath_delegates_to_super(provider: BandcampProv
 
 async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvider) -> None:
     """Test browsing wishlist returns resolved albums and tracks."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(item_type="album", item_id=456, band_id=123),
         Mock(item_type="track", item_id=789, band_id=123),
     ]
@@ -884,12 +881,12 @@ async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvi
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
         patch.object(provider, "get_track", new_callable=AsyncMock) as mock_get_track,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = mock_album
         mock_get_track.return_value = mock_track
 
@@ -905,8 +902,7 @@ async def test_browse_wishlist_returns_albums_and_tracks(provider: BandcampProvi
 
 async def test_browse_wishlist_skips_failed_items(provider: BandcampProvider) -> None:
     """Test that wishlist browse skips items that fail to resolve."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(item_type="album", item_id=456, band_id=123),
         Mock(item_type="album", item_id=789, band_id=123),
     ]
@@ -915,11 +911,11 @@ async def test_browse_wishlist_skips_failed_items(provider: BandcampProvider) ->
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.side_effect = [mock_album, MediaNotFoundError("not found")]
 
         result = await provider.browse("bandcamp_test://wishlist")
@@ -931,8 +927,8 @@ async def test_browse_wishlist_login_error(provider: BandcampProvider) -> None:
     """Test wishlist browse raises LoginFailed on auth error."""
     with (
         patch.object(
-            provider._client,
-            "get_collection_items",
+            provider,
+            "_get_all_collection_items",
             side_effect=BandcampMustBeLoggedInError("Must be logged in"),
         ),
         pytest.raises(LoginFailed),
@@ -947,8 +943,8 @@ async def test_browse_wishlist_rate_limit(provider: BandcampProvider) -> None:
 
     with (
         patch.object(
-            provider._client,
-            "get_collection_items",
+            provider,
+            "_get_all_collection_items",
             side_effect=rate_error,
         ),
         patch("asyncio.sleep", new_callable=AsyncMock),
@@ -959,8 +955,7 @@ async def test_browse_wishlist_rate_limit(provider: BandcampProvider) -> None:
 
 async def test_browse_following_returns_artists(provider: BandcampProvider) -> None:
     """Test browsing following returns resolved artists."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(spec=["band_id", "name"], band_id=100, name="Artist1"),
         Mock(spec=["band_id", "name"], band_id=200, name="Artist2"),
     ]
@@ -970,11 +965,11 @@ async def test_browse_following_returns_artists(provider: BandcampProvider) -> N
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_artist.side_effect = [mock_artist_1, mock_artist_2]
 
         result = await provider.browse("bandcamp_test://following")
@@ -986,8 +981,7 @@ async def test_browse_following_returns_artists(provider: BandcampProvider) -> N
 
 async def test_browse_following_skips_failed_artists(provider: BandcampProvider) -> None:
     """Test that following browse skips artists that fail to resolve."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(spec=["band_id", "name"], band_id=100, name="Found"),
         Mock(spec=["band_id", "name"], band_id=200, name="NotFound"),
     ]
@@ -996,11 +990,11 @@ async def test_browse_following_skips_failed_artists(provider: BandcampProvider)
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_artist.side_effect = [mock_artist, MediaNotFoundError("not found")]
 
         result = await provider.browse("bandcamp_test://following")
@@ -1012,8 +1006,8 @@ async def test_browse_following_login_error(provider: BandcampProvider) -> None:
     """Test following browse raises LoginFailed on auth error."""
     with (
         patch.object(
-            provider._client,
-            "get_collection_items",
+            provider,
+            "_get_all_collection_items",
             side_effect=BandcampMustBeLoggedInError("Must be logged in"),
         ),
         pytest.raises(LoginFailed),
@@ -1023,8 +1017,7 @@ async def test_browse_following_login_error(provider: BandcampProvider) -> None:
 
 async def test_browse_wishlist_ignores_unknown_item_types(provider: BandcampProvider) -> None:
     """Test that wishlist browse ignores items with unknown item_type."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(item_type="band", item_id=100, band_id=100),
         Mock(item_type="album", item_id=456, band_id=123),
     ]
@@ -1033,11 +1026,11 @@ async def test_browse_wishlist_ignores_unknown_item_types(provider: BandcampProv
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = mock_album
 
         result = await provider.browse("bandcamp_test://wishlist")
@@ -1214,13 +1207,12 @@ def test_people_to_folders_no_url_falls_back_to_id(provider: BandcampProvider) -
 
 async def test_browse_fans_top_level(provider: BandcampProvider) -> None:
     """Test browsing 'fans' at top level fetches authenticated user's fans."""
-    mock_collection = Mock()
-    mock_collection.items = [_fan_mock(1, "Fan1", url="https://bandcamp.com/fan1")]
+    collection_items = [_fan_mock(1, "Fan1", url="https://bandcamp.com/fan1")]
 
     with patch.object(
-        provider._client, "get_collection_items", new_callable=AsyncMock
+        provider, "_get_all_collection_items", new_callable=AsyncMock
     ) as mock_get_collection:
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
 
         result = await provider.browse("bandcamp_test://fans")
 
@@ -1232,13 +1224,12 @@ async def test_browse_fans_top_level(provider: BandcampProvider) -> None:
 
 async def test_browse_followers_top_level(provider: BandcampProvider) -> None:
     """Test browsing 'followers' at top level fetches authenticated user's followers."""
-    mock_collection = Mock()
-    mock_collection.items = [_fan_mock(2, "Follower1", url="https://bandcamp.com/follower1")]
+    collection_items = [_fan_mock(2, "Follower1", url="https://bandcamp.com/follower1")]
 
     with patch.object(
-        provider._client, "get_collection_items", new_callable=AsyncMock
+        provider, "_get_all_collection_items", new_callable=AsyncMock
     ) as mock_get_collection:
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
 
         result = await provider.browse("bandcamp_test://followers")
 
@@ -1263,17 +1254,16 @@ async def test_browse_fans_person_id_shows_subfolders(provider: BandcampProvider
 
 async def test_browse_person_collection(provider: BandcampProvider) -> None:
     """Test browsing fans/42/collection fetches person's collection."""
-    mock_collection = Mock()
-    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
     mock_album = Mock()
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = mock_album
 
         result = await provider.browse("bandcamp_test://fans/42/collection")
@@ -1285,17 +1275,16 @@ async def test_browse_person_collection(provider: BandcampProvider) -> None:
 
 async def test_browse_person_wishlist(provider: BandcampProvider) -> None:
     """Test browsing fans/42/wishlist fetches person's wishlist."""
-    mock_collection = Mock()
-    mock_collection.items = [Mock(item_type="album", item_id=789, band_id=123)]
+    collection_items = [Mock(item_type="album", item_id=789, band_id=123)]
     mock_album = Mock()
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = mock_album
 
         result = await provider.browse("bandcamp_test://fans/42/wishlist")
@@ -1307,17 +1296,16 @@ async def test_browse_person_wishlist(provider: BandcampProvider) -> None:
 
 async def test_browse_person_following(provider: BandcampProvider) -> None:
     """Test browsing fans/42/following fetches person's followed artists."""
-    mock_collection = Mock()
-    mock_collection.items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
+    collection_items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
     mock_artist = Mock()
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_artist.return_value = mock_artist
 
         result = await provider.browse("bandcamp_test://fans/42/following")
@@ -1329,13 +1317,12 @@ async def test_browse_person_following(provider: BandcampProvider) -> None:
 
 async def test_browse_person_fans(provider: BandcampProvider) -> None:
     """Test browsing fans/42/fans fetches person 42's fans."""
-    mock_collection = Mock()
-    mock_collection.items = [_fan_mock(99, "SubFan", url="https://bandcamp.com/subfan")]
+    collection_items = [_fan_mock(99, "SubFan", url="https://bandcamp.com/subfan")]
 
     with patch.object(
-        provider._client, "get_collection_items", new_callable=AsyncMock
+        provider, "_get_all_collection_items", new_callable=AsyncMock
     ) as mock_get_collection:
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
 
         result = await provider.browse("bandcamp_test://fans/42/fans")
 
@@ -1347,13 +1334,12 @@ async def test_browse_person_fans(provider: BandcampProvider) -> None:
 
 async def test_browse_person_followers(provider: BandcampProvider) -> None:
     """Test browsing followers/42/followers fetches person 42's followers."""
-    mock_collection = Mock()
-    mock_collection.items = [_fan_mock(88, "SubFollower", url="https://bandcamp.com/subfollower")]
+    collection_items = [_fan_mock(88, "SubFollower", url="https://bandcamp.com/subfollower")]
 
     with patch.object(
-        provider._client, "get_collection_items", new_callable=AsyncMock
+        provider, "_get_all_collection_items", new_callable=AsyncMock
     ) as mock_get_collection:
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
 
         result = await provider.browse("bandcamp_test://followers/42/followers")
 
@@ -1379,15 +1365,14 @@ async def test_browse_deep_nesting_with_slug(provider: BandcampProvider) -> None
     # Pre-populate slug mapping (as if we had previously browsed fans)
     provider._slug_to_fan_id["alice"] = 42
 
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         _fan_mock(99, "Bob", url="https://bandcamp.com/bob"),
     ]
 
     with patch.object(
-        provider._client, "get_collection_items", new_callable=AsyncMock
+        provider, "_get_all_collection_items", new_callable=AsyncMock
     ) as mock_get_collection:
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
 
         result = await provider.browse("bandcamp_test://fans/alice/fans")
 
@@ -1423,13 +1408,19 @@ async def test_browse_person_invalid_id_negative(provider: BandcampProvider) -> 
 
 async def test_browse_person_unknown_subcategory(provider: BandcampProvider) -> None:
     """Test that an unknown sub-category raises InvalidDataError."""
-    with pytest.raises(InvalidDataError, match="Unknown browse sub-category"):
+    with (
+        patch.object(provider, "_rebuild_slug_cache", new_callable=AsyncMock),
+        pytest.raises(InvalidDataError, match="Unknown browse sub-category"),
+    ):
         await provider.browse("bandcamp_test://fans/42/playlists")
 
 
 async def test_browse_person_invalid_path_no_id(provider: BandcampProvider) -> None:
     """Test that sub-category without valid person ID raises InvalidDataError."""
-    with pytest.raises(InvalidDataError, match="Invalid browse path"):
+    with (
+        patch.object(provider, "_rebuild_slug_cache", new_callable=AsyncMock),
+        pytest.raises(InvalidDataError, match="Invalid browse path"),
+    ):
         await provider.browse("bandcamp_test://fans/abc/collection")
 
 
@@ -1438,17 +1429,16 @@ async def test_browse_person_invalid_path_no_id(provider: BandcampProvider) -> N
 
 async def test_browse_person_content_with_person_id(provider: BandcampProvider) -> None:
     """Test _browse_person_content with explicit person_id passes fan_id."""
-    mock_collection = Mock()
-    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
     mock_album = Mock()
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = mock_album
 
         result = await provider._browse_person_content(42, CollectionType.COLLECTION)
@@ -1460,17 +1450,16 @@ async def test_browse_person_content_with_person_id(provider: BandcampProvider) 
 
 async def test_browse_person_content_caches_results(provider: BandcampProvider) -> None:
     """Test _browse_person_content caches non-empty results."""
-    mock_collection = Mock()
-    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
     mock_album = Mock()
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = mock_album
 
         await provider._browse_person_content(42, CollectionType.WISHLIST)
@@ -1502,7 +1491,7 @@ async def test_browse_person_content_cache_hit(provider: BandcampProvider) -> No
     with (
         patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_items),
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
     ):
         result = await provider._browse_person_content(42, CollectionType.COLLECTION)
@@ -1520,16 +1509,14 @@ async def test_browse_person_content_cache_hit_stale_data(
 ) -> None:
     """Test _browse_person_content falls through to API on stale/corrupt cache."""
     stale_cache = [{"garbage": True}]
-    mock_collection = Mock()
-    mock_collection.items = []
 
     with (
         patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=stale_cache),
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = []
         result = await provider._browse_person_content(42, CollectionType.COLLECTION)
 
         mock_get_collection.assert_called_once()
@@ -1541,13 +1528,10 @@ async def test_browse_person_content_empty_cached_with_short_ttl(
     provider: BandcampProvider,
 ) -> None:
     """Test empty results are cached with CACHE_EMPTY_RESULTS TTL."""
-    mock_collection = Mock()
-    mock_collection.items = []
-
     with patch.object(
-        provider._client, "get_collection_items", new_callable=AsyncMock
+        provider, "_get_all_collection_items", new_callable=AsyncMock
     ) as mock_get_collection:
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = []
 
         result = await provider._browse_person_content(42, CollectionType.COLLECTION)
 
@@ -1561,17 +1545,16 @@ async def test_browse_person_content_nonempty_cached_with_normal_ttl(
     provider: BandcampProvider,
 ) -> None:
     """Test non-empty results are cached with CACHE_USER_LISTS TTL."""
-    mock_collection = Mock()
-    mock_collection.items = [Mock(item_type="album", item_id=456, band_id=123)]
+    collection_items = [Mock(item_type="album", item_id=456, band_id=123)]
     mock_album = Mock()
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_album.return_value = mock_album
 
         await provider._browse_person_content(42, CollectionType.COLLECTION)
@@ -1585,8 +1568,8 @@ async def test_browse_person_content_api_error(provider: BandcampProvider) -> No
     """Test _browse_person_content maps generic API error via _map_api_errors."""
     with (
         patch.object(
-            provider._client,
-            "get_collection_items",
+            provider,
+            "_get_all_collection_items",
             side_effect=BandcampAPIError("API Error"),
         ),
         pytest.raises(MediaNotFoundError, match="Failed to get"),
@@ -1599,17 +1582,16 @@ async def test_browse_person_content_api_error(provider: BandcampProvider) -> No
 
 async def test_browse_person_following_with_person_id(provider: BandcampProvider) -> None:
     """Test _browse_person_following with explicit person_id."""
-    mock_collection = Mock()
-    mock_collection.items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
+    collection_items = [Mock(spec=["band_id", "name"], band_id=100, name="Artist1")]
     mock_artist = Mock()
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_artist.return_value = mock_artist
 
         result = await provider._browse_person_following(42)
@@ -1633,7 +1615,7 @@ async def test_browse_person_following_cache_hit(provider: BandcampProvider) -> 
     with (
         patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_items),
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
     ):
         result = await provider._browse_person_following(42)
@@ -1646,8 +1628,7 @@ async def test_browse_person_following_cache_hit(provider: BandcampProvider) -> 
 
 async def test_browse_person_following_skips_not_found(provider: BandcampProvider) -> None:
     """Test _browse_person_following logs warning and skips unfound artists."""
-    mock_collection = Mock()
-    mock_collection.items = [
+    collection_items = [
         Mock(spec=["band_id", "name"], band_id=100, name="Found"),
         Mock(spec=["band_id", "name"], band_id=200, name="NotFound"),
     ]
@@ -1655,11 +1636,11 @@ async def test_browse_person_following_skips_not_found(provider: BandcampProvide
 
     with (
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
         patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
         mock_get_artist.side_effect = [mock_artist, MediaNotFoundError("not found")]
 
         result = await provider._browse_person_following(42)
@@ -1672,16 +1653,14 @@ async def test_browse_person_following_cache_hit_stale_data(
 ) -> None:
     """Test _browse_person_following falls through to API on stale/corrupt cache."""
     stale_cache = [{"garbage": True}]
-    mock_collection = Mock()
-    mock_collection.items = []
 
     with (
         patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=stale_cache),
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
     ):
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = []
         result = await provider._browse_person_following(42)
 
         mock_get_collection.assert_called_once()
@@ -1694,13 +1673,12 @@ async def test_browse_person_following_cache_hit_stale_data(
 
 async def test_browse_person_people_with_person_id(provider: BandcampProvider) -> None:
     """Test _browse_person_people with explicit person_id fetches their fans."""
-    mock_collection = Mock()
-    mock_collection.items = [_fan_mock(10, "Fan", "http://img.jpg", "https://bandcamp.com/thefan")]
+    collection_items = [_fan_mock(10, "Fan", "http://img.jpg", "https://bandcamp.com/thefan")]
 
     with patch.object(
-        provider._client, "get_collection_items", new_callable=AsyncMock
+        provider, "_get_all_collection_items", new_callable=AsyncMock
     ) as mock_get_collection:
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = collection_items
 
         result = await provider._browse_person_people(
             CollectionType.FOLLOWING_FANS, "bandcamp_test://fans/42/fans", person_id=42
@@ -1716,8 +1694,8 @@ async def test_browse_person_people_api_error(provider: BandcampProvider) -> Non
     """Test _browse_person_people maps API error via _map_api_errors."""
     with (
         patch.object(
-            provider._client,
-            "get_collection_items",
+            provider,
+            "_get_all_collection_items",
             side_effect=BandcampAPIError("API Error"),
         ),
         pytest.raises(MediaNotFoundError, match="Failed to get"),
@@ -1773,8 +1751,6 @@ async def test_browse_person_people_cache_hit_stale_data(
 ) -> None:
     """Test _browse_person_people falls through to API on stale/corrupt cache."""
     stale_cache = [{"garbage": True}]
-    mock_collection = Mock()
-    mock_collection.items = []
 
     async def fake_cache_get(key: str, **kwargs: object) -> object:  # noqa: ARG001
         if "_browse_person_people_" in key:
@@ -1784,11 +1760,11 @@ async def test_browse_person_people_cache_hit_stale_data(
     with (
         patch.object(provider.mass.cache, "get", new_callable=AsyncMock) as mock_cache_get,
         patch.object(
-            provider._client, "get_collection_items", new_callable=AsyncMock
+            provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
     ):
         mock_cache_get.side_effect = fake_cache_get
-        mock_get_collection.return_value = mock_collection
+        mock_get_collection.return_value = []
         result = await provider._browse_person_people(
             CollectionType.FOLLOWING_FANS, "bandcamp_test://fans"
         )
@@ -1811,3 +1787,226 @@ async def test_rebuild_slug_cache_calls_browse_person_people(
         calls = mock_browse.call_args_list
         assert calls[0].args == (CollectionType.FOLLOWING_FANS, "bandcamp_test://fans")
         assert calls[1].args == (CollectionType.FOLLOWERS, "bandcamp_test://followers")
+
+
+# --- Pagination tests ---
+
+
+def _make_collection_page(
+    items: list[Mock],
+    has_more: bool = False,
+    last_token: str | None = None,
+) -> Mock:
+    """Create a mock CollectionSummary page."""
+    page = Mock()
+    page.items = items
+    page.has_more = has_more
+    page.last_token = last_token
+    return page
+
+
+async def test_get_all_collection_items_single_page(provider: BandcampProvider) -> None:
+    """Test _get_all_collection_items with a single page."""
+    page = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=10)],
+        has_more=False,
+    )
+    with patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = page
+
+        result = await provider._get_all_collection_items(CollectionType.COLLECTION)
+
+        assert len(result) == 1
+        mock_get.assert_called_once()
+
+
+async def test_get_all_collection_items_multiple_pages(provider: BandcampProvider) -> None:
+    """Test _get_all_collection_items follows pagination across multiple pages."""
+    page1 = _make_collection_page(
+        [Mock(item_type="album", item_id=i, band_id=10) for i in range(50)],
+        has_more=True,
+        last_token="token_page2",
+    )
+    page2 = _make_collection_page(
+        [Mock(item_type="album", item_id=i, band_id=10) for i in range(50, 100)],
+        has_more=True,
+        last_token="token_page3",
+    )
+    page3 = _make_collection_page(
+        [Mock(item_type="album", item_id=i, band_id=10) for i in range(100, 120)],
+        has_more=False,
+    )
+
+    with patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [page1, page2, page3]
+
+        result = await provider._get_all_collection_items(CollectionType.COLLECTION)
+
+        assert len(result) == 120
+        assert mock_get.call_count == 3
+        # First call has no older_than_token (positional arg index 1)
+        assert mock_get.call_args_list[0].args[1] is None
+        # Subsequent calls pass the last_token from the previous page
+        assert mock_get.call_args_list[1].args[1] == "token_page2"
+        assert mock_get.call_args_list[2].args[1] == "token_page3"
+
+
+async def test_get_all_collection_items_stops_on_missing_last_token(
+    provider: BandcampProvider,
+) -> None:
+    """Test _get_all_collection_items stops when has_more is True but last_token is None."""
+    page = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=10)],
+        has_more=True,
+        last_token=None,
+    )
+    with patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = page
+
+        result = await provider._get_all_collection_items(CollectionType.COLLECTION)
+
+        assert len(result) == 1
+        mock_get.assert_called_once()
+
+
+async def test_get_all_collection_items_passes_fan_id(provider: BandcampProvider) -> None:
+    """Test _get_all_collection_items forwards fan_id to the API client."""
+    page = _make_collection_page([], has_more=False)
+    with patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = page
+
+        await provider._get_all_collection_items(CollectionType.WISHLIST, fan_id=42)
+
+        mock_get.assert_called_once_with(CollectionType.WISHLIST, None, 42)
+
+
+async def test_get_library_albums_paginates(provider: BandcampProvider) -> None:
+    """Test get_library_albums yields albums from all pages."""
+    page1 = _make_collection_page(
+        [Mock(item_type="album", item_id=i, band_id=10) for i in range(1, 4)],
+        has_more=True,
+        last_token="tok2",
+    )
+    page2 = _make_collection_page(
+        [Mock(item_type="album", item_id=i, band_id=10) for i in range(4, 6)],
+        has_more=False,
+    )
+
+    with (
+        patch.object(provider._client, "get_collection_items", new_callable=AsyncMock) as mock_get,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+    ):
+        mock_get.side_effect = [page1, page2]
+        mock_get_album.return_value = Mock()
+
+        albums = [album async for album in provider.get_library_albums()]
+
+        assert len(albums) == 5
+        assert mock_get.call_count == 2
+
+
+async def test_get_library_artists_paginates(provider: BandcampProvider) -> None:
+    """Test get_library_artists yields artists from all pages."""
+    page1 = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=100)],
+        has_more=True,
+        last_token="tok2",
+    )
+    page2 = _make_collection_page(
+        [Mock(item_type="album", item_id=2, band_id=200)],
+        has_more=False,
+    )
+
+    with (
+        patch.object(provider._client, "get_collection_items", new_callable=AsyncMock) as mock_get,
+        patch.object(provider, "get_artist", new_callable=AsyncMock) as mock_get_artist,
+    ):
+        mock_get.side_effect = [page1, page2]
+        mock_get_artist.return_value = Mock()
+
+        artists = [artist async for artist in provider.get_library_artists()]
+
+        assert len(artists) == 2
+        assert mock_get.call_count == 2
+        # Band IDs 100 and 200 from pages 1 and 2
+        called_ids = {call.args[0] for call in mock_get_artist.call_args_list}
+        assert called_ids == {100, 200}
+
+
+async def test_get_all_collection_items_error_mid_pagination(
+    provider: BandcampProvider,
+) -> None:
+    """Test that an API error on page 2 propagates without returning partial results."""
+    page1 = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=10)],
+        has_more=True,
+        last_token="token_page2",
+    )
+
+    with patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [page1, BandcampRateLimitError(retry_after=3)]
+
+        with pytest.raises(BandcampRateLimitError):
+            await provider._get_all_collection_items(CollectionType.COLLECTION)
+
+        assert mock_get.call_count == 2
+
+
+async def test_browse_person_content_returns_only_resolved_items(
+    provider: BandcampProvider,
+) -> None:
+    """Test that _browse_person_content returns only resolved Album/Track objects.
+
+    Regression test: a previous version reused the same list variable for both
+    the raw API items and the resolved results, which mixed CollectionItem
+    objects into the returned list.
+    """
+    raw_items = [
+        Mock(item_type="album", item_id=456, band_id=123),
+        Mock(item_type="track", item_id=789, band_id=123),
+    ]
+    mock_album = Mock(spec=Album)
+    mock_track = Mock(spec=Track)
+
+    with (
+        patch.object(
+            provider, "_get_all_collection_items", new_callable=AsyncMock
+        ) as mock_get_collection,
+        patch.object(provider, "get_album", new_callable=AsyncMock) as mock_get_album,
+        patch.object(provider, "get_track", new_callable=AsyncMock) as mock_get_track,
+    ):
+        mock_get_collection.return_value = raw_items
+        mock_get_album.return_value = mock_album
+        mock_get_track.return_value = mock_track
+
+        result = await provider._browse_person_content(42, CollectionType.WISHLIST)
+
+        assert len(result) == 2
+        assert result[0] is mock_album
+        assert result[1] is mock_track
+        # Verify no raw CollectionItem objects leaked into the result
+        for item in result:
+            assert item is not raw_items[0]
+            assert item is not raw_items[1]
+
+
+async def test_get_all_collection_items_detects_token_loop(
+    provider: BandcampProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test _get_all_collection_items stops when the same token repeats."""
+    stuck_page = _make_collection_page(
+        [Mock(item_type="album", item_id=1, band_id=10)],
+        has_more=True,
+        last_token="same_token_forever",
+    )
+
+    with patch.object(provider, "_fetch_collection_page", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = stuck_page
+
+        result = await provider._get_all_collection_items(CollectionType.COLLECTION)
+
+        # Should fetch page 1 (token not yet seen), then page 2 (token repeated → stop)
+        assert mock_get.call_count == 2
+        assert len(result) == 2
+        assert "Pagination loop detected" in caplog.text

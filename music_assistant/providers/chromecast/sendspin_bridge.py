@@ -23,10 +23,10 @@ from typing import TYPE_CHECKING, Any, cast
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.models.types import AudioCodec
 from music_assistant_models.enums import EventType, IdentifierType
 
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.providers.chromecast.constants import get_cast_model_static_delay
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
@@ -172,7 +172,7 @@ class SendspinChromecastBridge:
                     )
                 ],
                 buffer_capacity=1_000,
-                supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
+                supported_commands=[],
             ),
         )
 
@@ -327,8 +327,8 @@ class SendspinChromecastBridge:
         """
         # The Sendspin server runs on its own port (8927), NOT through
         # the MA webserver or streams server. Use publish_ip directly.
-        publish_ip = self.mass.streams.publish_ip
-        server_url = f"ws://{publish_ip}:8927/sendspin"
+        publish_ip = cast("str", self.mass.streams.publish_ip)
+        server_url = f"ws://{format_ip_for_url(publish_ip)}:8927/sendspin"
         sync_delay = int(
             self.mass.config.get_raw_player_config_value(
                 self._bridge_client_id,

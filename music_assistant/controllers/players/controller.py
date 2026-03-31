@@ -23,6 +23,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -75,7 +76,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
+    CONF_GROUP_MEMBERS,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -100,7 +101,7 @@ from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
-from .helpers import AnnounceData, handle_player_command
+from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
 if TYPE_CHECKING:
@@ -153,12 +154,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
-        return (CONF_ENTRY_ZEROCONF_INTERFACES,)
+        return ()
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self._cleanup_stale_protocol_parent_ids()
         self._poll_task = self.mass.create_task(self._poll_players())
+        self.mass.tasks.register_scheduled_task(
+            task_id="fix_group_member_configs",
+            name="Fix sync group member configurations",
+            handler=self._fix_group_member_configs,
+            schedule=TaskSchedule.weekly(
+                days_of_week=[0],
+                hour=4,
+                minute=0,
+            ),
+            initial_delay=300,
+        )
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -803,7 +815,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(player.state.volume_control):
+        if protocol_player := self.get_player(player.mute_control):
             self.logger.debug(
                 "Redirecting mute command to protocol player %s",
                 protocol_player.provider.manifest.name,
@@ -1106,8 +1118,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Remove the given player from any (sync)groups it currently is synced to.
         If the player is not currently grouped to any other player,
         this will silently be ignored.
-
-        NOTE: This is a convenience helper for cmd_set_members.
         """
         if not (player := self.get_player(player_id)):
             self.logger.warning("Player %s is not available", player_id)
@@ -1129,6 +1139,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.player_id, player_ids_to_remove=player.state.group_members
             )
             return
+        # unjoin from any dynamic sync groups if we're currently in one (edge case)
+        # this is in particular used for the Home Assistant integration which does
+        # not have a set_members command and only supports a singe unjoin command
+        for player in self.all_players(False):
+            if not player.state.group_members or player.state.synced_to:
+                continue
+            if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
+                continue
+            if player_id in player.state.static_group_members:
+                continue
+            if player_id in player.state.group_members:
+                await self.cmd_set_members(player.player_id, player_ids_to_remove=[player_id])
+                return
 
     @api_command("players/cmd/ungroup_many")
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
@@ -1504,14 +1527,22 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # to prevent spamming the eventbus on small changes (e.g. elapsed time),
-        # we check if there are only changes in the elapsed time
-        clean_changed_keys = set(changed_values.keys()) - {"current_media.elapsed_time"}
+        # we check if there are only changes in the elapsed time and send
+        # a lightweight event.
+        clean_changed_keys = set(changed_values.keys()) - {
+            "current_media.elapsed_time",
+            "elapsed_time_last_updated",
+        }
         if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
-            # ignore small changes in elapsed time
-            prev_value = changed_values[ATTR_ELAPSED_TIME][0] or 0
-            new_value = changed_values[ATTR_ELAPSED_TIME][1] or 0
-            if abs(prev_value - new_value) > 1.0:
+            now = time.time()
+            prev_elapsed, new_elapsed = changed_values[ATTR_ELAPSED_TIME]
+            prev_updated, new_updated = changed_values.get("elapsed_time_last_updated", (now, now))
+            prev_corrected = (prev_elapsed or 0) + (now - (prev_updated or now))
+            new_corrected = (new_elapsed or 0) + (now - (new_updated or now))
+            if abs(prev_corrected - new_corrected) > 1.0:
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
+                if player.protocol_parent_id:
+                    self.trigger_player_update(player.protocol_parent_id)
             return
 
         # signal update to the playerqueue
@@ -2163,6 +2194,57 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
                 self.mass.config.set(conf_key, None)
 
+    async def _fix_group_member_configs(self) -> None:
+        """Fix stale protocol player IDs in sync group member configs.
+
+        When a sync group references a protocol player ID instead of
+        the parent player ID, correct it using the cached protocol parent mapping.
+        """
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        total_fixes = 0
+        fixed_groups: list[str] = []
+
+        for group_id, group_config in list(all_player_configs.items()):
+            if group_config.get("provider") != "sync_group":
+                continue
+            old_members: list[str] = group_config.get("values", {}).get(CONF_GROUP_MEMBERS, [])
+            if not old_members:
+                continue
+
+            new_members: list[str] = []
+            changes = 0
+            for member_id in old_members:
+                parent_id = self._get_cached_protocol_parent_id(member_id)
+                corrected_id = parent_id or member_id
+                if corrected_id != member_id:
+                    changes += 1
+                    self.logger.debug(
+                        "Sync group %s: corrected member %s -> %s",
+                        group_id,
+                        member_id,
+                        corrected_id,
+                    )
+                if corrected_id not in new_members:
+                    new_members.append(corrected_id)
+
+            if changes:
+                self.mass.config.set_raw_player_config_value(
+                    group_id, CONF_GROUP_MEMBERS, new_members
+                )
+                total_fixes += changes
+                fixed_groups.append(group_id)
+
+        for group_id in fixed_groups:
+            if (group_player := self.get_player(group_id)) and group_player.available:
+                await group_player.on_config_updated()
+
+        if total_fixes:
+            self.logger.info(
+                "Fixed %d stale member reference(s) across %d sync group(s)",
+                total_fixes,
+                len(fixed_groups),
+            )
+
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""
         while True:
@@ -2670,11 +2752,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # fallback: just try to resume queue playback
         await self.mass.player_queues.resume(player.player_id)
 
-    async def _handle_cmd_power(self, player_id: str, powered: bool) -> None:
+    async def _handle_cmd_power(
+        self, player_id: str, powered: bool, skip_auto_play: bool = False
+    ) -> None:
         """
         Handle player power on/off command.
 
         Skips the permission checks (internal use only).
+
+        :param player_id: The player ID to power on/off.
+        :param powered: True to power on, False to power off.
+        :param skip_auto_play: If True, skip auto-play on power on.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
@@ -2727,6 +2815,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
+            if powered:
+                await wait_for_power_on(self.logger, player)
         elif player_state.power_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
@@ -2738,9 +2828,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 provider=self.domain,
                 category=CACHE_CATEGORY_PLAYER_POWER,
             )
-        else:
-            # handle external player control
-            player_control = self._controls.get(player.state.power_control)
+        # handle external player control
+        elif player_control := self._controls.get(player.state.power_control):
             control_name = player_control.name if player_control else player.state.power_control
             self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
             if not player_control or not player_control.supports_power:
@@ -2750,16 +2839,27 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             if powered:
                 assert player_control.power_on is not None  # for type checking
                 await player_control.power_on()
+                await wait_for_power_on(self.logger, player, player_control)
             else:
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
+        # handle protocol player power control
+        elif protocol_player := self.get_player(player.state.power_control):
+            self.logger.debug(
+                "Redirecting power command to protocol player %s",
+                protocol_player.provider.manifest.name,
+            )
+            await self._handle_cmd_power(protocol_player.player_id, powered, True)
+            if powered:
+                await wait_for_power_on(self.logger, protocol_player)
 
         # always trigger a state update to update the UI
         player.update_state()
 
         # handle 'auto play on power on' feature
         if (
-            not player_state.active_group
+            not skip_auto_play
+            and not player_state.active_group
             and not player_state.synced_to
             and powered
             and player.config.get_value(CONF_AUTO_PLAY)
@@ -2857,10 +2957,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # power on the player if needed
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True)
-
         # Determine output protocol to use:
         # If player already has an active protocol set, prefer that.
         # Otherwise, select best protocol based on current state.
@@ -2893,17 +2989,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 target_player.state.group_members,
             )
             player.set_active_output_protocol(output_protocol.output_protocol_id)
-            # if the (protocol)player has power control and is currently powered off,
-            # we need to power it on before playback
-            if (
-                target_player.state.powered is False
-                and target_player.power_control != PLAYER_CONTROL_NONE
-            ):
-                await self._handle_cmd_power(target_player.player_id, True)
-            # forward play media command to protocol player
-            await target_player.play_media(media)
-            # notify the native player that protocol playback started
-            await player.on_protocol_playback(output_protocol=output_protocol)
         else:
             # Native playback
             self.logger.debug(
@@ -2912,7 +2997,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.group_members,
             )
             player.set_active_output_protocol("native")
-            await player.play_media(media)
+
+        # power on the player if needed (skip auto-play since we're about to start playback)
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+        await target_player.play_media(media)
+        if target_player.player_id != player.player_id:
+            # notify the native player that protocol playback started
+            assert output_protocol is not None
+            await player.on_protocol_playback(output_protocol=output_protocol)
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
@@ -2998,6 +3091,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        if player.state.playback_state == PlaybackState.IDLE:
+            return
         player.mark_stop_called()
         # Delegate to active protocol player if one is active
         target_player = player
@@ -3095,6 +3190,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        if player.state.playback_state == PlaybackState.IDLE:
+            return
         # Check if a plugin source is active with a pause callback
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.can_play_pause and plugin_source.on_pause:
