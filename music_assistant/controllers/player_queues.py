@@ -2204,9 +2204,10 @@ class PlayerQueuesController(CoreController):
         )
 
     def _prepare_next_audio_buffer(self, queue_id: str) -> None:
-        """Prepare the AudioBuffer for the next track in the queue.
+        """
+        Prepare the AudioBuffer for the next track in the queue.
 
-        Called ~30 seconds before the current track ends to ensure
+        Called ~30-60 seconds before the current track ends to ensure
         the buffer is warm when the next track starts playing.
         """
         queue = self._queues.get(queue_id)
