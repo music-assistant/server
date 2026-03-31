@@ -197,16 +197,20 @@ class LocalFileSystemProvider(MusicProvider):
         """Return the features supported by this Provider."""
         base_features = {*SUPPORTED_FEATURES}
         if self.media_content_type == "audiobooks":
-            return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
+            if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
+                base_features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
+            return base_features
         if self.media_content_type == "podcasts":
-            return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
-        music_features = {
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            *base_features,
-        }
+            if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
+                base_features.add(ProviderFeature.LIBRARY_PODCASTS)
+            return base_features
+        # Albums and artists are derived from track imports; not advertised as
+        # independent features to prevent phantom sync checkboxes in the UI.
+        music_features = {*base_features}
+        if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_TRACKS.key):
+            music_features.add(ProviderFeature.LIBRARY_TRACKS)
+        if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key):
+            music_features.add(ProviderFeature.LIBRARY_PLAYLISTS)
         if self.write_access:
             music_features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
             music_features.add(ProviderFeature.PLAYLIST_CREATE)
@@ -444,6 +448,8 @@ class LocalFileSystemProvider(MusicProvider):
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
 
             if item.ext in TRACK_EXTENSIONS and self.media_content_type == "music":
+                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_TRACKS.key):
+                    return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
                 track.favorite = False  # TODO: implement favorite status based on rating ?
@@ -453,6 +459,8 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
+                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
+                    return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 try:
                     audiobook = await self._parse_audiobook(item, tags)
@@ -464,6 +472,8 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
 
             if item.ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
+                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
+                    return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 episode = await self._parse_podcast_episode(item, tags)
                 assert isinstance(episode.podcast, Podcast)
@@ -473,6 +483,8 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
 
             if item.ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
+                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key):
+                    return False
                 playlist = await self.get_playlist(item.relative_path)
                 await self.mass.music.playlists.add_item_to_library(
                     playlist, overwrite_existing=prev_checksum is not None
