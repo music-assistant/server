@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import web
-from aiohttp_socks import ProxyConnector
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -33,6 +32,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, S
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.aiohttp_client import _get_socks5_url, create_clientsession
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.music_provider import MusicProvider
 
@@ -92,13 +92,12 @@ class PandoraProvider(MusicProvider):
         # Authenticate with Pandora
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
-        socks_address = str(self.config.get_value(CONF_SOCKS_URL))
+        socks_url = _get_socks5_url(str(self.config.get_value(CONF_SOCKS_URL)))
 
-        if socks_address:
-            if "://" not in socks_address:
-                socks_address = f"socks5://{socks_address}"
-            connector = ProxyConnector.from_url(socks_address)
-            self.http_session = aiohttp.ClientSession(connector=connector)
+        if socks_url:
+            self.http_session = create_clientsession(
+                self.mass, verify_ssl=True, socks_url=socks_url
+            )
             self._socks_proxy = True
         else:
             self.http_session = self.mass.http_session
