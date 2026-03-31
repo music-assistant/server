@@ -12,6 +12,8 @@ from music_assistant_models.enums import ProviderType
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
+CHUNK_PROCESS_TIMEOUT = 5
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
@@ -189,8 +191,11 @@ class AudioAnalysisController:
                 break
 
             pcm_data = chunk  # bind for closure (chunk is narrowed to bytes here)
+            timed_out: set[str] = set()
 
-            async def _process(pid: str, pcm_data: bytes = pcm_data) -> None:
+            async def _process(
+                pid: str, pcm_data: bytes = pcm_data, timed_out: set[str] = timed_out
+            ) -> None:
                 try:
                     provider = self.mass.get_provider(pid)
                     if not (
@@ -199,8 +204,20 @@ class AudioAnalysisController:
                         and provider.available
                     ):
                         return
-                    await provider.process_pcm_chunk(session_key, pcm_data)
+                    await asyncio.wait_for(
+                        provider.process_pcm_chunk(session_key, pcm_data),
+                        timeout=CHUNK_PROCESS_TIMEOUT,
+                    )
+                except TimeoutError:
+                    self.logger.warning(
+                        "Provider %s timed out processing chunk for %s, removing from session",
+                        pid,
+                        session_key,
+                    )
+                    timed_out.add(pid)
                 except Exception as err:
                     self.logger.warning("Error processing PCM chunk on provider %s: %s", pid, err)
 
             await asyncio.gather(*[_process(pid) for pid in provider_ids])
+            if timed_out:
+                provider_ids -= timed_out

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import unittest.mock
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -357,6 +358,44 @@ async def test_provider_error_during_start(
     prov_ok.finalize.assert_called_once()
     prov_fail.process_pcm_chunk.assert_not_called()
     prov_fail.finalize.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_slow_provider_removed_after_timeout(
+    controller: AudioAnalysisController,
+    audio_buffer: AudioBuffer,
+    mock_stream_details: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """A provider that exceeds the chunk timeout is removed from the session."""
+    prov_slow = _create_mock_provider(instance_id="prov_slow", name="SlowProv")
+    never_done = asyncio.Event()
+
+    async def _hang(_session_id: str, _chunk: bytes) -> None:
+        await never_done.wait()
+
+    prov_slow.process_pcm_chunk = AsyncMock(side_effect=_hang)
+
+    prov_fast = _create_mock_provider(instance_id="prov_fast", name="FastProv")
+    mock_mass.get_providers.return_value = [prov_slow, prov_fast]
+
+    def _get_prov(pid: str) -> MagicMock:
+        return {"prov_slow": prov_slow, "prov_fast": prov_fast}[pid]
+
+    mock_mass.get_provider = MagicMock(side_effect=_get_prov)
+
+    with unittest.mock.patch(
+        "music_assistant.controllers.streams.audio_analysis.CHUNK_PROCESS_TIMEOUT", 0.1
+    ):
+        await controller.start_analysis(audio_buffer, mock_stream_details)
+        audio_buffer.fill(_make_source(3), source_name="test")
+        await asyncio.sleep(1)
+
+    # Fast provider processed all chunks and finalized
+    assert prov_fast.process_pcm_chunk.call_count == 3
+    prov_fast.finalize.assert_called_once()
+    # Slow provider was removed after timing out on the first chunk
+    assert prov_slow.process_pcm_chunk.call_count == 1
 
 
 @pytest.mark.asyncio
