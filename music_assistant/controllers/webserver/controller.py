@@ -42,7 +42,6 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     verify_ssl_certificate,
 )
 from music_assistant.helpers.api import parse_arguments
-from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
@@ -229,10 +228,10 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 or :: to bind to all interfaces. \n"
+                "Use 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \n"
                 "Set this address for example to a docker-internal network, "
                 "when you are running a reverse proxy to enhance security and "
                 "protect outside access to the webinterface and API. \n\n"
@@ -474,7 +473,9 @@ class WebserverController(CoreController):
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
+        async for chunk in self.mass.streams.get_preview_stream(
+            provider_instance_id_or_domain, item_id
+        ):
             await resp.write(chunk)
         return resp
 

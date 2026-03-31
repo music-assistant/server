@@ -28,7 +28,7 @@ from music_assistant.constants import (
     CONF_HTTP_PROFILE,
     DEFAULT_STREAM_HEADERS,
 )
-from music_assistant.helpers.audio import get_mime_type, get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
@@ -386,7 +386,7 @@ class UniversalGroupPlayer(Player):
 
         if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
             # Use the preferred output format of the child player
-            output_format = await self.mass.streams.get_output_format(
+            output_format = await self.mass.streams.audio.get_output_format(
                 output_format_str=output_format_str,
                 player=child_player,
                 content_sample_rate=UGP_FORMAT.sample_rate,
@@ -437,8 +437,8 @@ class UniversalGroupPlayer(Player):
         # Generate filter params for the player specific DSP settings
         filter_params = None
         if child_player_id:
-            filter_params = get_player_filter_params(
-                self.mass, child_player_id, self.stream.input_format, output_format
+            filter_params = self.mass.streams.audio.get_player_filter_params(
+                child_player_id, self.stream.input_format, output_format
             )
 
         async for chunk in self.stream.get_stream(
