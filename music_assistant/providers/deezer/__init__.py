@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from math import ceil
 from typing import Any, Protocol
 
-import httpx
 from aiohttp import ClientTimeout
 from Crypto.Cipher import Blowfish
 from deezer_python_gql import DeezerGQLClient
@@ -185,15 +184,13 @@ class DeezerProvider(MusicProvider):
     gql_client: DeezerGQLClient
     gw_client: GWClient
     _user_id: str
-    _http_client: httpx.AsyncClient
     _browse_slug_cache: dict[str, str]  # slug → actual ID/path
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
         arl_token = str(self.config.get_value(CONF_ARL_TOKEN))
 
-        self._http_client = httpx.AsyncClient()
-        self.gql_client = DeezerGQLClient(arl=arl_token, http_client=self._http_client)
+        self.gql_client = DeezerGQLClient(arl=arl_token)
         me = await self.gql_client.get_me()
         if me is None:
             msg = "Failed to authenticate with Deezer. Please check your ARL token."
@@ -206,7 +203,7 @@ class DeezerProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        await self._http_client.aclose()
+        await self.gql_client.close()
 
     # -- Library retrieval (cursor-paginated) --
 
@@ -504,12 +501,15 @@ class DeezerProvider(MusicProvider):
                 ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
             yield ep
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 24)  # Cache full episode list for 24 hours
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
         """Fetch and cache all episodes for a podcast.
 
         Uses rawEpisodes (full ID list) + batch fetch because Deezer's cursor
         pagination on episodes is broken when using an order other than NONE.
+
+        Individual episodes are cached by ID for 30 days since their metadata
+        is immutable. Only uncached episodes are fetched from the API.
         """
         result = await self.gql_client.get_podcast(podcast_id=prov_podcast_id, episodes_first=0)
         if result is None:
@@ -526,20 +526,48 @@ class DeezerProvider(MusicProvider):
         episode_ids = result.raw_episodes
         if not episode_ids:
             return []
-        episodes: list[PodcastEpisode] = []
+
+        cache = self.mass.cache
+        episode_cache_ttl = 3600 * 24 * 30  # 30 days
+
+        # Resolve cached vs uncached episode IDs
+        cached_episodes: dict[str, PodcastEpisode] = {}
+        uncached_ids: list[str] = []
+        for eid in episode_ids:
+            cache_key = f"podcast_episode.{eid}"
+            cached = await cache.get(cache_key, provider=self.instance_id)
+            if cached is not None:
+                cached_episodes[eid] = PodcastEpisode(**cached)
+            else:
+                uncached_ids.append(eid)
+
+        # Batch-fetch only uncached episodes
         batch_size = 50
-        position = 0
-        for i in range(0, len(episode_ids), batch_size):
-            batch = episode_ids[i : i + batch_size]
+        for i in range(0, len(uncached_ids), batch_size):
+            batch = uncached_ids[i : i + batch_size]
             fetched = await self.gql_client.get_podcast_episodes_by_ids(ids=batch)
-            for episode in fetched:
-                if episode is not None:
-                    position += 1
-                    episodes.append(
-                        self._parse_podcast_episode(
-                            episode, podcast_mapping, position, podcast_image_url
+            for ep in fetched:
+                if ep is not None:
+                    parsed = self._parse_podcast_episode(ep, podcast_mapping, 0, podcast_image_url)
+                    cached_episodes[ep.id] = parsed
+                    self.mass.create_task(
+                        cache.set(
+                            key=f"podcast_episode.{ep.id}",
+                            data=parsed.to_dict(),
+                            expiration=episode_cache_ttl,
+                            provider=self.instance_id,
                         )
                     )
+
+        # Build final list in original order with correct positions
+        episodes: list[PodcastEpisode] = []
+        position = 0
+        for eid in episode_ids:
+            if eid in cached_episodes:
+                position += 1
+                ep = cached_episodes[eid]
+                ep.position = position
+                episodes.append(ep)
         return episodes
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
