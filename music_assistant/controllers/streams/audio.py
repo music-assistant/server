@@ -423,14 +423,22 @@ class StreamsAudio:
         try:
             await ffmpeg_proc.start()
             assert ffmpeg_proc.proc is not None  # for type checking
-            logger.debug(
-                "Started media stream for %s - using streamtype: %s "
-                "- pcm format: %s - ffmpeg PID: %s",
-                streamdetails.uri,
-                streamdetails.stream_type,
-                pcm_format.content_type.value,
-                ffmpeg_proc.proc.pid,
-            )
+            if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Started media stream for %s - using streamtype: %s "
+                    "- pcm format: %s - ffmpeg PID: %s",
+                    streamdetails.uri,
+                    streamdetails.stream_type,
+                    pcm_format.content_type.value,
+                    ffmpeg_proc.proc.pid,
+                )
+            else:
+                logger.debug(
+                    "Started media stream for %s - using streamtype: %s",
+                    streamdetails.uri,
+                    streamdetails.stream_type,
+                )
             stream_start = mass.loop.time()
             chunk_size = get_chunksize(pcm_format, 1)
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
@@ -448,10 +456,11 @@ class StreamsAudio:
                 bytes_sent += len(chunk)
 
             # end of audio/track reached
-            logger.debug("End of ffmpeg output stream reached for %s", streamdetails.uri)
+            logger.debug("End of media stream reached for %s", streamdetails.uri)
             # wait until stderr also completed reading
             await ffmpeg_proc.wait_with_timeout(5)
-            logger.debug(
+            logger.log(
+                VERBOSE_LOG_LEVEL,
                 "FFmpeg process ended with return code %s for %s",
                 ffmpeg_proc.returncode,
                 streamdetails.uri,
@@ -1089,7 +1098,9 @@ class StreamsAudio:
         if limiter_enabled:
             filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
 
-        self.logger.debug("Generated ffmpeg params for player %s: %s", player_id, filter_params)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL, "Generated ffmpeg params for player %s: %s", player_id, filter_params
+        )
         return filter_params
 
     async def get_output_format(
@@ -1227,6 +1238,8 @@ class StreamsAudio:
         assert streamdetails
         filter_params: list[str] = []
 
+        logger = self.logger.getChild("queue_item_stream")
+
         # re-evaluate normalization mode: the background loudness analyzer may have
         # updated streamdetails.loudness since get_stream_details was called
         if streamdetails.queue_id:
@@ -1279,14 +1292,17 @@ class StreamsAudio:
         if streamdetails.fade_in:
             filter_params.insert(0, "afade=type=in:start_time=0:duration=3")
 
-        self.logger.debug(
+        logger.log(
+            VERBOSE_LOG_LEVEL,
             "Starting queue item stream for %s (%s)"
             " - using fade-in: %s"
-            " - using volume normalization: %s",
+            " - using volume normalization: %s"
+            " - using playback speed: %s",
             queue_item.name,
             streamdetails.uri,
             streamdetails.fade_in,
             streamdetails.volume_normalization_mode,
+            playback_speed,
         )
 
         # get or create the AudioBuffer (stores raw decoded PCM)
@@ -1313,7 +1329,8 @@ class StreamsAudio:
                 bytes_received += len(chunk)
                 if not first_chunk_received:
                     first_chunk_received = True
-                    self.logger.debug(
+                    logger.log(
+                        VERBOSE_LOG_LEVEL,
                         "First audio chunk received for %s (%s) after %.2f seconds",
                         queue_item.name,
                         streamdetails.uri,
@@ -1343,7 +1360,7 @@ class StreamsAudio:
             queue_item.available = False
             if raise_on_error:
                 raise
-            self.logger.error(
+            logger.error(
                 "AudioError while streaming queue item %s (%s): %s",
                 queue_item.name,
                 streamdetails.uri,
@@ -1355,7 +1372,7 @@ class StreamsAudio:
             streamdetails.stream_error = True
             if raise_on_error:
                 raise
-            self.logger.exception(
+            logger.exception(
                 "Unexpected error while streaming queue item %s (%s): %s",
                 queue_item.name,
                 streamdetails.uri,
@@ -1364,7 +1381,8 @@ class StreamsAudio:
         finally:
             seconds_streamed = bytes_received / pcm_format.pcm_sample_size
             streamdetails.seconds_streamed = seconds_streamed
-            self.logger.debug(
+            logger.log(
+                VERBOSE_LOG_LEVEL,
                 "stream %s for %s in %.2f seconds - seconds streamed/buffered: %.2f",
                 "aborted" if not finished else "finished",
                 streamdetails.uri,
@@ -1406,12 +1424,13 @@ class StreamsAudio:
             crossfade_data = None
 
         self.logger.debug(
-            "Start Streaming queue track: %s (%s) for queue %s "
+            "Start Streaming queue track: %s (%s) for queue %s on player %s"
             "- crossfade mode: %s "
             "- crossfading from previous track: %s ",
             queue_item.streamdetails.uri if queue_item.streamdetails else "Unknown URI",
             queue_item.name,
             queue.display_name,
+            player.name,
             smart_fades_mode,
             "true" if crossfade_data else "false",
         )
