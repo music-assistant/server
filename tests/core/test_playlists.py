@@ -1,10 +1,23 @@
 """Tests for playlist parsing and generation helpers."""
 
+from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
+from music_assistant_models.media_items import (
+    AudioFormat,
+    ItemMapping,
+    MediaItemImage,
+    MediaItemMetadata,
+    ProviderMapping,
+    Radio,
+    Track,
+    UniqueList,
+)
+
 from music_assistant.helpers.playlists import (
     ImageInfo,
     PlaylistItem,
     ProviderMappingInfo,
     generate_m3u,
+    media_item_to_playlist_item,
     parse_extinf_title,
     parse_m3u,
     parse_m3u_playlist_name,
@@ -424,3 +437,159 @@ def test_round_trip_bare_uris() -> None:
     assert parsed[0].metadata is None
     assert parsed[0].providers == []
     assert parsed[1].path == "tidal://track/xyz789"
+
+
+# --------------------------------------------------------------------------- #
+#  media_item_to_playlist_item tests                                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_media_item_to_playlist_item_track() -> None:
+    """Test conversion of a Track with full metadata to PlaylistItem."""
+    artist = ItemMapping(
+        item_id="art1", provider="spotify", name="Radiohead", media_type=MediaType.ARTIST
+    )
+    album = ItemMapping(
+        item_id="alb1", provider="spotify", name="Kid A", media_type=MediaType.ALBUM
+    )
+    img = MediaItemImage(
+        type=ImageType.THUMB,
+        path="https://example.com/img.jpg",
+        provider="spotify",
+        remotely_accessible=True,
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify",
+        name="Everything In Its Right Place",
+        duration=240,
+        version="Deluxe",
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    bit_rate=320,
+                ),
+            ),
+        },
+        artists=UniqueList([artist]),
+        album=album,
+        external_ids={(ExternalID.ISRC, "USRC17607839")},
+        metadata=MediaItemMetadata(images=UniqueList([img])),
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert result.path == "spotify://track/abc123"
+    assert result.title == "Radiohead - Everything In Its Right Place"
+    assert result.length == "240"
+    assert result.metadata is not None
+    assert result.metadata["media_type"] == "track"
+    assert result.metadata["name"] == "Everything In Its Right Place"
+    assert result.metadata["isrc"] == "USRC17607839"
+    assert result.metadata["version"] == "Deluxe"
+    assert len(result.providers) == 1
+    assert result.providers[0].domain == "spotify"
+    assert result.providers[0].item_id == "abc123"
+    assert result.providers[0].content_type == "flac"
+    assert result.providers[0].sample_rate == 44100
+    assert result.providers[0].bit_rate == 320
+    assert len(result.artists) == 1
+    assert result.artists[0].name == "Radiohead"
+    assert result.album is not None
+    assert result.album.name == "Kid A"
+    assert len(result.images) == 1
+    assert result.images[0].type == "thumb"
+    assert result.images[0].remotely_accessible is True
+
+
+def test_media_item_to_playlist_item_radio() -> None:
+    """Test conversion of a Radio to PlaylistItem."""
+    radio = Radio(
+        item_id="radio1",
+        provider="builtin",
+        name="Test FM",
+        provider_mappings={
+            ProviderMapping(
+                item_id="radio1",
+                provider_domain="builtin",
+                provider_instance="builtin",
+                audio_format=AudioFormat(content_type=ContentType.OGG),
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(radio)
+
+    assert result.path == "builtin://radio/radio1"
+    assert result.title == "Test FM"
+    assert result.metadata is not None
+    assert result.metadata["media_type"] == "radio"
+    assert result.podcast is None
+    assert result.album is None
+    assert len(result.artists) == 0
+    assert result.length is None
+
+
+def test_media_item_to_playlist_item_no_version() -> None:
+    """Test that version is omitted from metadata when empty."""
+    track = Track(
+        item_id="t1",
+        provider="tidal",
+        name="Simple Track",
+        duration=180,
+        provider_mappings={
+            ProviderMapping(
+                item_id="t1",
+                provider_domain="tidal",
+                provider_instance="tidal_1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert result.metadata is not None
+    assert "version" not in result.metadata
+
+
+def test_media_item_to_playlist_item_multiple_providers() -> None:
+    """Test that multiple provider mappings are collected, one per domain, highest quality first."""
+    track = Track(
+        item_id="t1",
+        provider="spotify",
+        name="Multi Provider Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="t1",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(
+                    content_type=ContentType.OGG, sample_rate=44100, bit_depth=0, bit_rate=320
+                ),
+            ),
+            ProviderMapping(
+                item_id="t2",
+                provider_domain="tidal",
+                provider_instance="tidal_1",
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24, bit_rate=0
+                ),
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    assert len(result.providers) == 2
+    domains = {p.domain for p in result.providers}
+    assert domains == {"spotify", "tidal"}
+    # primary URI uses the highest quality provider
+    assert result.path == "tidal://track/t2"

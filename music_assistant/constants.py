@@ -605,18 +605,19 @@ CONF_ENTRY_ICY_METADATA_DEFAULT_FULL = ConfigEntry.from_dict(
     }
 )
 
-CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES = ConfigEntry(
-    key="gapless_different_sample_rates",
+CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES = ConfigEntry(
+    key="crossfade_different_sample_rates",
     type=ConfigEntryType.BOOLEAN,
-    label="Allow gapless playback (and crossfades) between tracks of different sample rates",
-    description="Enable this option to allow gapless playback between tracks that have different "
+    label="Allow crossfades between tracks of different sample rates",
+    description="Enable this option to allow crossfades between tracks that have different "
     "sample rates (e.g. 44.1kHz to 48kHz). \n\n "
-    "Only enable this option if your player actually support this, otherwise you may "
-    "experience audio glitches during transitioning between tracks.",
-    default_value=False,
+    "Disable this option if you experience audio glitches during transitions between tracks.",
+    default_value=True,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
+    depends_on=CONF_FLOW_MODE,
+    depends_on_value_not=True,
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
@@ -936,8 +937,6 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
 
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from (inactive) protocol implementations
-    PlayerFeature.VOLUME_SET,
-    PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
     PlayerFeature.SET_MEMBERS,
 }
@@ -946,7 +945,6 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from the active output protocol
     *PROTOCOL_FEATURES,
     PlayerFeature.ENQUEUE,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.PAUSE,

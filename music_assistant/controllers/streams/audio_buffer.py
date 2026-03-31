@@ -22,7 +22,7 @@ from music_assistant_models.enums import ContentType, MediaType, VolumeNormaliza
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_SMART_FADES_MODE, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
@@ -32,7 +32,9 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
+from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -168,10 +170,25 @@ class AudioBuffer:
 
         :param seek_position_ms: Starting position in milliseconds.
         """
+        # align to 100ms steps to avoid rounding issues
+        seek_position_ms = (seek_position_ms // 100) * 100
         chunk_number = seek_position_ms // 1000
+        # handle fractional seek: trim leading samples from the first chunk
+        fractional_ms = seek_position_ms % 1000
+        trim_bytes = 0
+        if fractional_ms > 0:
+            samples_to_trim = self.pcm_format.sample_rate * fractional_ms // 1000
+            bytes_per_sample = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
+            trim_bytes = samples_to_trim * bytes_per_sample
+
         while True:
             try:
-                yield await self._get(chunk_number=chunk_number)
+                self._last_access_time = time.time()
+                chunk = await self._get(chunk_number=chunk_number)
+                if trim_bytes > 0:
+                    chunk = chunk[trim_bytes:]
+                    trim_bytes = 0
+                yield chunk
                 chunk_number += 1
             except AudioBufferEOF:
                 break
@@ -348,11 +365,25 @@ class AudioBuffer:
             channels=streamdetails.audio_format.channels,
         )
 
-        # use a higher ready threshold for dynamic normalization so FFmpeg's
-        # loudnorm filter has enough lookahead to produce smooth initial output
-        ready_threshold = (
-            5 if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC else 2
+        # determine ready threshold: how many seconds of audio must be buffered
+        # before signaling ready for playback
+        smart_fades_mode = (
+            SmartFadesMode(
+                mass.config.get_raw_player_config_value(
+                    streamdetails.queue_id, CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED
+                )
+            )
+            if streamdetails.queue_id
+            else SmartFadesMode.DISABLED
         )
+        if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE:
+            ready_threshold = SMART_CROSSFADE_DURATION
+        elif smart_fades_mode != SmartFadesMode.STANDARD_CROSSFADE:
+            ready_threshold = 10
+        elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
+            ready_threshold = 5
+        else:
+            ready_threshold = 2
 
         LOGGER.debug(
             "get_buffer: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
@@ -387,14 +418,13 @@ class AudioBuffer:
 
         if wait_ready:
             try:
-                await asyncio.wait_for(audio_buffer.ready.wait(), timeout=30)
+                await asyncio.wait_for(audio_buffer.ready.wait(), timeout=15)
             except TimeoutError:
-                LOGGER.warning("Timeout waiting for audio buffer ready for %s", streamdetails.uri)
-                if audio_buffer.has_error:
-                    raise AudioError(
-                        f"Audio buffer failed for {streamdetails.uri}: "
-                        f"{audio_buffer._producer_error}"
-                    )
+                raise AudioError("Timeout waiting for audio data") from audio_buffer._producer_error
+            # ready was signaled but check if it was due to a producer error
+            # (ready is also set by _notify_on_producer_error)
+            if audio_buffer.has_error:
+                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
 
         return audio_buffer
 
@@ -481,8 +511,6 @@ class AudioBuffer:
         :raises AudioBufferEOF: If EOF is reached or the buffer was cleared.
         :raises AudioError: If the chunk has been discarded or the producer failed.
         """
-        self._last_access_time = time.time()
-
         async with self._data_available:
             if self._producer_error and len(self._chunks) == 0:
                 raise self._producer_error

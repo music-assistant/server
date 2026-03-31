@@ -48,8 +48,8 @@ from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
+    CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_OUTPUT_LIMITER,
-    CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_OUTPUT_CHANNELS,
     CONF_SAMPLE_RATES,
@@ -173,16 +173,16 @@ class StreamsAudio:
                 f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
             )
 
-        existing_buffer = None
         if queue_item.streamdetails and (
-            (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
-            > time.time()
-            or (
-                (existing_buffer := queue_item.streamdetails.buffer)
-                and existing_buffer.is_valid(seek_position * 1000)
+            # reuse if the buffer can serve this seek position (fast seek path)
+            (
+                queue_item.streamdetails.buffer
+                and queue_item.streamdetails.buffer.is_valid(seek_position * 1000)
             )
+            # or reuse if streamdetails hasn't expired yet (new buffer will be created)
+            or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
+            > time.time()
         ):
-            # already got a fresh/unused (or unexpired) streamdetails
             streamdetails = queue_item.streamdetails
         else:
             # need to (re)create streamdetails
@@ -935,7 +935,7 @@ class StreamsAudio:
                     # can use measurement-based normalization instead of dynamic
                     streamdetails.loudness = loudness
                     self.logger.debug(
-                        "Buffer loudness measurement for %s: %s LUFS",
+                        "Loudness measurement for %s: %s LUFS",
                         streamdetails.uri,
                         loudness,
                     )
@@ -1316,19 +1316,24 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
-                # trigger pre-buffering of the next track ~30 seconds before end
+                # trigger pre-buffering of the next track well before end
+                # to ensure the raw PCM is ready when the next track needs to be streamed
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and (bytes_received / pcm_format.pcm_sample_size + seek_position)
-                    >= streamdetails.duration - 30
+                    >= streamdetails.duration - 60
                 ):
                     next_buffer_triggered = True
                     self.mass.player_queues._prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
+            # if we received no audio and the buffer has a producer error,
+            # the error was swallowed by the FFmpeg stdin feeder - re-raise it
+            if bytes_received == 0 and audio_buffer.has_error:
+                raise AudioError("Failed to stream audio") from audio_buffer._producer_error
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True
@@ -1432,24 +1437,20 @@ class StreamsAudio:
         fade_out_data: bytes | None = None
 
         if crossfade_data:
-            # Calculate discard amount in seconds (format-independent)
-            # Use fade_in_pcm_format because fade_in_size is in the next track's original format
+            # skip past the audio already consumed by the crossfade
             fade_in_duration_seconds = (
                 crossfade_data.fade_in_size / crossfade_data.fade_in_pcm_format.pcm_sample_size
             )
-            discard_seconds = int(fade_in_duration_seconds) - 1
-            # Calculate discard amounts in CURRENT track's format
-            discard_bytes = int(discard_seconds * pcm_format.pcm_sample_size)
-            # Convert fade_in_size to current track's format for correct leftover calculation
-            fade_in_size_in_current_format = int(
-                fade_in_duration_seconds * pcm_format.pcm_sample_size
-            )
-            discard_leftover = fade_in_size_in_current_format - discard_bytes
+            discard_seconds = int(fade_in_duration_seconds)
+            # calculate leftover bytes to trim from the first chunk (sub-second alignment)
+            fractional_seconds = fade_in_duration_seconds - discard_seconds
+            discard_leftover = int(fractional_seconds * pcm_format.pcm_sample_size)
+            # frame-align the trim
+            discard_leftover = (discard_leftover // frame_size) * frame_size
         else:
             discard_seconds = streamdetails.seek_position
             discard_leftover = 0
         total_chunks_received = 0
-        req_buffer_size = crossfade_buffer_size
         async for chunk in self.get_queue_item_stream(
             queue_item,
             pcm_format,
@@ -1458,21 +1459,13 @@ class StreamsAudio:
         ):
             total_chunks_received += 1
             if discard_leftover:
-                # discard leftover bytes from crossfade data
                 chunk = chunk[discard_leftover:]  # noqa: PLW2901
                 discard_leftover = 0
-
-            if total_chunks_received < 10:
-                # we want a stream to start as quickly as possible
-                # so for the first 10 chunks we keep a very short buffer
-                req_buffer_size = pcm_format.pcm_sample_size
-            else:
-                req_buffer_size = crossfade_buffer_size
 
             # ALWAYS APPEND CHUNK TO BUFFER
             buffer += chunk
             del chunk
-            if len(buffer) < req_buffer_size:
+            if len(buffer) < crossfade_buffer_size:
                 # buffer is not full enough, move on
                 continue
 
@@ -1509,7 +1502,7 @@ class StreamsAudio:
                 crossfade_data = None
 
             #### OTHER: enough data in buffer, feed to output
-            while len(buffer) > req_buffer_size:
+            while len(buffer) > crossfade_buffer_size:
                 yield buffer[: pcm_format.pcm_sample_size]
                 bytes_written += pcm_format.pcm_sample_size
                 buffer = buffer[pcm_format.pcm_sample_size :]
@@ -1573,6 +1566,7 @@ class StreamsAudio:
         if not next_queue_item or not self.crossfade_allowed(
             queue_item,
             smart_fades_mode=smart_fades_mode,
+            player_id=player.player_id,
             flow_mode=False,
             next_queue_item=next_queue_item,
             sample_rate=pcm_format.sample_rate,
@@ -1612,8 +1606,6 @@ class StreamsAudio:
                 # This size is in the next track's original format which is what we need
                 original_buffer_size = len(buffer)
                 if next_queue_item_pcm_format != pcm_format:
-                    # edge case: pcm format mismatch, we need to resample the next track's
-                    # beginning part before crossfading
                     self.logger.debug(
                         "Resampling next track's crossfade from %s to %s for queue %s",
                         next_queue_item_pcm_format.sample_rate,
@@ -1623,6 +1615,8 @@ class StreamsAudio:
                     buffer = await resample_pcm_audio(
                         buffer, next_queue_item_pcm_format, pcm_format
                     )
+                    if not buffer:
+                        raise AudioError("Resampling failed for crossfade")
                 # perform actual (smart fades) crossfade using mixer
                 crossfade_bytes = await self.smart_fades_mixer.mix(
                     fade_in_part=buffer,
@@ -1642,21 +1636,20 @@ class StreamsAudio:
                 for _chunk in divide_chunks(crossfade_first, pcm_format.pcm_sample_size):
                     yield _chunk
                 # store the other half for the next track
-                # IMPORTANT: crossfade_second data is in CURRENT track's format (pcm_format)
-                # because it was created from the resampled buffer used for mixing.
-                # BUT fade_in_size represents bytes in NEXT track's original format
-                # (next_queue_item_pcm_format) because that's how much of the next track
-                # was consumed during the crossfade. We need both formats to correctly
-                # handle the crossfade data when the next track starts.
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
                     data=crossfade_second,
                     fade_in_size=original_buffer_size,
-                    pcm_format=pcm_format,  # Format of the data (current track)
-                    fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
+                    pcm_format=pcm_format,
+                    fade_in_pcm_format=next_queue_item_pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
                 )
-            except AudioError:
-                # no crossfade possible, just yield the fade_out_data
+            except Exception as err:
+                # crossfade failed, fall back to just yielding the fade_out_data
+                self.logger.warning(
+                    "Crossfade failed for queue %s, falling back to simple concat: %s",
+                    queue.display_name,
+                    err,
+                )
                 next_queue_item = None
                 yield fade_out_data
                 bytes_written += len(fade_out_data)
@@ -1779,10 +1772,8 @@ class StreamsAudio:
             crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
 
             bytes_written = 0
-            buffer = b""
-            # handle incoming audio chunks
+            crossfade_buffer = b""
             first_chunk_received = False
-            # buffer size needs to be big enough to include the crossfade part
 
             async for chunk in self.get_queue_item_stream(
                 queue_track,
@@ -1801,32 +1792,24 @@ class StreamsAudio:
                     self.mass.player_queues.track_loaded_in_buffer(
                         queue.queue_id, queue_track.queue_item_id
                     )
-                if total_chunks_received < 10 and smart_fades_mode != SmartFadesMode.DISABLED:
-                    # we want a stream to start as quickly as possible
-                    # so for the first 10 chunks we keep a very short buffer
-                    req_buffer_size = pcm_format.pcm_sample_size
-                else:
-                    req_buffer_size = (
-                        pcm_sample_size
-                        if smart_fades_mode == SmartFadesMode.DISABLED
-                        else crossfade_buffer_size
-                    )
 
-                # ALWAYS APPEND CHUNK TO BUFFER
-                buffer += chunk
-                del chunk
-                if len(buffer) < req_buffer_size:
-                    # buffer is not full enough, move on
-                    # yield control to event loop with 10ms delay
-                    await asyncio.sleep(0.01)
+                if smart_fades_mode == SmartFadesMode.DISABLED:
+                    # no cross/smart fade: yield chunks directly without intermediate buffer
+                    yield chunk
+                    bytes_written += len(chunk)
+                    del chunk
                     continue
 
-                ####  HANDLE CROSSFADE OF PREVIOUS TRACK AND NEW TRACK
+                # smart fades enabled: accumulate chunks in crossfade buffer
+                crossfade_buffer += chunk
+                del chunk
+                if len(crossfade_buffer) < crossfade_buffer_size:
+                    continue
+
+                # handle crossfade of previous track and new track
                 if last_fadeout_part and last_streamdetails:
-                    # perform crossfade
-                    fadein_part = buffer[:crossfade_buffer_size]
-                    remaining_bytes = buffer[crossfade_buffer_size:]
-                    # Use the mixer to handle all crossfade logic
+                    fadein_part = crossfade_buffer[:crossfade_buffer_size]
+                    remaining_bytes = crossfade_buffer[crossfade_buffer_size:]
                     try:
                         crossfade_part = await self.smart_fades_mixer.mix(
                             fade_in_part=fadein_part,
@@ -1843,17 +1826,13 @@ class StreamsAudio:
                             queue_track.name,
                             mix_err,
                         )
-                        # Fallback: just output the fadeout part then the buffer
                         for _chunk in divide_chunks(last_fadeout_part, pcm_sample_size):
                             yield _chunk
                             bytes_written += len(_chunk)
                             del _chunk
                         crossfade_part = b""
-                        remaining_bytes = buffer
+                        remaining_bytes = crossfade_buffer
                     if crossfade_part:
-                        # because the crossfade exists of both the fadein and fadeout part
-                        # we need to correct the bytes_written accordingly so the duration
-                        # calculations at the end of the track are correct
                         crossfade_part_len = len(crossfade_part)
                         bytes_written += int(crossfade_part_len / 2)
                         if last_play_log_entry:
@@ -1861,40 +1840,34 @@ class StreamsAudio:
                             last_play_log_entry.seconds_streamed += (
                                 crossfade_part_len / 2 / pcm_sample_size
                             )
-                        # yield crossfade_part (in pcm_sample_size chunks)
                         for _chunk in divide_chunks(crossfade_part, pcm_sample_size):
                             yield _chunk
                             del _chunk
                         del crossfade_part
-                    # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
                         yield remaining_bytes
                         bytes_written += len(remaining_bytes)
                         del remaining_bytes
-                    # clear vars
                     last_fadeout_part = b""
                     last_streamdetails = None
-                    buffer = b""
+                    crossfade_buffer = b""
 
-                #### OTHER: enough data in buffer, feed to output
-                while len(buffer) > req_buffer_size:
-                    yield buffer[:pcm_sample_size]
+                # yield everything above the crossfade buffer size
+                while len(crossfade_buffer) > crossfade_buffer_size:
+                    yield crossfade_buffer[:pcm_sample_size]
                     bytes_written += pcm_sample_size
-                    buffer = buffer[pcm_sample_size:]
+                    crossfade_buffer = crossfade_buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
             if not first_chunk_received:
-                # Track failed to stream - no chunks received at all
                 self.logger.warning(
                     "Track %s (%s) on queue %s produced no audio data - skipping",
                     queue_track.name,
                     queue_track.streamdetails.uri if queue_track.streamdetails else "unknown",
                     queue.display_name,
                 )
-                # Clean up and continue to next track
                 queue_track.streamdetails.stream_error = True
                 play_log_entry.seconds_streamed = 0
-                del buffer
                 continue
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
@@ -1904,25 +1877,25 @@ class StreamsAudio:
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
             if self.crossfade_allowed(
-                queue_track, smart_fades_mode=smart_fades_mode, flow_mode=True
+                queue_track,
+                smart_fades_mode=smart_fades_mode,
+                player_id=queue.queue_id,
+                flow_mode=True,
             ):
-                # if crossfade is enabled, save fadeout part to pickup for next track
-                last_fadeout_part = buffer[-crossfade_buffer_size:]
+                last_fadeout_part = crossfade_buffer[-crossfade_buffer_size:]
                 last_streamdetails = queue_track.streamdetails
                 last_play_log_entry = play_log_entry
-                remaining_bytes = buffer[:-crossfade_buffer_size]
+                remaining_bytes = crossfade_buffer[:-crossfade_buffer_size]
                 if remaining_bytes:
                     yield remaining_bytes
                     bytes_written += len(remaining_bytes)
                 del remaining_bytes
-            elif buffer:
-                # no crossfade enabled, just yield the buffer last part
-                bytes_written += len(buffer)
-                for _chunk in divide_chunks(buffer, pcm_sample_size):
+            elif smart_fades_mode != SmartFadesMode.DISABLED and crossfade_buffer:
+                bytes_written += len(crossfade_buffer)
+                for _chunk in divide_chunks(crossfade_buffer, pcm_sample_size):
                     yield _chunk
                     del _chunk
-            # make sure the buffer gets cleaned up
-            del buffer
+            crossfade_buffer = b""
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
@@ -1965,6 +1938,7 @@ class StreamsAudio:
         self,
         queue_item: QueueItem,
         smart_fades_mode: SmartFadesMode,
+        player_id: str,
         flow_mode: bool = False,
         next_queue_item: QueueItem | None = None,
         sample_rate: int | None = None,
@@ -1973,7 +1947,9 @@ class StreamsAudio:
         """Get the crossfade config for a queue item."""
         if smart_fades_mode == SmartFadesMode.DISABLED:
             return False
-        if not (self.mass.players.get_player(queue_item.queue_id)):
+        if not (self.mass.player_queues.get(queue_item.queue_id)):
+            return False  # just a guard
+        if not (self.mass.players.get_player(player_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: current item is not a track")
@@ -2012,13 +1988,13 @@ class StreamsAudio:
             and next_sample_rate
             and sample_rate != next_sample_rate
             and not self.mass.config.get_raw_player_config_value(
-                queue_item.queue_id,
-                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.key,
-                CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES.default_value,
+                player_id,
+                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
+                CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
             )
         ):
             self.logger.debug(
-                "Skipping crossfade: player does not support gapless playback "
+                "Skipping crossfade: player(protocol) does not support gapless playback "
                 "with different sample rates (%s vs %s)",
                 sample_rate,
                 next_sample_rate,

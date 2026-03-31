@@ -53,6 +53,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
@@ -1713,6 +1714,8 @@ class ConfigController:
                 # add flow mode entry for http-based players that do not already enforce it
                 if not player.requires_flow_mode:
                     default_entries.append(CONF_ENTRY_FLOW_MODE)
+        if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
+            default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries
         player_entries = await player.get_config_entries(action=action, values=values)
         players_keys = {entry.key for entry in player_entries}
@@ -1864,13 +1867,13 @@ class ConfigController:
                             value=linked_protocol.output_protocol_id,
                         )
                     )
-                if protocol_player.supports_feature(PlayerFeature.POWER):
-                    base_power_options.append(
-                        ConfigValueOption(
-                            title=linked_protocol.name,
-                            value=linked_protocol.output_protocol_id,
-                        )
-                    )
+                # NOTE: we do not add power control options for linked protocols
+                # because power control is protocol-specific and can cause issues
+                # if you try to control power on a protocol that is not
+                # currently active for the player
+                # the power control will be added dynamically if the linked
+                # protocol becomes active and supports power control
+
         # append none+fake options
         base_power_options += [
             ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
@@ -1948,9 +1951,9 @@ class ConfigController:
 
         # Build options from available output protocols, sorted by priority
         options: list[ConfigValueOption] = []
-        default_value: str | None = None
 
         # Add each available output protocol as an option, sorted by priority
+        has_native = False
         for protocol in sorted(output_protocols, key=lambda p: p.priority):
             if provider_manifest := self.mass.get_provider_manifest(protocol.protocol_domain):
                 protocol_name = provider_manifest.name
@@ -1962,9 +1965,13 @@ class ConfigController:
                 title = f"{protocol_name} (native)" if protocol.is_native else protocol_name
                 value = "native" if protocol.is_native else protocol.output_protocol_id
                 options.append(ConfigValueOption(title=title, value=value))
-                # First available protocol becomes the default (highest priority)
-                if default_value is None:
-                    default_value = str(value)
+                has_native = has_native or protocol.is_native
+
+        if has_native:
+            default_value = "native"
+        else:
+            default_value = "auto"
+            options.append(ConfigValueOption(title="Auto-select", value="auto"))
 
         all_entries.append(
             ConfigEntry(
@@ -1972,7 +1979,7 @@ class ConfigController:
                 type=ConfigEntryType.STRING,
                 label="Preferred Output Protocol",
                 description="Select the preferred protocol for audio playback to this device.",
-                default_value=default_value or "native",
+                default_value=default_value,
                 required=True,
                 options=options,
                 category="protocol_general",
