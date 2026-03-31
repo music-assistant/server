@@ -1,8 +1,12 @@
 """Tests for utility/helper functions."""
 
+from ipaddress import IPv4Address, IPv6Address
+from unittest.mock import MagicMock, patch
+
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
+from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import uri, util
 
@@ -157,3 +161,166 @@ async def test_uri_parsing() -> None:
     # test invalid uri
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("invalid://blah")
+
+
+def test_format_ip_for_url() -> None:
+    """Test IPv6 bracket wrapping for URLs (RFC 2732)."""
+    # IPv4 should pass through unchanged
+    assert util.format_ip_for_url("192.168.1.1") == "192.168.1.1"
+    assert util.format_ip_for_url("10.0.0.1") == "10.0.0.1"
+    assert util.format_ip_for_url("0.0.0.0") == "0.0.0.0"
+    # IPv6 should be wrapped in brackets
+    assert util.format_ip_for_url("::1") == "[::1]"
+    assert util.format_ip_for_url("fe80::1") == "[fe80::1]"
+    assert util.format_ip_for_url("2001:db8::1") == "[2001:db8::1]"
+    assert util.format_ip_for_url("fd00::cafe:1") == "[fd00::cafe:1]"
+
+
+def _mock_service_info(ipv4_addrs: list[str], ipv6_addrs: list[str]) -> MagicMock:
+    """Create a mock AsyncServiceInfo with ip_addresses_by_version."""
+    mock_info = MagicMock()
+
+    def ip_addresses_by_version(version: IPVersion) -> list[IPv4Address | IPv6Address]:
+        if version == IPVersion.V4Only:
+            return [IPv4Address(a) for a in ipv4_addrs]
+        if version == IPVersion.V6Only:
+            return [IPv6Address(a) for a in ipv6_addrs]
+        return [IPv4Address(a) for a in ipv4_addrs] + [IPv6Address(a) for a in ipv6_addrs]
+
+    mock_info.ip_addresses_by_version = ip_addresses_by_version
+    return mock_info
+
+
+def test_get_primary_ip_address_from_zeroconf_prefer_ipv4() -> None:
+    """Test zeroconf IP extraction preferring IPv4 (default)."""
+    mock_info = _mock_service_info(["192.168.1.100"], ["fd00::1"])
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=False)
+    assert result == "192.168.1.100"
+
+
+def test_get_primary_ip_address_from_zeroconf_prefer_ipv6() -> None:
+    """Test zeroconf IP extraction preferring IPv6."""
+    mock_info = _mock_service_info(["192.168.1.100"], ["fd00::1"])
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True)
+    assert result == "fd00::1"
+
+
+def test_get_primary_ip_address_from_zeroconf_ipv6_fallback() -> None:
+    """Test zeroconf IP extraction falls back to IPv6 when no IPv4 available."""
+    mock_info = _mock_service_info([], ["fd00::1"])
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=False)
+    assert result == "fd00::1"
+
+
+def test_get_primary_ip_address_from_zeroconf_ipv4_fallback() -> None:
+    """Test zeroconf IP extraction falls back to IPv4 when no IPv6 available."""
+    mock_info = _mock_service_info(["192.168.1.100"], [])
+    result = util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True)
+    assert result == "192.168.1.100"
+
+
+def test_get_primary_ip_address_from_zeroconf_skips_link_local() -> None:
+    """Test zeroconf IP extraction skips loopback and link-local addresses."""
+    mock_info = _mock_service_info(
+        ["127.0.0.1", "169.254.1.1", "192.168.1.100"],
+        ["::1", "fe80::1", "fd00::1"],
+    )
+    # IPv4 preferred: should skip 127.x and 169.254.x
+    assert (
+        util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=False) == "192.168.1.100"
+    )
+    # IPv6 preferred: should skip ::1 and fe80::
+    assert util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True) == "fd00::1"
+
+
+def test_get_primary_ip_address_from_zeroconf_no_addresses() -> None:
+    """Test zeroconf IP extraction returns None when no addresses available."""
+    mock_info = _mock_service_info([], [])
+    assert util.get_primary_ip_address_from_zeroconf(mock_info) is None
+    assert util.get_primary_ip_address_from_zeroconf(mock_info, prefer_ipv6=True) is None
+
+
+def _make_mock_adapter(
+    name: str,
+    ipv4_addrs: list[str] | None = None,
+    ipv6_addrs: list[tuple[str, int, int]] | None = None,
+) -> MagicMock:
+    """Create a mock ifaddr.Adapter.
+
+    :param name: Adapter name.
+    :param ipv4_addrs: List of IPv4 address strings.
+    :param ipv6_addrs: List of (address, flowinfo, scope_id) tuples for IPv6.
+    """
+    adapter = MagicMock()
+    adapter.nice_name = name
+    ips = []
+    for addr in ipv4_addrs or []:
+        ip_mock = MagicMock()
+        ip_mock.is_IPv6 = False
+        ip_mock.ip = addr
+        ips.append(ip_mock)
+    for addr_tuple in ipv6_addrs or []:
+        ip_mock = MagicMock()
+        ip_mock.is_IPv6 = True
+        ip_mock.ip = addr_tuple
+        ips.append(ip_mock)
+    adapter.ips = ips
+    return adapter
+
+
+def test_get_zeroconf_args_dual_stack() -> None:
+    """Test zeroconf args on a dual-stack host."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    assert result["ip_version"] == IPVersion.All
+    assert isinstance(result["interfaces"], list)
+    assert "192.168.1.10" in result["interfaces"]
+
+
+def test_get_zeroconf_args_ipv4_only() -> None:
+    """Test zeroconf args on an IPv4-only host."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    assert result["ip_version"] == IPVersion.V4Only
+    assert result["interfaces"] == InterfaceChoice.Default
+
+
+def test_get_zeroconf_args_ipv6_only() -> None:
+    """Test zeroconf args on an IPv6-only host."""
+    adapters = [
+        _make_mock_adapter("eth0", ipv6_addrs=[("fd00::1", 0, 2)]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    assert result["ip_version"] == IPVersion.V6Only
+    assert isinstance(result["interfaces"], list)
+
+
+def test_get_zeroconf_args_skips_loopback() -> None:
+    """Test that loopback addresses are excluded from interface detection."""
+    adapters = [
+        _make_mock_adapter("lo", ["127.0.0.1"], [("::1", 0, 0)]),
+        _make_mock_adapter("eth0", ["192.168.1.10"]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    # Should be IPv4-only (only loopback IPv6 found, which is excluded)
+    assert result["ip_version"] == IPVersion.V4Only
+
+
+def test_get_zeroconf_args_all_interfaces() -> None:
+    """Test zeroconf args with use_all_interfaces=True."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
+    ]
+    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+        result = util.get_zeroconf_args(use_all_interfaces=True)
+    assert result["ip_version"] == IPVersion.All
+    assert isinstance(result["interfaces"], list)
+    assert "192.168.1.10" in result["interfaces"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from asyncio import TaskGroup
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from libopensonic import AsyncConnection as SonicConnection
@@ -339,7 +340,7 @@ class OpenSonicProvider(MusicProvider):
         while results.song:
             album: Album | None = None
             for entry in results.song:
-                aid = entry.album_id if entry.album_id else entry.parent
+                aid = entry.album_id or entry.parent
                 if aid is not None and (album is None or album.item_id != aid):
                     album = await self.get_album(prov_album_id=aid)
                 self._set_loudness(entry)
@@ -425,7 +426,7 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Item {prov_track_id} not found"
             raise MediaNotFoundError(msg) from e
-        aid = sonic_song.album_id if sonic_song.album_id else sonic_song.parent
+        aid = sonic_song.album_id or sonic_song.parent
         album: Album | None = None
         if not aid:
             self.logger.warning("Unable to find album id for track %s", sonic_song.id)
@@ -520,7 +521,7 @@ class OpenSonicProvider(MusicProvider):
 
         album: Album | None = None
         for index, sonic_song in enumerate(sonic_playlist.entry, 1):
-            aid = sonic_song.album_id if sonic_song.album_id else sonic_song.parent
+            aid = sonic_song.album_id or sonic_song.parent
             if not aid:
                 self.logger.warning("Unable to find album for track %s", sonic_song.id)
             if aid is not None and (not album or album.item_id != aid):
@@ -666,12 +667,12 @@ class OpenSonicProvider(MusicProvider):
             media_type=media_type,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(mime_type),
-                sample_rate=item.sampling_rate if item.sampling_rate else 44100,
-                bit_depth=item.bit_depth if item.bit_depth else 16,
-                channels=item.channel_count if item.channel_count else 2,
+                sample_rate=item.sampling_rate or 44100,
+                bit_depth=item.bit_depth or 16,
+                channels=item.channel_count or 2,
             ),
             stream_type=StreamType.CUSTOM,
-            duration=item.duration if item.duration else 0,
+            duration=item.duration or 0,
         )
 
     async def on_played(
@@ -725,7 +726,9 @@ class OpenSonicProvider(MusicProvider):
             comment="Music Assistant Bookmark",
         )
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """
         Get progress (resume point) details for the given Audiobook or Podcast episode.
 
@@ -747,9 +750,9 @@ class OpenSonicProvider(MusicProvider):
 
         for mark in bookmarks:
             if mark.entry.id == ep_id:
-                return (False, mark.position)
+                return (False, mark.position, None)
         # If we get here, there is no bookmark
-        return (False, 0)
+        return (False, 0, None)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0

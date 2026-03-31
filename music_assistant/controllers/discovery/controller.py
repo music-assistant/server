@@ -8,15 +8,13 @@ import inspect
 import logging
 import os
 from collections import defaultdict
-from ipaddress import IPv4Address, ip_address
+from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from zeroconf import (
-    InterfaceChoice,
-    IPVersion,
     NonUniqueNameException,
     ServiceStateChange,
     Zeroconf,
@@ -29,7 +27,7 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.util import get_ip_pton
+from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -156,26 +154,13 @@ class DiscoveryController(CoreController):
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""
         zeroconf_interfaces = str(config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
-        if zeroconf_interfaces == "all":
-            # IPv6 requires InterfaceChoice.All, so only enable when all interfaces are used.
-            return AsyncZeroconf(ip_version=IPVersion.All, interfaces=InterfaceChoice.All)
-        if zeroconf_interfaces != "default":
-            # Comma-separated list of explicit interface IPs.
-            iface_list = [i.strip() for i in zeroconf_interfaces.split(",") if i.strip()]
-            if iface_list:
-                use_all_ip_versions = False
-                for iface in iface_list:
-                    try:
-                        use_all_ip_versions = ip_address(iface).version == 6
-                    except ValueError:
-                        continue
-                    if use_all_ip_versions:
-                        break
-                return AsyncZeroconf(
-                    ip_version=IPVersion.All if use_all_ip_versions else IPVersion.V4Only,
-                    interfaces=iface_list,
-                )
-        return AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.Default)
+        use_all_interfaces = zeroconf_interfaces == "all"
+        zc_args = get_zeroconf_args(use_all_interfaces)
+        self.logger.debug("Zeroconf configuration: %s", zc_args)
+        return AsyncZeroconf(
+            ip_version=zc_args["ip_version"],
+            interfaces=zc_args["interfaces"],
+        )
 
     async def _setup_mdns_browser(self) -> None:
         """Create the global mDNS browser for all subscribed provider types."""

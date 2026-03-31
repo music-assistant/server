@@ -19,7 +19,6 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
-from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.bridge_role import (
@@ -1091,8 +1090,7 @@ class SendspinPlaybackSession:
         try:
             output_format = self._get_member_output_format(player_id)
             filter_params = tuple(
-                get_player_filter_params(
-                    self.player.mass,
+                self.player.mass.streams.audio.get_player_filter_params(
                     player_id,
                     _PCM_FORMAT,
                     output_format,
