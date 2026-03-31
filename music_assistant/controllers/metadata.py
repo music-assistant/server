@@ -1055,7 +1055,7 @@ class MetaDataController(CoreController):
         :param fallback_image_url: Fallback image URL (e.g., station logo).
         """
         if " / " in artist_name:
-            artist_name = artist_name.split(" / ")[0].strip()
+            artist_name = artist_name.split(" / ", 1)[0].strip()
         else:
             artists_tuple = split_artists(artist_name)
             artist_name = artists_tuple[0] if artists_tuple else artist_name
