@@ -21,7 +21,7 @@ audible==0.10.0
 auntie-sounds==1.1.7
 av==16.1.0
 awesomeversion>=24.6.0
-bandcamp-async-api==0.0.9
+bandcamp-async-api==0.1.1
 bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
@@ -40,8 +40,8 @@ liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.7.5
 mashumaro==3.18
-music-assistant-frontend==2.17.135
-music-assistant-models==1.1.108
+music-assistant-frontend==2.17.136
+music-assistant-models==1.1.109
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post1
 numpy==2.3.5

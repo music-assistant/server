@@ -2817,9 +2817,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 provider=self.domain,
                 category=CACHE_CATEGORY_PLAYER_POWER,
             )
-        else:
-            # handle external player control
-            player_control = self._controls.get(player.state.power_control)
+        # handle external player control
+        elif player_control := self._controls.get(player.state.power_control):
             control_name = player_control.name if player_control else player.state.power_control
             self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
             if not player_control or not player_control.supports_power:
@@ -2833,6 +2832,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             else:
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
+        # handle protocol player power control
+        elif protocol_player := self.get_player(player.state.power_control):
+            self.logger.debug(
+                "Redirecting power command to protocol player %s",
+                protocol_player.provider.manifest.name,
+            )
+            await self._handle_cmd_power(protocol_player.player_id, powered, True)
+            if powered:
+                await wait_for_power_on(self.logger, protocol_player)
 
         # always trigger a state update to update the UI
         player.update_state()
@@ -2938,10 +2946,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # power on the player if needed (skip auto-play since we're about to start playback)
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
-
         # Determine output protocol to use:
         # If player already has an active protocol set, prefer that.
         # Otherwise, select best protocol based on current state.
@@ -2974,17 +2978,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 target_player.state.group_members,
             )
             player.set_active_output_protocol(output_protocol.output_protocol_id)
-            # if the (protocol)player has power control and is currently powered off,
-            # we need to power it on before playback (skip auto-play since we're starting playback)
-            if (
-                target_player.state.powered is False
-                and target_player.power_control != PLAYER_CONTROL_NONE
-            ):
-                await self._handle_cmd_power(target_player.player_id, True, skip_auto_play=True)
-            # forward play media command to protocol player
-            await target_player.play_media(media)
-            # notify the native player that protocol playback started
-            await player.on_protocol_playback(output_protocol=output_protocol)
         else:
             # Native playback
             self.logger.debug(
@@ -2993,7 +2986,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.group_members,
             )
             player.set_active_output_protocol("native")
-            await player.play_media(media)
+
+        # power on the player if needed (skip auto-play since we're about to start playback)
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+        await target_player.play_media(media)
+        if target_player.player_id != player.player_id:
+            # notify the native player that protocol playback started
+            assert output_protocol is not None
+            await player.on_protocol_playback(output_protocol=output_protocol)
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """

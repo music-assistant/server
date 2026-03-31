@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 from typing import TYPE_CHECKING, cast
 
@@ -39,7 +40,15 @@ class RaopStream(AirPlayProtocol):
         assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
-        extra_args += ["-if", self.mass.streams.bind_ip]
+        # Only pass the -if (interface/bind) flag to cliraop when the bind IP is a
+        # specific address and matches the address family of the target player,
+        # since cliraop cannot use an IPv6 source to connect to an IPv4 target or vice versa
+        bind_ip = self.mass.streams.bind_ip
+        if bind_ip not in ("0.0.0.0", "::"):
+            bind_is_ipv6 = isinstance(ipaddress.ip_address(bind_ip), ipaddress.IPv6Address)
+            target_is_ipv6 = ":" in self.player.address
+            if bind_is_ipv6 == target_is_ipv6:
+                extra_args += ["-if", bind_ip]
         if self.player.config.get_value(CONF_ENCRYPTION, True):
             extra_args += ["-encrypt"]
         if self.player.config.get_value(CONF_ALAC_ENCODE, True):
@@ -117,14 +126,7 @@ class RaopStream(AirPlayProtocol):
             elif "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
                 millis = int(line.split("elapsed milliseconds: ")[1])
-                silence_ms = (self.session.silence_padding * 1000) if self.session else 0
-                adjusted_millis = millis - silence_ms
-                if adjusted_millis < 0:
-                    # we need to ignore updates until we have passed the initial silence padding,
-                    # otherwise the player will not correct drift
-                    continue
-                # note that this represents the total elapsed time of the streaming session
-                elapsed_time = adjusted_millis / 1000
+                elapsed_time = millis / 1000
                 player.set_state_from_stream(elapsed_time=elapsed_time)
             elif "Password required, but none supplied." in line:
                 logger.error(

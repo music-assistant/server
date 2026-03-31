@@ -1851,6 +1851,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
     'item_id': 'Mi8xNzQzNzg5NTk5MzM1LTE3NDM3ODk1OTkzMzUubTN1',
