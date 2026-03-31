@@ -373,8 +373,10 @@ async def test_seekable_buffer_backpressure() -> None:
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     max_size = buf.max_size_seconds
 
-    for i in range(max_size):
-        await buf._put(_make_chunk(i))
+    # use fill() so there's an active producer task (eviction only happens
+    # when the producer is running and needs space)
+    buf.fill(_make_source(max_size + 5), source_name="test")
+    await asyncio.sleep(0.1)
 
     assert buf.size_seconds == max_size
 
@@ -382,6 +384,25 @@ async def test_seekable_buffer_backpressure() -> None:
     chunk = await buf._get(chunk_number=0)
     assert chunk == _make_chunk(0)
     assert buf._discarded_chunks == 1
+
+
+@pytest.mark.asyncio
+async def test_seekable_no_eviction_after_eof() -> None:
+    """After EOF, reads from a full buffer do not evict chunks."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    max_size = buf.max_size_seconds
+
+    buf.fill(_make_source(max_size), source_name="test")
+    await asyncio.sleep(0.1)
+
+    assert buf._eof_received
+    assert buf.size_seconds == max_size
+
+    # read should NOT evict since producer is done
+    chunk = await buf._get(chunk_number=0)
+    assert chunk == _make_chunk(0)
+    assert buf._discarded_chunks == 0
+    assert buf.size_seconds == max_size
 
 
 # -- get_stream passthrough --
