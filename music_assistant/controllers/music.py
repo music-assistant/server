@@ -78,7 +78,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import UNSET, DatabaseConnection
-from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
+from music_assistant.helpers.datetime import (
+    from_utc_timestamp,
+    local_clock_time_to_utc,
+    utc_timestamp,
+)
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
@@ -108,7 +112,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 33
+DB_SCHEMA_VERSION: Final[int] = 35
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -1482,9 +1486,35 @@ class MusicController(CoreController):
         """
         provider_fully_played = False
         provider_position_ms = 0
+        provider_timestamp: datetime | None = None
+
+        user: User | None = None
+        if userid:
+            # userid overridden by parameter
+            user = await self.mass.webserver.auth.get_user(userid)
+        elif session_user := get_current_user():
+            # this is the active session user that triggered the action
+            user = session_user
+        elif provider_user := await self._get_user_for_provider(media_item.provider_mappings):
+            # based on configured provider filter we can try to find a user
+            user = provider_user
+
+        provider_instances = {x.provider_instance for x in media_item.provider_mappings}
+        if user and user.provider_filter:
+            # only if the user has provider filters configured
+            # otherwise we allow all providers
+            preferred_provider_instances = provider_instances.intersection(user.provider_filter)
+        else:
+            preferred_provider_instances = provider_instances
+
+        preferred_providers = [
+            x
+            for x in media_item.provider_mappings
+            if x.provider_instance in preferred_provider_instances
+        ]
 
         # Try to get position from providers
-        for prov_mapping in media_item.provider_mappings:
+        for prov_mapping in preferred_providers:
             if not (
                 provider := self.mass.get_provider(
                     prov_mapping.provider_instance, provider_type=MusicProvider
@@ -1495,12 +1525,14 @@ class MusicController(CoreController):
                 (
                     provider_fully_played,
                     provider_position_ms,
+                    provider_timestamp,
                 ) = await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
                 break  # Use first provider that returns data
 
         # Get MA's internal position from playlog
         ma_fully_played = False
         ma_position_ms = 0
+        ma_timestamp = from_utc_timestamp(0)
         params = {
             "media_type": media_item.media_type.value,
             "item_id": media_item.item_id,
@@ -1508,10 +1540,15 @@ class MusicController(CoreController):
         }
         if userid:
             params["userid"] = userid
+        elif user:
+            params["userid"] = user.user_id
         if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
             ma_fully_played = parse_optional_bool(db_entry["fully_played"])
+            ma_timestamp = from_utc_timestamp(db_entry["timestamp"])
 
+        if provider_timestamp is not None and provider_timestamp > ma_timestamp:
+            return provider_fully_played, provider_position_ms
         # Return the higher position to ensure users never lose progress
         if ma_position_ms >= provider_position_ms:
             return ma_fully_played, ma_position_ms
@@ -2647,6 +2684,39 @@ class MusicController(CoreController):
             )
             await self._database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
 
+        if prev_version <= 33:
+            # add is_excluded column to genres table (new in schema 34)
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} "
+                    "ADD COLUMN [is_excluded] BOOLEAN NOT NULL DEFAULT 0;"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+            # drop the old genre_global_exclusion table (replaced by is_excluded column)
+            await self._database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
+            # add is_default column to genres table (new in schema 34)
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRES} "
+                    "ADD COLUMN [is_default] BOOLEAN NOT NULL DEFAULT 0;"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+            # mark all existing genres with a translation_key as default
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_GENRES} SET is_default = 1 WHERE translation_key IS NOT NULL;"
+            )
+        if prev_version <= 34:
+            # fix filesystem playlists missing in_library flag
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE media_type = 'playlist' "
+                "AND provider_domain IN ('filesystem_local', 'filesystem_smb', 'filesystem_nfs');"
+            )
+
         # save changes
         await self._database.commit()
 
@@ -2838,7 +2908,9 @@ class MusicController(CoreController):
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
+            [is_default] BOOLEAN NOT NULL DEFAULT 0
             );"""
         )
         await self.database.execute(

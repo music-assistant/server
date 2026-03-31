@@ -8,17 +8,21 @@ import platform
 import time
 from typing import TYPE_CHECKING
 
-from zeroconf import IPVersion
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.process import check_output
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_2_DEFAULT_MODELS,
     BROKEN_AIRPLAY_MODELS,
+    CONF_ALAC_ENCODE,
     StreamingProtocol,
 )
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
+
+    from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,19 +103,6 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
         return ("Apple", f"Mac ({model})")
 
     return (manufacturer or "AirPlay", model)
-
-
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    return None
 
 
 def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
@@ -332,3 +323,25 @@ def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
     ntp_fraction = int(fraction * (1 << 32))
 
     return ntp_timestamp + ntp_seconds + ntp_fraction
+
+
+def get_final_output_format(
+    audio_format: AudioFormat,
+    airplay_player: AirPlayPlayer,
+) -> AudioFormat:
+    """
+    Determine final output format based on stream and player capabilities.
+
+    This is for the UI only, so it correctly displays ALAC/PCM support.
+    """
+    content_type = audio_format.content_type
+    if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
+        content_type = ContentType.ALAC
+    if airplay_player.config.get_value(CONF_ALAC_ENCODE, True):
+        content_type = ContentType.ALAC
+    return AudioFormat(
+        content_type=content_type,
+        sample_rate=audio_format.sample_rate,
+        bit_depth=audio_format.bit_depth,
+        channels=audio_format.channels,
+    )
