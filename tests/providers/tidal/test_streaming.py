@@ -1,10 +1,10 @@
 """Test Tidal Streaming Manager."""
 
 import base64
-from collections.abc import Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from sqlite3 import OperationalError
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
@@ -12,6 +12,23 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.providers.tidal.streaming import TidalStreamingManager
+
+# A minimal valid DASH manifest for testing.
+_TEST_MANIFEST_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static">'
+    "<Period><AdaptationSet>"
+    '<Representation id="1" codecs="flac" audioSamplingRate="44100">'
+    '<SegmentTemplate initialization="https://cdn.tidal.com/init.mp4" '
+    'media="https://cdn.tidal.com/$Number$.mp4" startNumber="1" timescale="44100">'
+    "<SegmentTimeline>"
+    '<S d="176128" r="2"/>'
+    "</SegmentTimeline>"
+    "</SegmentTemplate>"
+    "</Representation>"
+    "</AdaptationSet></Period></MPD>"
+)
+_TEST_MANIFEST_B64 = base64.b64encode(_TEST_MANIFEST_XML.encode()).decode()
 
 
 @pytest.fixture
@@ -39,9 +56,6 @@ def provider_mock() -> Mock:
     provider.mass.cache.set = AsyncMock()
     provider.mass.cache.delete = AsyncMock()
     provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
-    provider.mass.streams.base_url = "http://localhost:8095"
-    provider.mass.streams.register_dynamic_route = Mock(return_value=Mock())
-
     return provider
 
 
@@ -120,13 +134,11 @@ async def test_get_stream_details_hires(
 async def test_get_stream_details_with_dash_manifest(
     streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
 ) -> None:
-    """Test get_stream_details with DASH manifest serves via HTTP route, not data: URI."""
+    """Test get_stream_details with DASH manifest uses CUSTOM stream with parsed segments."""
     provider_mock.get_track.return_value = mock_track
-    manifest_xml = b"<MPD>dummy manifest</MPD>"
-    manifest_b64 = base64.b64encode(manifest_xml).decode()
     provider_mock.api.get.return_value = {
         "manifestMimeType": "application/dash+xml",
-        "manifest": manifest_b64,
+        "manifest": _TEST_MANIFEST_B64,
         "audioQuality": "HIGH",
         "sampleRate": 44100,
         "bitDepth": 16,
@@ -134,16 +146,18 @@ async def test_get_stream_details_with_dash_manifest(
 
     stream_details = await streaming_manager.get_stream_details("123")
 
-    assert isinstance(stream_details.path, str)
-    assert stream_details.path.startswith("http://localhost:8095/tidal-dash/")
-    assert stream_details.path.endswith(".mpd")
-    assert "data:" not in stream_details.path
-
-    # Route must be registered with the streams server.
-    provider_mock.mass.streams.register_dynamic_route.assert_called_once()
-    call_args = provider_mock.mass.streams.register_dynamic_route.call_args
-    assert call_args[0][0].startswith("/tidal-dash/")
-    assert call_args[1]["method"] == "GET"
+    assert stream_details.stream_type == StreamType.CUSTOM
+    assert stream_details.audio_format.content_type == ContentType.MP4
+    assert stream_details.can_seek is True
+    assert stream_details.allow_seek is True
+    # Segment info stored in data field
+    assert isinstance(stream_details.data, dict)
+    assert stream_details.data["init_url"] == "https://cdn.tidal.com/init.mp4"
+    segments = stream_details.data["segments"]
+    assert len(segments) == 3
+    assert segments[0]["url"] == "https://cdn.tidal.com/1.mp4"
+    assert segments[0]["start"] == 0.0
+    assert segments[2]["url"] == "https://cdn.tidal.com/3.mp4"
 
 
 async def test_get_stream_details_with_codec(
@@ -568,15 +582,14 @@ async def test_async_update_provider_mapping_audio_format_unexpected_error_logs_
     provider_mock.logger.exception.assert_called()
 
 
-async def test_get_stream_details_dash_schedules_cleanup_task(
+async def test_get_stream_details_dash_only_creates_mapping_task(
     streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
 ) -> None:
-    """Verify a cleanup task is scheduled to unregister the DASH manifest route."""
+    """Verify only the mapping update task is created (no route cleanup for CUSTOM streams)."""
     provider_mock.get_track.return_value = mock_track
-    manifest_b64 = base64.b64encode(b"<MPD/>").decode()
     provider_mock.api.get.return_value = {
         "manifestMimeType": "application/dash+xml",
-        "manifest": manifest_b64,
+        "manifest": _TEST_MANIFEST_B64,
         "audioQuality": "HIGH",
         "sampleRate": 44100,
         "bitDepth": 16,
@@ -587,33 +600,179 @@ async def test_get_stream_details_dash_schedules_cleanup_task(
 
     await streaming_manager.get_stream_details("123")
 
-    # create_task is called twice: once for the mapping update, once for route cleanup.
-    assert provider_mock.mass.create_task.call_count == 2
+    # Only the mapping update task should be created.
+    assert provider_mock.mass.create_task.call_count == 1
 
 
-async def test_make_manifest_handler_serves_manifest_bytes() -> None:
-    """Verify _make_manifest_handler returns an async handler that serves the given bytes."""
-    manifest_bytes = b"<MPD>test manifest</MPD>"
-    logger = Mock()
-    handler = TidalStreamingManager._make_manifest_handler(manifest_bytes, logger, "track_42")
+async def test_get_stream_details_dash_repeated_calls_independent(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Repeated calls for the same DASH track produce independent stream details."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.mass.cache.get.return_value = {
+        "manifestMimeType": "application/dash+xml",
+        "manifest": _TEST_MANIFEST_B64,
+        "audioQuality": "HIGH",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
 
-    response = await handler(MagicMock())
+    sd1 = await streaming_manager.get_stream_details("123")
+    sd2 = await streaming_manager.get_stream_details("123")
 
-    assert response.body == manifest_bytes
-    assert "dash+xml" in response.content_type
-    logger.debug.assert_called()
+    # Both should be CUSTOM streams with the same segment data.
+    assert sd1.stream_type == StreamType.CUSTOM
+    assert sd2.stream_type == StreamType.CUSTOM
+    assert sd1.data["init_url"] == sd2.data["init_url"]
+    assert len(sd1.data["segments"]) == len(sd2.data["segments"])
 
 
-async def test_async_unregister_manifest_route_calls_unregister(
+async def test_parse_dash_segments_extracts_urls_with_timing(
     streaming_manager: TidalStreamingManager,
 ) -> None:
-    """Verify the route unregister callable is called after the delay."""
-    unregister = Mock()
-    with patch("music_assistant.providers.tidal.streaming.asyncio.sleep", new_callable=AsyncMock):
-        await streaming_manager._async_unregister_manifest_route(
-            unregister, "/tidal-dash/test.mpd", 300.0
-        )
-    unregister.assert_called_once()
+    """Verify _parse_dash_segments correctly extracts segment URLs and start times."""
+    result = streaming_manager._parse_dash_segments(_TEST_MANIFEST_XML.encode(), "123")
+
+    assert result["init_url"] == "https://cdn.tidal.com/init.mp4"
+    segments = result["segments"]
+    assert len(segments) == 3  # r="2" means 3 repetitions
+    assert segments[0]["url"] == "https://cdn.tidal.com/1.mp4"
+    assert segments[0]["start"] == 0.0
+    assert segments[1]["url"] == "https://cdn.tidal.com/2.mp4"
+    # 176128 / 44100 ≈ 3.993 seconds
+    assert abs(segments[1]["start"] - 176128 / 44100) < 0.001
+    assert segments[2]["url"] == "https://cdn.tidal.com/3.mp4"
+
+
+async def test_get_audio_stream_yields_init_then_segments(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Verify get_audio_stream yields init segment followed by media segments."""
+    mock_streamdetails = Mock()
+    mock_streamdetails.item_id = "123"
+    mock_streamdetails.data = {
+        "init_url": "https://cdn.tidal.com/init.mp4",
+        "segments": [
+            {"url": "https://cdn.tidal.com/1.mp4", "start": 0.0},
+            {"url": "https://cdn.tidal.com/2.mp4", "start": 4.0},
+        ],
+    }
+
+    # Mock the HTTP session to return predictable bytes per URL.
+    responses: dict[str, bytes] = {
+        "https://cdn.tidal.com/init.mp4": b"INIT",
+        "https://cdn.tidal.com/1.mp4": b"SEG1",
+        "https://cdn.tidal.com/2.mp4": b"SEG2",
+    }
+
+    async def _mock_content(data: bytes) -> AsyncGenerator[bytes, None]:
+        yield data
+
+    def _mock_get(url: str, **_kwargs: object) -> MagicMock:
+        ctx = MagicMock()
+        resp = MagicMock()
+        resp.status = 200
+        resp.content.iter_any = lambda: _mock_content(responses[url])
+        ctx.__aenter__ = AsyncMock(return_value=resp)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        return ctx
+
+    mock_session = MagicMock()
+    mock_session.get = _mock_get
+    provider_mock.mass.http_session = mock_session
+
+    chunks = []
+    async for chunk in streaming_manager.get_audio_stream(mock_streamdetails):
+        chunks.append(chunk)
+
+    assert chunks == [b"INIT", b"SEG1", b"SEG2"]
+
+
+async def test_get_audio_stream_seeks_to_correct_segment(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Verify get_audio_stream skips segments before the seek position."""
+    mock_streamdetails = Mock()
+    mock_streamdetails.item_id = "123"
+    mock_streamdetails.data = {
+        "init_url": "https://cdn.tidal.com/init.mp4",
+        "segments": [
+            {"url": "https://cdn.tidal.com/1.mp4", "start": 0.0},
+            {"url": "https://cdn.tidal.com/2.mp4", "start": 4.0},
+            {"url": "https://cdn.tidal.com/3.mp4", "start": 8.0},
+        ],
+    }
+
+    fetched_urls: list[str] = []
+
+    async def _mock_content(data: bytes) -> AsyncGenerator[bytes, None]:
+        yield data
+
+    def _mock_get(url: str, **_kwargs: object) -> MagicMock:
+        fetched_urls.append(url)
+        ctx = MagicMock()
+        resp = MagicMock()
+        resp.status = 200
+        resp.content.iter_any = lambda: _mock_content(b"X")
+        ctx.__aenter__ = AsyncMock(return_value=resp)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        return ctx
+
+    mock_session = MagicMock()
+    mock_session.get = _mock_get
+    provider_mock.mass.http_session = mock_session
+
+    chunks = []
+    async for chunk in streaming_manager.get_audio_stream(mock_streamdetails, seek_position=5):
+        chunks.append(chunk)
+
+    # Should fetch init + segments starting from segment 2 (start=4.0, which is <= 5)
+    assert fetched_urls == [
+        "https://cdn.tidal.com/init.mp4",
+        "https://cdn.tidal.com/2.mp4",
+        "https://cdn.tidal.com/3.mp4",
+    ]
+
+
+async def test_get_audio_stream_raises_on_segment_error(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Verify get_audio_stream raises MediaNotFoundError on HTTP errors."""
+    mock_streamdetails = Mock()
+    mock_streamdetails.item_id = "123"
+    mock_streamdetails.data = {
+        "init_url": "https://cdn.tidal.com/init.mp4",
+        "segments": [{"url": "https://cdn.tidal.com/1.mp4", "start": 0.0}],
+    }
+
+    async def _mock_content(data: bytes) -> AsyncGenerator[bytes, None]:
+        yield data
+
+    call_count = 0
+
+    def _mock_get(_url: str, **_kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        ctx = MagicMock()
+        resp = MagicMock()
+        if call_count == 1:
+            # Init segment succeeds
+            resp.status = 200
+            resp.content.iter_any = lambda: _mock_content(b"INIT")
+        else:
+            # Media segment fails
+            resp.status = 403
+        ctx.__aenter__ = AsyncMock(return_value=resp)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        return ctx
+
+    mock_session = MagicMock()
+    mock_session.get = _mock_get
+    provider_mock.mass.http_session = mock_session
+
+    with pytest.raises(MediaNotFoundError, match="HTTP 403"):
+        async for _ in streaming_manager.get_audio_stream(mock_streamdetails):
+            pass
 
 
 async def test_get_stream_details_playback_info_cache_hit(

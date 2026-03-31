@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -187,6 +188,13 @@ class TidalProvider(MusicProvider):
     ) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         return await self.streaming.get_stream_details(item_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
+            yield chunk
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
