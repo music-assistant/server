@@ -27,6 +27,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.playlists import (
+    PlaylistItem,
+    generate_m3u,
+    media_item_to_playlist_item,
+)
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
@@ -38,6 +43,7 @@ if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
 
     from music_assistant import MusicAssistant
+    from music_assistant.providers.builtin import BuiltinProvider
 
 
 def _update_stage_progress(
@@ -75,6 +81,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.mass.register_api_command(
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
+        self.mass.register_api_command("music/playlists/export_playlist", self.export_playlist)
+        self.mass.register_api_command("music/playlists/import_playlist", self.import_playlist)
 
     def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
         """Verify that the update is allowed from a security perspective.
@@ -638,3 +646,67 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # in the next scheduled run of the playlist metadata task
         playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
+
+    async def export_playlist(self, db_playlist_id: str | int) -> str:
+        """Export a playlist to M3U8 format.
+
+        :param db_playlist_id: The library database ID of the playlist.
+        """
+        db_id = int(db_playlist_id)
+        playlist = await self.get_library_item(db_id)
+        if not playlist:
+            msg = f"Playlist with id {db_id} not found"
+            raise MediaNotFoundError(msg)
+        items: list[PlaylistItem] = []
+        async for track in self.tracks(
+            item_id=str(db_id),
+            provider_instance_id_or_domain="library",
+        ):
+            items.append(media_item_to_playlist_item(track))
+        return generate_m3u(playlist.name, items)
+
+    async def import_playlist(
+        self,
+        m3u_data: str,
+        library_matching: bool = False,
+        match_providers: list[str] | None = None,
+    ) -> Playlist:
+        """Import a playlist from M3U8 format.
+
+        Creates a new builtin playlist from the provided M3U data.
+
+        :param m3u_data: The M3U8 playlist data as a string.
+        :param library_matching: When True, attempt to find tracks by searching
+            providers using metadata when the original URI's provider is not
+            available. Defaults to False.
+        :param match_providers: Optional list of provider instance IDs or domains
+            to search when library_matching is enabled.
+        """
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+        playlist = await builtin_prov.import_playlist(m3u_data)
+        for prov_mapping in playlist.provider_mappings:
+            prov_mapping.in_library = True
+        db_playlist = await self.add_item_to_library(playlist, False)
+        if library_matching:
+            prov_playlist_id = playlist.item_id
+            user = get_current_user()
+            self.mass.tasks.run_background_task(
+                name=f"Import playlist {db_playlist.name}",
+                handler=lambda: builtin_prov.match_imported_playlist_tracks(
+                    prov_playlist_id, match_providers
+                ),
+                translation_key="background_task.import_playlist_matching",
+                translation_args=[db_playlist.name],
+                user_id=user.user_id if user else None,
+                metadata={
+                    "task_domain": "playlist_import_matching",
+                    "playlist_id": str(db_playlist.item_id),
+                    "playlist_name": db_playlist.name,
+                },
+                allow_retry=True,
+                allow_cancel=True,
+            )
+        return db_playlist

@@ -26,7 +26,7 @@ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFo
 from aiosendspin.models.types import AudioCodec
 from music_assistant_models.enums import EventType, IdentifierType
 
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -336,8 +336,8 @@ class SendspinChromecastBridge:
         """
         # The Sendspin server runs on its own port (8927), NOT through
         # the MA webserver or streams server. Use publish_ip directly.
-        publish_ip = self.mass.streams.publish_ip
-        server_url = f"ws://{publish_ip}:8927/sendspin"
+        publish_ip = cast("str", self.mass.streams.publish_ip)
+        server_url = f"ws://{format_ip_for_url(publish_ip)}:8927/sendspin"
         sync_delay = self._get_sync_delay()
         # The Cast receiver JS reads playerId (not clientId) from the config.
         # It uses this as the client_id in its hello message to the Sendspin server,

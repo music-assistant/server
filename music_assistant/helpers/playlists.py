@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from aiohttp import ClientTimeout, client_exceptions
 from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -637,6 +638,99 @@ def collect_podcast_info(full_item: MediaItem) -> PodcastInfo | None:
         provider_domain=p_domain,
         item_id=p_item_id,
         provider_instance=p_instance,
+    )
+
+
+def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
+    """Convert a MediaItem to a PlaylistItem with full M3U metadata.
+
+    Pure conversion — takes an already-fetched MediaItem and produces a
+    PlaylistItem suitable for ``generate_m3u``.
+
+    :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
+    """
+    # build M3U-compliant EXTINF title
+    if hasattr(full_item, "artists") and full_item.artists:
+        artist_names = ", ".join(a.name for a in full_item.artists)
+        title = f"{artist_names} - {full_item.name}"
+    elif hasattr(full_item, "podcast") and full_item.podcast:
+        title = f"{full_item.podcast.name} - {full_item.name}"
+    else:
+        title = full_item.name
+
+    duration = getattr(full_item, "duration", None)
+
+    # build EXTMA metadata
+    metadata: dict[str, str] = {
+        "media_type": full_item.media_type.value,
+        "name": full_item.name,
+    }
+    if hasattr(full_item, "authors") and full_item.authors:
+        metadata["authors"] = "; ".join(full_item.authors)
+    if hasattr(full_item, "narrators") and full_item.narrators:
+        metadata["narrators"] = "; ".join(full_item.narrators)
+    if full_item.version:
+        metadata["version"] = full_item.version
+    if isrc := full_item.get_external_id(ExternalID.ISRC):
+        metadata["isrc"] = isrc
+    if mbid := full_item.get_external_id(ExternalID.MB_RECORDING):
+        metadata["mbid"] = mbid
+
+    # collect one provider mapping per domain (highest quality)
+    prov_infos: list[ProviderMappingInfo] = []
+    seen_domains: set[str] = set()
+    sorted_mappings = sorted(full_item.provider_mappings, key=lambda x: x.quality, reverse=True)
+    for prov_mapping in sorted_mappings:
+        domain = prov_mapping.provider_domain
+        if domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        prov_infos.append(
+            ProviderMappingInfo(
+                domain=domain,
+                item_id=prov_mapping.item_id,
+                instance_id=prov_mapping.provider_instance,
+                content_type=prov_mapping.audio_format.content_type.value,
+                sample_rate=prov_mapping.audio_format.sample_rate,
+                bit_depth=prov_mapping.audio_format.bit_depth,
+                bit_rate=prov_mapping.audio_format.bit_rate or 0,
+            )
+        )
+
+    # primary URI = highest quality provider (or first if no mappings)
+    if prov_infos:
+        primary = prov_infos[0]
+        primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
+    else:
+        primary_uri = full_item.uri or ""
+
+    artist_infos = collect_artist_infos(full_item)
+    album_info = collect_album_info(full_item)
+    podcast_info = collect_podcast_info(full_item)
+
+    # collect images
+    images: list[ImageInfo] = []
+    if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
+        for img in full_item.metadata.images:
+            images.append(
+                ImageInfo(
+                    type=img.type.value,
+                    path=img.path,
+                    provider=img.provider,
+                    remotely_accessible=img.remotely_accessible,
+                )
+            )
+
+    return PlaylistItem(
+        path=primary_uri,
+        title=title,
+        length=str(duration) if duration else None,
+        metadata=metadata,
+        providers=prov_infos,
+        images=images,
+        artists=artist_infos,
+        album=album_info,
+        podcast=podcast_info,
     )
 
 
