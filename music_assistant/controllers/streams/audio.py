@@ -1303,7 +1303,10 @@ class StreamsAudio:
         # get or create the AudioBuffer (stores raw decoded PCM)
         seek_position_ms = int(seek_position * 1000)
         audio_buffer = await AudioBuffer.get_buffer(
-            mass=self.mass, streamdetails=streamdetails, seek_position_ms=seek_position_ms
+            mass=self.mass,
+            streamdetails=streamdetails,
+            seek_position_ms=seek_position_ms,
+            reason="streaming",
         )
 
         # read from buffer with filters applied (volume normalization, speed, fade-in, etc.)
