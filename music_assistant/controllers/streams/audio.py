@@ -1420,6 +1420,7 @@ class StreamsAudio:
                 "Skipping crossfade data for queue %s - next item changed!", queue.display_name
             )
             crossfade_data = None
+            self._crossfade_data.pop(queue.queue_id, None)
 
         self.logger.debug(
             "Start Streaming queue track: %s (%s) for queue %s on player %s"
