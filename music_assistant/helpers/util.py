@@ -151,11 +151,21 @@ VERSION_PARTS = (
     "instrumental",
     "karaoke",
     "remaster",
+    "remastered",
     "versie",
     "unplugged",
     "disco",
     "akoestisch",
     "deluxe",
+    "video",
+    "radio",
+    "extended",
+    "single",
+    "edition",
+    "anniversary",
+    "stereo",
+    "album",
+    "bonus",
 )
 IGNORE_TITLE_PARTS = (
     # strings that may be stripped off a title part
@@ -175,6 +185,70 @@ WITH_TITLE_WORDS = (
     "you",
     "no",
 )
+
+# Keywords for aggressive search cleaning (includes featuring).
+_VERSION_PATTERN = "|".join(re.escape(v) for v in VERSION_PARTS)
+_FEAT_PATTERN = r"feat(?:uring)?|ft"
+_SEARCH_PATTERN = rf"{_VERSION_PATTERN}|{_FEAT_PATTERN}"
+
+_SEARCH_PAREN_PATTERN = re.compile(
+    rf"[\(\[][^\)\]]*\b({_SEARCH_PATTERN})\b[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+_SEARCH_HYPHEN_PATTERN = re.compile(
+    rf"(\s*-\s*(\d{{4}}|{_SEARCH_PATTERN}).*)$",
+    re.IGNORECASE,
+)
+
+_DISPLAY_STRIP_PATTERN = re.compile(
+    r"\s*[\(\[](official\s+)?(lyric\s+|music\s+)?(video|audio)[\)\]]$",
+    re.IGNORECASE,
+)
+
+# Featuring patterns for stripping from titles (not in parentheses).
+_FEATURING_PATTERNS = (
+    " featuring ",
+    " feat. ",
+    " feat ",
+    " ft. ",
+    " ft ",
+)
+
+
+def clean_title_for_search(title: str) -> str:
+    """Remove version info and featuring credits from a song title for search matching.
+
+    Performs aggressive cleaning to maximize search API matching accuracy.
+    Removes parenthetical/bracketed metadata (remastered, live, featuring, etc.),
+    hyphen-separated suffixes, and standalone featuring credits.
+
+    TODO: Refactor genius_lyrics provider to use this function instead of its
+    own clean_song_title helper (providers/genius_lyrics/helpers.py).
+
+    :param title: The song title to clean.
+    """
+    # Strip parentheses/brackets containing keywords (including feat)
+    cleaned = _SEARCH_PAREN_PATTERN.sub("", title)
+
+    # Strip hyphen suffixes like "- Remastered 2019" or "- 2019"
+    cleaned = _SEARCH_HYPHEN_PATTERN.sub("", cleaned)
+
+    # Strip bare featuring credits (not in parentheses)
+    cleaned_lower = cleaned.lower()
+    for pattern in _FEATURING_PATTERNS:
+        if pattern in cleaned_lower:
+            idx = cleaned_lower.find(pattern)
+            cleaned = cleaned[:idx]
+            break
+
+    # Clean up dangling hyphens and extra spaces
+    cleaned = re.sub(r"\s*-\s*$", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def clean_title_for_display(title: str) -> str:
+    """Remove video-related suffixes from a song title for display."""
+    return _DISPLAY_STRIP_PATTERN.sub("", title).strip()
 
 
 def filename_from_string(string: str) -> str:

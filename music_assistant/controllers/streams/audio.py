@@ -600,7 +600,7 @@ class StreamsAudio:
                     # fallback to iso-8859-1
                     stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
                 cleaned_stream_title = clean_stream_title(stream_title)
-                if cleaned_stream_title != streamdetails.stream_title:
+                if cleaned_stream_title and cleaned_stream_title != streamdetails.stream_title:
                     self.logger.log(
                         VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title
                     )
@@ -608,6 +608,40 @@ class StreamsAudio:
                         VERBOSE_LOG_LEVEL, "ICY Radio streamtitle cleaned: %s", cleaned_stream_title
                     )
                     streamdetails.stream_title = cleaned_stream_title
+
+                    if " - " in cleaned_stream_title:
+                        parts = cleaned_stream_title.split(" - ", 1)
+                        artist_name_raw = parts[0].strip()
+                        track_name = parts[1].strip()
+
+                        if artist_name_raw and track_name:
+                            self.logger.debug(
+                                "ICY metadata: artist='%s', track='%s'",
+                                artist_name_raw,
+                                track_name,
+                            )
+                            # Set metadata with station image initially
+                            station_image_url = self.mass.metadata.get_radio_stream_station_image(
+                                streamdetails
+                            )
+                            artist_normalized = self.mass.metadata.normalize_radio_artist_name(
+                                artist_name_raw
+                            )
+                            streamdetails.stream_metadata = StreamMetadata(
+                                title=track_name,
+                                artist=artist_normalized,
+                                image_url=station_image_url,
+                            )
+                            streamdetails.stream_metadata_last_updated = time.time()
+                            if streamdetails.queue_id:
+                                self.mass.player_queues.signal_update(streamdetails.queue_id)
+                            # Fetch artist artwork in background
+                            self.mass.call_later(
+                                0.2,
+                                self.mass.metadata.update_radio_stream_artwork,
+                                streamdetails,
+                                task_id=f"update_radio_artwork_{streamdetails.queue_id}",
+                            )
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes, None]:
         """
@@ -2177,6 +2211,9 @@ class StreamsAudio:
                     # Build stream title from title and artist
                     title = metadata.get("title", "")
                     artist = metadata.get("artist", "")
+                    image_url = (
+                        metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
+                    )
 
                     if title or artist:
                         # Format as "Artist - Title"
@@ -2196,6 +2233,34 @@ class StreamsAudio:
                                 VERBOSE_LOG_LEVEL, "HLS Radio metadata updated: %s", cleaned_title
                             )
                             streamdetails.stream_title = cleaned_title
+
+                            # Set metadata immediately with provided/station image
+                            station_image_url = (
+                                image_url
+                                or mass.metadata.get_radio_stream_station_image(streamdetails)
+                            )
+                            artist_normalized = (
+                                mass.metadata.normalize_radio_artist_name(artist)
+                                if artist
+                                else None
+                            )
+                            streamdetails.stream_metadata = StreamMetadata(
+                                title=title or cleaned_title,
+                                artist=artist_normalized,
+                                image_url=station_image_url,
+                            )
+                            streamdetails.stream_metadata_last_updated = time.time()
+                            if streamdetails.queue_id:
+                                mass.player_queues.signal_update(streamdetails.queue_id)
+
+                            # Fetch artist artwork if not provided in stream metadata
+                            if artist and title and not image_url:
+                                mass.call_later(
+                                    0.2,
+                                    mass.metadata.update_radio_stream_artwork,
+                                    streamdetails,
+                                    task_id=f"update_radio_artwork_{streamdetails.queue_id}",
+                                )
 
                     # Only check the most recent EXTINF
                     break
