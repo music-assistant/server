@@ -842,7 +842,7 @@ class QobuzProvider(MusicProvider):
             if items_received < limit:
                 # If the API returned fewer items than requested but reports more exist,
                 # the server silently capped our limit. Continue paginating.
-                if total > len(all_items):
+                if items_received > 0 and total > len(all_items):
                     continue
                 break
         return all_items

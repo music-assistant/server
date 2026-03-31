@@ -189,9 +189,9 @@ class TestExponentialBackoffWithJitter:
         await provider.api_call("ok")
 
         sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
-        # MAX_BACKOFF=120, with ±25% jitter: max is 120 * 1.25 = 150
+        # Jitter is applied before capping, so no value should exceed MAX_BACKOFF (120)
         for t in sleep_times:
-            assert t <= 150.0
+            assert t <= 120.0
 
 
 class TestMixedBackoff:

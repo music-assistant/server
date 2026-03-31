@@ -162,8 +162,7 @@ def throttle_with_retries[ProviderT: "Provider", **P, R](
                             sleep_time = float(e.backoff_time)
                         else:
                             # No server guidance — exponential backoff with jitter
-                            sleep_time = min(exp_backoff, MAX_BACKOFF)
-                            sleep_time *= random.uniform(0.75, 1.25)
+                            sleep_time = min(exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF)
                             exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
                         self.logger.info(f"Retrying in {sleep_time:.1f} seconds...")
                         await asyncio.sleep(sleep_time)
