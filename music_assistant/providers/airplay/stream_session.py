@@ -203,11 +203,22 @@ class AirPlayStreamSession:
                 if not self.sync_clients:
                     break
 
-                has_running_clients = await self._write_chunk_to_all_players(chunk)
-                if not has_running_clients:
-                    self.prov.logger.debug("No running clients remaining, stopping audio streamer")
-                    break
-                self.seconds_streamed += len(chunk) / pcm_sample_size
+                # Split large chunks (e.g. crossfade segments) into 1-second sub-chunks
+                # to prevent write timeouts and keep the late-joiner buffer accurate.
+                for offset in range(0, len(chunk), pcm_sample_size):
+                    sub_chunk = chunk[offset : offset + pcm_sample_size]
+                    if not self.sync_clients:
+                        break
+                    has_running_clients = await self._write_chunk_to_all_players(sub_chunk)
+                    if not has_running_clients:
+                        self.prov.logger.debug(
+                            "No running clients remaining, stopping audio streamer"
+                        )
+                        break
+                    self.seconds_streamed += len(sub_chunk) / pcm_sample_size
+                else:
+                    continue
+                break
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
