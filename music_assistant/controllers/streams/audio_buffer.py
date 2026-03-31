@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -45,7 +45,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
 # Callback signature for chunk observers: (chunk_position_seconds, pcm_data, is_last_chunk)
 # When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
-ChunkCallback = Callable[[int, bytes, bool], None]
+ChunkCallback = Callable[[int, bytes, bool], Awaitable[None]]
 
 # Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
 CancelCallback = Callable[[], None]
@@ -491,7 +491,7 @@ class AudioBuffer:
             failed: list[ChunkCallback] = []
             for callback in self._chunk_callbacks:
                 try:
-                    callback(chunk_position, chunk, False)
+                    await callback(chunk_position, chunk, False)
                 except Exception:
                     LOGGER.exception("Chunk callback failed, removing it")
                     failed.append(callback)
@@ -516,7 +516,7 @@ class AudioBuffer:
         total_chunks = self._discarded_chunks + len(self._chunks)
         for callback in list(self._chunk_callbacks):
             try:
-                callback(total_chunks, b"", True)
+                await callback(total_chunks, b"", True)
             except Exception:
                 LOGGER.exception("Chunk callback failed at EOF")
 

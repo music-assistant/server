@@ -84,23 +84,23 @@ class AudioAnalysisController:
             return
 
         self._active_sessions[session_key] = provider_ids
-        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=10)
         self._queues[session_key] = queue
         self._workers[session_key] = self.mass.create_task(self._chunk_worker(session_key, queue))
 
         # Build and register closures for callbacks on the audio buffer
         finalized = False
 
-        def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
+        async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
             nonlocal finalized
             if finalized:
                 return
             if is_last_chunk:
                 finalized = True
-                queue.put_nowait(None)
+                await queue.put(None)
                 self.mass.create_task(_finalize_session())
                 return
-            queue.put_nowait(pcm_data)
+            await queue.put(pcm_data)
 
         async def _finalize_session() -> None:
             """Await the worker, then dispatch finalize to each provider."""

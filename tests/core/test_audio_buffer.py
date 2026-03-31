@@ -288,7 +288,7 @@ async def test_chunk_callback_receives_data() -> None:
     """Registered callbacks receive chunks with position."""
     received: list[tuple[int, bytes, bool]] = []
 
-    def _callback(position: int, data: bytes, is_last_chunk: bool) -> None:
+    async def _callback(position: int, data: bytes, is_last_chunk: bool) -> None:
         received.append((position, data, is_last_chunk))
 
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
@@ -313,7 +313,7 @@ async def test_chunk_callback_eof_signal() -> None:
     """Callback receives empty bytes on EOF."""
     eof_positions: list[int] = []
 
-    def _callback(position: int, _data: bytes, is_last_chunk: bool) -> None:
+    async def _callback(position: int, _data: bytes, is_last_chunk: bool) -> None:
         if is_last_chunk:
             eof_positions.append(position)
 
@@ -331,7 +331,7 @@ async def test_callbacks_cleared_on_clear() -> None:
     """Callbacks are removed when buffer is cleared."""
     call_count = 0
 
-    def _callback(_position: int, _data: bytes, _is_last_chunk: bool) -> None:
+    async def _callback(_position: int, _data: bytes, _is_last_chunk: bool) -> None:
         nonlocal call_count
         call_count += 1
 
@@ -495,11 +495,11 @@ async def test_failing_callback_does_not_break_fill() -> None:
     """A failing chunk callback is removed without breaking the fill task."""
     good_chunks: list[int] = []
 
-    def _bad_callback(_position: int, _data: bytes, _is_last_chunk: bool) -> None:
+    async def _bad_callback(_position: int, _data: bytes, _is_last_chunk: bool) -> None:
         msg = "callback error"
         raise RuntimeError(msg)
 
-    def _good_callback(position: int, data: bytes, is_last_chunk: bool) -> None:
+    async def _good_callback(position: int, data: bytes, is_last_chunk: bool) -> None:
         if data and not is_last_chunk:
             good_chunks.append(position)
 
@@ -520,7 +520,7 @@ async def test_clear_fires_cancel_callbacks() -> None:
     chunk_received: list[bytes] = []
     cancel_called = False
 
-    def _chunk_callback(_position: int, data: bytes, _is_last_chunk: bool) -> None:
+    async def _chunk_callback(_position: int, data: bytes, _is_last_chunk: bool) -> None:
         chunk_received.append(data)
 
     def _cancel_callback() -> None:

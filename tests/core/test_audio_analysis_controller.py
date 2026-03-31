@@ -45,12 +45,12 @@ def _create_mock_provider(
     return prov
 
 
-def _send_chunks(audio_buffer: AudioBuffer, num_chunks: int) -> None:
+async def _send_chunks(audio_buffer: AudioBuffer, num_chunks: int) -> None:
     """Deliver chunks and EOF directly via the registered callback."""
     cb = audio_buffer._chunk_callbacks[0]
     for i in range(num_chunks):
-        cb(i, ONE_SECOND_CHUNK, False)
-    cb(num_chunks, b"", True)
+        await cb(i, ONE_SECOND_CHUNK, False)
+    await cb(num_chunks, b"", True)
 
 
 @pytest.fixture
@@ -176,7 +176,7 @@ async def test_chunks_delivered_to_provider(
 ) -> None:
     """Provider receives all PCM chunks via the worker."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    _send_chunks(audio_buffer, 3)
+    await _send_chunks(audio_buffer, 3)
     await _await_tasks(mock_mass)
     assert mock_provider.process_pcm_chunk.call_count == 3
 
@@ -191,7 +191,7 @@ async def test_finalize_called_on_eof(
 ) -> None:
     """After EOF, provider.finalize is called with the session key."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    _send_chunks(audio_buffer, 2)
+    await _send_chunks(audio_buffer, 2)
     await _await_tasks(mock_mass)
     session_key = "test_prov:track:test_123"
     mock_provider.finalize.assert_called_once_with(session_key)
@@ -215,7 +215,7 @@ async def test_multiple_providers_receive_chunks(
     mock_mass.get_provider = MagicMock(side_effect=_get_prov)
 
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    _send_chunks(audio_buffer, 3)
+    await _send_chunks(audio_buffer, 3)
     await _await_tasks(mock_mass)
 
     assert prov_a.process_pcm_chunk.call_count == 3
@@ -233,7 +233,7 @@ async def test_session_cleaned_up_after_finalize(
 ) -> None:
     """Internal dicts are empty after finalize completes."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    _send_chunks(audio_buffer, 1)
+    await _send_chunks(audio_buffer, 1)
     await _await_tasks(mock_mass)
     assert len(controller._active_sessions) == 0
     assert len(controller._queues) == 0
@@ -254,8 +254,8 @@ async def test_cancel_on_buffer_clear(
     """Clearing the buffer triggers provider.cancel."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
     cb = audio_buffer._chunk_callbacks[0]
-    cb(0, ONE_SECOND_CHUNK, False)
-    cb(1, ONE_SECOND_CHUNK, False)
+    await cb(0, ONE_SECOND_CHUNK, False)
+    await cb(1, ONE_SECOND_CHUNK, False)
     await audio_buffer.clear()
     await _await_tasks(mock_mass)
     session_key = "test_prov:track:test_123"
@@ -272,7 +272,7 @@ async def test_session_cleaned_up_after_cancel(
     """Internal dicts are empty after cancel."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
     cb = audio_buffer._chunk_callbacks[0]
-    cb(0, ONE_SECOND_CHUNK, False)
+    await cb(0, ONE_SECOND_CHUNK, False)
     await audio_buffer.clear()
     await _await_tasks(mock_mass)
     assert len(controller._active_sessions) == 0
@@ -312,8 +312,8 @@ async def test_finalized_guard_prevents_double_finalize(
     await controller.start_analysis(audio_buffer, mock_stream_details)
     assert len(audio_buffer._chunk_callbacks) == 1
     cb = audio_buffer._chunk_callbacks[0]
-    cb(0, b"", True)
-    cb(1, b"", True)
+    await cb(0, b"", True)
+    await cb(1, b"", True)
     await _await_tasks(mock_mass)
     mock_provider.finalize.assert_called_once()
 
@@ -337,7 +337,7 @@ async def test_provider_error_during_chunk_processing(
 
     mock_provider.process_pcm_chunk = AsyncMock(side_effect=_flaky_process)
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    _send_chunks(audio_buffer, 3)
+    await _send_chunks(audio_buffer, 3)
     await _await_tasks(mock_mass)
     assert call_count == 3
     mock_provider.finalize.assert_called_once()
@@ -358,7 +358,7 @@ async def test_provider_error_during_start(
     mock_mass.get_provider = MagicMock(return_value=prov_ok)
 
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    _send_chunks(audio_buffer, 2)
+    await _send_chunks(audio_buffer, 2)
     await _await_tasks(mock_mass)
 
     assert prov_ok.process_pcm_chunk.call_count == 2
@@ -395,7 +395,7 @@ async def test_slow_provider_removed_after_timeout(
         "music_assistant.controllers.streams.audio_analysis.CHUNK_PROCESS_TIMEOUT", 0.1
     ):
         await controller.start_analysis(audio_buffer, mock_stream_details)
-        _send_chunks(audio_buffer, 3)
+        await _send_chunks(audio_buffer, 3)
         await _await_tasks(mock_mass)
 
     assert prov_fast.process_pcm_chunk.call_count == 3

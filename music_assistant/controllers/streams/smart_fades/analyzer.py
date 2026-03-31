@@ -65,7 +65,7 @@ class SmartFadesAnalyzer:
         outro_chunks: deque[bytes] = deque(maxlen=analysis_seconds)
         intro_analyzed = False
 
-        def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
+        async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
             nonlocal intro_analyzed
 
             if is_last_chunk:
