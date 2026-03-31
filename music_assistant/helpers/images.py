@@ -355,7 +355,7 @@ async def create_collage(
 
 async def get_icon_string(icon_path: str) -> str:
     """Get svg icon as string."""
-    ext = icon_path.rsplit(".")[-1]
+    ext = icon_path.rsplit(".", maxsplit=1)[-1]
     assert ext == "svg"
     async with aiofiles.open(icon_path) as _file:
         xml_data = await _file.read()

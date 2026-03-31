@@ -1297,7 +1297,7 @@ class StreamsAudio:
         media_stream_gen = audio_buffer.get_stream(
             output_format=pcm_format,
             seek_position_ms=seek_position_ms,
-            filter_params=filter_params if filter_params else None,
+            filter_params=filter_params or None,
         )
 
         first_chunk_received = False
