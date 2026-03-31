@@ -1053,7 +1053,7 @@ class ProtocolLinkingMixin:
                 continue
 
             # Extract domain from provider instance_id (e.g., "airplay--uuid" -> "airplay")
-            protocol_domain = protocol_provider.split("--")[0]
+            protocol_domain = protocol_provider.split("--", maxsplit=1)[0]
 
             # Skip if parent already has a link from this domain
             existing_domains = {

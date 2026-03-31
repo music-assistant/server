@@ -456,7 +456,7 @@ class MetaDataController(CoreController):
             image_format = _detect_image_format(path)
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
-            collage_rel = path.split("/collage/")[-1]
+            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
             if not is_safe_path(collage_rel):
                 raise FileNotFoundError("Invalid collage path")
             path = os.path.join(self._collage_images_dir, collage_rel)

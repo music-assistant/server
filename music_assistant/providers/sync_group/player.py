@@ -341,7 +341,7 @@ class SyncGroupPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         self._attr_current_media = media
-        self._attr_active_source = media.source_id if media.source_id else None
+        self._attr_active_source = media.source_id or None
         await self._form_syncgroup()
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:

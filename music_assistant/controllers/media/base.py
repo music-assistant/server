@@ -114,7 +114,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'is_unique', provider_mappings.is_unique
                 )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
                     AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
-            FROM {self.db_table} """  # noqa: E501
+            FROM {self.db_table} """
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
         # register (base) api handlers
         self.api_base = api_base = f"{self.media_type}s"
