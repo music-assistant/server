@@ -266,7 +266,10 @@ class StreamsAudio:
                 streamdetails.loudness_album = result[1]
 
         if not streamdetails.duration:
-            streamdetails.duration = queue_item.duration
+            if queue_item.media_item and queue_item.media_item.duration:
+                streamdetails.duration = queue_item.media_item.duration
+            else:
+                streamdetails.duration = queue_item.duration
         if seek_position and (not streamdetails.allow_seek or not streamdetails.duration):
             self.logger.warning("seeking is not possible on duration-less streams!")
             seek_position = 0
@@ -309,7 +312,7 @@ class StreamsAudio:
         streamdetails.dsp = self.get_stream_dsp_details(streamdetails.queue_id)
 
         self.logger.debug(
-            "retrieved streamdetails for %s in %s milliseconds",
+            "Retrieved streamdetails for %s in %s milliseconds",
             queue_item.uri,
             int((time.time() - time_start) * 1000),
         )
