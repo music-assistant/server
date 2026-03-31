@@ -1118,8 +1118,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Remove the given player from any (sync)groups it currently is synced to.
         If the player is not currently grouped to any other player,
         this will silently be ignored.
-
-        NOTE: This is a convenience helper for cmd_set_members.
         """
         if not (player := self.get_player(player_id)):
             self.logger.warning("Player %s is not available", player_id)
@@ -1141,6 +1139,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.player_id, player_ids_to_remove=player.state.group_members
             )
             return
+        # unjoin from any dynamic sync groups if we're currently in one (edge case)
+        # this is in particular used for the Home Assistant integration which does
+        # not have a set_members command and only supports a single unjoin command
+        for player in self.all_players(False):
+            if not player.state.group_members or player.state.synced_to:
+                continue
+            if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
+                continue
+            if player_id in player.state.static_group_members:
+                continue
+            if player_id in player.state.group_members:
+                await self.cmd_set_members(player.player_id, player_ids_to_remove=[player_id])
+                return
 
     @api_command("players/cmd/ungroup_many")
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
