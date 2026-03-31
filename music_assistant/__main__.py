@@ -241,6 +241,7 @@ def main() -> None:
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
+            loop.slow_callback_duration = 0.2
         loop.set_exception_handler(_global_loop_exception_handler)
 
         stop_event = asyncio.Event()
