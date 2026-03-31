@@ -32,7 +32,6 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
-from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.smart_fades import SmartFadesMode
 
@@ -376,9 +375,7 @@ class AudioBuffer:
             if streamdetails.queue_id
             else SmartFadesMode.DISABLED
         )
-        if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE:
-            ready_threshold = SMART_CROSSFADE_DURATION
-        elif smart_fades_mode != SmartFadesMode.STANDARD_CROSSFADE:
+        if smart_fades_mode != SmartFadesMode.DISABLED:
             ready_threshold = 10
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             ready_threshold = 5
