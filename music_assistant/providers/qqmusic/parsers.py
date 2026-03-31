@@ -126,3 +126,77 @@ def describe_payload(data: Any) -> str:
         first_type = type(data[0]).__name__ if data else "empty"
         return f"list(len={len(data)}, first={first_type})"
     return type(data).__name__
+
+
+def extract_guess_recommend_tracks(data: Any) -> list[dict[str, Any]]:
+    """Extract tracks from GuessRecommendResponse raw payload: $.Tracks[*]."""
+    if not isinstance(data, dict):
+        return []
+    tracks = data.get("Tracks")
+    if not isinstance(tracks, list):
+        return []
+    return [item for item in tracks if isinstance(item, dict)]
+
+
+def extract_radar_recommend_tracks(data: Any) -> list[dict[str, Any]]:
+    """Extract tracks from RadarRecommendResponse raw payload: $.VecSongs[*].Track."""
+    if not isinstance(data, dict):
+        return []
+    vec_songs = data.get("VecSongs")
+    if not isinstance(vec_songs, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in vec_songs:
+        if not isinstance(item, dict):
+            continue
+        track = item.get("Track")
+        if isinstance(track, dict):
+            result.append(track)
+    return result
+
+
+def extract_newsong_tracks(data: Any) -> list[dict[str, Any]]:
+    """Extract tracks from RecommendNewSongResponse raw payload: $.songlist[*]."""
+    if not isinstance(data, dict):
+        return []
+    songs = data.get("songlist")
+    if not isinstance(songs, list):
+        return []
+    return [item for item in songs if isinstance(item, dict)]
+
+
+def extract_recommend_songlists(data: Any) -> list[dict[str, Any]]:
+    """Extract playlist basics from RecommendSonglistResponse: $.List[*].Playlist.basic."""
+    if not isinstance(data, dict):
+        return []
+    items = data.get("List")
+    if not isinstance(items, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        playlist_obj = item.get("Playlist")
+        if not isinstance(playlist_obj, dict):
+            continue
+        basic = playlist_obj.get("basic")
+        if not isinstance(basic, dict):
+            continue
+        merged = dict(basic)
+        cover_obj = playlist_obj.get("cover")
+        if isinstance(cover_obj, dict):
+            cover_url = normalize_image_url(
+                cover_obj.get("default_url")
+                or cover_obj.get("medium_url")
+                or cover_obj.get("big_url")
+                or cover_obj.get("small_url")
+            )
+            if cover_url and not merged.get("picurl"):
+                merged["picurl"] = cover_url
+        creator_obj = playlist_obj.get("creator")
+        if isinstance(creator_obj, dict) and not merged.get("creator"):
+            merged["creator"] = creator_obj
+        if playlist_obj.get("desc") and not merged.get("desc"):
+            merged["desc"] = playlist_obj.get("desc")
+        result.append(merged)
+    return result

@@ -10,7 +10,7 @@ import re
 import time
 from asyncio import Semaphore
 from base64 import b64encode
-from collections.abc import AsyncGenerator, Awaitable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -73,10 +73,12 @@ from .constants import (
 from .helpers import clean_text, extract_artist_mid, extract_first_text, normalize_image_url
 from .parsers import (
     describe_payload,
+    extract_guess_recommend_tracks,
     extract_items,
-    extract_playlist_candidates,
+    extract_newsong_tracks,
+    extract_radar_recommend_tracks,
+    extract_recommend_songlists,
     extract_song_id,
-    extract_track_candidates,
 )
 
 if TYPE_CHECKING:
@@ -103,6 +105,12 @@ SUPPORTED_FEATURES = {
 
 _QR_ROUTE_UNREGISTER: dict[str, Any] = {}
 _LRC_TIMESTAMP_PATTERN = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]")
+_QRC_LINE_TIMESTAMP_PATTERN = re.compile(r"\[\d+,\d+\]")
+_QRC_LINE_PREFIX_PATTERN = re.compile(r"^\[(\d+),(\d+)\]")
+_QRC_WORD_TIMESTAMP_PATTERN = re.compile(r"\(\d+,\d+\)")
+_RECOMMEND_GUESS_TTL = 60 * 60
+_RECOMMEND_NEWSONG_TTL = 60 * 60 * 6
+_RECOMMEND_PLAYLIST_TTL = 60 * 60 * 6
 
 
 def _clear_qr_routes() -> None:
@@ -138,6 +146,49 @@ def _register_qr_auth_page(
     unregister = mass.webserver.register_dynamic_route(route_path, _serve_qr, "GET")
     _QR_ROUTE_UNREGISTER[route_path] = unregister
     return f"{route_path}?ts={int(time.time())}"
+
+
+def _normalize_qq_lyric_text(raw_text: str) -> str:
+    """Normalize QQ lyric/qrc payload to readable plain text."""
+    text = html.unescape(raw_text).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\\n", "\n")
+    text = _QRC_LINE_TIMESTAMP_PATTERN.sub("", text)
+    text = _QRC_WORD_TIMESTAMP_PATTERN.sub("", text)
+    lines: list[str] = []
+    for raw_line in text.split("\n"):
+        cleaned_line = raw_line.strip()
+        if cleaned_line:
+            lines.append(cleaned_line)
+    return "\n".join(lines)
+
+
+def _ms_to_lrc_timestamp(ms_value: int) -> str:
+    """Convert milliseconds to LRC timestamp string (mm:ss.xx)."""
+    minute = ms_value // 60000
+    second = (ms_value % 60000) // 1000
+    centisecond = (ms_value % 1000) // 10
+    return f"{minute:02d}:{second:02d}.{centisecond:02d}"
+
+
+def _qrc_to_lrc(raw_text: str) -> str:
+    """Convert QQ QRC line-timed lyric text to basic LRC format."""
+    text = html.unescape(raw_text).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\\n", "\n")
+    lrc_lines: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line_match = _QRC_LINE_PREFIX_PATTERN.match(line)
+        if not line_match:
+            continue
+        start_ms = int(line_match.group(1))
+        lyric_content = line[line_match.end() :]
+        lyric_content = _QRC_WORD_TIMESTAMP_PATTERN.sub("", lyric_content).strip()
+        if not lyric_content:
+            continue
+        lrc_lines.append(f"[{_ms_to_lrc_timestamp(start_ms)}]{lyric_content}")
+    return "\n".join(lrc_lines)
 
 
 async def setup(
@@ -426,6 +477,7 @@ class QQMusicProvider(MusicProvider):
     _api_semaphore: Semaphore
     _musicid: int = 0
     _euin: str = ""
+    _recommend_payload_cache: dict[str, tuple[float, Any]]
 
     async def handle_async_init(self) -> None:
         """Validate auth and initialize qqmusic api adapters."""
@@ -470,6 +522,7 @@ class QQMusicProvider(MusicProvider):
         self._qq_login_error = getattr(exception_mod, "LoginError", None)
         self._api_semaphore = Semaphore(4)
         self._musicid = int(uin)
+        self._recommend_payload_cache = {}
         self.logger.info("QQ Music authenticated for uin %s", uin)
 
     async def _run_with_session(self, coro: Awaitable[Any]) -> Any:
@@ -519,7 +572,21 @@ class QQMusicProvider(MusicProvider):
         if is_removed:
             _clear_qr_routes()
         self._qq_session = None
+        self._recommend_payload_cache = {}
         await super().unload(is_removed)
+
+    async def _get_recommend_payload_cached(
+        self, key: str, ttl: int, fetcher: Callable[[], Awaitable[Any]]
+    ) -> Any:
+        """Return recommendation payload from in-memory TTL cache or fetch fresh."""
+        if cached := self._recommend_payload_cache.get(key):
+            timestamp, payload = cached
+            if (time.time() - timestamp) < ttl:
+                self.logger.debug("QQ recommendations %s payload cache hit", key)
+                return payload
+        payload = await self._run_with_session(fetcher())
+        self._recommend_payload_cache[key] = (time.time(), payload)
+        return payload
 
     def _get_candidate_file_types(self) -> list[Any]:
         """Return ordered quality candidates based on provider config."""
@@ -1412,22 +1479,34 @@ class QQMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
         track = self._parse_track(track_obj)
         try:
+            # Prefer normal lyric first: this is typically LRC and works best for MA synced scroll.
             lyric_response = await self._run_with_session(
-                self._qq_lyric.get_lyric(prov_track_id, qrc=True, trans=True)
+                self._qq_lyric.get_lyric(prov_track_id, qrc=False, trans=True)
             )
+            lyric_text = ""
+            trans_text = ""
             if isinstance(lyric_response, dict):
                 lyric_text = str(lyric_response.get("lyric") or "").strip()
                 trans_text = str(lyric_response.get("trans") or "").strip()
+            # Fallback to QRC when standard lyric is empty/unavailable.
+            if not lyric_text:
+                lyric_response = await self._run_with_session(
+                    self._qq_lyric.get_lyric(prov_track_id, qrc=True, trans=True)
+                )
+            if isinstance(lyric_response, dict):
+                lyric_text = str(lyric_response.get("lyric") or lyric_text).strip()
+                trans_text = str(lyric_response.get("trans") or trans_text).strip()
                 if lyric_text:
-                    lyric_text = html.unescape(lyric_text).replace("\r\n", "\n").replace("\r", "\n")
-                    lyric_text = lyric_text.replace("\\n", "\n")
-                    # QQ qrc payload is usually LRC-compatible time-tagged text.
                     if _LRC_TIMESTAMP_PATTERN.search(lyric_text):
-                        track.metadata.lrc_lyrics = lyric_text
-                    track.metadata.lyrics = lyric_text
+                        track.metadata.lrc_lyrics = _normalize_qq_lyric_text(lyric_text)
+                    else:
+                        # QRC (e.g. [36438,1880]当(36438,161)...) -> LRC for synced display.
+                        qrc_lrc = _qrc_to_lrc(lyric_text)
+                        if qrc_lrc:
+                            track.metadata.lrc_lyrics = qrc_lrc
+                    track.metadata.lyrics = _normalize_qq_lyric_text(lyric_text)
                 if trans_text:
-                    trans_text = html.unescape(trans_text).replace("\r\n", "\n").replace("\r", "\n")
-                    trans_text = trans_text.replace("\\n", "\n")
+                    trans_text = _normalize_qq_lyric_text(trans_text)
                     if track.metadata.lyrics:
                         track.metadata.lyrics = f"{track.metadata.lyrics}\n\n{trans_text}".strip()
                     else:
@@ -1617,130 +1696,80 @@ class QQMusicProvider(MusicProvider):
                 continue
         return results
 
-    @use_cache(3600, cache_checksum="v3")
     async def recommendations(self) -> list[RecommendationFolder]:  # noqa: PLR0915
         """Get recommendations from QQ Music endpoints."""
-        max_guess_tracks = 10
-        max_new_songs = 8
-        max_recommended_playlists = 12
         folders: list[RecommendationFolder] = []
-        seen_playlist_ids: set[str] = set()
 
-        def _has_track_mid(item: dict[str, Any]) -> bool:
-            return bool(item.get("mid") or item.get("songMid") or item.get("songmid"))
-
-        async def _resolve_recommend_track(item: dict[str, Any]) -> Track | None:
-            """Resolve recommendation track through detail endpoint to avoid invalid mids."""
-            track_mid = str(item.get("mid") or item.get("songMid") or item.get("songmid") or "")
-            if not track_mid:
-                return None
-            try:
-                detail = await self._run_with_session(self._qq_song.get_detail(track_mid))
-                track_obj = detail.get("track_info") if isinstance(detail, dict) else None
-                if not isinstance(track_obj, dict):
-                    return None
-                return self._parse_track(track_obj)
-            except Exception as err:
-                self.logger.debug(
-                    "Skipping recommendation track mid=%s due to detail failure: %s",
-                    track_mid,
-                    err,
-                )
-                return None
-
-        def _playlist_has_cover(item: dict[str, Any]) -> bool:
-            """Only keep playlist-like entries with an actual cover image."""
-            cover_val = item.get("cover")
-            if isinstance(cover_val, dict):
-                if normalize_image_url(
-                    cover_val.get("default_url")
-                    or cover_val.get("medium_url")
-                    or cover_val.get("big_url")
-                    or cover_val.get("small_url")
-                ):
-                    return True
-            return bool(
-                normalize_image_url(
-                    cover_val
-                    or item.get("picurl")
-                    or item.get("logo")
-                    or item.get("cover_url_big")
-                    or item.get("pic")
-                    or item.get("picUrl")
-                )
-            )
+        def _resolve_recommend_track(item: dict[str, Any]) -> Track | None:
+            """Map recommendation track directly from raw response item."""
+            with suppress(InvalidDataError, TypeError, ValueError):
+                return self._parse_track(item)
+            return None
 
         def _add_playlist_folder_items(
             folder: RecommendationFolder, playlist_items: list[dict[str, Any]]
         ) -> None:
-            """Parse playlist candidates with de-duplication."""
+            """Parse playlist candidates in original API order."""
             for item in playlist_items:
-                if not _playlist_has_cover(item):
-                    continue
                 with suppress(InvalidDataError, TypeError, ValueError):
                     playlist = self._parse_playlist(item)
-                    if playlist.item_id in seen_playlist_ids:
-                        continue
-                    seen_playlist_ids.add(playlist.item_id)
                     folder.items.append(playlist)
 
         try:
-            guess_response = await self._run_with_session(self._qq_recommend.get_guess_recommend())
+            guess_response = await self._get_recommend_payload_cached(
+                "guess_recommend",
+                _RECOMMEND_GUESS_TTL,
+                self._qq_recommend.get_guess_recommend,
+            )
             self.logger.debug(
                 "QQ recommendations guess payload: %s",
                 describe_payload(guess_response),
             )
-            guess_tracks = extract_track_candidates(guess_response)
-            if hasattr(self._qq_recommend, "get_radar_recommend"):
-                with suppress(Exception):
-                    radar_response = await self._run_with_session(
-                        self._qq_recommend.get_radar_recommend()
-                    )
-                    self.logger.debug(
-                        "QQ recommendations radar payload: %s",
-                        describe_payload(radar_response),
-                    )
-                    guess_tracks.extend(extract_track_candidates(radar_response))
-            if guess_tracks:
-                guess_folder = RecommendationFolder(
-                    item_id="guess_recommend",
-                    provider=self.instance_id,
-                    name="猜你喜欢",
-                    icon="mdi-lightbulb-on-outline",
+            guess_tracks = extract_guess_recommend_tracks(guess_response)
+            guess_folder = RecommendationFolder(
+                item_id="guess_recommend",
+                provider=self.instance_id,
+                name="猜你喜欢",
+                icon="mdi-lightbulb-on-outline",
+            )
+            for item in guess_tracks:
+                track = _resolve_recommend_track(item)
+                if track:
+                    guess_folder.items.append(track)
+            if not guess_folder.items:
+                radar_response = await self._get_recommend_payload_cached(
+                    "guess_recommend_radar",
+                    _RECOMMEND_GUESS_TTL,
+                    self._qq_recommend.get_radar_recommend,
                 )
-                seen_track_mids: set[str] = set()
-                for item in guess_tracks:
-                    if not _has_track_mid(item):
-                        continue
-                    track_mid = str(
-                        item.get("mid") or item.get("songMid") or item.get("songmid") or ""
-                    )
-                    if not track_mid or track_mid in seen_track_mids:
-                        continue
-                    track = await _resolve_recommend_track(item)
+                self.logger.debug(
+                    "QQ recommendations radar payload: %s",
+                    describe_payload(radar_response),
+                )
+                for item in extract_radar_recommend_tracks(radar_response):
+                    track = _resolve_recommend_track(item)
                     if track:
-                        seen_track_mids.add(track_mid)
                         guess_folder.items.append(track)
-                    if len(guess_folder.items) >= max_guess_tracks:
-                        break
-                if guess_folder.items:
-                    self.logger.info(
-                        "QQ recommendations: guess_recommend resolved %s items",
-                        len(guess_folder.items),
-                    )
-                    folders.append(guess_folder)
+            if guess_folder.items:
+                self.logger.debug(
+                    "QQ recommendations: guess_recommend resolved %s items",
+                    len(guess_folder.items),
+                )
+                folders.append(guess_folder)
         except Exception as err:
             self.logger.warning("QQ recommendations guess_recommend failed: %s", err)
 
         try:
-            new_song_response = await self._run_with_session(
-                self._qq_recommend.get_recommend_newsong()
+            new_song_response = await self._get_recommend_payload_cached(
+                "new_songs",
+                _RECOMMEND_NEWSONG_TTL,
+                self._qq_recommend.get_recommend_newsong,
             )
             self.logger.debug(
                 "QQ recommendations new_song payload: %s",
                 describe_payload(new_song_response),
             )
-            new_tracks = extract_track_candidates(new_song_response)
+            new_tracks = extract_newsong_tracks(new_song_response)
             if new_tracks:
                 new_song_folder = RecommendationFolder(
                     item_id="new_songs",
@@ -1749,15 +1778,11 @@ class QQMusicProvider(MusicProvider):
                     icon="mdi-music-note-plus",
                 )
                 for item in new_tracks:
-                    if not _has_track_mid(item):
-                        continue
-                    track = await _resolve_recommend_track(item)
+                    track = _resolve_recommend_track(item)
                     if track:
                         new_song_folder.items.append(track)
-                    if len(new_song_folder.items) >= max_new_songs:
-                        break
                 if new_song_folder.items:
-                    self.logger.info(
+                    self.logger.debug(
                         "QQ recommendations: new_songs resolved %s items",
                         len(new_song_folder.items),
                     )
@@ -1766,14 +1791,16 @@ class QQMusicProvider(MusicProvider):
             self.logger.warning("QQ recommendations new_songs failed: %s", err)
 
         try:
-            playlist_response = await self._run_with_session(
-                self._qq_recommend.get_recommend_songlist()
+            playlist_response = await self._get_recommend_payload_cached(
+                "recommended_playlists",
+                _RECOMMEND_PLAYLIST_TTL,
+                self._qq_recommend.get_recommend_songlist,
             )
             self.logger.debug(
                 "QQ recommendations songlist payload: %s",
                 describe_payload(playlist_response),
             )
-            playlist_items = extract_playlist_candidates(playlist_response)
+            playlist_items = extract_recommend_songlists(playlist_response)
             if playlist_items:
                 playlist_folder = RecommendationFolder(
                     item_id="recommended_playlists",
@@ -1782,12 +1809,8 @@ class QQMusicProvider(MusicProvider):
                     icon="mdi-playlist-music",
                 )
                 _add_playlist_folder_items(playlist_folder, playlist_items)
-                if len(playlist_folder.items) > max_recommended_playlists:
-                    playlist_folder.items = UniqueList(
-                        list(playlist_folder.items)[:max_recommended_playlists]
-                    )
                 if playlist_folder.items:
-                    self.logger.info(
+                    self.logger.debug(
                         "QQ recommendations: recommended_playlists resolved %s items",
                         len(playlist_folder.items),
                     )
@@ -1795,50 +1818,7 @@ class QQMusicProvider(MusicProvider):
         except Exception as err:
             self.logger.warning("QQ recommendations songlist failed: %s", err)
 
-        # Home feed has additional recommendation cards on some accounts/regions.
-        has_recommend_playlists = any(
-            folder.item_id == "recommended_playlists" and folder.items for folder in folders
-        )
-        if hasattr(self._qq_recommend, "get_home_feed") and not has_recommend_playlists:
-            try:
-                home_feed_response = await self._run_with_session(
-                    self._qq_recommend.get_home_feed()
-                )
-                self.logger.debug(
-                    "QQ recommendations home_feed payload: %s",
-                    describe_payload(home_feed_response),
-                )
-                home_playlists = extract_playlist_candidates(home_feed_response)
-                if home_playlists:
-                    home_folder = next(
-                        (x for x in folders if x.item_id == "recommended_playlists"),
-                        None,
-                    )
-                    if home_folder is None:
-                        home_folder = RecommendationFolder(
-                            item_id="recommended_playlists",
-                            provider=self.instance_id,
-                            name="推荐歌单",
-                            icon="mdi-playlist-music",
-                        )
-                        folders.append(home_folder)
-                    _add_playlist_folder_items(home_folder, home_playlists)
-                    if len(home_folder.items) > max_recommended_playlists:
-                        home_folder.items = UniqueList(
-                            list(home_folder.items)[:max_recommended_playlists]
-                        )
-                    self.logger.info(
-                        "QQ recommendations: home_feed contributed %s playlist candidate(s)",
-                        len(home_playlists),
-                    )
-            except Exception as err:
-                self.logger.warning("QQ recommendations home_feed failed: %s", err)
-
-        self.logger.debug(
-            "QQ recommendations request budget: base_calls<=4, detail_calls<=%s",
-            max_guess_tracks + max_new_songs,
-        )
-        self.logger.info("QQ recommendations returned %s folder(s)", len(folders))
+        self.logger.debug("QQ recommendations returned %s folder(s)", len(folders))
         return folders
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
