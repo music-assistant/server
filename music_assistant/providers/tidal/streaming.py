@@ -6,9 +6,9 @@ import base64
 from collections.abc import AsyncGenerator
 from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
-from xml.etree import ElementTree as ET
 
 import aiohttp
+from defusedxml import ElementTree
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
@@ -114,6 +114,9 @@ class TidalStreamingManager:
         if "dash+xml" in manifest_type and "manifest" in stream_data:
             try:
                 manifest_bytes = base64.b64decode(stream_data["manifest"])
+                dash_data = self._parse_dash_segments(manifest_bytes, track.item_id)
+            except MediaNotFoundError:
+                raise
             except Exception as err:
                 self.provider.logger.warning(
                     "Invalid DASH manifest for track %s, evicting cache entry: %s",
@@ -128,7 +131,6 @@ class TidalStreamingManager:
                 raise MediaNotFoundError(
                     f"Invalid DASH manifest for track {track.item_id}"
                 ) from err
-            dash_data = self._parse_dash_segments(manifest_bytes, track.item_id)
             stream_type = StreamType.CUSTOM
             content_type = ContentType.MP4
             url = None
@@ -184,7 +186,7 @@ class TidalStreamingManager:
         :param manifest_bytes: Decoded DASH manifest XML bytes.
         :param track_id: Track ID for logging.
         """
-        root = ET.fromstring(manifest_bytes)  # noqa: S314
+        root = ElementTree.fromstring(manifest_bytes)
 
         rep = root.find(f".//{{{_MPD_NS}}}Representation")
         if rep is None:
