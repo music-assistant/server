@@ -86,7 +86,7 @@ class AirPlayProvider(PlayerProvider):
         if not info:
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
-                raw_id, display_name = name.split(".")[0].split("@", 1)
+                raw_id, display_name = name.split(".", maxsplit=1)[0].split("@", 1)
             else:
                 # If we are not in a 'Removed' state, we need info to be filled to update the player
                 return

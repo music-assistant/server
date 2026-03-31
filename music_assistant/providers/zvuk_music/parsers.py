@@ -50,7 +50,7 @@ def _get_image_url(image: ZvukImage | None, size: int = IMAGE_SIZE_LARGE) -> str
     if not image:
         return None
     url = image.get_url(size, size)
-    return url if url else None
+    return url or None
 
 
 def parse_artist(provider: ZvukMusicProvider, artist_obj: ZvukArtist | ZvukSimpleArtist) -> Artist:

@@ -444,7 +444,7 @@ class SpotifyProvider(MusicProvider):
                 fully_played = resume_point.get("fully_played", False)
                 position_ms = resume_point.get("resume_position_ms", 0)
 
-                episode.fully_played = fully_played if fully_played else None
+                episode.fully_played = fully_played or None
                 episode.resume_position_ms = position_ms if position_ms > 0 else None
 
             yield episode
