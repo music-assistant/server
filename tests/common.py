@@ -38,17 +38,19 @@ async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None,
     """Wait for a sync to finish."""
     flag = asyncio.Event()
 
-    def _event(event: MassEvent) -> None:
-        if not event.data:
-            flag.set()
+    def _event(_event: MassEvent) -> None:
+        flag.set()
 
-    release_cb = mass.subscribe(_event, EventType.SYNC_TASKS_UPDATED)
+    release_cb = mass.subscribe(_event, EventType.MUSIC_SYNC_COMPLETED)
 
     try:
         yield
     finally:
-        await flag.wait()
-        release_cb()
+        try:
+            if mass.music.active_sync_tasks:
+                await flag.wait()
+        finally:
+            release_cb()
 
 
 # Mock classes for testing

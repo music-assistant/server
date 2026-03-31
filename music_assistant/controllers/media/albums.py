@@ -79,12 +79,14 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        allow_update_metadata: bool = True,
         recursive: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
             item_id,
             provider_instance_id_or_domain,
+            allow_update_metadata=allow_update_metadata,
         )
         if not recursive:
             return album
@@ -98,8 +100,7 @@ class AlbumsController(MediaControllerBase[Album]):
             with contextlib.suppress(MediaNotFoundError):
                 album_artists.append(
                     await self.mass.music.artists.get(
-                        artist.item_id,
-                        artist.provider,
+                        artist.item_id, artist.provider, allow_update_metadata=False
                     )
                 )
         album.artists = album_artists

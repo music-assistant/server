@@ -17,7 +17,6 @@ import urllib.parse
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
-from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
 
@@ -211,8 +210,7 @@ class SnapcastMAStream:
         take_from = from_player or self._filter_settings_owner
         if not take_from:
             raise RuntimeError("No player provided to read filter settings from.")
-        new_settings = get_player_filter_params(
-            self._mass,
+        new_settings = self._mass.streams.audio.get_player_filter_params(
             take_from,
             DEFAULT_SNAPCAST_FORMAT,
             DEFAULT_SNAPCAST_FORMAT,
@@ -288,8 +286,7 @@ class SnapcastMAStream:
         self._stop_streamer_evt.clear()
         self._streamer_started_evt.clear()
         if self._filter_settings_owner:
-            self._filter_settings = get_player_filter_params(
-                self._mass,
+            self._filter_settings = self._mass.streams.audio.get_player_filter_params(
                 self._filter_settings_owner,
                 DEFAULT_SNAPCAST_FORMAT,
                 DEFAULT_SNAPCAST_FORMAT,

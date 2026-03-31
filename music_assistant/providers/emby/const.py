@@ -1,5 +1,7 @@
 """Constants for Emby provider."""
 
+from typing import Final
+
 # Emby API item keys
 AUTH_ACCESS_TOKEN = "AccessToken"
 AUTH_USER = "User"
@@ -25,6 +27,9 @@ ITEM_KEY_TYPE = "Type"
 ITEM_KEY_CONTAINER = "Container"
 ITEM_KEY_INDEX_NUMBER = "IndexNumber"
 ITEM_KEY_PARENT_INDEX_NUMBER = "ParentIndexNumber"
+ITEM_KEY_USER_DATA: Final = "UserData"
+
+USER_DATA_KEY_IS_FAVORITE: Final = "IsFavorite"
 
 AUDIO_STREAM_CODEC = "Codec"
 AUDIO_STREAM_SAMPLE_RATE = "SampleRate"

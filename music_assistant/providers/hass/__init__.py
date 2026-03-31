@@ -511,13 +511,10 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and entity_platform != "media_player":
                 player_control.volume_level = try_parse_int(state["s"]) or 0
         if "a" in state and (attributes := state["a"]):
-            if player_control.supports_volume:
-                if entity_platform == "media_player":
-                    player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
-                else:
-                    player_control.volume_level = try_parse_int(attributes.get("value")) or 0
-            if player_control.supports_mute and entity_platform == "media_player":
-                player_control.volume_muted = attributes.get("volume_muted")
+            if player_control.supports_volume and "volume_level" in attributes:
+                player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
+            if player_control.supports_mute and "is_volume_muted" in attributes:
+                player_control.volume_muted = attributes.get("is_volume_muted")
         self.mass.players.update_player_control(entity_id)
 
     async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
