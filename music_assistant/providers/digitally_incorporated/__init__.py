@@ -310,9 +310,12 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 channels_by_key = {
                     str(ch["key"]): ch for ch in channels if isinstance(ch, dict) and ch.get("key")
                 }
+                channels_lower_by_key = {k.lower(): v for k, v in channels_by_key.items()}
 
                 for channel_key in channel_keys:
-                    ch_data = self._channel_data_for_pls_key(channel_key, channels_by_key)
+                    ch_data = self._channel_data_for_pls_key(
+                        channel_key, channels_by_key, channels_lower_by_key
+                    )
                     if ch_data:
                         yield self._channel_to_radio(ch_data, network_key)
 
@@ -619,23 +622,21 @@ class DigitallyIncorporatedProvider(MusicProvider):
         self,
         pls_key: str,
         channels_by_key: dict[str, dict[str, Any]],
+        channels_lower_by_key: dict[str, dict[str, Any]],
     ) -> dict[str, Any] | None:
-        """Match a PLS-derived slug to channel JSON (handles ``*_aac`` / ``*_mp3`` mounts)."""
-        # Fast path: exact match with original casing.
+        """Match a PLS-derived slug to channel JSON (case-insensitive; ``*_aac`` / ``*_mp3``)."""
         if pls_key in channels_by_key:
             return channels_by_key[pls_key]
         # Build a lowercase-keyed view for case-insensitive matching.
         lower_channels_by_key = {key.lower(): value for key, value in channels_by_key.items()}
         pls_lower = pls_key.lower()
-        # Direct case-insensitive match.
-        if pls_lower in lower_channels_by_key:
-            return lower_channels_by_key[pls_lower]
-        # Handle codec suffixes (e.g. ``_aac``, ``_mp3``) in a case-insensitive way.
+        if pls_lower in channels_lower_by_key:
+            return channels_lower_by_key[pls_lower]
         for suffix in PLS_KEY_CODEC_SUFFIXES:
             if pls_lower.endswith(suffix):
                 trimmed_lower = pls_lower[: -len(suffix)]
-                if trimmed_lower in lower_channels_by_key:
-                    return lower_channels_by_key[trimmed_lower]
+                if trimmed_lower in channels_lower_by_key:
+                    return channels_lower_by_key[trimmed_lower]
         return None
 
     def _parse_favorites_pls_channel_keys(self, pls_body: str, network_key: str) -> list[str]:
