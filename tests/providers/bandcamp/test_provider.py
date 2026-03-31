@@ -150,10 +150,8 @@ async def test_handle_async_init_with_identity(provider: BandcampProvider) -> No
 async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock: Mock) -> None:
     """Test async initialization without identity token."""
     config = Mock()
-    config.get_value.side_effect = (
-        lambda key, default=None: default
-        if default is not None
-        else ("INFO" if key == "log_level" else None)
+    config.get_value.side_effect = lambda key, default=None: (
+        default if default is not None else ("INFO" if key == "log_level" else None)
     )
     provider = BandcampProvider(mass_mock, manifest_mock, config)
 

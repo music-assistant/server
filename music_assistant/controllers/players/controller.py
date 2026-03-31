@@ -1118,8 +1118,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Remove the given player from any (sync)groups it currently is synced to.
         If the player is not currently grouped to any other player,
         this will silently be ignored.
-
-        NOTE: This is a convenience helper for cmd_set_members.
         """
         if not (player := self.get_player(player_id)):
             self.logger.warning("Player %s is not available", player_id)
@@ -1141,6 +1139,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.player_id, player_ids_to_remove=player.state.group_members
             )
             return
+        # unjoin from any dynamic sync groups if we're currently in one (edge case)
+        # this is in particular used for the Home Assistant integration which does
+        # not have a set_members command and only supports a single unjoin command
+        for player in self.all_players(False):
+            if not player.state.group_members or player.state.synced_to:
+                continue
+            if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
+                continue
+            if player_id in player.state.static_group_members:
+                continue
+            if player_id in player.state.group_members:
+                await self.cmd_set_members(player.player_id, player_ids_to_remove=[player_id])
+                return
 
     @api_command("players/cmd/ungroup_many")
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:
@@ -2946,10 +2957,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if media.source_id:
             player.set_active_mass_source(media.source_id)
 
-        # power on the player if needed (skip auto-play since we're about to start playback)
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
-
         # Determine output protocol to use:
         # If player already has an active protocol set, prefer that.
         # Otherwise, select best protocol based on current state.
@@ -2982,17 +2989,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 target_player.state.group_members,
             )
             player.set_active_output_protocol(output_protocol.output_protocol_id)
-            # if the (protocol)player has power control and is currently powered off,
-            # we need to power it on before playback (skip auto-play since we're starting playback)
-            if (
-                target_player.state.powered is False
-                and target_player.power_control != PLAYER_CONTROL_NONE
-            ):
-                await self._handle_cmd_power(target_player.player_id, True, skip_auto_play=True)
-            # forward play media command to protocol player
-            await target_player.play_media(media)
-            # notify the native player that protocol playback started
-            await player.on_protocol_playback(output_protocol=output_protocol)
         else:
             # Native playback
             self.logger.debug(
@@ -3001,7 +2997,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.group_members,
             )
             player.set_active_output_protocol("native")
-            await player.play_media(media)
+
+        # power on the player if needed (skip auto-play since we're about to start playback)
+        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+        await target_player.play_media(media)
+        if target_player.player_id != player.player_id:
+            # notify the native player that protocol playback started
+            assert output_protocol is not None
+            await player.on_protocol_playback(output_protocol=output_protocol)
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """

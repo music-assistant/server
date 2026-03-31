@@ -224,10 +224,11 @@ class StreamsController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Start the stream server on this specific interface. \n"
-                "Use 0.0.0.0 or :: to bind to all interfaces, which is the default. \n"
+                "Use 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), "
+                "which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
                 category="generic",
@@ -358,7 +359,7 @@ class StreamsController(CoreController):
             and media.media_type not in (MediaType.RADIO, MediaType.PLUGIN_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
-        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"  # noqa: E501
+        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
 
     async def get_plugin_source_url(self, plugin_source: PluginSource, player_id: str) -> str:
         """Get the url for the Plugin Source stream/proxy."""
@@ -413,7 +414,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",
             "Accept-Ranges": "none",
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
@@ -578,7 +579,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
             "Accept-Ranges": "none",
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
@@ -757,7 +758,7 @@ class StreamsController(CoreController):
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
             "icy-name": plugin_source.name,
             "Accept-Ranges": "none",
             "Content-Type": get_mime_type(output_format.output_format_str),
@@ -980,7 +981,7 @@ class StreamsController(CoreController):
         )
 
         async def fetch_announcement() -> None:
-            fmt = announcement_url.rsplit(".")[-1]
+            fmt = announcement_url.rsplit(".", maxsplit=1)[-1]
             try:
                 async for chunk in get_ffmpeg_stream(
                     audio_input=announcement_url,
@@ -1100,11 +1101,9 @@ class StreamsController(CoreController):
     async def _periodic_garbage_collection(self) -> None:
         """Periodic garbage collection to free up memory from audio buffers and streams."""
         self.logger.log(VERBOSE_LOG_LEVEL, "Running periodic garbage collection...")
-        # Run garbage collection in executor to avoid blocking the event loop
-        # Since this runs periodically (not in response to subprocess cleanup),
-        # it's safe to run in a thread without causing thread-safety issues
-        loop = asyncio.get_running_loop()
-        collected = await loop.run_in_executor(None, gc.collect)
+        # Run gc.collect on the event loop thread to avoid thread-safety issues
+        # with StreamWriter.__del__ calling close() which requires the event loop thread
+        collected = gc.collect()
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Garbage collection completed, collected %d objects", collected
         )

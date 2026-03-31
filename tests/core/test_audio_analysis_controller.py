@@ -7,12 +7,8 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, ProviderType
+from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
-
-# Add AUDIO_ANALYSIS to ProviderType if not yet present in the installed models package
-if not hasattr(ProviderType, "AUDIO_ANALYSIS"):
-    ProviderType.AUDIO_ANALYSIS = "audio_analysis"  # type: ignore[attr-defined]
 
 from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,

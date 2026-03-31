@@ -434,7 +434,7 @@ class AlexaPlayer(Player):
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
-        ask_command_key = f"play_audio_{alexa_locale if alexa_locale else 'default'}"
+        ask_command_key = f"play_audio_{alexa_locale or 'default'}"
 
         if ask_command_key not in ALEXA_LANGUAGE_COMMANDS:
             _LOGGER.debug(

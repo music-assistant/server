@@ -9,8 +9,10 @@ without deadlocking.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import logging
 import os
+import sys
 
 # if TYPE_CHECKING:
 from collections.abc import AsyncGenerator
@@ -33,6 +35,31 @@ def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     if env:
         result.update(env)
     return result
+
+
+def _try_increase_pipe_buffer(proc: asyncio.subprocess.Process) -> None:
+    """Try to increase pipe buffer size on Linux for smoother audio streaming.
+
+    Default Linux pipe buffer is 64KB. This increases it to 1MB to reduce
+    the chance of FFmpeg stalling on write when the consumer is briefly slow.
+    """
+    if sys.platform != "linux":
+        return
+    target_size = 1024 * 1024  # 1 MB
+    f_setpipe_sz = 1031  # F_SETPIPE_SZ
+    for stream in (proc.stdin, proc.stdout):
+        if stream is None:
+            continue
+        try:
+            # StreamWriter has .transport, StreamReader has ._transport
+            transport = getattr(stream, "transport", None) or getattr(stream, "_transport", None)
+            if transport is None:
+                continue
+            pipe_handle = transport.get_extra_info("pipe")
+            if pipe_handle is not None:
+                fcntl.fcntl(pipe_handle.fileno(), f_setpipe_sz, target_size)
+        except (OSError, AttributeError) as err:
+            LOGGER.debug("Failed to increase pipe buffer size: %s", err)
 
 
 class AsyncProcess:
@@ -124,6 +151,7 @@ class AsyncProcess:
             env=self._env,
             bufsize=0,
         )
+        _try_increase_pipe_buffer(self.proc)
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
         )
@@ -177,9 +205,12 @@ class AsyncProcess:
         if self.proc.stdin is None:
             return
         async with self._stdin_lock:
-            self.proc.stdin.write(data)
+            mv = memoryview(data)
+            chunk_size = 65536
             with suppress(BrokenPipeError, ConnectionResetError):
-                await self.proc.stdin.drain()
+                for i in range(0, len(mv), chunk_size):
+                    self.proc.stdin.write(mv[i : i + chunk_size])
+                    await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
