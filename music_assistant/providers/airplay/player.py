@@ -16,7 +16,7 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, create_sample_rates_config_entry
-from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -52,7 +52,6 @@ from .constants import (
     StreamingProtocol,
 )
 from .helpers import (
-    get_primary_ip_address_from_zeroconf,
     is_airplay2_preferred_model,
     is_apple_device,
     is_broken_airplay_model,
@@ -166,10 +165,11 @@ class AirPlayPlayer(Player):
     @property
     def wait_start(self) -> int:
         """Get the time in ms to allow device to connect before starting stream."""
-        # TODO: make this value configurable ?
         if self.protocol == StreamingProtocol.AIRPLAY2:
-            return AIRPLAY2_CONNECT_TIME_MS
-        return RAOP_CONNECT_TIME_MS
+            base = AIRPLAY2_CONNECT_TIME_MS
+        else:
+            base = RAOP_CONNECT_TIME_MS
+        return int(base + self.output_buffer_duration_ms)
 
     async def get_config_entries(
         self,
@@ -179,7 +179,6 @@ class AirPlayPlayer(Player):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries: list[ConfigEntry] = []
         require_authentication = self._requires_pin_pairing() or self._requires_password_pairing()
-        self.logger.debug(f"Player requires authentication: {require_authentication}")
 
         # Handle pairing actions
         if action and require_authentication:
@@ -272,7 +271,6 @@ class AirPlayPlayer(Player):
                     "Try increasing value if playback is unreliable."
                 ),
                 category="protocol_generic",
-                depends_on=CONF_AIRPLAY_PROTOCOL,
                 advanced=True,
             ),
         ]
@@ -799,7 +797,8 @@ class AirPlayPlayer(Player):
         else:  # guard
             return
         cur_address = self.address
-        new_address = get_primary_ip_address_from_zeroconf(discovery_info)
+        prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
+        new_address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
         if new_address is None:
             # should always be set, but guard against None
             return

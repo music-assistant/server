@@ -25,6 +25,7 @@ from music_assistant_models.player import OutputProtocol
 from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
 from tests.common import MockPlayer, MockProvider
@@ -186,13 +187,25 @@ class TestPowerControlAutoSelect:
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
         assert player.power_control == PLAYER_CONTROL_NATIVE
 
-    def test_auto_falls_back_to_protocol_player(self, mock_mass: MagicMock) -> None:
-        """Auto-select returns protocol player when no native support."""
+    def test_auto_falls_back_to_active_protocol_player(self, mock_mass: MagicMock) -> None:
+        """Auto-select returns active protocol player when no native support."""
+        protocol = _create_protocol_player(mock_mass, "proto_power", {PlayerFeature.POWER})
+        mock_mass.players.get_player = MagicMock(return_value=protocol)
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [_make_output_protocol("proto_power", "Proto Power")],
+            active_protocol_id="proto_power",
+        )
+        assert player.power_control == "proto_power"
+
+    def test_auto_returns_none_without_active_protocol(self, mock_mass: MagicMock) -> None:
+        """Auto-select returns NONE when protocol exists but is not active."""
         protocol = _create_protocol_player(mock_mass, "proto_power", {PlayerFeature.POWER})
         mock_mass.players.get_player = MagicMock(return_value=protocol)
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_output_protocol("proto_power", "Proto Power")])
-        assert player.power_control == "proto_power"
+        assert player.power_control == PLAYER_CONTROL_NONE
 
     def test_auto_returns_none_when_nothing_available(self, mock_mass: MagicMock) -> None:
         """Auto-select returns NONE when no native and no protocol players."""
@@ -350,13 +363,41 @@ class TestProtocolPlayerPreferActive:
         )
         assert player.volume_control == "proto_a"
 
-    def test_skips_unavailable_protocol_player(self, mock_mass: MagicMock) -> None:
-        """Auto-select skips unavailable protocol players."""
+    def test_power_requires_active_protocol(self, mock_mass: MagicMock) -> None:
+        """Power auto-select requires active protocol; returns NONE without one."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.POWER})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [_make_output_protocol("proto_a", "Proto A", priority=0)],
+        )
+        # no active protocol set -> power returns NONE
+        assert player.power_control == PLAYER_CONTROL_NONE
+
+    def test_power_returns_active_protocol(self, mock_mass: MagicMock) -> None:
+        """Power auto-select returns the active protocol when it supports POWER."""
+        proto_a = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.POWER})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto_a})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [_make_output_protocol("proto_a", "Proto A", priority=0)],
+            active_protocol_id="proto_a",
+        )
+        assert player.power_control == "proto_a"
+
+    def test_volume_skips_unavailable_protocol_player(self, mock_mass: MagicMock) -> None:
+        """Volume auto-select skips unavailable protocol players."""
         proto_a = _create_protocol_player(
-            mock_mass, "proto_a", {PlayerFeature.POWER}, available=False
+            mock_mass, "proto_a", {PlayerFeature.VOLUME_SET}, available=False
         )
         proto_b = _create_protocol_player(
-            mock_mass, "proto_b", {PlayerFeature.POWER}, available=True
+            mock_mass, "proto_b", {PlayerFeature.VOLUME_SET}, available=True
         )
         mock_mass.players.get_player = MagicMock(
             side_effect=self._get_player_lookup({"proto_a": proto_a, "proto_b": proto_b})
@@ -369,4 +410,66 @@ class TestProtocolPlayerPreferActive:
                 _make_output_protocol("proto_b", "Proto B", priority=1),
             ],
         )
-        assert player.power_control == "proto_b"
+        assert player.volume_control == "proto_b"
+
+
+class TestPreferredOutputProtocolAutoValue:
+    """Test that 'auto' preferred output protocol is treated as no preference."""
+
+    def _get_player_lookup(self, players: dict[str, MockPlayer]) -> Any:
+        """Create a side_effect that looks up players by ID."""
+
+        def _lookup(pid: str) -> MockPlayer | None:
+            return players.get(pid)
+
+        return _lookup
+
+    def test_preferred_auto_uses_active_for_power(self, mock_mass: MagicMock) -> None:
+        """With preferred='auto', power control uses active protocol if available."""
+        proto = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.POWER})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "auto"})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [_make_output_protocol("proto_a", "Proto A")],
+            active_protocol_id="proto_a",
+        )
+        assert player.power_control == "proto_a"
+
+    def test_preferred_auto_falls_back_for_volume(self, mock_mass: MagicMock) -> None:
+        """With preferred='auto', volume control falls back to any linked protocol."""
+        proto = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.VOLUME_SET})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "auto"})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [_make_output_protocol("proto_a", "Proto A")],
+        )
+        # volume doesn't require active, so it falls back to linked protocol
+        assert player.volume_control == "proto_a"
+
+    def test_preferred_auto_no_active_power_returns_none(self, mock_mass: MagicMock) -> None:
+        """With preferred='auto' and no active protocol, power returns NONE."""
+        proto = _create_protocol_player(mock_mass, "proto_a", {PlayerFeature.POWER})
+        mock_mass.players.get_player = MagicMock(
+            side_effect=self._get_player_lookup({"proto_a": proto})
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_PREFERRED_OUTPUT_PROTOCOL: "auto"})
+        )
+        player = _create_player(mock_mass)
+        _link_protocols(
+            player,
+            [_make_output_protocol("proto_a", "Proto A")],
+        )
+        assert player.power_control == PLAYER_CONTROL_NONE

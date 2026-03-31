@@ -53,6 +53,7 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
     PROTOCOL_FEATURES,
@@ -774,9 +775,10 @@ class Player(ABC):
         if PlayerFeature.POWER in self.supported_features:
             # player supports native power control, always prefer that
             return PLAYER_CONTROL_NATIVE
+        # check if the active (or preferred) protocol player supports power control
         # check for protocol player with power support, and use that if found
         if protocol_player := self._get_protocol_player_for_feature(
-            PlayerFeature.POWER, prefer_active=True
+            PlayerFeature.POWER, require_active=True
         ):
             return protocol_player.player_id
         return PLAYER_CONTROL_NONE
@@ -802,7 +804,7 @@ class Player(ABC):
             return PLAYER_CONTROL_NATIVE
         # check for protocol player with volume support, and use that if found
         if protocol_player := self._get_protocol_player_for_feature(
-            PlayerFeature.VOLUME_SET, prefer_active=True
+            PlayerFeature.VOLUME_SET, require_active=False
         ):
             return protocol_player.player_id
         return PLAYER_CONTROL_NONE
@@ -828,7 +830,7 @@ class Player(ABC):
             return PLAYER_CONTROL_NATIVE
         # check for protocol player with mute support, and use that if found
         if protocol_player := self._get_protocol_player_for_feature(
-            PlayerFeature.VOLUME_MUTE, prefer_active=True
+            PlayerFeature.VOLUME_MUTE, require_active=False
         ):
             return protocol_player.player_id
         return PLAYER_CONTROL_NONE
@@ -1015,13 +1017,6 @@ class Player(ABC):
             # Check if the protocol player is actually available
             protocol_player = self.mass.players.get_player(linked.output_protocol_id)
             is_available = protocol_player.available if protocol_player else False
-            if protocol_player and not is_available:
-                self.logger.debug(
-                    "Protocol player %s (%s) is unavailable for %s",
-                    linked.output_protocol_id,
-                    linked.protocol_domain,
-                    self.display_name,
-                )
             # Use provider name if available, else domain title
             if protocol_player:
                 name = protocol_player.provider.name
@@ -1346,26 +1341,47 @@ class Player(ABC):
     def _get_protocol_player_for_feature(
         self,
         feature: PlayerFeature,
-        prefer_active: bool = True,
+        require_active: bool = True,
     ) -> Player | None:
         """Get player(protocol) which has the given PlayerFeature."""
         # prefer native player
         if feature in self.supported_features:
             return self
-        for _prefer_active in (prefer_active, False):
-            # Otherwise, use the first available linked protocol
-            for linked in self.linked_output_protocols:
-                if (
-                    (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
-                    and protocol_player.available
-                    and feature in protocol_player.supported_features
-                ):
-                    if (
-                        _prefer_active
-                        and self.__attr_active_output_protocol != linked.output_protocol_id
-                    ):
-                        continue  # skip non-active protocol if we prefer active
-                    return protocol_player
+        # prefer active (or preferred) protocol player with the feature
+        active_protocol = self.active_output_protocol
+        if not active_protocol:
+            preferred = self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
+            )
+            if preferred and preferred not in ("auto", "native"):
+                active_protocol = str(preferred)
+        if active_protocol:
+            protocol_player = self.mass.players.get_player(active_protocol)
+            if (
+                protocol_player
+                and protocol_player.available
+                and feature in protocol_player.supported_features
+            ):
+                return protocol_player
+        if require_active:
+            # if we require active and the active protocol
+            # doesn't support the feature, return None
+            return None
+
+        # Otherwise, use the first available linked protocol.
+        # Prefer protocols that can process commands without active streaming
+        # (cast/dlna can always handle volume, airplay/sendspin only while streaming).
+        _control_priority = {"chromecast": 0, "dlna": 1, "airplay": 2, "sendspin": 3}
+        for linked in sorted(
+            self.linked_output_protocols,
+            key=lambda o: _control_priority.get(o.protocol_domain, 10),
+        ):
+            if (
+                (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
+                and protocol_player.available
+                and feature in protocol_player.supported_features
+            ):
+                return protocol_player
 
         return None
 
@@ -1493,9 +1509,13 @@ class Player(ABC):
             return self.powered
         if power_control == PLAYER_CONTROL_NONE:
             return None
+        # handle protocol player as power control
+        if player_ctrl := self.mass.players.get_player(power_control):
+            if player_ctrl.powered is not None:
+                return player_ctrl.powered
         # handle player control for power if set
-        if control := self.mass.players.get_player_control(power_control):
-            return control.power_state
+        if ext_ctrl := self.mass.players.get_player_control(power_control):
+            return ext_ctrl.power_state
         return None
 
     @cached_property
@@ -1817,6 +1837,18 @@ class Player(ABC):
                 for feature in protocol_player.supported_features:
                     if feature in PROTOCOL_FEATURES:
                         base_features.add(feature)
+        if self.power_control != PLAYER_CONTROL_NONE:
+            base_features.add(PlayerFeature.POWER)
+        else:
+            base_features.discard(PlayerFeature.POWER)
+        if self.volume_control != PLAYER_CONTROL_NONE:
+            base_features.add(PlayerFeature.VOLUME_SET)
+        else:
+            base_features.discard(PlayerFeature.VOLUME_SET)
+        if self.mute_control != PLAYER_CONTROL_NONE:
+            base_features.add(PlayerFeature.VOLUME_MUTE)
+        else:
+            base_features.discard(PlayerFeature.VOLUME_MUTE)
         return base_features
 
     @cached_property
