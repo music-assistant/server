@@ -220,4 +220,14 @@ class AudioAnalysisController:
 
             await asyncio.gather(*[_process(pid) for pid in provider_ids])
             if timed_out:
+                for pid in timed_out:
+                    provider = self.mass.get_provider(pid)
+                    if (
+                        provider
+                        and isinstance(provider, AudioAnalysisProvider)
+                        and provider.available
+                    ):
+                        self.mass.create_task(provider.cancel(session_key))
                 provider_ids -= timed_out
+                if not provider_ids:
+                    break
