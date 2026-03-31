@@ -222,10 +222,11 @@ class StreamsController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Start the stream server on this specific interface. \n"
-                "Use 0.0.0.0 or :: to bind to all interfaces, which is the default. \n"
+                "Use 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), "
+                "which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
                 category="generic",
@@ -1098,11 +1099,9 @@ class StreamsController(CoreController):
     async def _periodic_garbage_collection(self) -> None:
         """Periodic garbage collection to free up memory from audio buffers and streams."""
         self.logger.log(VERBOSE_LOG_LEVEL, "Running periodic garbage collection...")
-        # Run garbage collection in executor to avoid blocking the event loop
-        # Since this runs periodically (not in response to subprocess cleanup),
-        # it's safe to run in a thread without causing thread-safety issues
-        loop = asyncio.get_running_loop()
-        collected = await loop.run_in_executor(None, gc.collect)
+        # Run gc.collect on the event loop thread to avoid thread-safety issues
+        # with StreamWriter.__del__ calling close() which requires the event loop thread
+        collected = gc.collect()
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Garbage collection completed, collected %d objects", collected
         )
