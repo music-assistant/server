@@ -566,6 +566,18 @@ class PlayerQueuesController(CoreController):
                             media_item.provider,
                         )
 
+                # Stale is_dynamic guard: library items may have is_dynamic=False if the DB
+                # migration has not yet run or the item was added before is_dynamic was tracked.
+                # Fetch the provider item to correct it in-memory before populating radio_source.
+                if isinstance(media_item, Playlist) and not media_item.is_dynamic:
+                    with suppress(MusicAssistantError):
+                        provider_item = await self.mass.music.playlists.get_provider_item(
+                            media_item.item_id,
+                            media_item.provider,
+                        )
+                        if provider_item.is_dynamic:
+                            media_item.is_dynamic = True
+
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
@@ -1916,6 +1928,7 @@ class PlayerQueuesController(CoreController):
             playlist.item_id,
             playlist.provider,
             force_refresh=force_refresh,
+            allow_dynamic_tracks=True,
         ):
             if not playlist_track.available:
                 continue
