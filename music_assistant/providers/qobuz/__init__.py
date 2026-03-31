@@ -49,7 +49,11 @@ from music_assistant.constants import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.helpers.util import (
     infer_album_type,
     lock,
@@ -145,9 +149,9 @@ class QobuzProvider(MusicProvider):
     """Provider for the Qobuz music service."""
 
     _user_auth_info: dict[str, Any] | None = None
-    # rate limiter needs to be specified on provider-level,
-    # so make it an instance attribute
-    throttler = ThrottlerManager(rate_limit=1, period=2)
+    # Class-level throttler shared across all instances of this provider.
+    # This ensures a single rate limit even if multiple Qobuz accounts are configured.
+    throttler = ThrottlerManager(rate_limit=2, period=1)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -819,7 +823,7 @@ class QobuzProvider(MusicProvider):
         self, endpoint: str, key: str = "tracks", **kwargs: Any
     ) -> list[dict[str, Any]]:
         """Get all items from a paged list."""
-        limit = 50
+        limit = 500
         offset = 0
         all_items: list[dict[str, Any]] = []
         while True:
@@ -833,7 +837,13 @@ class QobuzProvider(MusicProvider):
                 break
             for item in result[key]["items"]:
                 all_items.append(item)
-            if len(result[key]["items"]) < limit:
+            total = result[key].get("total", 0)
+            items_received = len(result[key]["items"])
+            if items_received < limit:
+                # If the API returned fewer items than requested but reports more exist,
+                # the server silently capped our limit. Continue paginating.
+                if items_received > 0 and total > len(all_items):
+                    continue
                 break
         return all_items
 
@@ -872,7 +882,13 @@ class QobuzProvider(MusicProvider):
         ):
             # handle rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers.get("Retry-After", 0))
+                retry_after = response.headers.get("Retry-After")
+                backoff_time = parse_retry_after(retry_after)
+                self.logger.warning(
+                    "Rate limited by Qobuz API (429) on %s, Retry-After: %s",
+                    endpoint,
+                    retry_after or "not provided",
+                )
                 raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
@@ -911,7 +927,13 @@ class QobuzProvider(MusicProvider):
         async with self.mass.http_session.post(url, params=params, json=data) as response:
             # handle rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers.get("Retry-After", 0))
+                retry_after = response.headers.get("Retry-After")
+                backoff_time = parse_retry_after(retry_after)
+                self.logger.warning(
+                    "Rate limited by Qobuz API (429) on %s, Retry-After: %s",
+                    endpoint,
+                    retry_after or "not provided",
+                )
                 raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
