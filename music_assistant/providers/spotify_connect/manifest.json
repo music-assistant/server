@@ -5,6 +5,7 @@
   "name": "Spotify Connect",
   "description": "Makes a Music Assistant player appear as a device in the official Spotify app via Spotify Connect.",
   "codeowners": ["@music-assistant"],
+  "requirements": ["pkce==1.0.3"],
   "documentation": "https://music-assistant.io/plugins/spotify-connect/",
   "multi_instance": true
 }
