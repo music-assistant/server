@@ -32,7 +32,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, S
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.aiohttp_client import _get_socks5_url, create_clientsession
+from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.music_provider import MusicProvider
 
@@ -92,7 +92,7 @@ class PandoraProvider(MusicProvider):
         # Authenticate with Pandora
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
-        socks_url = _get_socks5_url(str(self.config.get_value(CONF_SOCKS_URL)))
+        socks_url = get_socks5_url(str(self.config.get_value(CONF_SOCKS_URL)))
 
         if socks_url:
             self.http_session = create_clientsession(

@@ -207,7 +207,7 @@ def _get_resolver(mass: MusicAssistant) -> MassAsyncDNSResolver:
     return resolver
 
 
-def _get_socks5_url(url_string: str) -> str:
+def get_socks5_url(url_string: str) -> str:
     """Return full socks5 url string from config."""
     if url_string:
         if "://" not in url_string:
