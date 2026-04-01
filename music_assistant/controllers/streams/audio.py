@@ -1611,10 +1611,13 @@ class StreamsAudio:
                     fade_in_pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
                 )
+                crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
                 self.logger.debug(
-                    "Stored crossfade data for queue %s - next queue_item_id: %s",
+                    "Stored crossfade data for queue %s"
+                    " - next queue_item_id: %s (preparation took %.1fs)",
                     queue.display_name,
                     next_queue_item.queue_item_id,
+                    crossfade_elapsed,
                 )
                 yield crossfade_first
             except Exception as err:
@@ -1628,21 +1631,6 @@ class StreamsAudio:
                 yield fade_out_data
                 bytes_written += len(fade_out_data)
                 del fade_out_data
-        # log timing of the crossfade phase (no audio was yielded during this time)
-        crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
-        if crossfade_elapsed > 10:
-            self.logger.warning(
-                "Crossfade preparation for queue %s took %.1f seconds"
-                " - no audio was yielded to the player during this time",
-                queue.display_name,
-                crossfade_elapsed,
-            )
-        else:
-            self.logger.debug(
-                "Crossfade preparation for queue %s completed in %.1f seconds",
-                queue.display_name,
-                crossfade_elapsed,
-            )
         # make sure the buffer gets cleaned up
         del buffer
         # update duration details based on the actual pcm data we sent
