@@ -66,6 +66,7 @@ BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 ENABLE_LATE_JOIN_DEFAULT: Final[bool] = True
 
 FALLBACK_VOLUME: Final[int] = 20
+AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
 
 AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
     content_type=INTERNAL_PCM_FORMAT.content_type,
