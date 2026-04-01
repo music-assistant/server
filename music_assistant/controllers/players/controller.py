@@ -1052,9 +1052,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             source = player_id  # default to MA queue source
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
-        # Check if player is currently grouped (reject for public API)
-        if player.state.synced_to or player.state.active_group:
-            raise PlayerCommandFailed(f"Player {player.state.name} is currently grouped")
+        # If player is currently grouped, handle it so the source switch can proceed.
+        # This allows external sources (e.g. Spotify Connect, AirPlay) to take over a grouped player.
+        if player.state.active_group and (
+            group_player := self.get_player(player.state.active_group)
+        ):
+            if player_id in group_player.state.static_group_members:
+                # player is a static member of a permanent group - stop the group
+                # and power it off if supported, rather than removing the member
+                await self._handle_cmd_stop(group_player.player_id)
+                if group_player.state.power_control != PLAYER_CONTROL_NONE:
+                    await self._handle_cmd_power(group_player.player_id, False)
+            else:
+                await self.cmd_ungroup(player_id)
+        elif player.state.synced_to:
+            await self.cmd_ungroup(player_id)
         # Delegate to internal handler for actual implementation
         await self._handle_select_source(player_id, source)
 
@@ -1148,8 +1160,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Remove the given player from any (sync)groups it currently is synced to.
         If the player is not currently grouped to any other player,
         this will silently be ignored.
-
-        NOTE: This is a convenience helper for cmd_set_members.
         """
         if not (player := self.get_player(player_id)):
             self.logger.warning("Player %s is not available", player_id)
@@ -1171,6 +1181,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.player_id, player_ids_to_remove=player.state.group_members
             )
             return
+        # unjoin from any dynamic sync groups if we're currently in one (edge case)
+        # this is in particular used for the Home Assistant integration which does
+        # not have a set_members command and only supports a single unjoin command
+        for player in self.all_players(False):
+            if not player.state.group_members or player.state.synced_to:
+                continue
+            if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
+                continue
+            if player_id in player.state.static_group_members:
+                continue
+            if player_id in player.state.group_members:
+                await self.cmd_set_members(player.player_id, player_ids_to_remove=[player_id])
+                return
 
     @api_command("players/cmd/ungroup_many")
     async def cmd_ungroup_many(self, player_ids: list[str]) -> None:

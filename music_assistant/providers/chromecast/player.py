@@ -628,7 +628,7 @@ class ChromecastPlayer(Player):
             "title": media.title or "",
             "images": [{"url": media.image_url}] if media.image_url else None,
         }
-        file_ext = stream_url.split("?")[0].split(".")[-1].lower()
+        file_ext = stream_url.split("?", maxsplit=1)[0].rsplit(".", maxsplit=1)[-1].lower()
         return {
             "contentId": stream_url,
             "customData": {
