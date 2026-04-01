@@ -12,7 +12,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_LOSSLESS
+from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_SUPERB
 from music_assistant.providers.kion_music.streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
@@ -66,7 +66,7 @@ def test_select_best_quality_lossless_returns_flac(
     flac = _make_download_info("flac", 0, "https://example.com/track.flac")
     download_infos = [mp3, flac]
 
-    result = streaming_manager._select_best_quality(download_infos, QUALITY_LOSSLESS)
+    result = streaming_manager._select_best_quality(download_infos, QUALITY_SUPERB)
 
     assert result is not None
     assert result.codec == "flac"
@@ -92,7 +92,7 @@ def test_select_best_quality_empty_list_returns_none(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
     """Empty download_infos returns None."""
-    result = streaming_manager._select_best_quality([], QUALITY_LOSSLESS)
+    result = streaming_manager._select_best_quality([], QUALITY_SUPERB)
     assert result is None
 
 
