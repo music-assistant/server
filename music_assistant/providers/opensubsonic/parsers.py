@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType
@@ -535,7 +535,7 @@ def parse_structured_lyrics(lyrics: StructuredLyrics) -> tuple[str, bool]:
             if line.start is None:
                 raise InvalidDataError("Open Subsonic Synced lyric missing time index")
             ms = int(line.start) + offset
-            dt = datetime.fromtimestamp(ms / 1000)
+            dt = datetime.fromtimestamp(ms / 1000, tz=UTC)
             ts = dt.strftime("%M:%S.%f")[:-4]
             lines.append(f"[{ts}]{line.value}")
     else:
