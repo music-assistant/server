@@ -362,7 +362,9 @@ class BandcampConverters:
                     url=album.url,
                 )
             },
-            year=datetime.fromtimestamp(album.release_date, tz=UTC).year if album.release_date else None,
+            year=datetime.fromtimestamp(album.release_date, tz=UTC).year
+            if album.release_date
+            else None,
         )
         output.metadata.add_image(
             MediaItemImage(
