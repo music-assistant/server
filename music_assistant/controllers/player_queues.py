@@ -566,9 +566,8 @@ class PlayerQueuesController(CoreController):
                             media_item.provider,
                         )
 
-                # Stale is_dynamic guard: library items may have is_dynamic=False if the DB
-                # migration has not yet run or the item was added before is_dynamic was tracked.
-                # Fetch the provider item to correct it in-memory before populating radio_source.
+                # Ensure is_dynamic is up-to-date for library playlists: the DB may have a
+                # stale False value if the item was added before is_dynamic tracking was introduced.
                 if isinstance(media_item, Playlist) and not media_item.is_dynamic:
                     with suppress(MusicAssistantError):
                         provider_item = await self.mass.music.playlists.get_provider_item(
@@ -615,6 +614,10 @@ class PlayerQueuesController(CoreController):
                     # Type guard for mypy - only add full MediaItemType to radio_source
                     if not isinstance(media_item, (ItemMapping, BrowseFolder)):
                         radio_source.append(media_item)
+                elif isinstance(media_item, Playlist) and media_item.is_dynamic:
+                    # Dynamic playlists supply their own tracks on demand; fetch first batch now.
+                    initial_tracks = await self.get_playlist_tracks(media_item, start_item=None)
+                    media_items += initial_tracks
                 else:
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
@@ -1781,7 +1784,6 @@ class PlayerQueuesController(CoreController):
         else:
             duration = queue_item.duration
         if queue.session_id is None:
-            # handle error or return early
             raise InvalidDataError("Queue session_id is None")
         media = PlayerMedia(
             uri=queue_item.uri,
@@ -2155,11 +2157,15 @@ class PlayerQueuesController(CoreController):
             return
 
         queue = self._queues[queue_id]
+        session_id = queue.session_id
         if queue.flow_mode:
             # ignore this for flow mode
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
+            if not queue.active or queue.session_id != session_id:
+                # queue is not active anymore or session_id does not match, so we bail out
+                return
             await self.mass.players.enqueue_next_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item),

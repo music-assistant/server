@@ -128,6 +128,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 item_id, provider_instance_id_or_domain
             )
 
+        # Dynamic playlists always need fresh tracks from the provider.
+        if allow_dynamic_tracks:
+            force_refresh = True
+
         # Dynamic playlists should not expose a static track list in browse/refresh views.
         # Only the playback queue may request tracks for dynamic refill.
         if not allow_dynamic_tracks:
