@@ -357,7 +357,7 @@ class StreamsController(CoreController):
             and media.media_type not in (MediaType.RADIO, MediaType.PLUGIN_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
-        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"  # noqa: E501
+        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
 
     async def get_plugin_source_url(self, plugin_source: PluginSource, player_id: str) -> str:
         """Get the url for the Plugin Source stream/proxy."""
@@ -412,7 +412,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",
             "Accept-Ranges": "none",
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
@@ -577,7 +577,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
             "Accept-Ranges": "none",
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
@@ -756,7 +756,7 @@ class StreamsController(CoreController):
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
             "icy-name": plugin_source.name,
             "Accept-Ranges": "none",
             "Content-Type": get_mime_type(output_format.output_format_str),
@@ -979,7 +979,7 @@ class StreamsController(CoreController):
         )
 
         async def fetch_announcement() -> None:
-            fmt = announcement_url.rsplit(".")[-1]
+            fmt = announcement_url.rsplit(".", maxsplit=1)[-1]
             try:
                 async for chunk in get_ffmpeg_stream(
                     audio_input=announcement_url,

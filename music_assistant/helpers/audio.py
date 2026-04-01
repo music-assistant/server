@@ -29,7 +29,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 
-from .ffmpeg import get_ffmpeg_args
+from .ffmpeg import get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
@@ -319,47 +319,49 @@ async def get_silence(
 
 
 async def resample_pcm_audio(
-    input_audio: bytes,
+    input_audio: bytes | AsyncGenerator[bytes, None],
     input_format: AudioFormat,
     output_format: AudioFormat,
-) -> bytes:
+    chunk_size: int | None = None,
+) -> AsyncGenerator[bytes, None]:
     """
-    Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg.
+    Resample PCM audio from input_format to output_format using ffmpeg.
 
-    :param input_audio: Raw PCM audio data to resample.
+    Yields chunks of resampled audio as they become available.
+
+    :param input_audio: Raw PCM audio data or async generator of PCM chunks.
     :param input_format: AudioFormat of the input audio.
     :param output_format: Desired AudioFormat for the output audio.
-
-    :return: Resampled audio data, frame-aligned. Returns empty bytes if resampling fails.
+    :param chunk_size: Output chunk size in bytes. Defaults to 1 second of output PCM.
     """
+    if chunk_size is None:
+        chunk_size = output_format.pcm_sample_size
+
+    async def _as_generator() -> AsyncGenerator[bytes, None]:
+        if isinstance(input_audio, bytes):
+            yield input_audio
+        else:
+            async for chunk in input_audio:
+                yield chunk
+
     if input_format == output_format:
-        return input_audio
-    LOGGER.log(VERBOSE_LOG_LEVEL, f"Resampling audio from {input_format} to {output_format}")
-    try:
-        ffmpeg_args = get_ffmpeg_args(
-            input_format=input_format,
-            output_format=output_format,
-            filter_params=[],
-        )
-        _, stdout, stderr = await communicate(ffmpeg_args, input_audio)
-        if not stdout:
-            LOGGER.error(
-                "Resampling failed: no output from ffmpeg. Input: %s, Output: %s, stderr: %s",
-                input_format,
-                output_format,
-                stderr.decode() if stderr else "(no stderr)",
-            )
-            return b""
-        # Ensure frame alignment after resampling
-        return align_audio_to_frame_boundary(stdout, output_format)
-    except Exception as err:
-        LOGGER.exception(
-            "Failed to resample audio from %s to %s: %s",
-            input_format,
-            output_format,
-            err,
-        )
-        return b""
+        buffer = b""
+        async for chunk in _as_generator():
+            buffer += chunk
+            while len(buffer) >= chunk_size:
+                yield buffer[:chunk_size]
+                buffer = buffer[chunk_size:]
+        if buffer:
+            yield buffer
+        return
+
+    async for chunk in get_ffmpeg_stream(
+        audio_input=_as_generator(),
+        input_format=input_format,
+        output_format=output_format,
+        chunk_size=chunk_size,
+    ):
+        yield chunk
 
 
 def get_chunksize(
