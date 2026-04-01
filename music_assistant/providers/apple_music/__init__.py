@@ -521,12 +521,34 @@ class AppleMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id.startswith("ra."):
-            # Radio/algorithmic stations are user-specific and have no catalog endpoint.
-            # Return a synthetic Playlist - the station is always dynamic by definition.
-            return Playlist(
+            # Try the catalog endpoint to get the real name and artwork.
+            name = prov_playlist_id
+            image: MediaItemImage | None = None
+            try:
+                station_response = await self._get_data(
+                    f"catalog/{self._storefront}/stations/{prov_playlist_id}"
+                )
+                attrs = station_response["data"][0].get("attributes", {})
+                name = attrs.get("name", prov_playlist_id)
+                if artwork := attrs.get("artwork"):
+                    url = artwork["url"]
+                    if artwork.get("width") and artwork.get("height"):
+                        url = url.format(
+                            w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                            h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                        )
+                    image = MediaItemImage(
+                        provider=self.instance_id,
+                        type=ImageType.THUMB,
+                        path=url,
+                        remotely_accessible=True,
+                    )
+            except (MediaNotFoundError, KeyError, IndexError):
+                pass
+            playlist = Playlist(
                 item_id=prov_playlist_id,
                 provider=self.instance_id,
-                name=prov_playlist_id,
+                name=name,
                 is_dynamic=True,
                 provider_mappings={
                     ProviderMapping(
@@ -536,6 +558,9 @@ class AppleMusicProvider(MusicProvider):
                     )
                 },
             )
+            if image:
+                playlist.metadata.add_image(image)
+            return playlist
         if not self.is_library_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
