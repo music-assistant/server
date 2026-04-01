@@ -34,13 +34,13 @@ class AudioAnalysisProvider(Provider):
     results such as beat tracking, key detection, phrase boundaries, etc.
 
     The AudioAnalysisController creates session IDs and passes them to all methods.
-    The default start_analysis stores streamdetails and audio_format in self._sessions.
-    Providers that need richer per-session state can override start_analysis and cancel.
+    Providers implement _start_analysis and _finalize as hooks — the base class
+    manages session lifecycle, version gating, and cleanup.
     """
 
     # Version of the analysis algorithm. Providers should increment this when
-    # their algorithm changes significantly. The controller uses this to
-    # short-circuit: skip re-analysis if the stored version matches.
+    # their algorithm changes significantly. The base class compares this against
+    # the stored version to decide whether to re-analyze a track.
     analysis_version: int = 1
 
     def __init__(
@@ -59,21 +59,50 @@ class AudioAnalysisProvider(Provider):
         session_id: str,
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
-    ) -> None:
+    ) -> bool:
         """Start analysis for a new session.
 
-        Called when a new track starts streaming. The controller has already
-        verified that analysis is needed (version check passed). Override to
-        initialize richer per-session state, but call super() first.
+        Checks whether analysis is needed (version gating), stores session data,
+        and calls _start_analysis for provider-specific initialization.
+        Returns True if the provider accepted the session.
 
         :param session_id: Session ID created by the AudioAnalysisController.
         :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        stored_version = await self.mass.music.get_audio_analysis_version(
+            streamdetails.item_id,
+            streamdetails.provider,
+            self.domain,
+        )
+        if stored_version is not None and stored_version >= self.analysis_version:
+            return False
         self._sessions[session_id] = AnalysisSessionData(
             streamdetails=streamdetails,
             audio_format=audio_format,
         )
+        if not await self._start_analysis(session_id, streamdetails, audio_format):
+            self._sessions.pop(session_id, None)
+            return False
+        return True
+
+    @abstractmethod
+    async def _start_analysis(
+        self,
+        session_id: str,
+        streamdetails: StreamDetails,
+        audio_format: AudioFormat,
+    ) -> bool:
+        """Provider-specific initialization for a new analysis session.
+
+        Called by start_analysis after version gating and session storage.
+        Return False to reject the session (e.g. unsupported format).
+        Session data is available in self._sessions[session_id].
+
+        :param session_id: The analysis session ID.
+        :param streamdetails: The stream details for the item being analyzed.
+        :param audio_format: PCM format of the audio stream.
+        """
 
     @abstractmethod
     async def process_pcm_chunk(

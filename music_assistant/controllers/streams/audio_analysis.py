@@ -127,31 +127,17 @@ class AudioAnalysisController:
         """Call start_analysis on each provider, returning IDs of those that accepted."""
         provider_ids: set[str] = set()
         for provider in providers:
-            stored_version = await self.mass.music.get_audio_analysis_version(
-                streamdetails.item_id,
-                streamdetails.provider,
-                provider.domain,
-            )
-            if stored_version is not None and stored_version >= provider.analysis_version:
-                self.logger.debug(
-                    "Analysis already exists for provider %s (version %d >= %d), skipping",
-                    provider.name,
-                    stored_version,
-                    provider.analysis_version,
-                )
-                continue
             try:
-                await provider.start_analysis(
+                if await provider.start_analysis(
                     session_id=session_key,
                     streamdetails=streamdetails,
                     audio_format=audio_format,
-                )
+                ):
+                    provider_ids.add(provider.instance_id)
             except Exception as err:
                 self.logger.warning(
                     "Failed to start analysis on provider %s: %s", provider.name, err
                 )
-            else:
-                provider_ids.add(provider.instance_id)
         return provider_ids
 
     def _finalize_providers(self, session_key: str) -> None:

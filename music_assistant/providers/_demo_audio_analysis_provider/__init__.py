@@ -87,12 +87,15 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     audio analysis provider.
 
     Key concepts:
-    - The controller calls start_analysis once per track, then feeds PCM chunks
-      via process_pcm_chunk, and finally calls finalize (or cancel).
-    - The base class stores session data (streamdetails, audio_format) in
+    - Implement _start_analysis, process_pcm_chunk, and _finalize.
+    - The base class handles version gating and session lifecycle — providers
+      only need to implement the hooks.
+    - Session data (streamdetails, audio_format) is stored in
       self._sessions[session_id]. Access it in process_pcm_chunk and _finalize.
     - Increment analysis_version when your algorithm changes significantly.
-      The controller uses this to skip re-analysis of already-analyzed tracks.
+      The base class uses this to skip re-analysis of already-analyzed tracks.
+    - If you have other conditions that determine whether to skip an analysis,
+      implement them in _start_analysis and return False to reject the session.
     - Store results via self.mass.music.set_audio_analysis() in _finalize.
     """
 
@@ -111,27 +114,21 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         """
         self.logger.debug("Demo Audio Analysis Provider loaded in Music Assistant")
 
-    async def start_analysis(
+    async def _start_analysis(
         self,
         session_id: str,
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
-    ) -> None:
-        """Start analysis for a new session.
+    ) -> bool:
+        """Provider-specific initialization for a new analysis session.
 
-        Called by the controller when a track starts streaming and analysis is needed.
-        The controller has already checked the stored version — this method is only
-        called if (re-)analysis is required.
-
-        The base class stores streamdetails and audio_format in self._sessions.
-        Override this to initialize additional per-session state (e.g. accumulators,
-        buffers), but always call super() first.
+        Called by the base class after version gating and session storage.
+        Return True to accept the session, False to reject.
 
         :param session_id: Unique session ID created by the controller.
         :param streamdetails: Details about the stream being analyzed.
         :param audio_format: PCM format of the audio (sample rate, bit depth, channels).
         """
-        await super().start_analysis(session_id, streamdetails, audio_format)
         self.logger.debug(
             "Started analysis session %s for %s (sample_rate=%d, bit_depth=%d, channels=%d)",
             session_id,
@@ -140,6 +137,7 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
             audio_format.bit_depth,
             audio_format.channels,
         )
+        return True
 
     async def process_pcm_chunk(
         self,

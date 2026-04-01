@@ -38,7 +38,7 @@ def _create_mock_provider(
     prov.name = name
     prov.domain = domain
     prov.available = True
-    prov.start_analysis = AsyncMock()
+    prov.start_analysis = AsyncMock(return_value=True)
     prov.process_pcm_chunk = AsyncMock()
     prov.finalize = AsyncMock()
     prov.cancel = AsyncMock()
@@ -73,7 +73,6 @@ def mock_mass(mock_provider: MagicMock) -> MagicMock:
     mass.create_task = MagicMock(side_effect=_track_create_task)
     mass.get_providers = MagicMock(return_value=[mock_provider])
     mass.get_provider = MagicMock(return_value=mock_provider)
-    mass.music.get_audio_analysis_version = AsyncMock(return_value=None)
     return mass
 
 
@@ -402,22 +401,19 @@ async def test_slow_provider_removed_after_timeout(
 
 
 @pytest.mark.asyncio
-async def test_version_check_skips_provider(
+async def test_provider_rejects_analysis(
     controller: AudioAnalysisController,
     mock_mass: MagicMock,
     mock_stream_details: MagicMock,
     mock_provider: MagicMock,
 ) -> None:
-    """Controller skips provider when stored version >= provider version."""
-    mock_provider.analysis_version = 1
-    mock_provider.domain = "test_aa"
+    """Controller skips provider when start_analysis returns False."""
+    mock_provider.start_analysis = AsyncMock(return_value=False)
     mock_mass.get_providers.return_value = [mock_provider]
-    mock_mass.music.get_audio_analysis_version = AsyncMock(return_value=1)
 
     audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
     await controller.start_analysis(audio_buffer, mock_stream_details)
 
-    mock_provider.start_analysis.assert_not_called()
     assert not controller._active_sessions
 
 
