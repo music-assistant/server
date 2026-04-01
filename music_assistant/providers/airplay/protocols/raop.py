@@ -37,8 +37,7 @@ class RaopStream(AirPlayProtocol):
 
     async def start(self, start_ntp: int) -> None:
         """Start CLIRaop process."""
-        if self.player.raop_discovery_info is None:
-            raise RuntimeError(f"RAOP service not discovered for {self.player.display_name}")
+        assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
         if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))

@@ -56,15 +56,11 @@ class AirPlay2Stream(AirPlayProtocol):
 
     async def start(self, start_ntp: int) -> None:
         """Start cliap2 process."""
-        if self.player.airplay_discovery_info is None:
-            raise RuntimeError(f"AirPlay service not discovered for {self.player.display_name}")
+        assert self.player.airplay_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         player_id = self.player.player_id
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST)
-        if not isinstance(sync_adjust, int):
-            raise TypeError(
-                f"Invalid sync_adjust value for {self.player.display_name}: {sync_adjust}"
-            )
+        assert isinstance(sync_adjust, int)  # for type checker
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
