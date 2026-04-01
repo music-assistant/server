@@ -517,7 +517,7 @@ class AppleMusicProvider(MusicProvider):
         is_favourite = rating_response.get(prov_track_id)
         return self._parse_track(response["data"][0], is_favourite)
 
-    @use_cache()
+    @use_cache(cache_checksum="stations-metadata-v2")
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
         if not self.is_library_id(prov_playlist_id):
