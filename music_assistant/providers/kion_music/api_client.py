@@ -85,7 +85,7 @@ class KionMusicClient:
             self._user_id = self._client.me.account.uid
             LOGGER.debug("Connected to KION Music as user %s", self._user_id)
             return True
-        except UnauthorizedError as err:
+        except (UnauthorizedError, BadRequestError) as err:
             raise LoginFailed("Invalid KION Music token") from err
         except NetworkError as err:
             msg = "Network error connecting to KION Music"
