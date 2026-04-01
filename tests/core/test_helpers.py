@@ -228,6 +228,16 @@ async def test_apple_music_uri_parsing() -> None:
 
 
 def test_format_ip_for_url() -> None:
+    """Test IPv6 bracket wrapping for URLs (RFC 2732)."""
+    # IPv4 should pass through unchanged
+    assert util.format_ip_for_url("192.168.1.1") == "192.168.1.1"
+    assert util.format_ip_for_url("10.0.0.1") == "10.0.0.1"
+    assert util.format_ip_for_url("0.0.0.0") == "0.0.0.0"
+    # IPv6 should be wrapped in brackets
+    assert util.format_ip_for_url("::1") == "[::1]"
+    assert util.format_ip_for_url("fe80::1") == "[fe80::1]"
+    assert util.format_ip_for_url("2001:db8::1") == "[2001:db8::1]"
+    assert util.format_ip_for_url("fd00::cafe:1") == "[fd00::cafe:1]"
 
 
 def _mock_service_info(ipv4_addrs: list[str], ipv6_addrs: list[str]) -> MagicMock:
