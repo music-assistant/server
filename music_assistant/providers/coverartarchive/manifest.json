@@ -9,5 +9,5 @@
   "requirements": [],
   "documentation": "",
   "multi_instance": false,
-  "builtin": false
+  "builtin": true
 }
