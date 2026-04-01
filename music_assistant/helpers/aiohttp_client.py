@@ -160,7 +160,7 @@ class MusicAssistantTCPConnector(aiohttp.TCPConnector):
 def _get_connector(
     mass: MusicAssistant,
     verify_ssl: bool = True,
-    socks_url: str = "",
+    socks_url: str | None = None,
     family: socket.AddressFamily = socket.AF_UNSPEC,
     ssl_cipher: ssl_util.SSLCipherList = ssl_util.SSLCipherList.PYTHON_DEFAULT,
 ) -> aiohttp.BaseConnector:
