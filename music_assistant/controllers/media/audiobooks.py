@@ -9,6 +9,7 @@ from music_assistant_models.media_items import Audiobook, ProviderMapping, Uniqu
 
 from music_assistant.constants import DB_TABLE_AUDIOBOOKS, DB_TABLE_PLAYLOG
 from music_assistant.controllers.media.base import MediaControllerBase
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_audiobook,
     compare_media_item,
@@ -18,9 +19,11 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.util import parse_optional_bool
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.media_items import Track
 
     from music_assistant import MusicAssistant
@@ -56,7 +59,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog.seconds_played * 1000 as resume_position_ms
             FROM audiobooks
             LEFT JOIN playlog ON playlog.item_id = audiobooks.item_id AND playlog.media_type = 'audiobook'
-            """  # noqa: E501
+            """
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
@@ -69,6 +72,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
+        **kwargs: Any,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
 
@@ -78,18 +83,21 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
+        :param genre: Filter by genre id(s).
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
+            genre_ids=genre,
             limit=limit,
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -100,11 +108,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
+                genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=True,
             )
         return result
 
@@ -284,48 +294,71 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
+        # Get user(s)
+        user: User | None = None
+        if session_user := get_current_user():
+            # this is the active session user that triggered the action
+            user = session_user
+        elif provider_user := await self.mass.music._get_user_for_provider(
+            media_item.provider_mappings
+        ):
+            # based on configured provider filter we can try to find a user
+            user = provider_user
+        if user:
+            user_ids = [user.user_id]
+        else:
+            # NOTE: if no user was found, we will alter the playlog for all users
+            user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+
         # cleanup provider specific entries for this item
         # we always prefer the library playlog entry
         for prov_mapping in media_item.provider_mappings:
-            await self.mass.music.database.delete(
+            for user_id in user_ids:
+                await self.mass.music.database.delete(
+                    DB_TABLE_PLAYLOG,
+                    {
+                        "media_type": self.media_type.value,
+                        "item_id": prov_mapping.item_id,
+                        "provider": prov_mapping.provider_instance,
+                        "userid": user_id,
+                    },
+                )
+        if media_item.fully_played is None and media_item.resume_position_ms is None:
+            return
+
+        for user_id in user_ids:
+            cur_entry = await self.mass.music.database.get_row(
                 DB_TABLE_PLAYLOG,
                 {
                     "media_type": self.media_type.value,
-                    "item_id": prov_mapping.item_id,
-                    "provider": prov_mapping.provider_instance,
+                    "item_id": db_id,
+                    "provider": "library",
+                    "userid": user_id,
                 },
             )
-        if media_item.fully_played is None and media_item.resume_position_ms is None:
-            return
-        cur_entry = await self.mass.music.database.get_row(
-            DB_TABLE_PLAYLOG,
-            {
-                "media_type": self.media_type.value,
-                "item_id": db_id,
-                "provider": "library",
-            },
-        )
-        seconds_played = int(media_item.resume_position_ms or 0 / 1000)
-        # abort if nothing changed
-        if (
-            cur_entry
-            and cur_entry["fully_played"] == media_item.fully_played
-            and abs((cur_entry["seconds_played"] or 0) - seconds_played) > 2
-        ):
-            return
-        await self.mass.music.database.insert(
-            DB_TABLE_PLAYLOG,
-            {
-                "item_id": db_id,
-                "provider": "library",
-                "media_type": media_item.media_type.value,
-                "name": media_item.name,
-                "image": serialize_to_json(media_item.image.to_dict())
-                if media_item.image
-                else None,
-                "fully_played": media_item.fully_played,
-                "seconds_played": seconds_played,
-                "timestamp": utc_timestamp(),
-            },
-            allow_replace=True,
-        )
+            seconds_played = int((media_item.resume_position_ms or 0) / 1000)
+            # abort if nothing changed
+            if (
+                cur_entry
+                and parse_optional_bool(cur_entry["fully_played"]) == media_item.fully_played
+                and abs((cur_entry["seconds_played"] or 0) - seconds_played) <= 2
+            ):
+                return
+
+            await self.mass.music.database.insert(
+                DB_TABLE_PLAYLOG,
+                {
+                    "item_id": db_id,
+                    "provider": "library",
+                    "media_type": media_item.media_type.value,
+                    "name": media_item.name,
+                    "image": serialize_to_json(media_item.image.to_dict())
+                    if media_item.image
+                    else None,
+                    "fully_played": media_item.fully_played,
+                    "seconds_played": seconds_played,
+                    "timestamp": utc_timestamp(),
+                    "userid": user_id,
+                },
+                allow_replace=True,
+            )

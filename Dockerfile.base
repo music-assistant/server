@@ -116,12 +116,9 @@ COPY --from=ffmpeg-builder /usr/local/lib/pkgconfig/ /usr/local/lib/pkgconfig/
 RUN ldconfig
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
-# Resolve PyAV version from aiosendspin's dependencies and build wheel
-RUN PYAV_VERSION=$(pip install --dry-run aiosendspin 2>&1 | grep -oP 'av-\K[0-9.]+' | head -1) && \
-    if [ -z "$PYAV_VERSION" ]; then \
-        echo "ERROR: Failed to detect PyAV version from aiosendspin dependencies" >&2; \
-        exit 1; \
-    fi && \
+# Build PyAV wheel against the custom FFmpeg with the in the Sendspin provider manifest pinned version
+COPY music_assistant/providers/sendspin/manifest.json /tmp/sendspin_manifest.json
+RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_manifest.json'))['requirements']; print(next(r.split('==')[1] for r in reqs if r.startswith('av==')))") && \
     echo "Building PyAV version: ${PYAV_VERSION}" && \
     pip wheel --no-binary av av==${PYAV_VERSION} -w /wheels/
 
@@ -145,6 +142,7 @@ RUN set -x \
         # cifs utils and libnfs are needed for smb and nfs support (file provider)
         cifs-utils \
         libnfs13 \
+        nfs-common \
         # airplay libraries
         openssl \
         libssl-dev \

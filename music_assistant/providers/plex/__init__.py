@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
 import requests
+import urllib3.exceptions
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -245,7 +247,7 @@ async def get_config_entries(  # noqa: PLR0915
             required=True,
             default_value=True,
             depends_on=CONF_LOCAL_SERVER_SSL,
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
@@ -351,7 +353,7 @@ async def get_config_entries(  # noqa: PLR0915
             label="Import Collections",
             description="Import collections (tracks, albums, or artists) as playlists",
             default_value=False,
-            category="advanced",
+            advanced=True,
         )
     )
     entries.append(
@@ -362,7 +364,7 @@ async def get_config_entries(  # noqa: PLR0915
             description="Prefix to add to collection names when imported as playlists",
             default_value="Collection: ",
             depends_on=CONF_IMPORT_COLLECTIONS,
-            category="advanced",
+            advanced=True,
         )
     )
 
@@ -412,7 +414,7 @@ async def get_config_entries(  # noqa: PLR0915
             label="Items per hub",
             description="Maximum number of items to load from each hub (default: 10)",
             default_value=10,
-            category="advanced",
+            advanced=True,
             range=(1, 100),
         )
     )
@@ -439,10 +441,6 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
-        # silence urllib3 InsecureRequestWarning when certificate verification is disabled
-        # this is expected when connecting to Plex servers using their wildcard certificates
-        # that don't validate against LAN IP addresses
-        logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
         _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
 
         def connect() -> PlexServer:
@@ -470,15 +468,22 @@ class PlexProvider(MusicProvider):
                     f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
                     f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
                 )
-                if token == AUTH_TOKEN_UNAUTH:
-                    # Doing local connection, not via plex.tv.
-                    plex_server = PlexServer(plex_url, session=session)
-                else:
-                    plex_server = PlexServer(
-                        plex_url,
-                        token,
-                        session=session,
+                # silence urllib3 InsecureRequestWarning from Plex connections
+                # using wildcard certificates that don't validate against LAN IPs
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=urllib3.exceptions.InsecureRequestWarning,
                     )
+                    if token == AUTH_TOKEN_UNAUTH:
+                        # Doing local connection, not via plex.tv.
+                        plex_server = PlexServer(plex_url, session=session)
+                    else:
+                        plex_server = PlexServer(
+                            plex_url,
+                            token,
+                            session=session,
+                        )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
@@ -589,11 +594,11 @@ class PlexProvider(MusicProvider):
     async def _parse(self, plex_media: PlexObject) -> MediaItem | None:
         if plex_media.type == "artist":
             return await self._parse_artist(plex_media)
-        elif plex_media.type == "album":
+        if plex_media.type == "album":
             return await self._parse_album(plex_media)
-        elif plex_media.type == "track":
+        if plex_media.type == "track":
             return await self._parse_track(plex_media)
-        elif plex_media.type == "playlist":
+        if plex_media.type == "playlist":
             return await self._parse_playlist(plex_media)
         return None
 

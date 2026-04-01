@@ -20,10 +20,12 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - name: Check out code from GitHub
@@ -31,7 +33,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python
-        uses: actions/setup-python@v6.1.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.12"
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
@@ -61,7 +63,6 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +75,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6.1.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
       # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).

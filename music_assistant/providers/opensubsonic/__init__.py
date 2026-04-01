@@ -47,6 +47,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_ARTISTS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
+    ProviderFeature.LYRICS,
 }
 
 
@@ -167,6 +168,6 @@ async def get_config_entries(
             "request. Smaller will require more requests but is better for low bandwidth "
             "connections. The Open Subsonic spec says the max value for this is 500 items.",
             default_value=200,
-            category="advanced",
+            advanced=True,
         ),
     )

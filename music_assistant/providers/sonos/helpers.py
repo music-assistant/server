@@ -12,12 +12,13 @@ if TYPE_CHECKING:
 
 def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
     """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
+    for address in discovery_info.ip_addresses_by_version(IPVersion.V4Only):
+        if address.is_loopback or address.is_link_local or address.is_unspecified:
             continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
+        return str(address)
+    # fall back to IPv6 addresses if no usable IPv4 address found
+    for address in discovery_info.ip_addresses_by_version(IPVersion.V6Only):
+        if address.is_loopback or address.is_link_local or address.is_unspecified:
             continue
-        return address
+        return str(address)
     return None

@@ -1011,6 +1011,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
     'item_id': '78597499',
@@ -1075,6 +1076,9 @@
       }),
     ]),
     'sort_name': 'テストマイリスト68461151-78597499',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'nicovideo_test://playlist/78597499',
     'version': '',
@@ -1086,6 +1090,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
     'item_id': '78597499',
@@ -1150,6 +1155,9 @@
       }),
     ]),
     'sort_name': 'テストマイリスト68461151-78597499',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'nicovideo_test://playlist/78597499',
     'version': '',
@@ -1162,6 +1170,7 @@
       'external_ids': list([
       ]),
       'favorite': False,
+      'is_dynamic': False,
       'is_editable': True,
       'is_playable': True,
       'item_id': '78597499',
@@ -1226,6 +1235,9 @@
         }),
       ]),
       'sort_name': 'テストマイリスト68461151-78597499',
+      'supported_mediatypes': list([
+        'track',
+      ]),
       'translation_key': None,
       'uri': 'nicovideo_test://playlist/78597499',
       'version': '',
@@ -1395,6 +1407,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
     'item_id': '78597499',
@@ -1459,6 +1472,9 @@
       }),
     ]),
     'sort_name': 'テストマイリスト68461151-78597499',
+    'supported_mediatypes': list([
+      'track',
+    ]),
     'translation_key': None,
     'uri': 'nicovideo_test://playlist/78597499',
     'version': '',

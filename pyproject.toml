@@ -10,42 +10,40 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "aiodns>=3.2.0",
-  # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes
-  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
+  "aiodns>=3.2.0", # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.2",
+  "aiohttp==3.13.3",
   "aiohttp-fast-zlib==0.3.0",
   "aiofiles==24.1.0",
-  "aiorun==2025.1.1",
   "aiosqlite==0.22.1",
   "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
-  "cryptography==46.0.3",
+  "cryptography==46.0.6",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
-  "mashumaro==3.17",
-  "music-assistant-frontend==2.17.63",
-  "music-assistant-models==1.1.88",
+  "mashumaro==3.18",
+  "music-assistant-frontend==2.17.138",
+  "music-assistant-models==1.1.110",
   "mutagen==1.47.0",
-  "orjson==3.11.5",
-  "pillow==12.0.0",
+  "orjson==3.11.6",
+  "pillow==12.1.1",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
   "unidecode==1.4.0",
-  "xmltodict==1.0.2",
+  "xmltodict==1.0.4",
   "shortuuid==1.0.13",
   "zeroconf==0.148.0",
   "uv>=0.8.0",
   "librosa==0.11.0",
+  "numpy==2.3.5",  # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
   "gql[all]==4.0.0",
-  "aiovban>=0.6.3",
   "aiortc>=1.6.0",
+  "pyjwt[crypto]>=2.10.1",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
@@ -57,14 +55,14 @@ version = "0.0.0"
 test = [
   "codespell==2.4.1",
   "mypy==1.19.1",
-  "pre-commit==4.5.0",
+  "pre-commit==4.5.1",
   "pre-commit-hooks==6.0.0",
-  "pytest==8.4.2",
+  "pytest==9.0.2",
   "pytest-aiohttp==1.1.0",
   "pytest-cov==7.0.0",
-  "syrupy==5.0.0",
+  "syrupy==5.1.0",
   "tomli==2.3.0",
-  "ruff==0.14.9",
+  "ruff==0.15.6",
 ]
 
 [project.scripts]
@@ -73,9 +71,10 @@ mass = "music_assistant.__main__:main"
 [tool.codespell]
 # explicit is misspelled in the iTunes API
 # "additionals" is a fixed field name from the Nicovideo API fixtures
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
+music_assistant/helpers/resources/genres/genre_mapping.json,\
 """
 
 [tool.setuptools]
@@ -139,7 +138,6 @@ exclude = [
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
-  '^music_assistant/providers/chromecast/.*$',
   '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
@@ -197,7 +195,15 @@ ignore = [
   "TRY003", # Just annoying, not really useful
   "TRY400", # Just annoying, not really useful
   "COM812", # Conflicts with the Ruff formatter
-  "ISC001", # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  "ASYNC109", # Not relevant, since we use helpers with configurable timeouts
+  "ASYNC110", # Use `asyncio.Event` instead of awaiting `asyncio.sleep` in a `while` loop
+  "N818", # Just annoying, not really useful
+  "E501", # Handled by ruff formatter
+  "ASYNC240", # Not relevant, we use asyncio not trio/anyio
+  "UP047", # Not yet ready to migrate to type parameters
+  "PLW0108", # Just annoying, not really useful
+  "FURB110", # Just annoying, not really useful
+  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
   "FBT002",
@@ -216,7 +222,6 @@ ignore = [
   "PTH120",
   "PTH123",
   "PYI034",
-  "PYI036",
   "G004",
   "PGH003",
   "DTZ005",
@@ -224,14 +229,12 @@ ignore = [
   "S105",
   "S106",
   "SLF001",
-  "SIM113",
   "SIM102",
   "PERF401",
   "PERF402",
   "ARG002",
   "S311",
   "TRY301",
-  "RET505",
   "PLR0912",
   "B904",
   "TRY401",
@@ -242,18 +245,12 @@ ignore = [
   "C901",
   "RUF012",
   "S304",
-  "RET507",
   "RUF006",
   "TRY300",
-  "PTH107",
   "S608",
-  "N818",
   "S307",
   "B007",
   "ANN204",
-  "PTH202",
-  "ASYNC109",
-  "ASYNC110",
 ]
 
 select = ["ALL"]
@@ -267,3 +264,7 @@ known-first-party = ["music_assistant"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
