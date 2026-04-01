@@ -216,6 +216,9 @@ class AirPlayStreamSession:
                         )
                         break
                     self.seconds_streamed += len(sub_chunk) / pcm_sample_size
+                    # Yield to the event loop to prevent blocking warnings
+                    # when writes complete synchronously (pipe buffers not full)
+                    await asyncio.sleep(0)
                 else:
                     continue
                 break
