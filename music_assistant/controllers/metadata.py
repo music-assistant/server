@@ -153,7 +153,7 @@ REFRESH_INTERVAL_PLAYLISTS = 60 * 60 * 24 * 14  # 14 days
 CACHE_CATEGORY_RADIO_ARTWORK = 101
 CACHE_EXPIRATION_RADIO_ARTWORK = 86400 * 90  # 90 days
 CACHE_EXPIRATION_RADIO_ARTWORK_MISS = 86400 * 7  # 7 days
-AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert")
+AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "promo")
 
 PERIODIC_SCAN_INTERVAL = 60 * 60 * 6  # 6 hours
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
@@ -639,10 +639,11 @@ class MetaDataController(CoreController):
 
     async def _get_release_group_artwork(
         self, mb_release_group: MusicBrainzReleaseGroup
-    ) -> MediaItemMetadata | None:
+    ) -> tuple[MediaItemMetadata, str] | None:
         """Try to get thumb artwork for a release group from metadata providers.
 
         :param mb_release_group: MusicBrainz release group to look up.
+        :returns: Tuple of (metadata, provider_name) or None if not found.
         """
         self.logger.debug(
             "Looking up artwork for release group '%s' (mbid: %s)",
@@ -662,7 +663,7 @@ class MetaDataController(CoreController):
             try:
                 if metadata := await provider.get_album_metadata(temp_album):
                     if thumb := self._get_thumb_image(metadata):
-                        return thumb
+                        return thumb, provider.name
             except (
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
@@ -777,8 +778,14 @@ class MetaDataController(CoreController):
         albums = [rg for rg in mb_release_groups if rg.primary_type == "Album"]
 
         for mb_release_group in singles:
-            if thumb := await self._get_release_group_artwork(mb_release_group):
-                return thumb, f"single '{mb_release_group.title}'", artist_name, clean_track_name
+            if result := await self._get_release_group_artwork(mb_release_group):
+                thumb, provider_name = result
+                return (
+                    thumb,
+                    f"single '{mb_release_group.title}' via {provider_name}",
+                    artist_name,
+                    clean_track_name,
+                )
 
         if singles:
             self.logger.debug(
@@ -788,8 +795,14 @@ class MetaDataController(CoreController):
             )
 
         for mb_release_group in albums:
-            if thumb := await self._get_release_group_artwork(mb_release_group):
-                return thumb, f"album '{mb_release_group.title}'", artist_name, clean_track_name
+            if result := await self._get_release_group_artwork(mb_release_group):
+                thumb, provider_name = result
+                return (
+                    thumb,
+                    f"album '{mb_release_group.title}' via {provider_name}",
+                    artist_name,
+                    clean_track_name,
+                )
 
         # Log when falling back to artist artwork
         self.logger.debug(
@@ -814,10 +827,10 @@ class MetaDataController(CoreController):
             if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                 continue
             try:
-                if metadata := await provider.get_artist_metadata(temp_artist):
-                    if thumb := self._get_thumb_image(metadata):
+                if artist_metadata := await provider.get_artist_metadata(temp_artist):
+                    if artist_thumb := self._get_thumb_image(artist_metadata):
                         return (
-                            thumb,
+                            artist_thumb,
                             f"artist '{mb_artist.name}' via {provider.name}",
                             artist_name,
                             clean_track_name,
@@ -1047,12 +1060,13 @@ class MetaDataController(CoreController):
         artist_name: str,
         track_name: str,
         fallback_image_url: str | None = None,
-    ) -> str | None:
+    ) -> tuple[str | None, str | None, str | None]:
         """Fetch artwork for radio stream based on current track metadata.
 
         :param artist_name: Artist name (already normalized).
         :param track_name: Track title.
         :param fallback_image_url: Fallback image URL (e.g., station logo).
+        :returns: Tuple of (image_url, corrected_artist, corrected_track).
         """
         if " / " in artist_name:
             artist_name = artist_name.split(" / ", 1)[0].strip()
@@ -1061,7 +1075,7 @@ class MetaDataController(CoreController):
             artist_name = artists_tuple[0] if artists_tuple else artist_name
 
         if any(phrase in artist_name.lower() for phrase in AD_DETECTION_PHRASES):
-            return fallback_image_url
+            return fallback_image_url, None, None
 
         cache_key = f"{artist_name.lower()}|{track_name.lower()}"
         cached_result = await self.mass.cache.get(
@@ -1075,15 +1089,17 @@ class MetaDataController(CoreController):
                     artist_name,
                     track_name,
                 )
-                return str(cached_result)
+                return str(cached_result), None, None
             self.logger.debug(
                 "Radio artwork for '%s - %s': cached miss",
                 artist_name,
                 track_name,
             )
-            return fallback_image_url
+            return fallback_image_url, None, None
 
         image_url = None
+        corrected_artist = None
+        corrected_track = None
         try:
             (
                 metadata,
@@ -1127,7 +1143,7 @@ class MetaDataController(CoreController):
         except (ProviderUnavailableError, ResourceTemporarilyUnavailable, InvalidDataError):
             pass
 
-        return image_url or fallback_image_url
+        return image_url or fallback_image_url, corrected_artist, corrected_track
 
     async def update_radio_stream_artwork(self, streamdetails: StreamDetails) -> None:
         """Fetch and update radio stream artwork.
@@ -1141,15 +1157,24 @@ class MetaDataController(CoreController):
 
         try:
             fallback_url = streamdetails.stream_metadata.image_url
-            image_url = await self.get_radio_stream_artwork(
-                artist_name=streamdetails.stream_metadata.artist,
-                track_name=streamdetails.stream_metadata.title,
+            original_artist = streamdetails.stream_metadata.artist
+            original_title = streamdetails.stream_metadata.title
+            image_url, corrected_artist, corrected_track = await self.get_radio_stream_artwork(
+                artist_name=original_artist,
+                track_name=original_title,
                 fallback_image_url=fallback_url,
             )
-            if image_url and image_url != fallback_url:
+            # Use corrected artist/track if metadata was swapped
+            final_artist = corrected_artist or original_artist
+            final_title = corrected_track or original_title
+            if (
+                image_url != fallback_url
+                or final_artist != original_artist
+                or final_title != original_title
+            ):
                 streamdetails.stream_metadata = StreamMetadata(
-                    title=streamdetails.stream_metadata.title,
-                    artist=streamdetails.stream_metadata.artist,
+                    title=final_title,
+                    artist=final_artist,
                     image_url=image_url,
                 )
                 streamdetails.stream_metadata_last_updated = time()
