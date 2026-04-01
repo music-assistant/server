@@ -77,10 +77,10 @@ from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
-    _get_normalization_mode,
-    _get_parts_from_position,
+    calculate_content_length,
     get_bit_rate,
-    get_chunksize,
+    get_normalization_mode,
+    get_parts_from_position,
     is_grouping_preventing_dsp,
     parse_extinf_metadata,
     resample_pcm_audio,
@@ -299,7 +299,7 @@ class StreamsAudio:
                 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
             )
         streamdetails.target_loudness = conf_volume_normalization_target
-        streamdetails.volume_normalization_mode = _get_normalization_mode(
+        streamdetails.volume_normalization_mode = get_normalization_mode(
             core_config, player_settings, streamdetails
         )
 
@@ -435,7 +435,7 @@ class StreamsAudio:
                     streamdetails.stream_type,
                 )
             stream_start = mass.loop.time()
-            chunk_size = get_chunksize(pcm_format, 1)
+            chunk_size = calculate_content_length(pcm_format, 1)
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 if not first_chunk_received:
                     # At this point ffmpeg has started and should now know the codec used
@@ -800,7 +800,7 @@ class StreamsAudio:
             seek_position = 0
             streamdetails.seek_position = 0
 
-        chunk_size = get_chunksize(streamdetails.audio_format)
+        chunk_size = calculate_content_length(streamdetails.audio_format)
         async with aiofiles.open(streamdetails.data, "rb") as _file:
             if seek_position:
                 assert streamdetails.duration is not None  # for type checking
@@ -826,7 +826,7 @@ class StreamsAudio:
         """
         if not isinstance(streamdetails.path, list):
             raise InvalidDataError("Multi-file streamdetails requires a list of MultiPartPath")
-        parts, seek_position = _get_parts_from_position(streamdetails.path, seek_position)
+        parts, seek_position = get_parts_from_position(streamdetails.path, seek_position)
         files_list = [part.path for part in parts]
 
         # concat input files
@@ -1240,7 +1240,7 @@ class StreamsAudio:
         if streamdetails.queue_id:
             core_config = await self.mass.config.get_core_config("streams")
             player_settings = await self.mass.config.get_player_config(streamdetails.queue_id)
-            streamdetails.volume_normalization_mode = _get_normalization_mode(
+            streamdetails.volume_normalization_mode = get_normalization_mode(
                 core_config, player_settings, streamdetails
             )
 
@@ -1413,14 +1413,29 @@ class StreamsAudio:
 
         if crossfade_data and streamdetails.seek_position > 0:
             # don't do crossfade when seeking into track
+            self.logger.debug(
+                "Discarding crossfade data for queue %s - seeking into track (pos=%s)",
+                queue.display_name,
+                streamdetails.seek_position,
+            )
             crossfade_data = None
         if crossfade_data and (crossfade_data.queue_item_id != queue_item.queue_item_id):
             # edge case alert: the next item changed just while we were preloading/crossfading
             self.logger.warning(
-                "Skipping crossfade data for queue %s - next item changed!", queue.display_name
+                "Skipping crossfade data for queue %s - next item changed!"
+                " (expected queue_item_id=%s, got=%s)",
+                queue.display_name,
+                crossfade_data.queue_item_id,
+                queue_item.queue_item_id,
             )
             crossfade_data = None
             self._crossfade_data.pop(queue.queue_id, None)
+        elif not crossfade_data:
+            self.logger.debug(
+                "No crossfade data available for queue %s (queue_item_id=%s)",
+                queue.display_name,
+                queue_item.queue_item_id,
+            )
 
         self.logger.debug(
             "Start Streaming queue track: %s (%s) for queue %s on player %s"
@@ -1509,6 +1524,9 @@ class StreamsAudio:
         #### HANDLE END OF TRACK
 
         # get next track for crossfade
+        # NOTE: during this phase (loading next track + mixing crossfade),
+        # no audio is yielded to the player. The player must survive on its buffer.
+        crossfade_start_time = asyncio.get_event_loop().time()
         next_queue_item: QueueItem | None
         try:
             self.logger.debug(
@@ -1583,8 +1601,9 @@ class StreamsAudio:
                 crossfade_second = crossfade_bytes[split_point:]
                 del crossfade_bytes
                 bytes_written += len(crossfade_first)
-                yield crossfade_first
-                # store second half with format info for the next track to pick up
+                # store second half BEFORE yielding first half to prevent data loss
+                # if the generator is interrupted after the yield (e.g., player disconnect
+                # causing the FFMpeg stdin feeder to be cancelled)
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
                     data=crossfade_second,
                     fade_in_size=len(buffer),
@@ -1592,6 +1611,12 @@ class StreamsAudio:
                     fade_in_pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
                 )
+                self.logger.debug(
+                    "Stored crossfade data for queue %s - next queue_item_id: %s",
+                    queue.display_name,
+                    next_queue_item.queue_item_id,
+                )
+                yield crossfade_first
             except Exception as err:
                 # crossfade failed, fall back to just yielding the fade_out_data
                 self.logger.warning(
@@ -1603,6 +1628,21 @@ class StreamsAudio:
                 yield fade_out_data
                 bytes_written += len(fade_out_data)
                 del fade_out_data
+        # log timing of the crossfade phase (no audio was yielded during this time)
+        crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
+        if crossfade_elapsed > 10:
+            self.logger.warning(
+                "Crossfade preparation for queue %s took %.1f seconds"
+                " - no audio was yielded to the player during this time",
+                queue.display_name,
+                crossfade_elapsed,
+            )
+        else:
+            self.logger.debug(
+                "Crossfade preparation for queue %s completed in %.1f seconds",
+                queue.display_name,
+                crossfade_elapsed,
+            )
         # make sure the buffer gets cleaned up
         del buffer
         # update duration details based on the actual pcm data we sent
