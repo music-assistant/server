@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.audio")
@@ -234,7 +235,7 @@ def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
     return metadata
 
 
-def _get_parts_from_position(
+def get_parts_from_position(
     parts: list[MultiPartPath],
     seek_position: int,
 ) -> tuple[list[MultiPartPath], int]:
@@ -364,34 +365,127 @@ async def resample_pcm_audio(
         yield chunk
 
 
-def get_chunksize(
+def calculate_content_length(
     fmt: AudioFormat,
     seconds: float = 1,
 ) -> int:
-    """Get a default chunk/file size for given contenttype in bytes."""
+    """
+    Calculate the estimated encoded size in bytes for a given format and duration.
+
+    For CBR lossy formats (MP3/AAC), the estimate is near-exact.
+    For lossless formats (FLAC), the estimate uses an empirical average
+    compression ratio and may differ from actual size by up to ~15%.
+    For uncompressed formats (PCM/WAV), the result is exact.
+
+    :param fmt: The audio format to estimate size for.
+    :param seconds: Duration in seconds.
+    """
     pcm_size = int(fmt.sample_rate * (fmt.bit_depth / 8) * fmt.channels * seconds)
-    if fmt.content_type.is_pcm() or fmt.content_type == ContentType.WAV:
+    if fmt.content_type.is_pcm():
         return pcm_size
     if fmt.content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
         return pcm_size
     if fmt.bit_rate and fmt.bit_rate < 10000:
         return int(((fmt.bit_rate * 1000) / 8) * seconds)
     if fmt.content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
-        # assume 74.7% compression ratio (level 0)
-        # source: https://z-issue.com/wp/flac-compression-level-comparison/
+        # FLAC compression_level 0: empirical ratio ~74.7% of PCM
+        # Source: https://z-issue.com/wp/flac-compression-level-comparison/
+        # Real-world variance: 65-85% depending on audio content.
         return int(pcm_size * 0.747)
     if fmt.content_type in (ContentType.MP3, ContentType.OGG):
+        # CBR 320kbps as set in get_ffmpeg_args
         return int((320000 / 8) * seconds)
     if fmt.content_type in (ContentType.AAC, ContentType.M4A):
+        # CBR 256kbps as set in get_ffmpeg_args
         return int((256000 / 8) * seconds)
     return int((320000 / 8) * seconds)
+
+
+def get_output_format_key(fmt: AudioFormat) -> str:
+    """Get a stable key representing the output encoding parameters.
+
+    :param fmt: The output audio format.
+    """
+    return f"{fmt.content_type.value}_{fmt.sample_rate}_{fmt.bit_depth}_{fmt.channels}"
+
+
+CONTENT_LENGTH_CACHE_CATEGORY = 50
+CONTENT_LENGTH_CACHE_PROVIDER = "audio"
+CONTENT_LENGTH_CACHE_EXPIRATION = 365 * 86400  # 1 year
+
+
+async def get_content_length(
+    mass: MusicAssistant,
+    uri: str,
+    output_format: AudioFormat,
+    seconds: float,
+) -> int:
+    """
+    Get the estimated encoded size, using cached actual measurement when available.
+
+    After a track has been fully streamed, its actual content size and duration
+    are cached. On subsequent plays this gives a near-exact content_length:
+    - Exact when the requested duration matches the cached duration.
+    - Very accurate when the duration differs (derived bytes-per-second).
+
+    Falls back to the static estimate from calculate_content_length() if no cache entry exists.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media URI (e.g. "qobuz://track/12345").
+    :param output_format: The output audio format.
+    :param seconds: Duration in seconds to estimate.
+    """
+    cache_key = f"{uri}/{get_output_format_key(output_format)}"
+    cached: dict[str, float] | None = await mass.cache.get(
+        cache_key,
+        provider=CONTENT_LENGTH_CACHE_PROVIDER,
+        category=CONTENT_LENGTH_CACHE_CATEGORY,
+    )
+    if cached is not None:
+        cached_size = cached["size"]
+        cached_duration = cached["duration"]
+        if abs(seconds - cached_duration) < 1:
+            # same duration: return the exact cached size
+            return int(cached_size)
+        # different duration: derive bytes-per-second from the cached measurement
+        return int((cached_size / cached_duration) * seconds)
+    return calculate_content_length(output_format, seconds)
+
+
+async def store_content_length_in_cache(
+    mass: MusicAssistant,
+    uri: str,
+    output_format: AudioFormat,
+    content_size: int,
+    seconds_streamed: float,
+) -> None:
+    """
+    Store the actual content size after a track has been fully streamed.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media URI (e.g. "qobuz://track/12345").
+    :param output_format: The output audio format used for encoding.
+    :param content_size: Total encoded bytes sent to the player.
+    :param seconds_streamed: Duration of audio streamed in seconds.
+    """
+    if seconds_streamed < 10 or content_size < 1000:
+        return
+    cache_key = f"{uri}/{get_output_format_key(output_format)}"
+    await mass.cache.set(
+        cache_key,
+        {"size": content_size, "duration": seconds_streamed},
+        expiration=CONTENT_LENGTH_CACHE_EXPIRATION,
+        provider=CONTENT_LENGTH_CACHE_PROVIDER,
+        category=CONTENT_LENGTH_CACHE_CATEGORY,
+        persistent=True,
+    )
 
 
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
         return int(fmt.bit_rate / 1000) if fmt.bit_rate >= 10000 else fmt.bit_rate
-    return int((get_chunksize(fmt, seconds=1) / 1000) * 8)
+    return int((calculate_content_length(fmt, seconds=1) / 1000) * 8)
 
 
 def is_grouping_preventing_dsp(player: Player) -> bool:
@@ -433,11 +527,12 @@ def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
     return None
 
 
-def _get_normalization_mode(
+def get_normalization_mode(
     core_config: CoreConfig,
     player_config: PlayerConfig,
     streamdetails: StreamDetails,
 ) -> VolumeNormalizationMode:
+    """Get the volume normalization mode for a given player and stream."""
     if not player_config.get_value(CONF_VOLUME_NORMALIZATION):
         # disabled for this player
         return VolumeNormalizationMode.DISABLED
