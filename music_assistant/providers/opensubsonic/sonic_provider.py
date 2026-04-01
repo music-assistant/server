@@ -750,7 +750,11 @@ class OpenSonicProvider(MusicProvider):
 
         for mark in bookmarks:
             if mark.entry.id == ep_id:
-                return (False, mark.position, None)
+                return (
+                    False,
+                    mark.position,
+                    datetime.fromisoformat(mark.created) if mark.created else None,
+                )
         # If we get here, there is no bookmark
         return (False, 0, None)
 
