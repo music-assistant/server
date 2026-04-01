@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 import aiofiles
 import aiohttp
@@ -341,6 +342,10 @@ class StreamsAudio:
             assert isinstance(streamdetails.path, str)  # for type checking
             audio_source = self.get_icy_radio_stream(streamdetails.path, streamdetails)
             seek_position = 0  # seeking not possible on radio streams
+        elif stream_type == StreamType.SHOUTCAST:
+            assert isinstance(streamdetails.path, str)  # for type checking
+            audio_source = self.get_shoutcast_stream(streamdetails.path, streamdetails)
+            seek_position = 0  # seeking not possible on radio streams
         elif stream_type == StreamType.IN_BAND:
             assert isinstance(streamdetails.path, str)  # for type checking
 
@@ -549,9 +554,70 @@ class StreamsAudio:
                 except IsHLSPlaylist:
                     stream_type = StreamType.HLS
 
-        except Exception as err:
-            self.logger.warning("Error while parsing radio URL %s: %s", url, str(err))
-            return (url, stream_type)
+        except TimeoutError as err:
+            self.logger.warning("Timeout while parsing radio URL %s", url)
+            raise InvalidDataError(f"Timeout connecting to {url}") from err
+
+        except aiohttp.ClientError as err:
+            # Check if this is a Shoutcast/ICY response that aiohttp can't parse
+            if isinstance(err, aiohttp.ClientResponseError):
+                err_msg = str(err)
+
+                # Check for ICY response first - this indicates Shoutcast
+                if "ICY" in err_msg.upper():
+                    self.logger.debug(
+                        "ICY response detected for %s, validating Shoutcast stream", url
+                    )
+                    if await self._validate_shoutcast_stream(url):
+                        result = (url, StreamType.SHOUTCAST)
+                        await mass.cache.set(
+                            url,
+                            result,
+                            expiration=3600 * 3,
+                            provider=CACHE_PROVIDER,
+                            category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+                        )
+                        return result
+                    # Validation failed but ICY detected - still try as HTTP
+                    self.logger.warning(
+                        "ICY response detected but Shoutcast validation failed for %s", url
+                    )
+                    result = (url, stream_type)
+                    await mass.cache.set(
+                        url,
+                        result,
+                        expiration=3600 * 3,
+                        provider=CACHE_PROVIDER,
+                        category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+                    )
+                    return result
+
+            # Other aiohttp errors - might still be Shoutcast, check it
+            self.logger.debug("aiohttp error for %s, checking if legacy Shoutcast stream", url)
+            if await self._validate_shoutcast_stream(url):
+                result = (url, StreamType.SHOUTCAST)
+                await mass.cache.set(
+                    url,
+                    result,
+                    expiration=3600 * 3,
+                    provider=CACHE_PROVIDER,
+                    category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+                )
+                return result
+
+            # Unknown error - still try to stream
+            self.logger.warning(
+                "Failed to parse radio URL %s: %s - attempting direct stream", url, str(err)
+            )
+            result = (url, stream_type)
+            await mass.cache.set(
+                url,
+                result,
+                expiration=3600 * 3,
+                provider=CACHE_PROVIDER,
+                category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+            )
+            return result
 
         result = (resolved_url, stream_type)
         cache_expiration = 3600 * 3
@@ -570,42 +636,100 @@ class StreamsAudio:
         """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
         timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
         self.logger.debug("Start streaming radio with ICY metadata from url %s", url)
-        async with self._connect_radio_stream(
-            url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
-        ) as resp:
-            headers = resp.headers
-            meta_int = int(headers["icy-metaint"])
-            while True:
-                try:
-                    yield await resp.content.readexactly(meta_int)
-                    meta_byte = await resp.content.readexactly(1)
-                    if meta_byte == b"\x00":
+
+        # Try aiohttp first (works for most ICY streams)
+        try:
+            async with self._connect_radio_stream(
+                url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
+            ) as resp:
+                headers = resp.headers
+                meta_int = int(headers["icy-metaint"])
+                while True:
+                    try:
+                        yield await resp.content.readexactly(meta_int)
+                        meta_byte = await resp.content.readexactly(1)
+                        if meta_byte == b"\x00":
+                            continue
+                        meta_length = ord(meta_byte) * 16
+                        meta_data = await resp.content.readexactly(meta_length)
+                    except asyncio.exceptions.IncompleteReadError:
+                        break
+                    if not meta_data:
                         continue
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                except asyncio.exceptions.IncompleteReadError:
-                    break
-                if not meta_data:
-                    continue
-                meta_data = meta_data.rstrip(b"\0")
-                stream_title_re = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                if not stream_title_re:
-                    continue
-                try:
-                    # in 99% of the cases the stream title is utf-8 encoded
-                    stream_title = stream_title_re.group(1).decode("utf-8")
-                except UnicodeDecodeError:
-                    # fallback to iso-8859-1
-                    stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
-                cleaned_stream_title = clean_stream_title(stream_title)
-                if cleaned_stream_title != streamdetails.stream_title:
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title
-                    )
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL, "ICY Radio streamtitle cleaned: %s", cleaned_stream_title
-                    )
-                    streamdetails.stream_title = cleaned_stream_title
+                    self._parse_icy_metadata(meta_data, streamdetails)
+
+        except (aiohttp.ClientError, KeyError, ValueError) as err:
+            # Fallback for old Shoutcast servers that return "ICY 200 OK"
+            self.logger.debug("Using raw socket fallback for ICY stream %s: %s", url, err)
+
+            parsed = urlparse(url)
+            host = parsed.hostname
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            path = parsed.path or "/"
+
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout=30
+                )
+            except (TimeoutError, OSError) as conn_err:
+                raise AudioError(f"Failed to connect to ICY stream: {conn_err}") from conn_err
+
+            try:
+                # Send ICY metadata request
+                request = (
+                    f"GET {path} HTTP/1.1\r\n"
+                    f"Host: {host}\r\n"
+                    f"Icy-MetaData: 1\r\n"
+                    f"User-Agent: Music Assistant\r\n"
+                    f"\r\n"
+                )
+                writer.write(request.encode())
+                await writer.drain()
+
+                # Read response line
+                response_line = await reader.readline()
+                response_str = response_line.decode("latin1", errors="replace").strip()
+
+                if not response_str.startswith(("HTTP", "ICY")):
+                    raise InvalidDataError(f"Invalid response: {response_str}")
+
+                # Read headers
+                icy_headers: dict[str, str] = {}
+                while True:
+                    line = await reader.readline()
+                    if line == b"\r\n":
+                        break
+                    header_line = line.decode("latin1", errors="replace").strip()
+                    if ":" in header_line:
+                        key, value = header_line.split(":", 1)
+                        icy_headers[key.lower().strip()] = value.strip()
+
+                meta_int = int(icy_headers.get("icy-metaint", 0))
+                if not meta_int:
+                    raise InvalidDataError("No icy-metaint header found")
+
+                self.logger.debug("ICY stream connected with metaint=%s", meta_int)
+
+                # Stream audio and metadata
+                while True:
+                    try:
+                        # Read audio chunk
+                        audio_chunk = await reader.readexactly(meta_int)
+                        yield audio_chunk
+
+                        # Read metadata length
+                        meta_byte = await reader.readexactly(1)
+                        if meta_byte == b"\x00":
+                            continue
+                        meta_length = ord(meta_byte) * 16
+                        meta_data = await reader.readexactly(meta_length)
+                        self._parse_icy_metadata(meta_data, streamdetails)
+
+                    except asyncio.exceptions.IncompleteReadError:
+                        break
+            finally:
+                writer.close()
+                await writer.wait_closed()
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes, None]:
         """
@@ -1952,7 +2076,190 @@ class StreamsAudio:
             self.logger.debug("Clearing crossfade data for queue %s", queue_id)
             del self._crossfade_data[queue_id]
 
+    async def get_shoutcast_stream(
+        self, url: str, streamdetails: StreamDetails
+    ) -> AsyncGenerator[bytes, None]:
+        """Get (radio) audio stream from legacy Shoutcast server using raw socket connection.
+
+        Legacy Shoutcast servers return "ICY 200 OK" instead of "HTTP/1.1 200 OK",
+        which aiohttp cannot parse. This function handles the connection manually.
+        """
+        self.logger.debug("Start streaming from legacy Shoutcast server: %s", url)
+
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or 80
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+
+        try:
+            # Open raw socket connection
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=30)
+        except TimeoutError as err:
+            raise AudioError(f"Timeout connecting to Shoutcast stream {url}") from err
+        except (OSError, ConnectionError) as err:
+            raise AudioError(f"Failed to connect to Shoutcast stream {url}") from err
+
+        try:
+            # Send HTTP request with ICY metadata header
+            request = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host}\r\n"
+                f"User-Agent: {HTTP_HEADERS['User-Agent']}\r\n"
+                f"Icy-MetaData: 1\r\n\r\n"
+            )
+            writer.write(request.encode())
+            await writer.drain()
+
+            # Read and parse response line
+            try:
+                response_line = await asyncio.wait_for(reader.readline(), timeout=10)
+            except TimeoutError as err:
+                raise AudioError("Timeout reading Shoutcast response") from err
+
+            if not response_line.startswith(b"ICY"):
+                raise InvalidDataError("Invalid Shoutcast response")
+
+            # Read headers until empty line
+            headers: dict[str, str] = {}
+            while True:
+                try:
+                    line = await asyncio.wait_for(reader.readline(), timeout=5)
+                except TimeoutError as err:
+                    raise AudioError("Timeout reading Shoutcast headers") from err
+
+                if line in (b"\r\n", b"\n", b""):
+                    break
+
+                if b":" in line:
+                    try:
+                        key, value = line.decode("latin-1", errors="ignore").split(":", 1)
+                        headers[key.strip().lower()] = value.strip()
+                    except (UnicodeDecodeError, ValueError):
+                        continue
+
+            # Get metadata interval
+            meta_int_str = headers.get("icy-metaint")
+            if not meta_int_str:
+                raise InvalidDataError("No icy-metaint header in Shoutcast response")
+
+            try:
+                meta_int = int(meta_int_str)
+            except ValueError as err:
+                raise InvalidDataError("Invalid icy-metaint value") from err
+
+            self.logger.debug("Connected to Shoutcast stream %s (icy-metaint: %s)", url, meta_int)
+
+            # Stream audio data with metadata parsing
+            while True:
+                try:
+                    # Read audio chunk
+                    audio_chunk = await reader.readexactly(meta_int)
+                    yield audio_chunk
+
+                    # Read metadata length
+                    meta_byte = await reader.readexactly(1)
+                    if meta_byte == b"\x00":
+                        continue
+
+                    meta_length = ord(meta_byte) * 16
+                    meta_data = await reader.readexactly(meta_length)
+                    self._parse_icy_metadata(meta_data, streamdetails)
+
+                except asyncio.exceptions.IncompleteReadError:
+                    # End of stream
+                    break
+
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
     # --- Private methods ---
+
+    def _parse_icy_metadata(self, meta_data: bytes, streamdetails: StreamDetails) -> None:
+        """Parse ICY metadata and update streamdetails with stream title.
+
+        :param meta_data: Raw metadata bytes from ICY stream.
+        :param streamdetails: StreamDetails object to update with parsed title.
+        """
+        if not meta_data:
+            return
+
+        meta_data = meta_data.rstrip(b"\0")
+        # Match StreamTitle, handling apostrophes in titles
+        stream_title_re = re.search(rb"StreamTitle='(.*?)';", meta_data)
+
+        if not stream_title_re:
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "ICY metadata does not contain StreamTitle field. Raw: %s",
+                meta_data.decode("utf-8", errors="replace")[:200],
+            )
+            return
+
+        try:
+            # in 99% of the cases the stream title is utf-8 encoded
+            stream_title = stream_title_re.group(1).decode("utf-8")
+        except UnicodeDecodeError:
+            # fallback to iso-8859-1
+            stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
+
+        cleaned_stream_title = clean_stream_title(stream_title)
+
+        if not cleaned_stream_title:
+            return
+
+        if cleaned_stream_title != streamdetails.stream_title:
+            self.logger.log(VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title)
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "ICY Radio streamtitle cleaned: %s", cleaned_stream_title
+            )
+            streamdetails.stream_title = cleaned_stream_title
+
+    async def _validate_shoutcast_stream(self, url: str) -> bool:
+        """Validate if a URL is a legacy Shoutcast stream that returns "ICY 200 OK".
+
+        Makes a raw socket connection to check the response line.
+
+        :param url: The URL to validate.
+        """
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+            port = parsed.port or 80
+            path = parsed.path or "/"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+
+            # Open raw socket connection with timeout
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=10)
+
+            # Send minimal HTTP request with ICY metadata header
+            request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nIcy-MetaData: 1\r\n\r\n"
+            writer.write(request.encode())
+            await writer.drain()
+
+            # Read just the response line
+            response_line = await asyncio.wait_for(reader.readline(), timeout=5)
+
+            # Clean up connection
+            writer.close()
+            await writer.wait_closed()
+
+            # Check if response starts with "ICY"
+            decoded_line = response_line.decode("latin-1", errors="ignore").strip()
+            return decoded_line.startswith("ICY")
+
+        except TimeoutError:
+            self.logger.debug("Timeout during Shoutcast validation for %s", url)
+            return False
+        except (OSError, ConnectionError):
+            self.logger.debug("Connection failed during Shoutcast validation for %s", url)
+            return False
+        except UnicodeDecodeError:
+            self.logger.debug("Invalid response encoding during Shoutcast validation for %s", url)
+            return False
 
     @asynccontextmanager
     async def _connect_radio_stream(self, url: str, **kwargs: Any) -> AsyncGenerator[Any, None]:
