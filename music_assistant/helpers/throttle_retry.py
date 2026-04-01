@@ -1,13 +1,16 @@
 """Context manager using asyncio_throttle that catches and re-raises RetriesExhausted."""
 
 import asyncio
+import datetime
 import functools
 import logging
+import random
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from email.utils import parsedate_to_datetime
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate
 
@@ -21,6 +24,33 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
 BYPASS_THROTTLER: ContextVar[bool] = ContextVar("BYPASS_THROTTLER", default=False)
+
+# Cap exponential backoff to prevent absurd wait times
+MAX_BACKOFF = 120
+
+
+def parse_retry_after(value: str | None) -> int:
+    """Parse a Retry-After header value per RFC 9110 Section 10.2.3.
+
+    Supports both valid formats: delay-seconds (integer) and HTTP-date.
+
+    :param value: The raw Retry-After header value, or None if absent.
+    :returns: Non-negative integer seconds to wait, or 0 if unparsable/absent.
+    """
+    if value is None:
+        return 0
+    # Try delay-seconds (non-negative integer) first — the common case
+    try:
+        return max(0, int(value))
+    except (ValueError, TypeError):
+        pass
+    # Try HTTP-date format (e.g., "Fri, 31 Dec 1999 23:59:59 GMT")
+    try:
+        target = parsedate_to_datetime(value)
+        delta = (target - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
+        return max(0, int(delta))
+    except (ValueError, TypeError):
+        return 0
 
 
 class Throttler:
@@ -111,9 +141,9 @@ def throttle_with_retries[ProviderT: "Provider", **P, R](
     @functools.wraps(func)
     async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call async function using the throttler with retries."""
-        # the trottler attribute must be present on the class
+        # the throttler attribute must be present on the class
         throttler: ThrottlerManager = self.throttler  # type: ignore[attr-defined]
-        backoff_time = throttler.initial_backoff
+        exp_backoff = throttler.initial_backoff
         async with throttler.acquire() as delay:
             if delay != 0:
                 self.logger.debug(
@@ -123,14 +153,19 @@ def throttle_with_retries[ProviderT: "Provider", **P, R](
                 try:
                     return await func(self, *args, **kwargs)
                 except ResourceTemporarilyUnavailable as e:
-                    backoff_time = e.backoff_time or backoff_time
                     self.logger.info(
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )
                     if attempt < throttler.retry_attempts - 1:
-                        self.logger.info(f"Retrying in {backoff_time} seconds...")
-                        await asyncio.sleep(backoff_time)
-                        backoff_time *= 2
+                        if e.backoff_time > 0:
+                            # Server told us exactly how long to wait — respect it
+                            sleep_time = float(e.backoff_time)
+                        else:
+                            # No server guidance — exponential backoff with jitter
+                            sleep_time = min(exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF)
+                            exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
+                        self.logger.info(f"Retrying in {sleep_time:.1f} seconds...")
+                        await asyncio.sleep(sleep_time)
             else:  # noqa: PLW0120
                 msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
                 raise RetriesExhausted(msg)

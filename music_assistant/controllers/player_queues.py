@@ -1569,6 +1569,7 @@ class PlayerQueuesController(CoreController):
                 queue_item.streamdetails,
                 seek_position_ms=seek_position * 1000,
                 wait_ready=True,
+                reason="prepare",
             )
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
@@ -1769,7 +1770,6 @@ class PlayerQueuesController(CoreController):
         else:
             duration = queue_item.duration
         if queue.session_id is None:
-            # handle error or return early
             raise InvalidDataError("Queue session_id is None")
         media = PlayerMedia(
             uri=queue_item.uri,
@@ -2134,11 +2134,15 @@ class PlayerQueuesController(CoreController):
             return
 
         queue = self._queues[queue_id]
+        session_id = queue.session_id
         if queue.flow_mode:
             # ignore this for flow mode
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
+            if not queue.active or queue.session_id != session_id:
+                # queue is not active anymore or session_id does not match, so we bail out
+                return
             await self.mass.players.enqueue_next_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item),
@@ -2152,7 +2156,7 @@ class PlayerQueuesController(CoreController):
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
+        self.mass.call_later(1, _enqueue_next_item_on_player, next_item, task_id=task_id)
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -2204,9 +2208,10 @@ class PlayerQueuesController(CoreController):
         )
 
     def _prepare_next_audio_buffer(self, queue_id: str) -> None:
-        """Prepare the AudioBuffer for the next track in the queue.
+        """
+        Prepare the AudioBuffer for the next track in the queue.
 
-        Called ~30 seconds before the current track ends to ensure
+        Called ~30-60 seconds before the current track ends to ensure
         the buffer is warm when the next track starts playing.
         """
         queue = self._queues.get(queue_id)
@@ -2236,6 +2241,7 @@ class PlayerQueuesController(CoreController):
                 await AudioBuffer.get_buffer(
                     self.mass,
                     next_item.streamdetails,
+                    reason="prepare_next",
                     wait_ready=True,
                 )
             except (AudioError, MediaNotFoundError) as err:
