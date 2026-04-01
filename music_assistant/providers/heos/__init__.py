@@ -6,11 +6,10 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from pyheos.const import DEFAULT_TIMEOUT
 
 from music_assistant.constants import CONF_IP_ADDRESS
 
-from .constants import CONF_TIMEOUT
+from .constants import CONF_TIMEOUT, DEFAULT_TIMEOUT
 from .provider import HeosPlayerProvider
 
 if TYPE_CHECKING:

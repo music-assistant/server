@@ -39,7 +39,7 @@ class HLSMediaSegment:
             parts = self.extinf_line.split("#EXTINF:")[1].split(",", 1)
             if len(parts) == 2:
                 title = parts[1].strip()
-                return title if title else None
+                return title or None
             return None
         except IndexError:
             return None

@@ -7,10 +7,12 @@ import hashlib
 import itertools
 import os
 import random
+import urllib.parse
 from base64 import b64decode
 from collections import OrderedDict
 from collections.abc import Iterable
 from io import BytesIO
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
@@ -35,6 +37,8 @@ _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
 
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
+
+_MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 
 
 def _create_thumb_hash(provider: str, path_or_url: str) -> str:
@@ -67,8 +71,47 @@ def _put_in_memory_cache(key: str, data: bytes) -> None:
         _thumb_memory_cache.popitem(last=False)
 
 
-async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
-    """Create thumbnail from image url."""
+def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
+    """Extract path and provider from an imageproxy URL.
+
+    :param url: The URL to check for imageproxy format.
+    :return: Tuple of (path, provider) if this is an imageproxy URL, None otherwise.
+    """
+    if "/imageproxy?" not in url:
+        return None
+
+    parsed = urllib.parse.urlparse(url)
+    query_params = urllib.parse.parse_qs(parsed.query)
+
+    path = query_params.get("path", [None])[0]
+    provider = query_params.get("provider", ["builtin"])[0]
+
+    if path:
+        # The path may be URL-encoded multiple times; decode until stable
+        decoded_path = urllib.parse.unquote_plus(path)
+        for _ in range(3):
+            new_decoded = urllib.parse.unquote_plus(decoded_path)
+            if new_decoded == decoded_path:
+                break
+            decoded_path = new_decoded
+        return (decoded_path, provider)
+
+    return None
+
+
+async def get_image_data(
+    mass: MusicAssistant, path_or_url: str, provider: str, *, _depth: int = 0
+) -> bytes:
+    """Retrieve image data from a path or URL.
+
+    :param mass: The MusicAssistant instance.
+    :param path_or_url: The image path, URL, or base64 data URI.
+    :param provider: The provider ID that can resolve the image.
+    :param _depth: Internal recursion depth counter (do not set manually).
+    """
+    if _depth >= _MAX_IMAGEPROXY_RECURSION_DEPTH:
+        msg = f"Maximum recursion depth exceeded when fetching image: {path_or_url}"
+        raise FileNotFoundError(msg)
     # TODO: add local cache here !
     if prov := mass.get_provider(provider):
         assert isinstance(prov, MusicProvider | MetadataProvider | PluginProvider)
@@ -79,11 +122,33 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
                 path_or_url = resolved_image
     # handle HTTP location
     if path_or_url.startswith("http"):
+        # Handle imageproxy URLs pointing to our own server
+        parsed_url = urllib.parse.urlparse(path_or_url)
+        url_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        server_origins = {
+            f"{p.scheme}://{p.netloc}"
+            for b in (mass.webserver.base_url, mass.streams.base_url)
+            if (p := urllib.parse.urlparse(b)).netloc
+        }
+        if url_origin in server_origins:
+            if imageproxy_params := _extract_imageproxy_params(path_or_url):
+                extracted_path, extracted_provider = imageproxy_params
+                # Validate extracted path before recursive call
+                if not extracted_path.startswith(("http://", "https://", "data:image")):
+                    if not is_safe_path(extracted_path):
+                        msg = f"Unsafe image path extracted from imageproxy URL: {extracted_path}"
+                        raise FileNotFoundError(msg)
+                return await get_image_data(
+                    mass, extracted_path, extracted_provider, _depth=_depth + 1
+                )
+            msg = f"Invalid imageproxy URL (missing path): {path_or_url}"
+            raise FileNotFoundError(msg)
         try:
             async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
                 return await resp.read()
         except ClientError as err:
-            raise FileNotFoundError from err
+            msg = f"Failed to fetch image from {path_or_url}: {err}"
+            raise FileNotFoundError(msg) from err
     # handle base64 embedded images
     if path_or_url.startswith("data:image"):
         return b64decode(path_or_url.split(",")[-1])
@@ -211,6 +276,40 @@ async def _generate_and_cache_thumb(
     return thumb_data
 
 
+async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
+    """Remove oldest cached thumbnails when total size exceeds the limit.
+
+    :param cache_path: The base cache directory (mass.cache_path).
+    :param max_size_bytes: Maximum allowed total size in bytes.
+    :returns: Number of files removed.
+    """
+    thumb_dir = os.path.join(cache_path, _THUMB_CACHE_DIR)
+
+    def _cleanup() -> int:
+        if not os.path.isdir(thumb_dir):
+            return 0
+        entries = []
+        for entry in os.scandir(thumb_dir):
+            if entry.is_file():
+                stat = entry.stat()
+                entries.append((entry.path, stat.st_size, stat.st_mtime))
+        entries.sort(key=lambda e: e[2])
+        total_size = sum(e[1] for e in entries)
+        removed = 0
+        for filepath, file_size, _ in entries:
+            if total_size <= max_size_bytes:
+                break
+            try:
+                Path(filepath).unlink()
+                total_size -= file_size
+                removed += 1
+            except OSError:
+                pass
+        return removed
+
+    return await asyncio.to_thread(_cleanup)
+
+
 async def create_collage(
     mass: MusicAssistant,
     images: Iterable[MediaItemImage],
@@ -256,7 +355,7 @@ async def create_collage(
 
 async def get_icon_string(icon_path: str) -> str:
     """Get svg icon as string."""
-    ext = icon_path.rsplit(".")[-1]
+    ext = icon_path.rsplit(".", maxsplit=1)[-1]
     assert ext == "svg"
     async with aiofiles.open(icon_path) as _file:
         xml_data = await _file.read()
