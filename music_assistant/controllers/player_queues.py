@@ -646,18 +646,27 @@ class PlayerQueuesController(CoreController):
             media_items = list(radio_tracks)
 
         # only add valid/available items
-        queue_items: list[QueueItem] = []
-        for x in media_items:
-            if not x or not x.available:
-                continue
-            queue_items.append(
-                QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
-            )
+        queue_items: list[QueueItem] = [
+            QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
+            for x in media_items
+            if x and x.available
+        ]
 
         if not queue_items:
             raise MediaNotFoundError("No playable items found")
 
         # load the items into the queue
+        await self._enqueue_with_option(queue_id, queue_items, option, radio_mode)
+
+    async def _enqueue_with_option(
+        self,
+        queue_id: str,
+        queue_items: list[QueueItem],
+        option: QueueOption | None,
+        radio_mode: bool,
+    ) -> None:
+        """Load queue items into the queue according to the given enqueue option."""
+        queue = self._queues[queue_id]
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             cur_index = (
                 queue.index_in_buffer
@@ -2519,25 +2528,12 @@ class PlayerQueuesController(CoreController):
 
         return tracks
 
-    def _update_queue_from_player(
-        self,
-        player: Player,
-    ) -> None:
-        """Update the Queue when the player state changed."""
-        queue_id = player.player_id
-        queue = self._queues[queue_id]
+    def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
+        """Update the current item/index/elapsed time on the queue from the player state.
 
-        # basic properties
-        queue.display_name = player.state.name
-        queue.available = player.state.available
-        queue.items = len(self._queue_items[queue_id])
-
-        queue.state = (
-            player.state.playback_state or PlaybackState.IDLE
-            if queue.active
-            else PlaybackState.IDLE
-        )
-        # update current item/index from player report
+        Returns True if the update was successful, False if the caller should return early.
+        """
+        queue_id = queue.queue_id
         if queue.active and queue.state in (
             PlaybackState.PLAYING,
             PlaybackState.PAUSED,
@@ -2555,7 +2551,7 @@ class PlayerQueuesController(CoreController):
             else:
                 # this may happen if the player is still transitioning between tracks
                 # we ignore this for now and keep the current index as is
-                return
+                return False
 
             # get current/next item based on current index
             queue.current_index = current_index
@@ -2585,6 +2581,29 @@ class PlayerQueuesController(CoreController):
                 if current_item and current_index is not None
                 else None
             )
+        return True
+
+    def _update_queue_from_player(
+        self,
+        player: Player,
+    ) -> None:
+        """Update the Queue when the player state changed."""
+        queue_id = player.player_id
+        queue = self._queues[queue_id]
+
+        # basic properties
+        queue.display_name = player.state.name
+        queue.available = player.state.available
+        queue.items = len(self._queue_items[queue_id])
+
+        queue.state = (
+            player.state.playback_state or PlaybackState.IDLE
+            if queue.active
+            else PlaybackState.IDLE
+        )
+        # update current item/index from player report
+        if not self._update_current_index_from_player(queue, player):
+            return
 
         # This is enough to detect any changes in the DSPDetails
         # (so child count changed, or any output format changed)
