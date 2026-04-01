@@ -13,7 +13,7 @@ aiomusiccast==0.15.0
 aiortc>=1.6.0
 aiosendspin==4.4.0
 aioslimproto==3.1.8
-aiosonos==0.1.9
+aiosonos==0.1.10
 aiosqlite==0.22.1
 aiovban==0.6.3
 alexapy==1.29.17

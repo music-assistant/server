@@ -12,10 +12,10 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientConnectorError
-from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
+from aiosonos.api.models import ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
@@ -164,15 +164,14 @@ class SonosPlayer(Player):
         await self.mass.players.register_or_update(self)
 
         # register callback for state changed
+        # aiosonos typed event_filter as tuple[EventType] but accepts multiple elements
         self._on_unload_callbacks.append(
             self.client.subscribe(
-                self.on_player_event,  # type: ignore[arg-type]
+                self.on_player_event,
                 (
-                    SonosEventType.GROUP_UPDATED,  # type: ignore[arg-type]
+                    SonosEventType.GROUP_UPDATED,
                     SonosEventType.PLAYER_UPDATED,
                 ),
-                # TODO: aiosonos subscribe() has incorrect type signature - cb_func should be
-                # EventCallBackType not EventSubscriptionType
             )
         )
 
@@ -354,21 +353,17 @@ class SonosPlayer(Player):
             object_id = stream_url
         await self.group_controller.play_stream_url(
             stream_url,
+            # Sonos API accepts this dict format but aiosonos Container TypedDict is stricter
             cast(
-                "Container",
+                "Any",
                 {
-                    "_objectType": "item",
-                    "name": media.title or "Unknown Title",
+                    "name": media.title,
                     "type": "track",
                     "imageUrl": media.image_url,
                     "id": {
-                        "_objectType": "id",
                         "objectId": object_id,
                     },
-                    "service": {
-                        "_objectType": "service",
-                        "name": "Music Assistant",
-                    },
+                    "service": {"name": "Music Assistant", "id": "mass"},
                 },
             ),
         )
