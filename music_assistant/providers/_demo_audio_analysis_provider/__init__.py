@@ -89,7 +89,7 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     Key concepts:
     - The controller calls start_analysis once per track, then feeds PCM chunks
       via process_pcm_chunk, and finally calls finalize (or cancel).
-    - The base class stores session data (stream_details, audio_format) in
+    - The base class stores session data (streamdetails, audio_format) in
       self._sessions[session_id]. Access it in process_pcm_chunk and _finalize.
     - Increment analysis_version when your algorithm changes significantly.
       The controller uses this to skip re-analysis of already-analyzed tracks.
@@ -114,7 +114,7 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     async def start_analysis(
         self,
         session_id: str,
-        stream_details: StreamDetails,
+        streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> None:
         """Start analysis for a new session.
@@ -123,19 +123,19 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         The controller has already checked the stored version — this method is only
         called if (re-)analysis is required.
 
-        The base class stores stream_details and audio_format in self._sessions.
+        The base class stores streamdetails and audio_format in self._sessions.
         Override this to initialize additional per-session state (e.g. accumulators,
         buffers), but always call super() first.
 
         :param session_id: Unique session ID created by the controller.
-        :param stream_details: Details about the stream being analyzed.
+        :param streamdetails: Details about the stream being analyzed.
         :param audio_format: PCM format of the audio (sample rate, bit depth, channels).
         """
-        await super().start_analysis(session_id, stream_details, audio_format)
+        await super().start_analysis(session_id, streamdetails, audio_format)
         self.logger.debug(
             "Started analysis session %s for %s (sample_rate=%d, bit_depth=%d, channels=%d)",
             session_id,
-            stream_details.uri,
+            streamdetails.uri,
             audio_format.sample_rate,
             audio_format.bit_depth,
             audio_format.channels,
@@ -177,8 +177,8 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
             session = self._sessions[session_id]
             analysis = AudioAnalysisData(bpm=120.0, duration=180.5)
             await self.mass.music.set_audio_analysis(
-                item_id=session.stream_details.item_id,
-                provider_instance_id_or_domain=session.stream_details.provider,
+                item_id=session.streamdetails.item_id,
+                provider_instance_id_or_domain=session.streamdetails.provider,
                 aa_provider_domain=self.domain,
                 analysis=analysis,
                 analysis_version=self.analysis_version,

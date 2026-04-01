@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 class AnalysisSessionData:
     """Base session data stored per analysis session."""
 
-    stream_details: StreamDetails
+    streamdetails: StreamDetails
     audio_format: AudioFormat
 
 
@@ -34,7 +34,7 @@ class AudioAnalysisProvider(Provider):
     results such as beat tracking, key detection, phrase boundaries, etc.
 
     The AudioAnalysisController creates session IDs and passes them to all methods.
-    The default start_analysis stores stream_details and audio_format in self._sessions.
+    The default start_analysis stores streamdetails and audio_format in self._sessions.
     Providers that need richer per-session state can override start_analysis and cancel.
     """
 
@@ -57,7 +57,7 @@ class AudioAnalysisProvider(Provider):
     async def start_analysis(
         self,
         session_id: str,
-        stream_details: StreamDetails,
+        streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> None:
         """Start analysis for a new session.
@@ -67,11 +67,11 @@ class AudioAnalysisProvider(Provider):
         initialize richer per-session state, but call super() first.
 
         :param session_id: Session ID created by the AudioAnalysisController.
-        :param stream_details: The stream details for the item being analyzed.
+        :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
         self._sessions[session_id] = AnalysisSessionData(
-            stream_details=stream_details,
+            streamdetails=streamdetails,
             audio_format=audio_format,
         )
 

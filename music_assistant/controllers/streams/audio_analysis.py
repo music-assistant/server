@@ -34,7 +34,6 @@ class AudioAnalysisController:
         self.mass = streams.mass
         self.logger = logging.getLogger(MASS_LOGGER_NAME).getChild("audio_analysis")
         self._active_sessions: dict[str, set[str]] = {}
-        self._queues: dict[str, asyncio.Queue[bytes | None]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
 
     @property
@@ -49,7 +48,7 @@ class AudioAnalysisController:
     async def start_analysis(
         self,
         audio_buffer: AudioBuffer,
-        stream_details: StreamDetails,
+        streamdetails: StreamDetails,
     ) -> None:
         """Start analysis session for a track across all providers.
 
@@ -57,35 +56,32 @@ class AudioAnalysisController:
         Audio Analysis providers.
 
         :param audio_buffer: The AudioBuffer to observe for PCM chunks.
-        :param stream_details: The stream details for the item being analyzed.
+        :param streamdetails: The stream details for the item being analyzed.
         """
         providers = self.providers
         if not providers:
             self.logger.debug("No audio analysis providers available")
             return
 
-        session_key = (
-            f"{stream_details.provider}:{stream_details.media_type}:{stream_details.item_id}"
-        )
+        session_key = streamdetails.uri
 
         # Skip if another queue already has an analysis running for the same item
         if session_key in self._active_sessions:
             self.logger.debug(
                 "Analysis session already active for %s, ignoring start request",
-                stream_details.uri,
+                session_key,
             )
             return
 
         provider_ids = await self._start_analysis_on_providers(
-            session_key, stream_details, audio_buffer.pcm_format, providers
+            session_key, streamdetails, audio_buffer.pcm_format, providers
         )
         if not provider_ids:
-            self.logger.debug("No providers accepted analysis for %s", stream_details.uri)
+            self.logger.debug("No providers accepted analysis for %s", session_key)
             return
 
         self._active_sessions[session_key] = provider_ids
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=10)
-        self._queues[session_key] = queue
         self._workers[session_key] = self.mass.create_task(self._chunk_worker(session_key, queue))
 
         # Build and register closures for callbacks on the audio buffer
@@ -108,12 +104,10 @@ class AudioAnalysisController:
             if worker is not None:
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker
-            self._queues.pop(session_key, None)
             self._finalize_providers(session_key)
 
         def _on_cancel() -> None:
             self.logger.debug("Cancelling analysis session %s", session_key)
-            self._queues.pop(session_key, None)
             worker = self._workers.pop(session_key, None)
             if worker is not None:
                 worker.cancel()
@@ -125,7 +119,7 @@ class AudioAnalysisController:
     async def _start_analysis_on_providers(
         self,
         session_key: str,
-        stream_details: StreamDetails,
+        streamdetails: StreamDetails,
         audio_format: AudioFormat,
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
@@ -133,8 +127,8 @@ class AudioAnalysisController:
         provider_ids: set[str] = set()
         for provider in providers:
             stored_version = await self.mass.music.get_audio_analysis_version(
-                stream_details.item_id,
-                stream_details.provider,
+                streamdetails.item_id,
+                streamdetails.provider,
                 provider.domain,
             )
             if stored_version is not None and stored_version >= provider.analysis_version:
@@ -148,7 +142,7 @@ class AudioAnalysisController:
             try:
                 await provider.start_analysis(
                     session_id=session_key,
-                    stream_details=stream_details,
+                    streamdetails=streamdetails,
                     audio_format=audio_format,
                 )
             except Exception as err:
@@ -191,19 +185,16 @@ class AudioAnalysisController:
                 break
 
             pcm_data = chunk  # bind for closure (chunk is narrowed to bytes here)
-            timed_out: set[str] = set()
 
-            async def _process(
-                pid: str, pcm_data: bytes = pcm_data, timed_out: set[str] = timed_out
-            ) -> None:
+            async def _process(prov_id: str, pcm_data: bytes = pcm_data) -> str | None:
                 try:
-                    provider = self.mass.get_provider(pid)
+                    provider = self.mass.get_provider(prov_id)
                     if not (
                         provider
                         and isinstance(provider, AudioAnalysisProvider)
                         and provider.available
                     ):
-                        return
+                        return None
                     await asyncio.wait_for(
                         provider.process_pcm_chunk(session_key, pcm_data),
                         timeout=CHUNK_PROCESS_TIMEOUT,
@@ -211,17 +202,21 @@ class AudioAnalysisController:
                 except TimeoutError:
                     self.logger.warning(
                         "Provider %s timed out processing chunk for %s, removing from session",
-                        pid,
+                        prov_id,
                         session_key,
                     )
-                    timed_out.add(pid)
+                    return prov_id
                 except Exception as err:
-                    self.logger.warning("Error processing PCM chunk on provider %s: %s", pid, err)
+                    self.logger.warning(
+                        "Error processing PCM chunk on provider %s: %s", prov_id, err
+                    )
+                return None
 
-            await asyncio.gather(*[_process(pid) for pid in provider_ids])
+            results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
+            timed_out = {prov_id for prov_id in results if prov_id is not None}
             if timed_out:
-                for pid in timed_out:
-                    provider = self.mass.get_provider(pid)
+                for prov_id in timed_out:
+                    provider = self.mass.get_provider(prov_id)
                     if (
                         provider
                         and isinstance(provider, AudioAnalysisProvider)

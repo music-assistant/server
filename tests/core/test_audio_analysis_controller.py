@@ -193,7 +193,7 @@ async def test_finalize_called_on_eof(
     await controller.start_analysis(audio_buffer, mock_stream_details)
     await _send_chunks(audio_buffer, 2)
     await _await_tasks(mock_mass)
-    session_key = "test_prov:track:test_123"
+    session_key = "test_prov://track/test_123"
     mock_provider.finalize.assert_called_once_with(session_key)
 
 
@@ -236,7 +236,6 @@ async def test_session_cleaned_up_after_finalize(
     await _send_chunks(audio_buffer, 1)
     await _await_tasks(mock_mass)
     assert len(controller._active_sessions) == 0
-    assert len(controller._queues) == 0
     assert len(controller._workers) == 0
 
 
@@ -258,7 +257,7 @@ async def test_cancel_on_buffer_clear(
     await cb(1, ONE_SECOND_CHUNK, False)
     await audio_buffer.clear()
     await _await_tasks(mock_mass)
-    session_key = "test_prov:track:test_123"
+    session_key = "test_prov://track/test_123"
     mock_provider.cancel.assert_called_once_with(session_key)
 
 
@@ -276,7 +275,6 @@ async def test_session_cleaned_up_after_cancel(
     await audio_buffer.clear()
     await _await_tasks(mock_mass)
     assert len(controller._active_sessions) == 0
-    assert len(controller._queues) == 0
     assert len(controller._workers) == 0
 
 
@@ -289,7 +287,7 @@ async def test_worker_cancelled_on_buffer_clear(
 ) -> None:
     """Worker task is cancelled when buffer is cleared."""
     await controller.start_analysis(audio_buffer, mock_stream_details)
-    session_key = "test_prov:track:test_123"
+    session_key = "test_prov://track/test_123"
     worker = controller._workers.get(session_key)
     assert worker is not None
     await audio_buffer.clear()
