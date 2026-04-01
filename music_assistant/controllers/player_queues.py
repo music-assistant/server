@@ -120,6 +120,9 @@ IN_PLAY_ACTION: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+PLAY_ACTION_LOCK_TIMEOUT = 60  # seconds to wait for a play action lock before force-resetting
+
+
 def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R](
     func: Callable[Concatenate[PlayerQueuesControllerT, P], Awaitable[R]],
 ) -> Callable[Concatenate[PlayerQueuesControllerT, P], Coroutine[Any, Any, R]]:
@@ -130,6 +133,10 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     and removes it after the function completes. Uses a per-queue lock to
     ensure play actions are serialized per queue. The lock is reentrant so
     nested calls (e.g. play_media calling play_index) pass through without deadlock.
+
+    A timeout prevents permanent deadlocks: if the lock cannot be acquired
+    within PLAY_ACTION_LOCK_TIMEOUT seconds, the lock is force-reset and
+    the new action proceeds.
 
     :param func: The function to wrap.
     """  # noqa: D401
@@ -146,7 +153,19 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
             # already in a play action context (nested call), just execute
             return await func(self, *args, **kwargs)
         lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=PLAY_ACTION_LOCK_TIMEOUT)
+        except TimeoutError:
+            self.logger.warning(
+                "Play action lock for queue %s timed out after %s seconds, forcing reset",
+                queue_id,
+                PLAY_ACTION_LOCK_TIMEOUT,
+            )
+            # Replace the stuck lock so the queue can recover
+            lock = asyncio.Lock()
+            self._play_action_locks[queue_id] = lock
+            await lock.acquire()
+        try:
             token = IN_PLAY_ACTION.set(True)
             try:
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
@@ -156,6 +175,8 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
                 IN_PLAY_ACTION.reset(token)
                 queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 self.signal_update(queue_id)
+        finally:
+            lock.release()
 
     return wrapper
 
@@ -554,6 +575,18 @@ class PlayerQueuesController(CoreController):
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
 
+                if (
+                    isinstance(media_item, ItemMapping)
+                    and media_item.media_type == MediaType.PLAYLIST
+                ):
+                    # Resolve ItemMapping for a playlist so the full Playlist object
+                    # so we have access to details such as 'is_dynamic'
+                    with suppress(MusicAssistantError):
+                        media_item = await self.mass.music.playlists.get(
+                            media_item.item_id,
+                            media_item.provider,
+                        )
+
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
@@ -568,6 +601,12 @@ class PlayerQueuesController(CoreController):
                     queue.enqueued_media_items.append(media_item)
                     if len(queue.enqueued_media_items) > 10:
                         queue.enqueued_media_items.pop(0)
+                    if (
+                        isinstance(media_item, Playlist)
+                        and media_item.is_dynamic
+                        and not radio_mode
+                    ):
+                        radio_source.append(media_item)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -838,6 +877,7 @@ class PlayerQueuesController(CoreController):
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
+    @handle_play_action
     async def play(self, queue_id: str) -> None:
         """
         Handle PLAY command for given queue.
@@ -950,7 +990,9 @@ class PlayerQueuesController(CoreController):
         # debounce rapid next button presses using call_later
         self.mass.call_later(
             1,
-            self.play_index(queue_id, next_index),
+            self.play_index,
+            queue_id,
+            next_index,
             task_id=f"queue_play_index_{queue_id}",
         )
 
@@ -1027,6 +1069,7 @@ class PlayerQueuesController(CoreController):
         await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume")
+    @handle_play_action
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """Handle RESUME command for given queue.
 
@@ -1549,6 +1592,7 @@ class PlayerQueuesController(CoreController):
                 queue_item.streamdetails,
                 seek_position_ms=seek_position * 1000,
                 wait_ready=True,
+                reason="prepare",
             )
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
@@ -1749,7 +1793,6 @@ class PlayerQueuesController(CoreController):
         else:
             duration = queue_item.duration
         if queue.session_id is None:
-            # handle error or return early
             raise InvalidDataError("Queue session_id is None")
         media = PlayerMedia(
             uri=queue_item.uri,
@@ -1890,9 +1933,12 @@ class PlayerQueuesController(CoreController):
             "Fetching tracks to play for playlist %s",
             playlist.name,
         )
+        force_refresh = playlist.is_dynamic
         # TODO: Handle other sort options etc.
         async for playlist_track in self.mass.music.playlists.tracks(
-            playlist.item_id, playlist.provider
+            playlist.item_id,
+            playlist.provider,
+            force_refresh=force_refresh,
         ):
             if not playlist_track.available:
                 continue
@@ -2063,9 +2109,41 @@ class PlayerQueuesController(CoreController):
             "Filling radio tracks for queue %s",
             queue_id,
         )
-        tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
+        queue = self._queues[queue_id]
+        dynamic_playlist = next(
+            (
+                item
+                for item in reversed(queue.radio_source)
+                if isinstance(item, Playlist) and item.is_dynamic
+            ),
+            None,
+        )
+        if dynamic_playlist is not None:
+            try:
+                dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
+                queue_items = [
+                    QueueItem.from_media_item(queue_id, x) for x in dynamic_tracks if x.available
+                ]
+                if queue_items:
+                    cur_index = self._queues[queue_id].current_index or 0
+                    await self.load(
+                        queue_id,
+                        queue_items,
+                        insert_at_index=cur_index + 1,
+                        keep_remaining=False,
+                        keep_played=True,
+                    )
+                    return
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Failed to refill dynamic playlist %s for queue %s: %s",
+                    getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                    queue.display_name,
+                    err,
+                )
+        radio_tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
-        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
+        queue_items = [QueueItem.from_media_item(queue_id, x) for x in radio_tracks if x.available]
         await self.load(
             queue_id,
             queue_items,
@@ -2079,11 +2157,15 @@ class PlayerQueuesController(CoreController):
             return
 
         queue = self._queues[queue_id]
+        session_id = queue.session_id
         if queue.flow_mode:
             # ignore this for flow mode
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
+            if not queue.active or queue.session_id != session_id:
+                # queue is not active anymore or session_id does not match, so we bail out
+                return
             await self.mass.players.enqueue_next_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item),
@@ -2097,7 +2179,7 @@ class PlayerQueuesController(CoreController):
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
+        self.mass.call_later(1, _enqueue_next_item_on_player, next_item, task_id=task_id)
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -2149,9 +2231,10 @@ class PlayerQueuesController(CoreController):
         )
 
     def _prepare_next_audio_buffer(self, queue_id: str) -> None:
-        """Prepare the AudioBuffer for the next track in the queue.
+        """
+        Prepare the AudioBuffer for the next track in the queue.
 
-        Called ~30 seconds before the current track ends to ensure
+        Called ~30-60 seconds before the current track ends to ensure
         the buffer is warm when the next track starts playing.
         """
         queue = self._queues.get(queue_id)
@@ -2181,13 +2264,13 @@ class PlayerQueuesController(CoreController):
                 await AudioBuffer.get_buffer(
                     self.mass,
                     next_item.streamdetails,
+                    reason="prepare_next",
                     wait_ready=True,
                 )
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
 
-        task_id = f"prepare_next_buffer_{queue_id}"
-        self.mass.create_task(_do_prepare, task_id=task_id, abort_existing=False)
+        self.mass.create_task(_do_prepare)
 
     async def _resolve_media_items(
         self,
@@ -2778,6 +2861,10 @@ class PlayerQueuesController(CoreController):
         if prev_state["current_item_id"] is None:
             return
 
+        # retrieve prev_item here so it's available in the _clear_or_resume_delayed closure
+        # regardless of which code path (flow mode or non-flow mode) creates the task
+        prev_item = prev_state["current_item"]
+
         async def _clear_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
@@ -2798,6 +2885,61 @@ class PlayerQueuesController(CoreController):
                         )
                         await self.play_index(queue.queue_id, next_index)
                     return
+            # If the queue was started from a dynamic playlist, fetch fresh tracks and continue.
+            dynamic_playlist = next(
+                (
+                    item
+                    for item in reversed(queue.radio_source)
+                    if isinstance(item, Playlist) and item.is_dynamic
+                ),
+                None,
+            )
+            if dynamic_playlist is None:
+                dynamic_playlist = next(
+                    (
+                        item
+                        for item in reversed(queue.enqueued_media_items)
+                        if isinstance(item, Playlist) and item.is_dynamic
+                    ),
+                    None,
+                )
+            if dynamic_playlist is not None:
+                try:
+                    dynamic_tracks = await self.get_playlist_tracks(
+                        dynamic_playlist, start_item=None
+                    )
+                    if dynamic_tracks:
+                        queue_items = [
+                            QueueItem.from_media_item(queue.queue_id, x)
+                            for x in dynamic_tracks
+                            if x.available
+                        ]
+                        if queue_items:
+                            cur_index = queue.current_index or 0
+                            await self.load(
+                                queue.queue_id,
+                                queue_items,
+                                insert_at_index=cur_index + 1,
+                                keep_remaining=False,
+                                keep_played=True,
+                                shuffle=False,
+                            )
+                            if queue.current_index is not None and (
+                                next_item := self.get_next_item(queue.queue_id, queue.current_index)
+                            ):
+                                next_index = self.index_by_id(
+                                    queue.queue_id, next_item.queue_item_id
+                                )
+                                if next_index is not None:
+                                    await self.play_index(queue.queue_id, next_index)
+                                    return
+                except MusicAssistantError as err:
+                    self.logger.warning(
+                        "Failed to refresh dynamic playlist %s for queue %s: %s",
+                        getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                        queue.display_name,
+                        err,
+                    )
             self.logger.info("End of queue reached, clearing items")
             self.clear(queue.queue_id)
 
@@ -2814,7 +2956,6 @@ class PlayerQueuesController(CoreController):
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
-        prev_item = prev_state["current_item"]
         if prev_item and (streamdetails := prev_item.streamdetails):
             duration = streamdetails.duration or prev_item.duration or 24 * 3600
         elif prev_item:
