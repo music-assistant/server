@@ -566,17 +566,6 @@ class PlayerQueuesController(CoreController):
                             media_item.provider,
                         )
 
-                # Ensure is_dynamic is up-to-date for library playlists: the DB may have a
-                # stale False value if the item was added before is_dynamic tracking was introduced.
-                if isinstance(media_item, Playlist) and not media_item.is_dynamic:
-                    with suppress(MusicAssistantError):
-                        provider_item = await self.mass.music.playlists.get_provider_item(
-                            media_item.item_id,
-                            media_item.provider,
-                        )
-                        if provider_item.is_dynamic:
-                            media_item.is_dynamic = True
-
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
