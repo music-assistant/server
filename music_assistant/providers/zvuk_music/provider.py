@@ -495,10 +495,11 @@ class ZvukMusicProvider(MusicProvider):
         if ProviderFeature.BROWSE not in self.supported_features:
             raise NotImplementedError
 
-        path_parts = path.split("://")[1].split("/") if "://" in path else []
-        subpath = path_parts[0] if path_parts else None
-
-        base = path if path.endswith("//") else path.rstrip("/") + "/"
+        subpath: str | None = None
+        if "://" in path:
+            after_scheme = path.split("://", 1)[1].strip("/")
+            if after_scheme:
+                subpath = after_scheme.split("/", 1)[0]
 
         if subpath == "for_you":
             return list(await self._get_for_you_playlists())
@@ -506,7 +507,11 @@ class ZvukMusicProvider(MusicProvider):
         if subpath == "editorial":
             return list(await self._get_editorial_playlists())
 
+        if subpath is not None:
+            raise KeyError(f"Unsupported browse path: {path}")
+
         # Root level — return top-level folders
+        base = f"{self.instance_id}://"
         return [
             BrowseFolder(
                 item_id="for_you",
@@ -742,7 +747,16 @@ class ZvukMusicProvider(MusicProvider):
         bitrate = 0
 
         for q_str, q_content_type, q_bitrate in quality_chain:
-            url = await self.client.get_direct_stream_url(item_id, q_str)
+            try:
+                url = await self.client.get_direct_stream_url(item_id, q_str)
+            except (ResourceTemporarilyUnavailable, ProviderUnavailableError) as err:
+                self.logger.warning(
+                    "Error getting stream URL for track %s quality=%s: %s",
+                    item_id,
+                    q_str,
+                    err,
+                )
+                continue
             self.logger.debug(
                 "Stream URL for track %s quality=%s: %s",
                 item_id,
