@@ -22,6 +22,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
+    AIRPLAY_VOLUME_MUTE,
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
@@ -342,8 +343,20 @@ class AirPlayProvider(PlayerProvider):
                 # In case of a small rounding difference, we ignore this,
                 # to prevent an endless pingpong of volume changes
                 airplay_volume = float(path.split("dmcp.device-volume=", 1)[-1])
-                volume = convert_airplay_volume(airplay_volume)
-                player.update_volume_from_device(volume)
+                if airplay_volume <= AIRPLAY_VOLUME_MUTE:
+                    player._attr_volume_muted = True
+                    if player.stream and player.stream.running:
+                        self.mass.create_task(player.stream.send_cli_command("VOLUME=0"))
+                    player.update_state()
+                else:
+                    if player.volume_muted:
+                        player._attr_volume_muted = False
+                        if player.stream and player.stream.running:
+                            self.mass.create_task(
+                                player.stream.send_cli_command(f"VOLUME={player.volume_level or 0}")
+                            )
+                    volume = convert_airplay_volume(airplay_volume)
+                    player.update_volume_from_device(volume)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
