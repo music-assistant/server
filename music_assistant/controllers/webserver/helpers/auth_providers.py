@@ -18,7 +18,7 @@ from hass_client.utils import base_url, get_auth_url, get_token, get_websocket_u
 from music_assistant_models.auth import AuthProviderType, User, UserRole
 from music_assistant_models.errors import AuthenticationFailed
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import CONF_AUTH_ALLOW_SELF_REGISTRATION, MASS_LOGGER_NAME
 from music_assistant.helpers.datetime import utc
 
 if TYPE_CHECKING:
@@ -113,8 +113,7 @@ async def get_ha_user_role(
                 if "system-admin" in group_ids:
                     LOGGER.debug("HA user %s is admin, granting ADMIN role", ha_user_id)
                     return UserRole.ADMIN
-                else:
-                    return UserRole.USER
+                return UserRole.USER
         raise RuntimeError(f"HA user ID {ha_user_id} not found in user list")
     except Exception as err:
         msg = f"Failed to check HA admin status: {err}"
@@ -253,8 +252,6 @@ class LoginRateLimiter:
 class LoginProviderConfig(TypedDict, total=False):
     """Base configuration for login providers."""
 
-    allow_self_registration: bool
-
 
 class HomeAssistantProviderConfig(LoginProviderConfig):
     """Configuration for Home Assistant OAuth provider."""
@@ -288,7 +285,11 @@ class LoginProvider(ABC):
         self.provider_id = provider_id
         self.config = config
         self.logger = LOGGER
-        self.allow_self_registration = config.get("allow_self_registration", False)
+
+    @property
+    def allow_self_registration(self) -> bool:
+        """Return whether self-registration is allowed for this provider."""
+        return False
 
     @property
     def auth_manager(self) -> AuthenticationManager:
@@ -522,6 +523,11 @@ class HomeAssistantOAuthProvider(LoginProvider):
         self._oauth_sessions: dict[str, str | None] = {}
 
     @property
+    def allow_self_registration(self) -> bool:
+        """Return whether self-registration is allowed, read dynamically from config."""
+        return bool(self.mass.webserver.config.get_value(CONF_AUTH_ALLOW_SELF_REGISTRATION))
+
+    @property
     def provider_type(self) -> AuthProviderType:
         """Return the provider type."""
         return AuthProviderType.HOME_ASSISTANT
@@ -548,7 +554,9 @@ class HomeAssistantOAuthProvider(LoginProvider):
 
         :return: External URL if available, otherwise None.
         """
-        ha_url = cast("str", self.config.get("ha_url")) if self.config.get("ha_url") else None
+        ha_url = (
+            cast("str", self.config.get("ha_url")).strip() if self.config.get("ha_url") else None
+        )
         if not ha_url:
             return None
 
@@ -585,7 +593,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
                 internal_url = network_urls.get("internal")
 
                 # Use external URL first, then cloud, then internal
-                final_url = cast("str", external_url or cloud_url or internal_url)
+                final_url = cast("str", external_url or cloud_url or internal_url).strip()
                 if final_url:
                     self.logger.debug(
                         "Using HA URL for OAuth: %s (from network/url, configured: %s)",

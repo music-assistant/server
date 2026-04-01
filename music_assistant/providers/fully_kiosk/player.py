@@ -6,14 +6,10 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-)
+from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 if TYPE_CHECKING:
@@ -39,17 +35,21 @@ class FullyKioskPlayer(Player):
         super().__init__(provider, player_id)
         self.fully_kiosk = fully_kiosk
         # Set player attributes
-        self._attr_type = PlayerType.PLAYER
-        self._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        self._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
         self._attr_name = self.fully_kiosk.deviceInfo["deviceName"]
         self._attr_device_info = DeviceInfo(
             model=self.fully_kiosk.deviceInfo["deviceModel"],
             manufacturer=self.fully_kiosk.deviceInfo["deviceManufacturer"],
-            ip_address=address,
         )
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         self._attr_available = True
         self._attr_needs_poll = True
         self._attr_poll_interval = 10
+
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
 
     async def get_config_entries(
         self,
@@ -57,12 +57,8 @@ class FullyKioskPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
         return [
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-            CONF_ENTRY_HTTP_PROFILE,
         ]
 
     def set_attributes(self) -> None:
@@ -97,7 +93,8 @@ class FullyKioskPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        await self.fully_kiosk.playSound(media.uri, AUDIOMANAGER_STREAM_MUSIC)
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        await self.fully_kiosk.playSound(url, AUDIOMANAGER_STREAM_MUSIC)
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()

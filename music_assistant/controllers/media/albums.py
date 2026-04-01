@@ -69,7 +69,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     'sort_name', artists.sort_name,
                     'media_type', 'artist'
                 )) FROM artists JOIN album_artists on album_artists.album_id = albums.item_id  WHERE artists.item_id = album_artists.artist_id) AS artists
-            FROM albums"""  # noqa: E501
+            FROM albums"""
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
@@ -79,12 +79,14 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        allow_update_metadata: bool = True,
         recursive: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
             item_id,
             provider_instance_id_or_domain,
+            allow_update_metadata=allow_update_metadata,
         )
         if not recursive:
             return album
@@ -98,8 +100,7 @@ class AlbumsController(MediaControllerBase[Album]):
             with contextlib.suppress(MediaNotFoundError):
                 album_artists.append(
                     await self.mass.music.artists.get(
-                        artist.item_id,
-                        artist.provider,
+                        artist.item_id, artist.provider, allow_update_metadata=False
                     )
                 )
         album.artists = album_artists
@@ -113,7 +114,9 @@ class AlbumsController(MediaControllerBase[Album]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
         album_types: list[AlbumType] | None = None,
+        **kwargs: Any,
     ) -> list[Album]:
         """Get in-database albums.
 
@@ -124,6 +127,7 @@ class AlbumsController(MediaControllerBase[Album]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param album_types: Filter by album types.
+        :param genre: Filter by genre id(s).
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
@@ -161,6 +165,7 @@ class AlbumsController(MediaControllerBase[Album]):
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
+            genre_ids=genre,
             limit=limit,
             offset=offset,
             order_by=order_by,
@@ -168,6 +173,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            in_library_only=True,
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -195,6 +201,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
+                in_library_only=True,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if album.uri not in existing_uris:

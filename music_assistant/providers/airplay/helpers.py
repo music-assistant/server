@@ -8,17 +8,21 @@ import platform
 import time
 from typing import TYPE_CHECKING
 
-from zeroconf import IPVersion
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.process import check_output
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_2_DEFAULT_MODELS,
     BROKEN_AIRPLAY_MODELS,
+    CONF_ALAC_ENCODE,
     StreamingProtocol,
 )
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
+
+    from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,21 +105,8 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
     return (manufacturer or "AirPlay", model)
 
 
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    return None
-
-
 def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to have broken RAOP support."""
+    """Check if a model is known to have broken AirPlay support."""
     for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
         if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
             return True
@@ -128,6 +119,20 @@ def is_airplay2_preferred_model(manufacturer: str, model: str) -> bool:
         if ap2_manufacturer in (manufacturer, "*") and ap2_model in (model, "*"):
             return True
     return False
+
+
+def is_apple_device(manufacturer: str, model: str) -> bool:
+    """
+    Check if a device is a (standalone) Apple device with native AirPlay support.
+
+    Apple devices (HomePod, Apple TV) have native AirPlay support
+    and should be exposed as PlayerType.PLAYER.
+    We don't include MacBooks etc. here as they are not standalone devices
+    and may also be used for other protocols.
+    """
+    return manufacturer.lower().startswith("apple") and (
+        "homepod" in model.lower() or "apple tv" in model.lower()
+    )
 
 
 async def get_cli_binary(protocol: StreamingProtocol) -> str:
@@ -272,6 +277,32 @@ def unix_time_to_ntp(unix_timestamp: float) -> int:
     return (ntp_seconds << 32) | ntp_fraction
 
 
+def player_id_to_mac_address(player_id: str) -> str:
+    """Convert a player_id to a MAC address-like string."""
+    # the player_id is the mac address prefixed with "ap"
+    hex_str = player_id.replace("ap", "").upper()
+    return ":".join(hex_str[i : i + 2] for i in range(0, 12, 2))
+
+
+def generate_active_remote_id(mac_address: str) -> str:
+    """
+    Generate an Active-Remote ID for DACP communication.
+
+    The Active-Remote ID is used to match DACP callbacks from devices to the
+    correct stream. This function generates a consistent ID based on the
+    player_id (=macaddress, =device id), converted to uint32).
+
+    :return: Active-Remote ID as decimal string.
+    """
+    # Convert MAC address format to uint32
+    # Remove colons: "AA:BB:CC:DD:EE:FF" -> "AABBCCDDEEFF"
+    hex_str = mac_address.replace(":", "").upper()
+    # Parse as uint64 and truncate to uint32 (lower 32 bits)
+    device_id_u64 = int(hex_str, 16)
+    device_id_u32 = device_id_u64 & 0xFFFFFFFF
+    return str(device_id_u32)
+
+
 def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
     """
     Add seconds to an NTP timestamp.
@@ -292,3 +323,25 @@ def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
     ntp_fraction = int(fraction * (1 << 32))
 
     return ntp_timestamp + ntp_seconds + ntp_fraction
+
+
+def get_final_output_format(
+    audio_format: AudioFormat,
+    airplay_player: AirPlayPlayer,
+) -> AudioFormat:
+    """
+    Determine final output format based on stream and player capabilities.
+
+    This is for the UI only, so it correctly displays ALAC/PCM support.
+    """
+    content_type = audio_format.content_type
+    if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
+        content_type = ContentType.ALAC
+    if airplay_player.config.get_value(CONF_ALAC_ENCODE, True):
+        content_type = ContentType.ALAC
+    return AudioFormat(
+        content_type=content_type,
+        sample_rate=audio_format.sample_rate,
+        bit_depth=audio_format.bit_depth,
+        channels=audio_format.channels,
+    )

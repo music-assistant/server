@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastChannel as SonicPodcast
     from libopensonic.media import PodcastEpisode as SonicEpisode
+    from libopensonic.media import StructuredLyrics
 
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
@@ -64,11 +65,12 @@ def get_item_mapping(instance_id: str, media_type: MediaType, key: str, name: st
     )
 
 
-def parse_track(
+def parse_track(  # noqa: PLR0915
     logger: logging.Logger,
     instance_id: str,
     sonic_song: SonicSong,
     album: Album | ItemMapping | None = None,
+    lyrics: tuple[str, bool] | None = None,
 ) -> Track:
     """Parse an OpenSubsonic.Child into an MA Track."""
     # Unfortunately, the Song response type is not defined in the open subsonic spec so we have
@@ -85,6 +87,13 @@ def parse_track(
             )
 
     metadata: MediaItemMetadata = MediaItemMetadata()
+
+    if lyrics:
+        ly, synced = lyrics
+        if synced:
+            metadata.lrc_lyrics = ly
+        else:
+            metadata.lyrics = ly
 
     if sonic_song.explicit_status and sonic_song.explicit_status != "clean":
         metadata.explicit = True
@@ -109,7 +118,12 @@ def parse_track(
         for c in sonic_song.contributors:
             metadata.performers.add(c.artist.name)
 
-    name, version = parse_title_and_version(sonic_song.title)
+    if isinstance(album, Album) and album.version:
+        name = sonic_song.title
+        version = album.version
+    else:
+        name, version = parse_title_and_version(sonic_song.title)
+
     track = Track(
         item_id=sonic_song.id,
         provider=instance_id,
@@ -216,6 +230,16 @@ def parse_artist(
     """Parse artist and artistInfo into a Music Assistant Artist."""
     metadata: MediaItemMetadata = MediaItemMetadata()
 
+    if sonic_artist.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_artist.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
     if sonic_artist.artist_image_url:
         metadata.add_image(
             MediaItemImage(
@@ -226,15 +250,6 @@ def parse_artist(
             )
         )
 
-    if sonic_artist.cover_art:
-        metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=sonic_artist.cover_art,
-                provider=instance_id,
-                remotely_accessible=False,
-            )
-        )
     if sonic_info:
         if sonic_info.biography:
             metadata.description = sonic_info.biography
@@ -316,7 +331,12 @@ def parse_album(
     if sonic_album.moods:
         metadata.mood = sonic_album.moods[0]
 
-    name, version = parse_title_and_version(sonic_album.name)
+    if sonic_album.version:
+        name = sonic_album.name
+        version = sonic_album.version
+    else:
+        name, version = parse_title_and_version(sonic_album.name)
+
     album = Album(
         item_id=sonic_album.id,
         provider=SUBSONIC_DOMAIN,
@@ -504,3 +524,21 @@ def parse_epsiode(
         )
 
     return episode
+
+
+def parse_structured_lyrics(lyrics: StructuredLyrics) -> tuple[str, bool]:
+    """Parse the Open Subsonic Structured lyrics objest into MA Lyrics."""
+    lines: list[str] = []
+    if lyrics.synced:
+        offset: int = int(lyrics.offset) if lyrics.offset else 0
+        for line in lyrics.line:
+            if line.start is None:
+                raise InvalidDataError("Open Subsonic Synced lyric missing time index")
+            ms = int(line.start) + offset
+            dt = datetime.fromtimestamp(ms / 1000)
+            ts = dt.strftime("%M:%S.%f")[:-4]
+            lines.append(f"[{ts}]{line.value}")
+    else:
+        for line in lyrics.line:
+            lines.append(line.value)
+    return ("\n".join(lines), lyrics.synced)

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -35,6 +36,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat, MediaItemType, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
@@ -105,11 +107,16 @@ async def get_config_entries(
     if values is None:
         values = {}
 
+    verify_ssl = True
+    if _verify_ssl := values.get(CONF_VERIFY_SSL):
+        verify_ssl = bool(_verify_ssl)
+
     if action == CONF_ACTION_AUTH_NC:
         session = mass.http_session
         response = await session.post(
             str(values[CONF_URL_NC]).rstrip("/") + "/index.php/login/v2",
             headers={"User-Agent": "Music Assistant"},
+            ssl=verify_ssl,
         )
         data = await response.json()
         poll_endpoint = data["poll"]["endpoint"]
@@ -118,7 +125,7 @@ async def get_config_entries(
         session_id = str(values["session_id"])
         mass.signal_event(EventType.AUTH_SESSION, session_id, login_url)
         while True:
-            response = await session.post(poll_endpoint, data={"token": poll_token})
+            response = await session.post(poll_endpoint, data={"token": poll_token}, ssl=verify_ssl)
             if response.status not in [200, 404]:
                 raise LoginFailed("The specified url seems not to belong to a nextcloud instance.")
             if response.status == 200:
@@ -226,7 +233,7 @@ async def get_config_entries(
             label="Verify SSL",
             required=False,
             description="Whether or not to verify the certificate of SSL/TLS connections.",
-            category="advanced",
+            advanced=True,
             default_value=True,
             value=values.get(CONF_VERIFY_SSL),
         ),
@@ -260,16 +267,19 @@ class GPodder(MusicProvider):
         _device_id = self.config.get_value(CONF_DEVICE_ID)
         nc_url = str(self.config.get_value(CONF_URL_NC))
         nc_token = self.config.get_value(CONF_TOKEN_NC)
+        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
 
         self.max_episodes = int(float(str(self.config.get_value(CONF_MAX_NUM_EPISODES))))
 
-        self._client = GPodderClient(session=self.mass.http_session, logger=self.logger)
+        self._client = GPodderClient(
+            session=self.mass.http_session, logger=self.logger, verify_ssl=verify_ssl
+        )
 
         if nc_token is not None:
             assert nc_url is not None
             self._client.init_nc(base_url=nc_url, nc_token=str(nc_token))
         else:
-            self.update_config_value(CONF_USING_GPODDER, True)
+            self._update_config_value(CONF_USING_GPODDER, True)
             if _username is None or _password is None or _device_id is None:
                 raise LoginFailed("Must provide username, password and device_id.")
             username = str(_username)
@@ -500,7 +510,9 @@ class GPodder(MusicProvider):
                 return mass_episode
         raise MediaNotFoundError("Did not find episode.")
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
         podcast_id, guid_or_stream_url = item_id.split(" ")
@@ -518,16 +530,18 @@ class GPodder(MusicProvider):
             if action.podcast == podcast_id and (
                 guid_or_stream_url in _test or stream_url in _test
             ):
+                dt_timestamp: datetime | None = None
                 if timestamp is not None:
                     self.timestamp_actions = timestamp
                     await self._cache_set_timestamps()
+                    dt_timestamp = from_utc_timestamp(timestamp)
                 if isinstance(action, EpisodeActionNew | EpisodeActionDelete):
                     # no progress, it might have been actively reset
                     # in case of delete, we start from start.
-                    return False, 0
+                    return False, 0, None
                 _progress = (action.position >= action.total, max(action.position * 1000, 0))
                 self.logger.debug("Found an updated external resume position.")
-                return action.position >= action.total, max(action.position * 1000, 0)
+                return action.position >= action.total, max(action.position * 1000, 0), dt_timestamp
         self.logger.debug("Did not find an updated resume position, falling back to stored.")
         # If we did not find a resume position, nothing changed since our last timestamp
         # we raise NotImplementedError, such that MA falls back to the already stored

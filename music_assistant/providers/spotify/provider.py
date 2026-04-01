@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import Any, cast
 
 import aiohttp
@@ -16,6 +17,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    AudioError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -442,7 +444,7 @@ class SpotifyProvider(MusicProvider):
                 fully_played = resume_point.get("fully_played", False)
                 position_ms = resume_point.get("resume_position_ms", 0)
 
-                episode.fully_played = fully_played if fully_played else None
+                episode.fully_played = fully_played or None
                 episode.resume_position_ms = position_ms if position_ms > 0 else None
 
             yield episode
@@ -455,7 +457,9 @@ class SpotifyProvider(MusicProvider):
             raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
         return parse_podcast_episode(episode_obj, self)
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Get resume position for episode/audiobook from Spotify."""
         if media_type == MediaType.PODCAST_EPISODE:
             if not self.podcast_progress_sync_enabled:
@@ -479,9 +483,9 @@ class SpotifyProvider(MusicProvider):
             resume_point = episode_obj["resume_point"]
             fully_played = resume_point.get("fully_played", False)
             position_ms = resume_point.get("resume_position_ms", 0)
-            return fully_played, position_ms
+            return fully_played, position_ms, None
 
-        elif media_type == MediaType.AUDIOBOOK:
+        if media_type == MediaType.AUDIOBOOK:
             if not self.audiobooks_supported:
                 raise NotImplementedError("Audiobook support is disabled")
             if not self.audiobook_progress_sync_enabled:
@@ -510,7 +514,7 @@ class SpotifyProvider(MusicProvider):
                         fully_played = False
                         break
 
-                return fully_played, total_position_ms
+                return fully_played, total_position_ms, None
 
             except (MediaNotFoundError, ResourceTemporarilyUnavailable, aiohttp.ClientError) as e:
                 self.logger.debug(f"Failed to get audiobook resume position for {item_id}: {e}")
@@ -588,7 +592,7 @@ class SpotifyProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
-        uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/tracks"
+        uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/items"
 
         # Liked songs always require global session
         # For other playlists, call get_playlist first to trigger the fallback logic
@@ -610,7 +614,12 @@ class SpotifyProvider(MusicProvider):
         spotify_result = await self._get_data_with_caching(
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
+        total = spotify_result.get("total", 0)
         for index, item in enumerate(spotify_result["items"], 1):
+            # Spotify wraps/recycles items for offsets beyond the playlist size,
+            # so we need to break when we've reached the total.
+            if (offset + index) > total:
+                break
             if not (item and item["track"] and item["track"]["id"]):
                 continue
             track = parse_track(item["track"], self)
@@ -677,7 +686,7 @@ class SpotifyProvider(MusicProvider):
         """Add track(s) to playlist."""
         track_uris = [f"spotify:track:{track_id}" for track_id in prov_track_ids]
         data = {"uris": track_uris}
-        await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
+        await self._post_data(f"playlists/{prov_playlist_id}/items", data=data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -685,16 +694,16 @@ class SpotifyProvider(MusicProvider):
         """Remove track(s) from playlist."""
         track_uris = []
         for pos in positions_to_remove:
-            uri = f"playlists/{prov_playlist_id}/tracks"
+            uri = f"playlists/{prov_playlist_id}/items"
             spotify_result = await self._get_data(uri, limit=1, offset=pos - 1)
             for item in spotify_result["items"]:
                 if not (item and item["track"] and item["track"]["id"]):
                     continue
                 track_uris.append({"uri": f"spotify:track:{item['track']['id']}"})
         data = {"tracks": track_uris}
-        await self._delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
+        await self._delete_data(f"playlists/{prov_playlist_id}/items", data=data)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         if self._sp_user is None:
             raise LoginFailed("User info not available - not logged in")
@@ -787,15 +796,23 @@ class SpotifyProvider(MusicProvider):
             current_seek_seconds = int(current_seek_ms // 1000)
 
             # Stream chapters starting from the calculated position
+            consecutive_failures = 0
             for i in range(start_chapter, len(chapter_uris)):
                 chapter_uri = chapter_uris[i]
                 chapter_seek = current_seek_seconds if i == start_chapter else 0
 
                 try:
+                    chunk_count = 0
                     async for chunk in self.streamer.stream_spotify_uri(chapter_uri, chapter_seek):
                         yield chunk
+                        chunk_count += 1
+                    if chunk_count > 0:
+                        consecutive_failures = 0
                 except Exception as e:
-                    self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
+                    self.logger.warning("Chapter %s streaming failed", i + 1)
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        raise AudioError("Audiobook streaming failed") from e
                     continue
         else:
             # Handle normal tracks and podcast episodes
@@ -830,7 +847,7 @@ class SpotifyProvider(MusicProvider):
         except LoginFailed as err:
             if "revoked" in str(err):
                 # clear refresh token if it's invalid
-                self.update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
+                self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
                 if self.available:
                     self.unload_with_error(str(err))
             elif self.available:
@@ -841,7 +858,7 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_global = auth_info
-        self.update_config_value(
+        self._update_config_value(
             CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True
         )
 
@@ -889,8 +906,8 @@ class SpotifyProvider(MusicProvider):
         except LoginFailed as err:
             if "revoked" in str(err):
                 # clear refresh token if it's invalid
-                self.update_config_value(CONF_REFRESH_TOKEN_DEV, None)
-                self.update_config_value(CONF_CLIENT_ID, None)
+                self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
+                self._update_config_value(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
@@ -898,7 +915,9 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
-        self.update_config_value(CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True)
+        self._update_config_value(
+            CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True
+        )
 
         # Setup librespot with dev token (preferred over global token)
         await self._setup_librespot_auth(auth_info["access_token"])

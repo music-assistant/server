@@ -81,10 +81,11 @@
     <script>
         const API_BASE = window.location.origin;
 
-        // Get return_url and device_name from query string
+        // Get parameters from query string
         const urlParams = new URLSearchParams(window.location.search);
         const returnUrl = urlParams.get('return_url');
         const deviceName = urlParams.get('device_name');
+        const joinCode = urlParams.get('join');
 
         // Show error message
         function showError(message) {
@@ -230,8 +231,97 @@
             input.addEventListener('input', hideError);
         });
 
-        // Load providers on page load
-        loadProviders();
+        // Handle short code authentication (e.g., from QR code or link)
+        async function handleJoinCode() {
+            if (!joinCode) {
+                return false;
+            }
+
+            // Show loading state
+            const container = document.querySelector('.login-container');
+            container.innerHTML = `
+                <div class="logo">
+                    <img src="logo.png" alt="Music Assistant">
+                </div>
+                <h1>Music Assistant</h1>
+                <p class="subtitle">Connecting...</p>
+                <div style="text-align: center; padding: 20px;">
+                    <div class="loading" style="display: inline-block;"></div>
+                </div>
+                <div id="error" class="error"></div>
+            `;
+
+            try {
+                // Exchange the join code for a JWT token via JSON-RPC API
+                const response = await fetch(`${API_BASE}/api`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message_id: 'join_code_auth',
+                        command: 'auth/join_code/exchange',
+                        args: { code: joinCode.toUpperCase() }
+                    })
+                });
+
+                const response_data = await response.json();
+
+                // JSON-RPC wraps results in 'result' field
+                const data = response_data.result || response_data;
+
+                if (data.success && data.access_token) {
+                    // Redirect with the token
+                    let redirectUrl = '/';
+                    // Only allow same-origin relative paths (e.g. "/path"), not external URLs
+                    if (typeof returnUrl === 'string' && returnUrl.startsWith('/') && !returnUrl.startsWith('//')) {
+                        redirectUrl = returnUrl;
+                    }
+                    const separator = redirectUrl.includes('?') ? '&' : '?';
+                    window.location.href = `${redirectUrl}${separator}code=${encodeURIComponent(data.access_token)}`;
+                    return true;
+                } else {
+                    // Show error - check both data and response_data for error info
+                    const errorMsg = data.error || response_data.error_message || 'Invalid or expired code';
+                    const errorEl = document.getElementById('error');
+                    if (errorEl) {
+                        errorEl.textContent = errorMsg;
+                        errorEl.classList.add('show');
+                    }
+                    // Reload page without join code to show login form
+                    setTimeout(() => {
+                        urlParams.delete('join');
+                        const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+                        window.location.href = newUrl;
+                    }, 2000);
+                    return false;
+                }
+            } catch (error) {
+                console.error('Join code authentication failed:', error);
+                // Show error and reload without join code
+                const errorEl = document.getElementById('error');
+                if (errorEl) {
+                    errorEl.textContent = 'Authentication failed. Please try again.';
+                    errorEl.classList.add('show');
+                }
+                setTimeout(() => {
+                    urlParams.delete('join');
+                    const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+                    window.location.href = newUrl;
+                }, 2000);
+                return false;
+            }
+        }
+
+        // On page load: try join code first, then load providers
+        (async function() {
+            if (joinCode) {
+                const handled = await handleJoinCode();
+                if (handled) return; // Successfully joined, redirecting
+            }
+            // No join code or it failed, show normal login
+            loadProviders();
+        })();
     </script>
 </body>
 </html>

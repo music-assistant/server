@@ -9,10 +9,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     SmartFade,
     StandardCrossFade,
 )
-from music_assistant.helpers.audio import (
-    align_audio_to_frame_boundary,
-    strip_silence,
-)
+from music_assistant.helpers.audio import align_audio_to_frame_boundary, strip_silence
 from music_assistant.models.smart_fades import (
     SmartFadesAnalysis,
     SmartFadesAnalysisFragment,
@@ -23,7 +20,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
-    from music_assistant.controllers.streams.streams_controller import StreamsController
+    from music_assistant.controllers.streams.controller import StreamsController
 
 
 class SmartFadesMixer:
@@ -51,26 +48,23 @@ class SmartFadesMixer:
             # but just to be sure...
             return fade_out_part + fade_in_part
 
-        # strip silence from end of audio of fade_out_part
-        fade_out_part = await strip_silence(
-            self.streams.mass,
-            fade_out_part,
-            pcm_format=pcm_format,
-            reverse=True,
-        )
-        # Ensure frame alignment after silence stripping
-        fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
-
-        # strip silence from begin of audio of fade_in_part
-        fade_in_part = await strip_silence(
-            self.streams.mass,
-            fade_in_part,
-            pcm_format=pcm_format,
-            reverse=False,
-        )
-        # Ensure frame alignment after silence stripping
-        fade_in_part = align_audio_to_frame_boundary(fade_in_part, pcm_format)
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
+            # strip silence from end of audio of fade_out_part
+            fade_out_part = await strip_silence(
+                fade_out_part,
+                pcm_format=pcm_format,
+                reverse=True,
+            )
+            # Ensure frame alignment after silence stripping
+            fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
+            # strip silence from begin of audio of fade_in_part
+            fade_in_part = await strip_silence(
+                fade_in_part,
+                pcm_format=pcm_format,
+                reverse=False,
+            )
+            # Ensure frame alignment after silence stripping
+            fade_in_part = align_audio_to_frame_boundary(fade_in_part, pcm_format)
             smart_fade: SmartFade = StandardCrossFade(
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
