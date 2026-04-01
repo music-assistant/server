@@ -59,7 +59,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog.seconds_played * 1000 as resume_position_ms
             FROM audiobooks
             LEFT JOIN playlog ON playlog.item_id = audiobooks.item_id AND playlog.media_type = 'audiobook'
-            """  # noqa: E501
+            """
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)

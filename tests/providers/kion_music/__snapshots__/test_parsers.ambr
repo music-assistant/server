@@ -199,6 +199,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
     'item_id': '12345:3',
@@ -265,6 +266,7 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
     'item_id': '99999:1',

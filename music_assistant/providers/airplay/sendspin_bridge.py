@@ -127,7 +127,9 @@ class SendspinAirPlayBridge:
             client_id=self._bridge_client_id,
             name=f"{self.airplay_player.display_name} (AirPlay)",
             version=1,
-            supported_roles=[BRIDGE_ROLE_ID],
+            # While the player@v1 role will never be used for bridges, it is required by
+            # aiosendspin to parse the player@v1_support/ClientHelloPlayerSupport object
+            supported_roles=[BRIDGE_ROLE_ID, "player@v1"],
             device_info=SendspinDeviceInfo(
                 product_name=self.airplay_player.device_info.model,
                 manufacturer=self.airplay_player.device_info.manufacturer,
@@ -172,6 +174,7 @@ class SendspinAirPlayBridge:
             self._bridge_role.set_callbacks(
                 on_audio_chunk=self._on_audio_chunk,
                 on_volume_change=self._on_volume_change,
+                on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
                 initial_volume=self.airplay_player.volume_level or 25,
@@ -333,15 +336,13 @@ class SendspinAirPlayBridge:
                 err,
             )
 
-    def _on_volume_change(self, volume: int, muted: bool) -> None:
-        """Forward volume/mute changes to the AirPlay CLI."""
-        effective_volume = 0 if muted else volume
-        self.mass.create_task(self._send_volume_command(effective_volume))
+    def _on_volume_change(self, volume: int) -> None:
+        """Forward volume changes to the AirPlay player."""
+        self.mass.create_task(self.airplay_player.volume_set(volume))
 
-    async def _send_volume_command(self, volume: int) -> None:
-        """Send VOLUME command to the AirPlay CLI."""
-        if self._airplay_stream and self._airplay_stream.running:
-            await self._airplay_stream.send_cli_command(f"VOLUME={volume}")
+    def _on_mute_change(self, muted: bool) -> None:
+        """Forward mute changes to the AirPlay player."""
+        self.mass.create_task(self.airplay_player.volume_mute(muted))
 
     def _on_bridge_stream_end(self) -> None:
         """Stop the AirPlay protocol immediately when the stream ends.

@@ -43,6 +43,8 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 # Home Assistant system user
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
+# Port used by the internal ingress webserver for the HA integration
+INGRESS_SERVER_PORT: Final[int] = 8094
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
@@ -159,6 +161,7 @@ DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
+DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:
@@ -206,6 +209,7 @@ MASS_LOGO_ONLINE: Final[str] = (
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
+    "discovery",
     "streams",
     "webserver",
     "players",
@@ -601,18 +605,19 @@ CONF_ENTRY_ICY_METADATA_DEFAULT_FULL = ConfigEntry.from_dict(
     }
 )
 
-CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES = ConfigEntry(
-    key="gapless_different_sample_rates",
+CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES = ConfigEntry(
+    key="crossfade_different_sample_rates",
     type=ConfigEntryType.BOOLEAN,
-    label="Allow gapless playback (and crossfades) between tracks of different sample rates",
-    description="Enable this option to allow gapless playback between tracks that have different "
+    label="Allow crossfades between tracks of different sample rates",
+    description="Enable this option to allow crossfades between tracks that have different "
     "sample rates (e.g. 44.1kHz to 48kHz). \n\n "
-    "Only enable this option if your player actually support this, otherwise you may "
-    "experience audio glitches during transitioning between tracks.",
-    default_value=False,
+    "Disable this option if you experience audio glitches during transitions between tracks.",
+    default_value=True,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
+    depends_on=CONF_FLOW_MODE,
+    depends_on_value_not=True,
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
@@ -647,9 +652,9 @@ CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_ARTISTS = ConfigEntry(
     key="library_sync_artists",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Artists from this provider to Music Assistant",
+    label="Sync Library Artists from this source to Music Assistant",
     description="Whether to synchronize (favourited/in-library) Artists from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
@@ -676,9 +681,9 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Albums from this provider to Music Assistant",
+    label="Sync Library Albums from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Albums from this "
-    "provider to the Music Assistant Library. \n\n"
+    "source to the Music Assistant Library. \n\n"
     "Please note that by adding an Album into the Music Assistant library, "
     "the Album Artists will always be imported as well.",
     default_value=True,
@@ -687,9 +692,9 @@ CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Tracks from this provider to Music Assistant",
+    label="Sync Library Tracks from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Tracks from this "
-    "provider to the Music Assistant Library. \n\n"
+    "source to the Music Assistant Library. \n\n"
     "Please note that by adding a Track into the Music Assistant library, "
     "the Track's Artists and Album will always be imported as well.",
     default_value=True,
@@ -698,36 +703,36 @@ CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
     key="library_sync_playlists",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Playlists from this provider to Music Assistant",
+    label="Sync Library Playlists from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Playlists from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
     key="library_sync_podcasts",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Podcasts from this provider to Music Assistant",
+    label="Sync Library Podcasts from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Podcasts from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     key="library_sync_audiobooks",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Audiobooks from this provider to Music Assistant",
+    label="Sync Library Audiobooks from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Audiobooks from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_RADIOS = ConfigEntry(
     key="library_sync_radios",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Radios from this provider to Music Assistant",
+    label="Sync Library Radios from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Radio stations from this "
-    "provider to the Music Assistant Library.",
+    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
@@ -740,7 +745,7 @@ CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS = ConfigEntry(
     "allowing you to manually browse and select which tracks you want to import. \n\n"
     "If you want to override this default behavior, "
     "you can use this configuration option.\n\n"
-    "Please note that some (streaming) providers may already define this behavior unsolicited, "
+    "Please note that some (streaming) sources may already define this behavior unsolicited, "
     "by automatically adding all tracks from the album to their library/favorites.",
     default_value=False,
     category="sync_options",
@@ -767,9 +772,9 @@ CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
     label="Sync back library additions/removals (2-way sync)",
     description="Specify the behavior if an item is manually added to "
     "(or removed from) the Music Assistant Library. \n"
-    "Should we synchronise that action back to the provider?\n\n"
-    "Please note that if you you don't sync back to the provider and you have enabled "
-    "automatic sync/import for this provider, a removed item may reappear in the library "
+    "Should we synchronise that action back to the source?\n\n"
+    "Please note that if you you don't sync back to the source and you have enabled "
+    "automatic sync/import for this source, a removed item may reappear in the library "
     "the next time a sync is performed.",
     default_value=True,
     category="sync_options",
@@ -779,113 +784,14 @@ CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
     key="library_sync_deletions",
     type=ConfigEntryType.BOOLEAN,
     label="Sync library deletions",
-    description="When enabled, items removed from the provider's library will also be "
+    description="When enabled, items removed from the source's library will also be "
     "hidden from the Music Assistant library.\n\n"
-    "When disabled, items removed from the provider will remain visible in the "
+    "When disabled, items removed from the source will remain visible in the "
     "Music Assistant library.",
     default_value=True,
     category="sync_options",
     advanced=True,
 )
-
-
-CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
-    ConfigValueOption("Disable automatic sync for this mediatype", 0),
-    ConfigValueOption("Every 30 minutes", 30),
-    ConfigValueOption("Every hour", 60),
-    ConfigValueOption("Every 3 hours", 180),
-    ConfigValueOption("Every 6 hours", 360),
-    ConfigValueOption("Every 12 hours", 720),
-    ConfigValueOption("Every 24 hours", 1440),
-    ConfigValueOption("Every 36 hours", 2160),
-    ConfigValueOption("Every 48 hours", 2880),
-    ConfigValueOption("Once a week", 10080),
-]
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS = ConfigEntry(
-    key="provider_sync_interval_artists",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Artists",
-    description="The interval at which the Artists are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_ARTISTS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS = ConfigEntry(
-    key="provider_sync_interval_albums",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Albums",
-    description="The interval at which the Albums are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_ALBUMS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS = ConfigEntry(
-    key="provider_sync_interval_tracks",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Tracks",
-    description="The interval at which the Tracks are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_TRACKS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS = ConfigEntry(
-    key="provider_sync_interval_playlists",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Playlists",
-    description="The interval at which the Playlists are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS = ConfigEntry(
-    key="provider_sync_interval_podcasts",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Podcasts",
-    description="The interval at which the Podcasts are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS = ConfigEntry(
-    key="provider_sync_interval_audiobooks",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Audiobooks",
-    description="The interval at which the Audiobooks are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key,
-    depends_on_value=True,
-    required=True,
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS = ConfigEntry(
-    key="provider_sync_interval_radios",
-    type=ConfigEntryType.INTEGER,
-    label="Automatic Sync Interval for Radios",
-    description="The interval at which the Radios are synced to the library for this provider.",
-    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
-    default_value=720,
-    category="sync_options",
-    depends_on=CONF_ENTRY_LIBRARY_SYNC_RADIOS.key,
-    depends_on_value=True,
-    required=True,
-)
-
 
 CONF_ENTRY_PLAYER_ICON = ConfigEntry(
     key=CONF_ICON,
@@ -1031,8 +937,6 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
 
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from (inactive) protocol implementations
-    PlayerFeature.VOLUME_SET,
-    PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
     PlayerFeature.SET_MEMBERS,
 }
@@ -1041,7 +945,6 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from the active output protocol
     *PROTOCOL_FEATURES,
     PlayerFeature.ENQUEUE,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.PAUSE,
@@ -1057,6 +960,7 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("sonos", True),
     ("bluesound", True),
     ("heos", True),
+    ("party", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

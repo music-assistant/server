@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from contextlib import suppress
+from ipaddress import ip_address
 from typing import cast
 
 from music_assistant_models.enums import PlaybackState
@@ -75,7 +77,7 @@ class AirPlayProvider(PlayerProvider):
             },
             server=f"{socket.gethostname()}.local",
         )
-        await self.mass.aiozc.async_register_service(self._dacp_info)
+        await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -84,7 +86,7 @@ class AirPlayProvider(PlayerProvider):
         if not info:
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
-                raw_id, display_name = name.split(".")[0].split("@", 1)
+                raw_id, display_name = name.split(".", maxsplit=1)[0].split("@", 1)
             else:
                 # If we are not in a 'Removed' state, we need info to be filled to update the player
                 return
@@ -125,7 +127,7 @@ class AirPlayProvider(PlayerProvider):
             self._dacp_server.close()
         # shutdown DACP zeroconf service
         if self._dacp_info:
-            await self.mass.aiozc.async_unregister_service(self._dacp_info)
+            await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
@@ -148,7 +150,9 @@ class AirPlayProvider(PlayerProvider):
                 AIRPLAY_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
             )
-            if not await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+            if not await airplay_discovery_info.async_request(
+                self.mass.discovery.aiozc.zeroconf, 3000
+            ):
                 airplay_discovery_info = None
         else:
             # AirPlay service discovered
@@ -159,7 +163,9 @@ class AirPlayProvider(PlayerProvider):
                 RAOP_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_airplay", "_raop"),
             )
-            if not await raop_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000):
+            if not await raop_discovery_info.async_request(
+                self.mass.discovery.aiozc.zeroconf, 3000
+            ):
                 raop_discovery_info = None
 
         if airplay_discovery_info:
@@ -169,7 +175,8 @@ class AirPlayProvider(PlayerProvider):
         else:
             return  # should not happen, but guard just in case
 
-        address = get_primary_ip_address_from_zeroconf(discovery_info)
+        prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
+        address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
         if not address:
             return  # should not happen, but guard just in case
 
@@ -178,8 +185,8 @@ class AirPlayProvider(PlayerProvider):
         # We check both model name AND that it's a local address to avoid filtering
         # shairport-sync instances running on other machines
         if model == "ShairportSync":
-            # Check if this is a local address (127.x.x.x or matches our server's IP)
-            if address.startswith("127.") or address == self.mass.streams.publish_ip:
+            # Check if this is a local address (loopback or matches our server's IP)
+            if ip_address(address).is_loopback or address == self.mass.streams.publish_ip:
                 # Only filter if the port matches one of MA's own AirPlay Receiver instances.
                 # This allows user-configured shairport-sync instances on the same machine
                 # to be used as AirPlay players (e.g., multiple audio outputs via shairport-sync).
@@ -348,6 +355,10 @@ class AirPlayProvider(PlayerProvider):
                 # Ignore during stream transition (stale message from old CLI process)
                 if player._transitioning or not player.stream:
                     self.logger.debug("Ignoring prevent-playback during stream transition")
+                elif player.stream.prevent_playback:
+                    # Already handling a prevent-playback for this stream
+                    # (duplicate message while ungroup/stop is still in progress)
+                    self.logger.debug("Ignoring duplicate prevent-playback for %s", player.name)
                 else:
                     player.stream.prevent_playback = True
                     if player.stream.session:
@@ -361,8 +372,18 @@ class AirPlayProvider(PlayerProvider):
                             self.mass.create_task(player.stream.session.stop())
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
-                if stream := player.stream:
-                    stream.prevent_playback = False
+                # use a debounced reset to avoid race conditions where a quick
+                # prevent-playback=0 between duplicate prevent-playback=1 messages
+                # would reset the flag and allow the second message to act
+                if (stream := player.stream) and stream.prevent_playback:
+                    self.mass.call_later(
+                        5,
+                        setattr,
+                        stream,
+                        "prevent_playback",
+                        False,
+                        task_id=f"reset_prevent_playback_{player_id}",
+                    )
 
             # send response
             date_str = utc().strftime("%a, %-d %b %Y %H:%M:%S")
@@ -376,6 +397,8 @@ class AirPlayProvider(PlayerProvider):
             await writer.drain()
         finally:
             writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
 
     def get_players(self) -> list[AirPlayPlayer]:
         """Return all airplay players belonging to this instance."""

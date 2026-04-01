@@ -318,12 +318,12 @@ class BluesoundPlayer(Player):
             image_url = None
 
         self._attr_current_media = PlayerMedia(
-            uri=self.status.stream_url if self.status.stream_url else self.status.name,
+            uri=self.status.stream_url or self.status.name,
             title=self.status.name,
             artist=self.status.artist,
             album=self.status.album,
             image_url=image_url,
-            duration=self.status.total_seconds if self.status.total_seconds else None,
+            duration=self.status.total_seconds or None,
         )
 
     async def update_attributes(self) -> None:

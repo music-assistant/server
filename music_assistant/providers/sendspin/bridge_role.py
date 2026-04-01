@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from aiosendspin.server import VolumeChangedEvent
 from aiosendspin.server.roles import AudioRequirements, Role
 from aiosendspin.server.roles.registry import register_role
 
@@ -47,7 +48,8 @@ class BridgePlayerRole(Role):
         """
         self._client = client
         self._on_audio_chunk_cb: Callable[[AudioChunk], None] | None = None
-        self._on_volume_change_cb: Callable[[int, bool], None] | None = None
+        self._on_volume_change_cb: Callable[[int], None] | None = None
+        self._on_mute_change_cb: Callable[[bool], None] | None = None
         self._on_stream_start_cb: Callable[[], None] | None = None
         self._on_stream_end_cb: Callable[[], None] | None = None
         self._audio_requirements: AudioRequirements | None = None
@@ -58,7 +60,8 @@ class BridgePlayerRole(Role):
         self,
         *,
         on_audio_chunk: Callable[[AudioChunk], None],
-        on_volume_change: Callable[[int, bool], None],
+        on_volume_change: Callable[[int], None],
+        on_mute_change: Callable[[bool], None],
         on_stream_start: Callable[[], None],
         on_stream_end: Callable[[], None],
         initial_volume: int = 100,
@@ -66,13 +69,15 @@ class BridgePlayerRole(Role):
         """Wire up bridge callbacks after role creation.
 
         :param on_audio_chunk: Callback to receive audio chunks.
-        :param on_volume_change: Callback when volume or mute state changes.
+        :param on_volume_change: Callback when volume level changes.
+        :param on_mute_change: Callback when mute state changes.
         :param on_stream_start: Callback when the stream starts.
         :param on_stream_end: Callback when the stream ends.
         :param initial_volume: Initial volume level (0-100).
         """
         self._on_audio_chunk_cb = on_audio_chunk
         self._on_volume_change_cb = on_volume_change
+        self._on_mute_change_cb = on_mute_change
         self._on_stream_start_cb = on_stream_start
         self._on_stream_end_cb = on_stream_end
         self._volume = initial_volume
@@ -111,14 +116,20 @@ class BridgePlayerRole(Role):
     def set_player_volume(self, volume: int) -> None:
         """Set volume and notify bridge."""
         self._volume = volume
+        self._emit_volume_changed()
         if self._on_volume_change_cb:
-            self._on_volume_change_cb(volume, self._muted)
+            self._on_volume_change_cb(volume)
 
     def set_player_mute(self, muted: bool) -> None:
         """Set mute state and notify bridge."""
         self._muted = muted
-        if self._on_volume_change_cb:
-            self._on_volume_change_cb(self._volume, muted)
+        self._emit_volume_changed()
+        if self._on_mute_change_cb:
+            self._on_mute_change_cb(muted)
+
+    def _emit_volume_changed(self) -> None:
+        """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
+        self._client._signal_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
 
     def on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Receive audio chunk from PushStream and forward to callback."""

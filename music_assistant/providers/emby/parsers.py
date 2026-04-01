@@ -28,10 +28,15 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_CONTAINER,
     ITEM_KEY_ID,
     ITEM_KEY_IMAGE_TAGS,
+    ITEM_KEY_INDEX_NUMBER,
     ITEM_KEY_MEDIA_STREAMS,
     ITEM_KEY_NAME,
+    ITEM_KEY_PARENT_INDEX_NUMBER,
+    ITEM_KEY_PRODUCTION_YEAR,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_TYPE,
+    ITEM_KEY_USER_DATA,
+    USER_DATA_KEY_IS_FAVORITE,
 )
 
 if TYPE_CHECKING:
@@ -88,12 +93,16 @@ def parse_track(
     duration = int(item.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000)  # Convert ticks to seconds
     media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
     audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
+    track_number = int(item.get(ITEM_KEY_INDEX_NUMBER, 0))
+    disc_number = int(item.get(ITEM_KEY_PARENT_INDEX_NUMBER, 0))
 
     track = Track(
         item_id=track_id,
         name=name,
         album=album,
         artists=artists,
+        track_number=track_number,
+        disc_number=disc_number,
         duration=duration,
         provider=instance_id,
         provider_mappings={
@@ -122,9 +131,12 @@ def parse_track(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
 
     return track
 
@@ -161,9 +173,12 @@ def parse_artist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
 
     return artist
 
@@ -176,6 +191,7 @@ def parse_album(
     """Parse an Emby MusicAlbum item into an Album."""
     album_id = str(item.get(ITEM_KEY_ID))
     name = str(item.get(ITEM_KEY_NAME))
+    year = item.get(ITEM_KEY_PRODUCTION_YEAR)
 
     # Extract artist info
     artists = UniqueList[Artist | ItemMapping]()
@@ -203,6 +219,7 @@ def parse_album(
         item_id=album_id,
         name=name,
         artists=artists,
+        year=year,
         provider=instance_id,
         provider_mappings={
             ProviderMapping(
@@ -214,8 +231,8 @@ def parse_album(
     )
 
     # Extract images
-    if image_id := item.get("PrimaryImageItemId"):
-        image_url = f"{provider._base_url}Items/{image_id}/Images/Primary"
+    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
+        image_url = f"{provider._base_url}Items/{album_id}/Images/Primary"
         if album.metadata.images is None:
             album.metadata.images = UniqueList[MediaItemImage]()
         album.metadata.images.append(
@@ -223,9 +240,12 @@ def parse_album(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
 
     return album
 
@@ -261,8 +281,11 @@ def parse_playlist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
 
     return playlist

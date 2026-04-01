@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import socket
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
@@ -18,6 +19,7 @@ from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
@@ -26,7 +28,7 @@ from urllib.parse import urlparse
 import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
-from zeroconf import IPVersion
+from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -204,8 +206,10 @@ def try_parse_bool(possible_bool: Any) -> bool:
 
 def try_parse_duration(duration_str: str) -> float:
     """Try to parse a duration in seconds from a duration (HH:MM:SS) string."""
-    milliseconds = float("0." + duration_str.split(".")[-1]) if "." in duration_str else 0.0
-    duration_parts = duration_str.split(".")[0].split(",")[0].split(":")
+    milliseconds = (
+        float("0." + duration_str.rsplit(".", maxsplit=1)[-1]) if "." in duration_str else 0.0
+    )
+    duration_parts = duration_str.split(".", maxsplit=1)[0].split(",", maxsplit=1)[0].split(":")
     if len(duration_parts) == 3:
         seconds = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts, strict=False))
     elif len(duration_parts) == 2:
@@ -347,6 +351,8 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
         result: list[tuple[int, str]] = []
         # try to get the primary IP address
         # this is the IP address of the default route
+        primary_ip = ""
+        # try IPv4 first
         _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         _sock.settimeout(0)
         try:
@@ -357,6 +363,17 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
             primary_ip = ""
         finally:
             _sock.close()
+        # fall back to IPv6 if no IPv4 primary found (e.g. IPv6-only networks)
+        if not primary_ip:
+            _sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            _sock6.settimeout(0)
+            try:
+                _sock6.connect(("2001:db8::1", 1))
+                primary_ip = _sock6.getsockname()[0]
+            except Exception:
+                primary_ip = ""
+            finally:
+                _sock6.close()
         # get all IP addresses of all network interfaces
         adapters = ifaddr.get_adapters()
         for adapter in adapters:
@@ -429,10 +446,14 @@ async def get_ip_from_host(dns_name: str) -> str | None:
 
     def _resolve() -> str | None:
         try:
-            return socket.gethostbyname(dns_name)
+            # use getaddrinfo to support both IPv4 and IPv6 resolution
+            results = socket.getaddrinfo(dns_name, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            if results:
+                return str(results[0][4][0])
         except Exception:
             # fail gracefully!
             return None
+        return None
 
     return await asyncio.to_thread(_resolve)
 
@@ -691,28 +712,94 @@ async def remove_file(file_path: str) -> None:
     LOGGER.log(VERBOSE_LOG_LEVEL, "Removed file: %s", file_path)
 
 
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    # fall back to IPv6 addresses if no usable IPv4 address found
-    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
-        if address.startswith(("::1", "fe80")):
-            # filter out loopback and link-local addresses
-            continue
-        return address
+def get_primary_ip_address_from_zeroconf(
+    discovery_info: AsyncServiceInfo,
+    prefer_ipv6: bool = False,
+) -> str | None:
+    """Get primary IP address from zeroconf discovery info.
+
+    :param discovery_info: The zeroconf service info to extract the address from.
+    :param prefer_ipv6: If True, prefer IPv6 addresses over IPv4.
+    """
+    if prefer_ipv6:
+        order = [IPVersion.V6Only, IPVersion.V4Only]
+    else:
+        order = [IPVersion.V4Only, IPVersion.V6Only]
+    for version in order:
+        for addr in discovery_info.ip_addresses_by_version(version):
+            if addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+                continue
+            return str(addr)
     return None
 
 
 def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> int | None:
     """Get port from zeroconf discovery info."""
     return discovery_info.port
+
+
+def get_zeroconf_args(
+    use_all_interfaces: bool = False,
+) -> dict[str, Any]:
+    """Determine optimal zeroconf IPVersion and interfaces from system adapters.
+
+    Inspects available network adapters to determine the correct IP version
+    and interface configuration, similar to Home Assistant's approach.
+
+    :param use_all_interfaces: If True, use all interfaces (user override).
+    """
+    adapters = ifaddr.get_adapters()
+    has_ipv4 = False
+    has_ipv6 = False
+    interface_ips: list[str] = []
+    for adapter in adapters:
+        for ip_config in adapter.ips:
+            if ip_config.is_IPv6:
+                ip_tuple = cast("tuple[str, int, int]", ip_config.ip)
+                addr = ip_address(ip_tuple[0])
+                if (
+                    isinstance(addr, IPv6Address)
+                    and not addr.is_loopback
+                    and not addr.is_link_local
+                ):
+                    has_ipv6 = True
+                    if not addr.is_global:
+                        interface_ips.append(f"{ip_tuple[0]}%{ip_tuple[2]}")
+            else:
+                ip_str = cast("str", ip_config.ip)
+                addr = ip_address(ip_str)
+                if isinstance(addr, IPv4Address) and not addr.is_loopback:
+                    has_ipv4 = True
+                    interface_ips.append(ip_str)
+
+    # Determine IP version based on available addresses.
+    # On macOS/FreeBSD, zeroconf's IPVersion.All creates an AF_INET6 listen socket
+    # that cannot join IPv4 multicast groups, silently breaking discovery of
+    # IPv4-only devices. Fall back to V4Only on those platforms.
+    has_functional_dual_stack = not sys.platform.startswith(("freebsd", "darwin"))
+    if has_ipv4 and has_ipv6 and has_functional_dual_stack:
+        ip_version = IPVersion.All
+    elif has_ipv4:
+        ip_version = IPVersion.V4Only
+    elif has_ipv6:
+        ip_version = IPVersion.V6Only
+    else:
+        ip_version = IPVersion.V4Only
+
+    if use_all_interfaces:
+        # User explicitly requested all interfaces — pass explicit IP list
+        # to avoid issues with InterfaceChoice.Default on multi-interface hosts.
+        if interface_ips:
+            return {"ip_version": ip_version, "interfaces": interface_ips}
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
+
+    # Default mode: use InterfaceChoice.Default for IPv4-only single-interface,
+    # otherwise pass explicit interface list for reliability.
+    if ip_version == IPVersion.V4Only:
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.Default}
+    if interface_ips:
+        return {"ip_version": ip_version, "interfaces": interface_ips}
+    return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
 
 
 async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:

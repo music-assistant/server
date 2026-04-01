@@ -282,7 +282,7 @@ class EmbyProvider(MusicProvider):
             while True:
                 params["StartIndex"] = str(page * ITEM_LIMIT)
                 params["Limit"] = ITEM_LIMIT
-                resp = await self._get(f"Users/{self._user_id}/Items", params=params)
+                resp = await self._get("Artists", params=params)
                 items = resp.get(ITEMS, [])
                 if not items:
                     break

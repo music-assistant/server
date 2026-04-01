@@ -16,7 +16,7 @@ when the provider is selected by the user.
 Please keep in mind that Music Assistant is a fully async application and all
 methods should be implemented as async methods. If you are not familiar with
 async programming in Python, we recommend you to read up on it first.
-If you are using a third-party library that is not async, you can need to use the several
+If you are using a third-party library that is not async, you will need to use the
 helper methods such as asyncio.to_thread or the create_task in the mass object to wrap
 the calls to the library in a thread.
 
@@ -24,8 +24,13 @@ To add a new provider to Music Assistant, you need to create a new folder
 in the providers folder with the name of your provider (e.g. 'my_music_provider').
 In that folder you should create (at least) a __init__.py file and a manifest.json file.
 
-Optional is an icon.svg file that will be used as the icon for the provider in the UI,
-but we also support that you specify a material design icon in the manifest.json file.
+As the provider gets bigger it is preferred to split it up. Start with __init__.py,
+constants.py and provider.py. Other often used files are helpers.py, parsers.py and
+streaming.py
+
+Optional, but strongly desired, are icon.svg and icon_monochrome.svg files that will be used
+as the icon for the provider in the UI, but if this is not possible then we also support
+a material design icon in the manifest.json file.
 
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
@@ -38,6 +43,7 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
@@ -204,6 +210,7 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows searching your provider for media items.
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
+        # For radio, a simple search of the available channel names is acceptable
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
@@ -299,6 +306,11 @@ class MyDemoMusicprovider(MusicProvider):
         # Will only be called if you reported the LIBRARY_RADIOS feature
         # in the supported_features and you did not override the default sync method.
         # It allows retrieving the library/favorite radio stations from your provider.
+        # To be clear, this is only implemented (and the LIBRARY_RADIOS feature declared
+        # if the originating provider supports the concept of favourites or a library of
+        # its own. This method synchronises the providers library with MA's library. It
+        # is not acceptable to automatically add all channels to the users library.
+
         # Warning: Async generator:
         # You should yield Radio objects for each radio station in the library.
         # NOTE: This is only called on each full sync of the library (at the specified interval).
@@ -438,7 +450,9 @@ class MyDemoMusicprovider(MusicProvider):
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:  # type: ignore[empty-body]
+    async def get_resume_position(  # type: ignore[empty-body]
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """
         Get progress (resume point) details for the given Audiobook or Podcast episode.
 
@@ -449,7 +463,8 @@ class MyDemoMusicprovider(MusicProvider):
         Will be called right before playback starts to ensure the resume position is correct.
 
         Returns a boolean with the fully_played status
-        and an integer with the resume position in ms.
+        and an integer with the resume position in ms,
+        and an optional timestamp as datetime when this resume position was set.
         """
         # optional function to get the resume position of a audiobook or podcast episode
         # only implement this if your provider supports providing this information!
@@ -569,8 +584,13 @@ class MyDemoMusicprovider(MusicProvider):
         # You should return a list of MediaItems or ItemMappings for the given path.
         # Note that you can return nested levels with BrowseFolder items.
 
-        # The MusicProvider base model has a default implementation of this method
-        # that will call the get_library_* methods if you did not override it.
+        # Ordinarily if the LIBRARY_* feature is declared then browse()
+        # is not implemented here as the MusicProvider base model has a default
+        # implementation which calls the get_library_*() methods.
+        # In this case the expectation is that adding to the library is done via search().
+        # For radio, where the LIBRARY_RADIOS feature is not declared, then browse() should
+        # be implemented
+
         return []
 
     async def recommendations(self) -> list[RecommendationFolder]:
@@ -587,7 +607,7 @@ class MyDemoMusicprovider(MusicProvider):
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
         # Run a full sync of the library for the given media type.
-        # This is called by the music controller to sync items from your provider to the library.
+        # This is called by the music controller to sync items from your provider to the MA library.
         # As a generic rule of thumb the default implementation within the MusicProvider
         # base model should be sufficient for most (streaming) providers.
         # If you need to do some custom sync logic, you can override this method.

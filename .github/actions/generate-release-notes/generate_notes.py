@@ -223,7 +223,8 @@ def generate_release_notes(  # noqa: PLR0915
             + "/"
             + os.environ["GITHUB_REPOSITORY"]
         )
-        channel = os.environ.get("CHANNEL", "").title()
+        channel_raw = os.environ.get("CHANNEL", "")
+        channel = "RC" if channel_raw == "rc" else channel_raw.title()
         if channel:
             lines.append(f"## 📦 {channel} Release")
             lines.append("")

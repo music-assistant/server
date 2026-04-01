@@ -51,6 +51,9 @@ class CoreController:
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
 
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
+
     async def close(self) -> None:
         """Handle logic on server stop."""
 
@@ -62,6 +65,7 @@ class CoreController:
         log_level = str(config.get_value(CONF_LOG_LEVEL))
         self._set_logger(log_level)
         await self.setup(config)
+        await self.post_setup()
 
     async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
