@@ -77,8 +77,12 @@ def mock_mass(mock_provider: MagicMock) -> MagicMock:
 
 
 async def _await_tasks(mock_mass: MagicMock) -> None:
-    """Await all tasks created via mock_mass.create_task."""
-    await asyncio.gather(*mock_mass._created_tasks, return_exceptions=True)
+    """Await all tasks created via mock_mass.create_task, including nested ones."""
+    awaited = 0
+    while awaited < len(mock_mass._created_tasks):
+        pending = mock_mass._created_tasks[awaited:]
+        awaited = len(mock_mass._created_tasks)
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 @pytest.fixture
