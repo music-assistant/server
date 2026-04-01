@@ -12,7 +12,7 @@ from music_assistant_models.enums import ProviderType
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
-CHUNK_PROCESS_TIMEOUT = 5
+CHUNK_PROCESS_TIMEOUT = 0.8
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
