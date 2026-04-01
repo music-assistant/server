@@ -51,7 +51,8 @@ class AudioAnalysisController:
         audio_buffer: AudioBuffer,
         stream_details: StreamDetails,
     ) -> None:
-        """Start analysis session for a track across all providers.
+        """
+        Start analysis session for a track across all providers.
 
         Starts an analysis session for the given track on all available
         Audio Analysis providers.
