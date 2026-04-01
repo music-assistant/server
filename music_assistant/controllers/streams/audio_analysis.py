@@ -90,7 +90,7 @@ class AudioAnalysisController:
 
         async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
             nonlocal finalized
-            if finalized:
+            if finalized or session_key not in self._active_sessions:
                 return
             if is_last_chunk:
                 finalized = True
@@ -212,4 +212,6 @@ class AudioAnalysisController:
                         self.mass.create_task(provider.cancel(session_key))
                 provider_ids -= timed_out
                 if not provider_ids:
+                    self._active_sessions.pop(session_key, None)
+                    self._workers.pop(session_key, None)
                     break
