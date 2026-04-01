@@ -5,14 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import aiohttp.client_exceptions
-from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ExternalID, ImageType, ProviderFeature
 from music_assistant_models.media_items import Album, MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -23,6 +24,30 @@ SUPPORTED_FEATURES = {
 }
 
 CAA_BASE_URL = "https://coverartarchive.org"
+CONF_ENABLE_ALBUM_IMAGES = "enable_album_images"
+
+
+async def get_config_entries(
+    mass: MusicAssistant,  # noqa: ARG001
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """
+    Return Config entries to setup this provider.
+
+    :param instance_id: id of an existing provider instance (None if new instance setup).
+    :param action: [optional] action key called from config entries UI.
+    :param values: the (intermediate) raw values for config entries sent with the action.
+    """
+    return (
+        ConfigEntry(
+            key=CONF_ENABLE_ALBUM_IMAGES,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable retrieval of album images",
+            default_value=True,
+        ),
+    )
 
 
 async def setup(
@@ -43,6 +68,9 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
 
         :param album: Album to retrieve metadata for.
         """
+        if not self.config.get_value(CONF_ENABLE_ALBUM_IMAGES):
+            return None
+
         mbid = album.get_external_id(ExternalID.MB_RELEASEGROUP)
         if not mbid:
             return None
