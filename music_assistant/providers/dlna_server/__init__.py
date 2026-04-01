@@ -22,7 +22,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import DEFAULT_STREAM_HEADERS, INTERNAL_PCM_FORMAT
-from music_assistant.helpers.audio import get_media_stream
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
@@ -655,8 +654,7 @@ class DLNAServerProvider(PluginProvider):
             )
 
             # Get raw PCM audio stream from the media
-            audio_input = get_media_stream(
-                mass=self.mass,
+            audio_input = self.mass.streams.audio.get_media_stream(
                 streamdetails=streamdetails,
                 pcm_format=pcm_format,
             )

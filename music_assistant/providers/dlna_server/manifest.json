@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "domain": "dlna-server",
+  "domain": "dlna_server",
   "stage": "beta",
   "name": "DLNA Server",
   "description": "Expose your Music Assistant library to other DLNA-compatible players and apps on your network.",
