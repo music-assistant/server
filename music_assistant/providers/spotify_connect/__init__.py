@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     ContentType,
     EventType,
     PlaybackState,
+    PlayerType,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -58,6 +59,18 @@ PLAYER_ID_AUTO = "__auto__"
 EVENTS_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("events.py")
 
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
+
+# After an outbound volume is sent to Spotify via Web API, suppress all
+# inbound volume_changed events for this duration.  This prevents stale
+# echoes during rapid slider drags -- the single-value dedup check
+# (_last_volume_sent_to_spotify) fails when the tracker advances before
+# earlier echoes return through Spotify's cloud servers.
+_VOLUME_ECHO_SUPPRESS_WINDOW = 1.5  # seconds
+
+# Debounce outbound volume PUT calls to the Spotify Web API.
+# During rapid slider drags each distinct value triggers _on_volume;
+# without debouncing this saturates the API and produces Retry-After errors.
+_VOLUME_API_DEBOUNCE = 0.3  # seconds -- max ~3 API calls/sec during drags
 
 
 async def setup(
@@ -209,6 +222,16 @@ class SpotifyConnectProvider(PluginProvider):
         self._spotify_device_id: str | None = None
         self._last_session_connected_time: float = 0
         self._last_volume_sent_to_spotify: int | None = None
+        # Monotonic timestamp of the last user-initiated volume change
+        # received via _on_volume (or the actual API send, whichever is
+        # later).  Inbound volume_changed events from Spotify are suppressed
+        # for _VOLUME_ECHO_SUPPRESS_WINDOW seconds after this timestamp, so
+        # the window deterministically extends from the user's last slider
+        # event.
+        self._last_volume_change_received_time: float = 0.0
+        # Debounce state for outbound Spotify Web API volume calls
+        self._volume_debounce_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._pending_spotify_volume: int | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -233,6 +256,8 @@ class SpotifyConnectProvider(PluginProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._stop_called = True
+        if self._volume_debounce_task and not self._volume_debounce_task.done():
+            self._volume_debounce_task.cancel()
         if self._runner_task and not self._runner_task.done():
             self._runner_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -491,7 +516,12 @@ class SpotifyConnectProvider(PluginProvider):
             raise
 
     async def _on_volume(self, volume: int) -> None:
-        """Handle volume change command via Spotify Web API.
+        """Handle volume change command via Spotify Web API (debounced).
+
+        Stores the latest requested volume and schedules a single API call
+        after ``_VOLUME_API_DEBOUNCE`` seconds of inactivity.  During rapid
+        slider drags this coalesces many calls into ~3/sec, preventing
+        Spotify ``Retry-After`` rate-limit errors.
 
         :param volume: Volume level (0-100) from Music Assistant.
         """
@@ -500,19 +530,100 @@ class SpotifyConnectProvider(PluginProvider):
                 "Volume control requires a matching Spotify music provider"
             )
 
-        # Prevent ping-pong: only send if volume actually changed from what we last sent
+        self.logger.debug(
+            "[GroupVolume] _on_volume OUTBOUND: requested=%d, "
+            "last_sent_to_spotify=%s, in_use_by=%s",
+            volume,
+            self._last_volume_sent_to_spotify,
+            self._source_details.in_use_by,
+        )
+
         if self._last_volume_sent_to_spotify == volume:
-            self.logger.debug("Skipping volume update to Spotify - already at %d%%", volume)
+            self.logger.debug(
+                "[GroupVolume] _on_volume SUPPRESSED (dedup): volume=%d already matches last sent",
+                volume,
+            )
+            return
+
+        self._last_volume_change_received_time = time.monotonic()
+        self._pending_spotify_volume = volume
+
+        if self._volume_debounce_task and not self._volume_debounce_task.done():
+            self._volume_debounce_task.cancel()
+            self.logger.debug(
+                "[GroupVolume] _on_volume DEBOUNCE: rescheduling for volume=%d", volume
+            )
+
+        self._volume_debounce_task = self.mass.create_task(self._send_volume_to_spotify())
+
+    async def _send_volume_to_spotify(self) -> None:
+        """Send the pending volume to Spotify Web API after the debounce delay."""
+        await asyncio.sleep(_VOLUME_API_DEBOUNCE)
+
+        volume = self._pending_spotify_volume
+        if volume is None:
+            return
+        self._pending_spotify_volume = None
+
+        if not self._spotify_provider:
+            return
+
+        if self._last_volume_sent_to_spotify == volume:
             return
 
         try:
-            # Bypass throttler for volume changes to ensure responsive UI
             async with self._spotify_provider.throttler.bypass():
                 await self._spotify_provider._put_data(f"me/player/volume?volume_percent={volume}")
                 self._last_volume_sent_to_spotify = volume
+                self._last_volume_change_received_time = time.monotonic()
+                self.logger.debug("[GroupVolume] _on_volume SENT to Spotify API: volume=%d", volume)
         except Exception as err:
             self.logger.warning("Failed to send volume command via Spotify Web API: %s", err)
-            raise
+
+    async def _apply_inbound_volume(self, volume: int) -> None:
+        """Apply a volume change received from Spotify to the correct MA target.
+
+        If the player owning this plugin source is part of a group (has
+        ``group_members`` or is synced to a leader), the volume is routed
+        through ``cmd_group_volume`` so all children are adjusted
+        proportionally -- matching the behavior of the MA group volume slider.
+        For standalone players, ``cmd_volume_set`` is used directly.
+
+        :param volume: Volume level (0-100) received from Spotify.
+        """
+        player_id = self._source_details.in_use_by
+        if not player_id:
+            return
+
+        player = self.mass.players.get_player(player_id)
+        if not player:
+            return
+
+        try:
+            is_group = bool(
+                player.state.group_members
+                or player.state.synced_to
+                or player.state.type == PlayerType.GROUP
+            )
+            if is_group:
+                self.logger.debug(
+                    "[GroupVolume] volume_changed INBOUND -> cmd_group_volume(%s, %d)",
+                    player_id,
+                    volume,
+                )
+                await self.mass.players.cmd_group_volume(player_id, volume)
+            else:
+                self.logger.debug(
+                    "[GroupVolume] volume_changed INBOUND -> cmd_volume_set(%s, %d)",
+                    player_id,
+                    volume,
+                )
+                await self.mass.players.cmd_volume_set(player_id, volume)
+        except UnsupportedFeaturedException:
+            self.logger.debug(
+                "Player %s does not support volume control",
+                player_id,
+            )
 
     async def _get_spotify_device_id(self) -> str | None:
         """Get the Spotify Connect device ID for this instance.
@@ -833,25 +944,44 @@ class SpotifyConnectProvider(PluginProvider):
                 self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
         if event_name == "volume_changed" and (volume := json_data.get("volume")):
+            raw_volume = volume
             # Ignore volume_changed events that fire immediately after session_connect
             # We want to use the volume from MA in that case
             time_since_connect = time.time() - self._last_session_connected_time
             if time_since_connect < 3.0:
                 self.logger.debug(
-                    "Ignoring initial volume_changed event (%.2fs after session_connect)",
+                    "[GroupVolume] volume_changed INBOUND SUPPRESSED "
+                    "(%.2fs after session_connect): raw=%s",
                     time_since_connect,
+                    raw_volume,
                 )
             elif self._source_details.in_use_by:
                 # Spotify Connect volume is 0-65535
                 volume = int(int(volume) / 65535 * 100)
-                self._last_volume_sent_to_spotify = volume
-                try:
-                    await self.mass.players.cmd_volume_set(self._source_details.in_use_by, volume)
-                except UnsupportedFeaturedException:
+                self.logger.debug(
+                    "[GroupVolume] volume_changed INBOUND from Spotify: raw=%s, "
+                    "mapped=%d, last_sent=%s, in_use_by=%s",
+                    raw_volume,
+                    volume,
+                    self._last_volume_sent_to_spotify,
+                    self._source_details.in_use_by,
+                )
+                since_last_change = time.monotonic() - self._last_volume_change_received_time
+                if volume == self._last_volume_sent_to_spotify:
                     self.logger.debug(
-                        "Player %s does not support volume control",
-                        self._source_details.in_use_by,
+                        "[GroupVolume] volume_changed SUPPRESSED (echo of our own send): volume=%d",
+                        volume,
                     )
+                elif since_last_change < _VOLUME_ECHO_SUPPRESS_WINDOW:
+                    self.logger.debug(
+                        "[GroupVolume] volume_changed SUPPRESSED "
+                        "(within echo window: %.2fs): volume=%d",
+                        since_last_change,
+                        volume,
+                    )
+                else:
+                    self._last_volume_sent_to_spotify = volume
+                    await self._apply_inbound_volume(volume)
 
         # signal update to connected player
         if self._source_details.in_use_by:

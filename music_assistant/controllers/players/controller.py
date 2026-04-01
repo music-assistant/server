@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable
 from contextlib import suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
@@ -147,6 +148,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
+        # Coalescing state for cmd_group_volume: during rapid slider drags,
+        # intermediate values are dropped so only the first and latest are
+        # executed.  See cmd_group_volume for the coalescing loop.
+        self._group_vol_in_flight: dict[str, bool] = {}
+        self._group_vol_target: dict[str, int] = {}
 
     async def get_config_entries(
         self,
@@ -622,6 +628,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
         """
+        self.logger.debug(
+            "[GroupVolume] cmd_volume_set ENTRY: player_id=%s, volume_level=%d",
+            player_id,
+            volume_level,
+        )
         await self._handle_cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
@@ -680,21 +691,73 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         Will set a new (overall) volume level to a group player or syncgroup.
 
+        Uses a coalescing pattern for rapid slider drags: the first event
+        executes immediately, and if additional events arrive while
+        ``set_group_volume`` is in-flight, only the latest target is kept.
+        When the in-flight call finishes it re-loops with the latest target,
+        effectively "dropping frames" of intermediate values.
+
         :param player_id: Player ID of group player or syncleader to handle the command.
         :param volume_level: Volume level (0..100) to set to the group.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
+        self.logger.debug(
+            "[GroupVolume] cmd_group_volume ENTRY: player=%s (%s), vol=%d, "
+            "type=%s, group_members=%s, synced_to=%s",
+            player.state.name,
+            player_id,
+            volume_level,
+            player.state.type,
+            player.state.group_members,
+            player.state.synced_to,
+        )
+
+        # Resolve the actual group player that set_group_volume will operate on.
+        group_player: Player | None = None
         if player.state.type == PlayerType.GROUP or player.state.group_members:
-            # dedicated group player or sync leader
-            await self.set_group_volume(player, volume_level)
+            group_player = player
+        elif player.state.synced_to:
+            group_player = self.get_player(player.state.synced_to)
+
+        if group_player is None:
+            # Not a group scenario -- treat as normal player volume change.
+            await self.cmd_volume_set(player_id, volume_level)
             return
-        if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
-            # redirect to sync leader
-            await self.set_group_volume(sync_leader, volume_level)
+
+        group_id = group_player.player_id
+
+        # Store the latest requested target.  If a set_group_volume call is
+        # already in-flight for this group, that call will pick up our target
+        # when it finishes -- so we can return immediately.
+        self._group_vol_target[group_id] = volume_level
+        if self._group_vol_in_flight.get(group_id):
+            self.logger.debug(
+                "[GroupVolume] cmd_group_volume COALESCED: group=%s, "
+                "in-flight will pick up target=%d",
+                group_id,
+                volume_level,
+            )
             return
-        # treat as normal player volume change
-        await self.cmd_volume_set(player_id, volume_level)
+
+        # We are the first caller -- enter the coalescing loop.
+        self._group_vol_in_flight[group_id] = True
+        try:
+            while True:
+                target = self._group_vol_target[group_id]
+                await self.set_group_volume(group_player, target)
+                # Check if a newer target arrived while we were executing.
+                if self._group_vol_target.get(group_id) == target:
+                    break
+                self.logger.debug(
+                    "[GroupVolume] cmd_group_volume RE-LOOP: group=%s, new target=%d (was %d)",
+                    group_id,
+                    self._group_vol_target[group_id],
+                    target,
+                )
+        finally:
+            self._group_vol_in_flight.pop(group_id, None)
+            self._group_vol_target.pop(group_id, None)
 
     @api_command("players/cmd/group_volume_up")
     @handle_player_command
@@ -1714,26 +1777,112 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         return None
 
     async def set_group_volume(self, group_player: Player, volume_level: int) -> None:
-        """Handle adjusting the overall/group volume to a playergroup (or synced players)."""
-        cur_volume = group_player.state.group_volume
-        if cur_volume is None:
-            return
-        volume_dif = volume_level - cur_volume
-        coros = []
-        # handle group volume by only applying the volume to powered members
+        """Handle adjusting the overall/group volume to a playergroup (or synced players).
+
+        Child volume commands are dispatched with ``from_group_volume=True`` so
+        that ``_handle_cmd_volume_set`` skips per-child plugin callbacks. A
+        single plugin callback fires here at the group level instead.
+
+        The group average is computed fresh from child player states on every
+        call rather than reading ``group_player.state.group_volume``.  The
+        cached ``group_volume`` property is only refreshed when
+        ``group_player.update_state()`` runs, which does NOT happen between
+        sequential ``set_group_volume`` calls.  Using the stale cached value
+        produces wildly incorrect deltas during rapid slider drags (the delta
+        can be off by tens of percent, causing children to slam to 0 or 100).
+
+        When clamping prevents a child from absorbing the full delta (i.e. it
+        hits 0 or 100), the lost headroom is redistributed among the remaining
+        children so the group average still converges to the requested target
+        in a single call.  Without redistribution the slider becomes sluggish
+        near the boundaries because the average falls short of the target.
+        """
+        # Collect child players and their current volumes in a single pass.
+        # Match the exclude_self logic of the group_volume cached property:
+        # GROUP-type virtual entities are excluded (they have no physical
+        # volume); PLAYER-type sync leaders are included because the leader
+        # IS a physical player participating in the group.
+        exclude_self = group_player.type != PlayerType.PLAYER
+        children: list[tuple[Player, int]] = []
         for child_player in self.iter_group_members(
-            group_player, only_powered=True, exclude_self=False
+            group_player, only_powered=True, exclude_self=exclude_self
         ):
             if child_player.state.volume_control == PLAYER_CONTROL_NONE:
                 continue
-            cur_child_volume = child_player.state.volume_level or 0
-            new_child_volume = int(cur_child_volume + volume_dif)
-            new_child_volume = max(0, new_child_volume)
-            new_child_volume = min(100, new_child_volume)
-            # Use private method to skip permission check - already validated on group
-            # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
-            coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
+            children.append((child_player, child_player.state.volume_level or 0))
+
+        if not children:
+            return
+
+        cur_volume = int(sum(v for _, v in children) / len(children))
+        volume_dif = volume_level - cur_volume
+        self.logger.debug(
+            "[GroupVolume] set_group_volume called for %s (%s): requested=%d, current_group_vol=%d",
+            group_player.state.name,
+            group_player.player_id,
+            volume_level,
+            cur_volume,
+        )
+
+        # Compute new child volumes, clamped to [0, 100].
+        new_vols = [max(0, min(100, cur + volume_dif)) for _, cur in children]
+
+        # Redistribute any headroom lost to clamping so the group average
+        # still hits the target.  Example: children=[80, 100], target_avg=90,
+        # delta=+5 → [85, 105→100].  Lost 5 units go to the non-clamped
+        # child: [90, 100], avg=95 — target hit.  We iterate a few times
+        # because redistribution itself can cause new clamping.
+        desired_sum = volume_level * len(children)
+        for _ in range(3):
+            shortfall = desired_sum - sum(new_vols)
+            if shortfall == 0:
+                break
+            adjustable = [
+                i
+                for i, v in enumerate(new_vols)
+                if (shortfall > 0 and v < 100) or (shortfall < 0 and v > 0)
+            ]
+            if not adjustable:
+                break
+            per_child, extra = divmod(abs(shortfall), len(adjustable))
+            sign = 1 if shortfall > 0 else -1
+            for j, idx in enumerate(adjustable):
+                bump = per_child + (1 if j < extra else 0)
+                new_vols[idx] = max(0, min(100, new_vols[idx] + sign * bump))
+
+        coros: list[Awaitable[None]] = []
+        for (child_player, cur_child_volume), new_child_volume in zip(
+            children, new_vols, strict=True
+        ):
+            self.logger.debug(
+                "[GroupVolume]   child %s (%s): cur=%d, new=%d",
+                child_player.state.name,
+                child_player.player_id,
+                cur_child_volume,
+                new_child_volume,
+            )
+            coros.append(
+                self._handle_cmd_volume_set(
+                    child_player.player_id, new_child_volume, from_group_volume=True
+                )
+            )
+
+        if plugin_source := self._get_active_plugin_source(group_player):
+            if plugin_source.on_volume:
+                self.logger.debug(
+                    "[GroupVolume] Firing plugin source on_volume(%d) for group %s (plugin=%s)",
+                    volume_level,
+                    group_player.player_id,
+                    plugin_source.id,
+                )
+                coros.append(plugin_source.on_volume(volume_level))
+
         await asyncio.gather(*coros)
+        self.logger.debug(
+            "[GroupVolume] set_group_volume complete for %s: group_vol=%d",
+            group_player.player_id,
+            volume_level,
+        )
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
         """Get the (player specific) volume for a announcement."""
@@ -1954,13 +2103,48 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         return player
 
     def _get_active_plugin_source(self, player: Player) -> PluginSource | None:
-        """Get the active PluginSource for a player if any."""
-        # Check if any plugin source is in use by this player
+        """Get the active PluginSource for a player if any.
+
+        For SyncGroupPlayers, the plugin source's ``in_use_by`` field points to
+        the **sync leader** (the physical player receiving audio), not the virtual
+        group entity.  This is a known architectural gap (see
+        music-assistant/support#5201) -- ``in_use_by`` is a physical-layer concept, but
+        callers here operate at the logical layer where the group is the
+        meaningful unit.
+
+        To bridge the gap without a larger refactor, we fall back to checking the
+        sync leader's ownership when the direct lookup on the group entity fails.
+        This mirrors the workaround already present in
+        ``SyncGroupPlayer.active_source`` (providers/sync_group/player.py).
+        """
+        # Direct lookup: plugin source owned by this exact player ID,
+        # or player's reported active_source matches a plugin source.
         for plugin_source in self.get_plugin_sources():
             if plugin_source.in_use_by == player.player_id:
                 return plugin_source
             if player.state.active_source == plugin_source.id:
                 return plugin_source
+
+        # Sync-leader fallback: if the player is a SyncGroupPlayer, its
+        # sync_leader attribute identifies the physical player that actually
+        # owns the plugin source.  We use getattr duck-typing here to avoid
+        # importing SyncGroupPlayer directly into the controller -- any player
+        # subclass that exposes a ``sync_leader`` attribute gets the same
+        # treatment.
+        if sync_leader := getattr(player, "sync_leader", None):
+            self.logger.debug(
+                "[PluginSource] Direct lookup failed for group %s, "
+                "falling back to sync leader %s (%s)",
+                player.player_id,
+                sync_leader.display_name,
+                sync_leader.player_id,
+            )
+            for plugin_source in self.get_plugin_sources():
+                if plugin_source.in_use_by == sync_leader.player_id:
+                    return plugin_source
+                if sync_leader.state.active_source == plugin_source.id:
+                    return plugin_source
+
         return None
 
     def _get_player_groups(
@@ -2857,16 +3041,214 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         ):
             await self.mass.player_queues.resume(player_id)
 
-    async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+    async def _handle_volume_plugin_callback(self, player: Player, volume_level: int) -> None:
+        """Handle plugin callback for a volume change, isolating group vs standalone.
+
+        Determines whether the player whose volume is changing belongs to a
+        group, and if so, computes the projected new group average.  If the
+        integer average shifts, fires a single ``on_volume`` callback on the
+        parent group's plugin source with the new group volume.  For standalone
+        players, fires the callback directly with the player's new volume.
+
+        **Group resolution** collects candidates from three sources, then picks
+        the best one -- preferring whichever candidate actually has an active
+        plugin source.  This is critical because a player can belong to
+        **multiple** groups simultaneously (e.g. a static SyncGroupPlayer that
+        isn't playing AND a dynamic sync group that IS playing via Spotify).
+        Greedily taking the first match would often pick the wrong group.
+
+        Candidate sources:
+
+        1. ``_get_player_groups``: all ``PlayerType.GROUP`` players (e.g.
+           SyncGroupPlayers, UniversalGroupPlayers) whose ``group_members``
+           includes this player.  May return multiple groups.
+
+        2. ``synced_to`` fallback: if the player is synced to a leader that has
+           ``group_members``, the leader itself.  Covers native hardware sync
+           groups without a SyncGroupPlayer wrapper.
+
+        3. **Sync leader self-recognition**: if the player itself has non-empty
+           ``group_members`` and is NOT a GROUP type (i.e. it's a physical
+           player acting as a sync leader), the player itself.  This handles
+           the case where the sync leader's volume changes -- the leader is
+           not listed in its own ``group_members``, so sources 1 and 2 both
+           miss.  By treating the leader as its own group parent, we correctly
+           compute the group average AND the plugin source lookup succeeds
+           naturally because ``in_use_by`` already points to the leader's ID.
+
+        After collecting candidates, we prefer the one with an active plugin
+        source.  If none has one, we fall back to the first candidate (so the
+        group average is still tracked, just without a plugin callback).
+
+        :param player: The player whose volume is changing.
+        :param volume_level: The new volume level being set.
         """
-        Handle Player volume set command.
+        # --- Step 1: Collect ALL candidate parent groups ---
+        #
+        # A player can belong to multiple groups at once.  For example,
+        # Kitchen might be a configured member of a static SyncGroupPlayer
+        # "The House" (powered but not playing) AND simultaneously synced to
+        # Garage as part of a dynamic sync group that IS playing via Spotify.
+        # We need to find the group that actually has the active plugin source,
+        # not just the first group we stumble upon.
+        candidates: list[tuple[Player, str]] = []
+
+        # Source 1: All powered GROUP-type players that list this player
+        for _gp in self._get_player_groups(player, powered_only=True):
+            candidates.append((_gp, "_get_player_groups"))
+
+        # Source 2: synced_to leader (if player is a sync child)
+        if player.state.synced_to:
+            if sync_leader := self.get_player(player.state.synced_to):
+                if sync_leader.state.group_members:
+                    candidates.append((sync_leader, "synced_to"))
+
+        # Source 3: Player IS the sync leader -- it has group_members but is
+        # a physical player (not a GROUP entity).  Treat it as its own group
+        # parent so that we compute a group average rather than reporting the
+        # leader's individual volume.
+        #
+        # Why this is needed: in a sync group, the SyncGroupPlayer's
+        # group_members list comes from the sync leader's state.group_members
+        # (see SyncGroupPlayer.group_members property).  However, a sync
+        # leader typically does NOT include itself in its own group_members
+        # list.  This means _get_player_groups (source 1) won't match the
+        # leader, and synced_to (source 2) is None for leaders.  So without
+        # this source, the leader would be incorrectly treated as standalone.
+        #
+        # By using the leader as its own group parent, the group average is
+        # computed over the leader's group_members (with exclude_self=False
+        # for PLAYER types, so the leader's own volume is included).  And
+        # crucially, _get_active_plugin_source(player) will succeed because
+        # in_use_by already points to this leader's player ID.
+        if player.type != PlayerType.GROUP and player.state.group_members:
+            candidates.append((player, "sync_leader_self"))
+
+        # --- Pick the best candidate ---
+        #
+        # Prefer whichever candidate has an active plugin source.  This
+        # ensures that when a player belongs to both a dormant static group
+        # and an actively-playing sync group, we pick the one that can
+        # actually fire the plugin callback (e.g. notify Spotify).
+        parent_group: Player | None = None
+        resolved_via: str = ""
+        for candidate, source in candidates:
+            if self._get_active_plugin_source(candidate):
+                parent_group = candidate
+                resolved_via = source
+                break
+
+        # If no candidate has a plugin source, fall back to the first
+        # candidate so we still track the group average correctly (the
+        # callback just won't fire since there's no plugin to notify).
+        if parent_group is None and candidates:
+            parent_group, resolved_via = candidates[0]
+
+        # --- Step 2: Compute projected group average and fire callback ---
+        if parent_group is not None:
+            self.logger.debug(
+                "[PluginCallback] Player %s (%s) resolved to parent group %s (%s) "
+                "via %s (candidates=%s)",
+                player.display_name,
+                player.player_id,
+                parent_group.display_name,
+                parent_group.player_id,
+                resolved_via,
+                [(c.display_name, s) for c, s in candidates],
+            )
+            old_group_vol = parent_group.state.group_volume
+            total = 0
+            count = 0
+            # For GROUP-type parents (SyncGroupPlayer, UniversalGroupPlayer),
+            # the virtual entity itself has no volume -- exclude it from the
+            # average.  For PLAYER-type parents (sync leader acting as its own
+            # group), include the leader in the average via exclude_self=False.
+            exclude_self = parent_group.type != PlayerType.PLAYER
+            for child in self.iter_group_members(
+                parent_group, only_powered=True, exclude_self=exclude_self
+            ):
+                if child.state.volume_control == PLAYER_CONTROL_NONE:
+                    continue
+                if child.player_id == player.player_id:
+                    # Use the NEW volume (not yet committed to state) for
+                    # the player being changed, so the projection is accurate.
+                    total += volume_level
+                elif child.state.volume_level is not None:
+                    total += child.state.volume_level
+                else:
+                    continue
+                count += 1
+            new_group_vol = int(total / count) if count else None
+            if old_group_vol != new_group_vol and new_group_vol is not None:
+                self.logger.debug(
+                    "[PluginCallback] Child vol change shifted group avg: "
+                    "old=%s -> new=%d, firing plugin for group %s (%s)",
+                    old_group_vol,
+                    new_group_vol,
+                    parent_group.display_name,
+                    parent_group.player_id,
+                )
+                # _get_active_plugin_source handles the sync-leader fallback
+                # internally (see docstring there), so this works for both
+                # GROUP-type parents (resolves through sync_leader) and
+                # PLAYER-type parents (direct in_use_by match).
+                if ps := self._get_active_plugin_source(parent_group):
+                    if ps.on_volume:
+                        await ps.on_volume(new_group_vol)
+                else:
+                    self.logger.debug(
+                        "[PluginCallback] No active plugin source found for "
+                        "group %s (%s) -- skipping callback",
+                        parent_group.display_name,
+                        parent_group.player_id,
+                    )
+            else:
+                self.logger.debug(
+                    "[PluginCallback] Child vol change, group avg unchanged "
+                    "(old=%s, projected=%s) for group %s (%s)",
+                    old_group_vol,
+                    new_group_vol,
+                    parent_group.display_name,
+                    parent_group.player_id,
+                )
+
+        # --- Step 3: Standalone player -- no group involvement ---
+        elif plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.on_volume:
+                self.logger.debug(
+                    "[PluginCallback] Standalone vol change -> firing plugin "
+                    "on_volume(%d) for player %s (%s, plugin=%s)",
+                    volume_level,
+                    player.display_name,
+                    player.player_id,
+                    plugin_source.id,
+                )
+                await plugin_source.on_volume(volume_level)
+
+    async def _handle_cmd_volume_set(
+        self, player_id: str, volume_level: int, from_group_volume: bool = False
+    ) -> None:
+        """Handle Player volume set command.
 
         Skips the permission checks (internal use only).
+
+        :param player_id: Player ID to set volume on.
+        :param volume_level: Volume level (0..100).
+        :param from_group_volume: When True, skip plugin source callback
+            (caller is set_group_volume which handles the callback at group level).
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
+        self.logger.debug(
+            "[GroupVolume] _handle_cmd_volume_set: player=%s (%s), vol=%d, "
+            "from_group_volume=%s, current_vol=%s",
+            player.state.name,
+            player_id,
+            volume_level,
+            from_group_volume,
+            player.state.volume_level,
+        )
         if player.type == PlayerType.GROUP:
-            # redirect to special group volume control
             await self.cmd_group_volume(player_id, volume_level)
             return
 
@@ -2889,10 +3271,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # always reset fake mute when controlling volume
         player.extra_data.pop(ATTR_FAKE_MUTE, None)
 
-        # Check if a plugin source is active with a volume callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.on_volume:
-                await plugin_source.on_volume(volume_level)
+        # Plugin callback isolation: skipped when from_group_volume is True
+        # (set_group_volume already handles the callback at group level).
+        if not from_group_volume and player.type != PlayerType.PROTOCOL:
+            await self._handle_volume_plugin_callback(player, volume_level)
+
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:
             # player supports volume command natively: forward to player
@@ -2925,10 +3308,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if protocol_player := self.get_player(player.state.volume_control):
             # redirect to protocol player volume control
             self.logger.debug(
-                "Redirecting volume command to protocol player %s",
+                "Redirecting volume command to protocol player %s (from_group_volume=%s)",
                 protocol_player.provider.manifest.name,
+                from_group_volume,
             )
-            await self._handle_cmd_volume_set(protocol_player.player_id, volume_level)
+            await self._handle_cmd_volume_set(
+                protocol_player.player_id, volume_level, from_group_volume=from_group_volume
+            )
             return
 
     async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None:
