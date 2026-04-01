@@ -59,9 +59,15 @@ from music_assistant.controllers.tasks.context import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.images import create_collage, get_image_data, get_image_thumb
+from music_assistant.helpers.images import (
+    cleanup_thumb_cache,
+    create_collage,
+    get_image_data,
+    get_image_thumb,
+)
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 
@@ -125,17 +131,15 @@ LOCALES = {
 }
 
 DEFAULT_LANGUAGE = "en_US"
-REFRESH_INTERVAL_ARTISTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_ALBUMS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_TRACKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_AUDIOBOOKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PODCASTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PLAYLISTS = 60 * 60 * 24 * 14  # 14 days
+REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 MISSING_ARTIST_ARTWORK_SCAN_TASK_ID = "metadata_missing_artist_artwork_scan"
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
+THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup"
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 METADATA_SCAN_BATCH_SIZE = 5
+CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
+DEFAULT_THUMB_CACHE_MAX_SIZE_MB = 500
 
 
 class MetaDataController(CoreController):
@@ -190,6 +194,16 @@ class MetaDataController(CoreController):
                 "The retrieval of additional rich metadata is a process that is executed slowly "
                 "in the background to not overload these free services with requests. "
                 "You can speedup the process by storing the images and other metadata locally.",
+            ),
+            ConfigEntry(
+                key=CONF_THUMB_CACHE_MAX_SIZE,
+                type=ConfigEntryType.INTEGER,
+                label="Maximum thumbnail cache size (MB)",
+                required=False,
+                default_value=DEFAULT_THUMB_CACHE_MAX_SIZE_MB,
+                range=(50, 5000),
+                description="Maximum total size in megabytes for the on-disk thumbnail cache.\n\n"
+                "Oldest thumbnails are automatically removed when this limit is exceeded.",
             ),
         )
 
@@ -328,28 +342,28 @@ class MetaDataController(CoreController):
                     )
             return item
 
-    def schedule_update_metadata(self, uri: str) -> None:
-        """Schedule metadata update for given MediaItem uri."""
-        if "library" not in uri:
+    def schedule_update_metadata(self, item: MediaItemType) -> None:
+        """Schedule metadata update for given MediaItem."""
+        if item.provider != "library":
+            # this shouldn't happen but just in case.
             return
-        task_id = self._get_metadata_lookup_task_id(uri)
+        last_refresh = item.metadata.last_refresh or 0
+        needs_update = (time() - last_refresh) > REFRESH_INTERVAL
+        if not needs_update:
+            return
+        assert item.uri is not None
+        task_id = self._get_metadata_lookup_task_id(item.uri)
+        _item = item
 
-        async def handle_lookup() -> None:
-            item = await self.mass.music.get_item_by_uri(uri)
-            item_name = getattr(item, "name", uri)
-            update_current_task_progress_text(f"Refreshing metadata for {item_name}")
-            await self.update_metadata(cast("MediaItemType", item))
-
-        self.mass.tasks.create_task(
+        self.mass.tasks.run_background_task(
             task_id=task_id,
-            name="Update metadata",
-            handler=handle_lookup,
+            name=f"Update metadata for {item.name}",
+            handler=lambda: self.update_metadata(_item),
             translation_key="background_task.update_metadata",
             metadata={
                 "task_domain": "metadata_lookup",
-                "item_uri": uri,
+                "item_uri": item.uri,
             },
-            remove_on_finish=True,
         )
 
     async def get_image_data_for_item(
@@ -461,7 +475,7 @@ class MetaDataController(CoreController):
             image_format = _detect_image_format(path)
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
-            collage_rel = path.split("/collage/")[-1]
+            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
             if not is_safe_path(collage_rel):
                 raise FileNotFoundError("Invalid collage path")
             path = os.path.join(self._collage_images_dir, collage_rel)
@@ -600,7 +614,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an artist."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL_ARTISTS
+        needs_refresh = (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -662,7 +676,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an album."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL_ALBUMS
+        needs_refresh = (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -715,7 +729,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a track."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL_TRACKS
+        needs_refresh = (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -744,7 +758,7 @@ class MetaDataController(CoreController):
 
         # collect metadata from all [metadata] providers
         # Only fetch metadata from these sources if force_refresh is set OR
-        # if the track needs a refresh (based on REFRESH_INTERVAL_TRACKS) AND
+        # if the track needs a refresh (based on REFRESH_INTERVAL) AND
         # online metadata is enabled.
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
@@ -769,9 +783,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a playlist."""
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (
-            time() - (playlist.metadata.last_refresh or 0)
-        ) > REFRESH_INTERVAL_PLAYLISTS
+        needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
         self.logger.debug("Updating metadata for Playlist %s", playlist.name)
@@ -847,9 +859,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an audiobook."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (
-            time() - (audiobook.metadata.last_refresh or 0)
-        ) > REFRESH_INTERVAL_AUDIOBOOKS
+        needs_refresh = (time() - (audiobook.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -895,7 +905,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a podcast."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (podcast.metadata.last_refresh or 0)) > REFRESH_INTERVAL_PODCASTS
+        needs_refresh = (time() - (podcast.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -1014,6 +1024,15 @@ class MetaDataController(CoreController):
             metadata={"task_domain": "metadata_playlist_metadata_scan"},
             allow_retry=True,
         )
+        self.mass.tasks.register_scheduled_task(
+            task_id=THUMB_CACHE_CLEANUP_TASK_ID,
+            name="Cleanup thumbnail cache",
+            handler=self._cleanup_thumb_cache,
+            schedule=desired_schedule,
+            translation_key="background_task.cleanup_thumbnail_cache",
+            metadata={"task_domain": "metadata_thumb_cache_cleanup"},
+            allow_retry=True,
+        )
 
     @staticmethod
     def _get_metadata_lookup_task_id(uri: str) -> str:
@@ -1023,7 +1042,7 @@ class MetaDataController(CoreController):
     async def _scan_missing_artist_artwork(self) -> None:
         """Refresh metadata for a small batch of artists missing artwork."""
         update_current_task_progress_text("Searching for artists with missing artwork")
-        refresh_before = int(time() - REFRESH_INTERVAL_ARTISTS)
+        refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
             f"(json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]') "
@@ -1059,7 +1078,7 @@ class MetaDataController(CoreController):
     async def _refresh_playlist_metadata_batch(self) -> None:
         """Refresh metadata for a small batch of library playlists."""
         update_current_task_progress_text("Searching for playlists needing metadata refresh")
-        refresh_before = int(time() - REFRESH_INTERVAL_PLAYLISTS)
+        refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before}"
@@ -1089,3 +1108,15 @@ class MetaDataController(CoreController):
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
         update_current_task_progress(100, f"Processed {len(playlists)} playlist(s)")
+
+    async def _cleanup_thumb_cache(self) -> None:
+        """Remove oldest thumbnails when the cache folder exceeds the configured limit."""
+        max_size_mb = (
+            try_parse_int(
+                self.config.get_value(CONF_THUMB_CACHE_MAX_SIZE), DEFAULT_THUMB_CACHE_MAX_SIZE_MB
+            )
+            or DEFAULT_THUMB_CACHE_MAX_SIZE_MB
+        )
+        removed = await cleanup_thumb_cache(self.mass.cache_path, max_size_mb * 1024 * 1024)
+        if removed:
+            self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)

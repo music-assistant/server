@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import quote
 
 import aiofiles
-from aiohttp import ClientTimeout, web
+from aiohttp import web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
@@ -32,6 +32,7 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
 )
@@ -41,7 +42,6 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     verify_ssl_certificate,
 )
 from music_assistant.helpers.api import parse_arguments
-from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
@@ -66,7 +66,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 DEFAULT_SERVER_PORT = 8095
-INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
@@ -229,10 +228,10 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", "::", *ip_addresses}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 or :: to bind to all interfaces. \n"
+                "Use 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \n"
                 "Set this address for example to a docker-internal network, "
                 "when you are running a reverse proxy to enhance security and "
                 "protect outside access to the webinterface and API. \n\n"
@@ -378,9 +377,6 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        if self.mass.running_as_hass_addon:
-            # (re)announce to HA supervisor to make sure that HA picks it up
-            await self._announce_to_homeassistant()
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
@@ -477,7 +473,9 @@ class WebserverController(CoreController):
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
+        async for chunk in self.mass.streams.get_preview_stream(
+            provider_instance_id_or_domain, item_id
+        ):
             await resp.write(chunk)
         return resp
 
@@ -1063,33 +1061,3 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
-
-    async def _announce_to_homeassistant(self) -> None:
-        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
-        addon_hostname = os.environ["HOSTNAME"]
-        # Get or create auth token for the HA system user
-        ha_integration_token = await self.auth.get_homeassistant_system_user_token()
-        discovery_payload = {
-            "service": "music_assistant",
-            "config": {
-                "host": addon_hostname,
-                "port": INGRESS_SERVER_PORT,
-                "auth_token": ha_integration_token,
-            },
-        }
-        try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
-        except Exception as err:
-            self.logger.warning("Failed to announce to Home Assistant: %s", err)

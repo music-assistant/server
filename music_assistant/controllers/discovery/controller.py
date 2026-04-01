@@ -6,15 +6,15 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import os
 from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from zeroconf import (
-    InterfaceChoice,
-    IPVersion,
     NonUniqueNameException,
     ServiceStateChange,
     Zeroconf,
@@ -24,9 +24,10 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZerocon
 from music_assistant.constants import (
     CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_ZEROCONF_INTERFACES,
+    INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.util import get_ip_pton
+from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -83,6 +84,9 @@ class DiscoveryController(CoreController):
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()
+        if self.mass.running_as_hass_addon:
+            # (re)announce to HA supervisor to make sure that HA picks it up
+            await self._announce_to_homeassistant()
         self._schedule_periodic_upnp_discovery()
 
     async def get_config_entries(
@@ -150,11 +154,12 @@ class DiscoveryController(CoreController):
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""
         zeroconf_interfaces = str(config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
-        # IPv6 requires InterfaceChoice.All, so only enable when all interfaces are used.
         use_all_interfaces = zeroconf_interfaces == "all"
+        zc_args = get_zeroconf_args(use_all_interfaces)
+        self.logger.debug("Zeroconf configuration: %s", zc_args)
         return AsyncZeroconf(
-            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
-            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
+            ip_version=zc_args["ip_version"],
+            interfaces=zc_args["interfaces"],
         )
 
     async def _setup_mdns_browser(self) -> None:
@@ -381,3 +386,32 @@ class DiscoveryController(CoreController):
                     err,
                     exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
+
+    async def _announce_to_homeassistant(self) -> None:
+        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
+        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
+        addon_hostname = os.environ["HOSTNAME"]
+        ha_integration_token = await self.mass.webserver.auth.get_homeassistant_system_user_token()
+        discovery_payload = {
+            "service": "music_assistant",
+            "config": {
+                "host": addon_hostname,
+                "port": INGRESS_SERVER_PORT,
+                "auth_token": ha_integration_token,
+            },
+        }
+        try:
+            async with self.mass.http_session_no_ssl.post(
+                "http://supervisor/discovery",
+                headers={"Authorization": f"Bearer {supervisor_token}"},
+                json=discovery_payload,
+                timeout=ClientTimeout(total=10),
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+                self.logger.debug(
+                    "Successfully announced to Home Assistant. Discovery UUID: %s",
+                    result.get("uuid"),
+                )
+        except Exception as err:
+            self.logger.warning("Failed to announce to Home Assistant: %s", err)

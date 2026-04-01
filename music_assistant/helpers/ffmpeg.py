@@ -145,6 +145,10 @@ class FFMpeg(AsyncProcess):
             if decode_errors >= 50:
                 self.logger.error(line)
 
+            # Log reconnection events for radio streams
+            if "Opening" in line or "Reconnect" in line or "reconnect" in line:
+                self.logger.debug("FFmpeg: %s", line)
+
             if "Error during demuxing" in line:
                 # this can occur if using the concat demuxer for multipart files
                 # and should raise an exception to prevent false progress logging

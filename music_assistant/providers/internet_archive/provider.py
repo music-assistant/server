@@ -149,7 +149,7 @@ class InternetArchiveProvider(MusicProvider):
 
         # For audiobooks: search within audiobook collections, still limit to audio
         if MediaType.AUDIOBOOK in media_types:
-            audiobook_query = f"{search_query} AND collection:(librivoxaudio OR audio_bookspoetry) AND mediatype:audio"  # noqa: E501
+            audiobook_query = f"{search_query} AND collection:(librivoxaudio OR audio_bookspoetry) AND mediatype:audio"
             search_strategies.append((audiobook_query, "downloads desc"))
 
         # For podcasts: search within podcast collections

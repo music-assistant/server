@@ -13,16 +13,9 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import (
-    Playlist,
-    Track,
-)
+from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.constants import (
-    DB_TABLE_PLAYLISTS,
-    PLAYLIST_MEDIA_TYPES,
-    PlaylistPlayableItem,
-)
+from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
 from music_assistant.controllers.media.audiobooks import AudiobooksController
 from music_assistant.controllers.media.radio import RadioController
 from music_assistant.controllers.media.tracks import TracksController
@@ -34,6 +27,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.playlists import (
+    PlaylistItem,
+    generate_m3u,
+    media_item_to_playlist_item,
+)
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
@@ -45,6 +43,7 @@ if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
 
     from music_assistant import MusicAssistant
+    from music_assistant.providers.builtin import BuiltinProvider
 
 
 def _update_stage_progress(
@@ -82,6 +81,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.mass.register_api_command(
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
+        self.mass.register_api_command("music/playlists/export_playlist", self.export_playlist)
+        self.mass.register_api_command("music/playlists/import_playlist", self.import_playlist)
 
     def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
         """Verify that the update is allowed from a security perspective.
@@ -217,7 +218,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         with suppress(MediaNotFoundError):
             playlist_name = (await self.get_library_item(int(db_playlist_id))).name
         user = get_current_user()
-        return self.mass.tasks.create_task(
+        return self.mass.tasks.run_background_task(
             name=f"Add items to playlist {playlist_name}",
             handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris),
             translation_key="background_task.add_playlist_tracks",
@@ -230,6 +231,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "item_count": len(uris),
             },
             allow_retry=True,
+            priority=True,
         )
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
@@ -250,7 +252,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         with suppress(MediaNotFoundError):
             playlist_name = (await self.get_library_item(int(db_playlist_id))).name
         user = get_current_user()
-        return self.mass.tasks.create_task(
+        return self.mass.tasks.run_background_task(
             name=f"Remove items from playlist {playlist_name}",
             handler=lambda: self._handle_remove_playlist_tracks(
                 db_playlist_id, positions_to_remove
@@ -264,6 +266,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "playlist_name": playlist_name,
                 "item_count": len(positions_to_remove),
             },
+            priority=True,
         )
 
     async def _add_library_item(self, item: Playlist, overwrite_existing: bool = False) -> int:
@@ -344,9 +347,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         provider = cast("MusicProvider", provider)
         async with self.mass.cache.handle_refresh(force_refresh):
-            # Builtin provider overrides to return list[PlaylistPlayableItem],
-            # others return list[Track]. Since Track is part of PlaylistPlayableItem union,
-            # this is safe at runtime. Type ignore needed because list is invariant.
             return await provider.get_playlist_tracks(item_id, page=page)
 
     async def radio_mode_base_tracks(
@@ -375,11 +375,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # playlists can only be matched on the same provider (if not unique)
         if self.mass.music.match_provider_instances(db_item):
             await self.add_provider_mappings(db_item.item_id, db_item.provider_mappings)
-
-    async def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
-        """Refresh playlist tracks by forcing a cache refresh."""
-        async for _ in self.tracks(playlist.item_id, playlist.provider, force_refresh=True):
-            pass
 
     async def _handle_add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Handle adding playlist items inside a managed task."""
@@ -496,6 +491,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
                 continue
 
+            # special: the builtin provider can handle uri's from all providers (with uri as id)
+            if playlist_prov.domain == "builtin":
+                ids_to_add.append(uri)
+                continue
+
             # parse uri for further processing
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
 
@@ -517,174 +517,96 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
                 continue
 
-            # special: the builtin provider can handle uri's from all providers (with uri as id)
-            if playlist_prov.domain == "builtin":
-                # For non-library URIs, add directly (they're already portable provider URIs)
-                if provider_instance_id_or_domain != "library":
-                    if uri not in ids_to_add:
-                        ids_to_add.append(uri)
-                    self.logger.info(
-                        "Adding %s to playlist %s",
-                        uri,
-                        playlist.name,
-                    )
-                    continue
-                # For library URIs, convert to provider URIs to survive DB rebuilds
-                # Get the full item from library to access all provider mappings
-                full_item = await self.mass.music.get_item_by_uri(uri)
-                if not hasattr(full_item, "provider_mappings"):
-                    self.logger.warning(
-                        "Can't add %s to playlist %s - unsupported media type",
-                        uri,
-                        playlist.name,
-                    )
-                    continue
-
-                # For tracks, try to match to playlist provider
-                # For non-track items, just use first available mapping
-                provider_mappings = full_item.provider_mappings
-                if media_type == MediaType.TRACK:
-                    # Cast to Track for mypy - we know it's a track from media_type check
-                    full_track = cast("Track", full_item)
-                    # Try to match the track to additional providers
-                    track_prov_domains = {x.provider_domain for x in provider_mappings}
-                    if (
-                        playlist_prov.is_streaming_provider
-                        and playlist_prov.domain not in track_prov_domains
-                    ):
-                        provider_mappings.update(
-                            await self.mass.music.tracks.match_provider(
-                                full_track, playlist_prov, strict=False
-                            )
-                        )
-
-                # Sort by quality (highest first) for deterministic selection
-                provider_mappings = sorted(provider_mappings, key=lambda x: x.quality, reverse=True)
-
-                # Add first available provider mapping
-                for prov_mapping in provider_mappings:
-                    if not prov_mapping.available:
-                        continue
-                    item_prov = self.mass.get_provider(prov_mapping.provider_instance)
-                    if not item_prov:
-                        continue
-                    # Create provider URI from the mapping
-                    provider_uri = create_uri(
-                        media_type,
-                        item_prov.instance_id,
-                        prov_mapping.item_id,
-                    )
-                    if (
-                        provider_uri not in ids_to_add
-                        and provider_uri not in cur_playlist_track_uris
-                    ):
-                        ids_to_add.append(provider_uri)
-                        self.logger.info(
-                            "Adding %s to playlist %s",
-                            provider_uri,
-                            playlist.name,
-                        )
-                    break
-                else:
-                    self.logger.warning(
-                        "Can't add %s to playlist %s - no available provider mapping",
-                        uri,
-                        playlist.name,
-                    )
+            # if target playlist is an exact provider match, we can add it
+            if provider_instance_id_or_domain in (playlist_prov.instance_id, playlist_prov.domain):
+                ids_to_add.append(item_id)
                 continue
 
-            # if target playlist is an exact provider match, we can add it
-            if provider_instance_id_or_domain != "library":
-                item_prov = self.mass.get_provider(provider_instance_id_or_domain)
-                if not item_prov or not item_prov.available:
-                    self.logger.warning(
-                        "Skip adding %s to playlist: Provider %s is not available",
-                        uri,
-                        provider_instance_id_or_domain,
-                    )
-                    continue
-                if item_prov.instance_id == playlist_prov.instance_id:
-                    if item_id not in ids_to_add:
-                        ids_to_add.append(item_id)
-                    continue
-
-            # For provider-specific playlists: match tracks with quality sorting
             if media_type == MediaType.PODCAST_EPISODE:
-                ids_to_add.append(item_id)
-            else:
-                full_item_track: PlaylistPlayableItem
-                controller = cast(
-                    "AudiobooksController | RadioController | TracksController",
-                    self.mass.music.get_controller(media_type),
+                # in practice we should not be able to reach here but guard just in case
+                self.logger.warning(
+                    "Not adding %s to playlist %s - "
+                    "podcast episodes must be added to a provider-specific playlist",
+                    uri,
+                    playlist.name,
                 )
-                if media_type == MediaType.TRACK:
-                    assert isinstance(controller, TracksController)  # for type checking
-                    full_item_track = await controller.get(
-                        item_id,
-                        provider_instance_id_or_domain,
-                        recursive=provider_instance_id_or_domain != "library",
-                    )
-                else:
-                    full_item_track = await controller.get(
-                        item_id,
-                        provider_instance_id_or_domain,
-                    )
-                track_prov_domains = {x.provider_domain for x in full_item_track.provider_mappings}
-                if (
-                    playlist_prov.domain != "builtin"
-                    and playlist_prov.is_streaming_provider
-                    and playlist_prov.domain not in track_prov_domains
-                ):
-                    # try to match the track to the playlist provider
-                    full_item_track.provider_mappings.update(
-                        await controller.match_provider(
-                            full_item_track,  # type: ignore[arg-type]
-                            playlist_prov,
-                            strict=False,
-                        )
-                    )
+                continue
 
-                # a track can contain multiple versions on the same provider
-                # simply sort by quality and just add the first available version
-                for track_version in sorted(
-                    full_item_track.provider_mappings, key=lambda x: x.quality, reverse=True
-                ):
-                    if not track_version.available:
-                        continue
-                    if track_version.item_id in cur_playlist_track_ids:
-                        break  # already existing in the playlist
-                    item_prov = self.mass.get_provider(track_version.provider_instance)
-                    if not item_prov:
-                        continue
-                    track_version_uri = create_uri(
-                        media_type,
-                        item_prov.instance_id,
-                        track_version.item_id,
+            # not exact match - try to get a match for the item on the playlist's provider
+            full_item: PlaylistPlayableItem
+            controller = cast(
+                "AudiobooksController | RadioController | TracksController",
+                self.mass.music.get_controller(media_type),
+            )
+            if media_type == MediaType.TRACK:
+                assert isinstance(controller, TracksController)  # for type checking
+                full_item = await controller.get(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    allow_update_metadata=False,
+                    recursive=provider_instance_id_or_domain != "library",
+                )
+            else:
+                full_item = await controller.get(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    allow_update_metadata=False,
+                )
+            track_prov_domains = {x.provider_domain for x in full_item.provider_mappings}
+            if (
+                playlist_prov.is_streaming_provider
+                and playlist_prov.domain not in track_prov_domains
+            ):
+                # try to match the track to the playlist's provider
+                full_item.provider_mappings.update(
+                    await controller.match_provider(
+                        full_item,  # type: ignore[arg-type]
+                        playlist_prov,
+                        strict=False,
                     )
-                    if track_version_uri in cur_playlist_track_uris:
-                        self.logger.warning(
-                            "Not adding %s to playlist %s - it already exists",
-                            full_item_track.name,
-                            playlist.name,
-                        )
-                        break  # already existing in the playlist
-                    # Add track to provider-specific playlist
-                    if item_prov.instance_id == playlist_prov.instance_id:
-                        if track_version.item_id not in ids_to_add:
-                            ids_to_add.append(track_version.item_id)
-                        self.logger.info(
-                            "Adding %s to playlist %s",
-                            full_item_track.name,
-                            playlist.name,
-                        )
-                        break
-                else:
+                )
+
+            # a track can contain multiple versions on the same provider
+            # simply sort by quality and just add the first available version
+            for item_mapping in sorted(
+                full_item.provider_mappings, key=lambda x: x.quality, reverse=True
+            ):
+                if not item_mapping.available:
+                    continue
+                if item_mapping.item_id in cur_playlist_track_ids:
+                    break  # already existing in the playlist
+                item_prov = self.mass.get_provider(item_mapping.provider_instance)
+                if not item_prov:
+                    continue
+                track_version_uri = create_uri(
+                    media_type,
+                    item_prov.instance_id,
+                    item_mapping.item_id,
+                )
+                if track_version_uri in cur_playlist_track_uris:
                     self.logger.warning(
-                        "Can't add %s to playlist %s - it is not available on provider %s",
-                        full_item_track.name,
+                        "Not adding %s to playlist %s - it already exists",
+                        full_item.name,
                         playlist.name,
-                        playlist_prov.name,
                     )
+                    break  # already existing in the playlist
+                # Add item to provider-specific playlist
+                if item_prov.instance_id == playlist_prov.instance_id:
+                    if item_mapping.item_id not in ids_to_add:
+                        ids_to_add.append(item_mapping.item_id)
+                    self.logger.info(
+                        "Adding %s to playlist %s",
+                        full_item.name,
+                        playlist.name,
+                    )
+                    break
+            else:
+                self.logger.warning(
+                    "Can't add %s to playlist %s - it is not available on provider %s",
+                    full_item.name,
+                    playlist.name,
+                    playlist_prov.name,
+                )
 
         if not ids_to_add:
             update_current_task_progress(100, "No new playlist items to add")
@@ -693,9 +615,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
         await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
-        # invalidate cache so tracks get refreshed
-        update_current_task_progress(95, "Refreshing playlist")
-        await self._refresh_playlist_tracks(playlist)
+        # reset 'last_refresh' to force a refresh of the playlist's metadata
+        # in the next scheduled run of the playlist metadata task
+        playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
         update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
 
@@ -720,5 +642,71 @@ class PlaylistController(MediaControllerBase[Playlist]):
             msg = f"Provider {provider.name} does not support editing playlists"
             raise InvalidDataError(msg)
         await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
-
+        # reset 'last_refresh' to force a refresh of the playlist's metadata
+        # in the next scheduled run of the playlist metadata task
+        playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
+
+    async def export_playlist(self, db_playlist_id: str | int) -> str:
+        """Export a playlist to M3U8 format.
+
+        :param db_playlist_id: The library database ID of the playlist.
+        """
+        db_id = int(db_playlist_id)
+        playlist = await self.get_library_item(db_id)
+        if not playlist:
+            msg = f"Playlist with id {db_id} not found"
+            raise MediaNotFoundError(msg)
+        items: list[PlaylistItem] = []
+        async for track in self.tracks(
+            item_id=str(db_id),
+            provider_instance_id_or_domain="library",
+        ):
+            items.append(media_item_to_playlist_item(track))
+        return generate_m3u(playlist.name, items)
+
+    async def import_playlist(
+        self,
+        m3u_data: str,
+        library_matching: bool = False,
+        match_providers: list[str] | None = None,
+    ) -> Playlist:
+        """Import a playlist from M3U8 format.
+
+        Creates a new builtin playlist from the provided M3U data.
+
+        :param m3u_data: The M3U8 playlist data as a string.
+        :param library_matching: When True, attempt to find tracks by searching
+            providers using metadata when the original URI's provider is not
+            available. Defaults to False.
+        :param match_providers: Optional list of provider instance IDs or domains
+            to search when library_matching is enabled.
+        """
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+        playlist = await builtin_prov.import_playlist(m3u_data)
+        for prov_mapping in playlist.provider_mappings:
+            prov_mapping.in_library = True
+        db_playlist = await self.add_item_to_library(playlist, False)
+        if library_matching:
+            prov_playlist_id = playlist.item_id
+            user = get_current_user()
+            self.mass.tasks.run_background_task(
+                name=f"Import playlist {db_playlist.name}",
+                handler=lambda: builtin_prov.match_imported_playlist_tracks(
+                    prov_playlist_id, match_providers
+                ),
+                translation_key="background_task.import_playlist_matching",
+                translation_args=[db_playlist.name],
+                user_id=user.user_id if user else None,
+                metadata={
+                    "task_domain": "playlist_import_matching",
+                    "playlist_id": str(db_playlist.item_id),
+                    "playlist_name": db_playlist.name,
+                },
+                allow_retry=True,
+                allow_cancel=True,
+            )
+        return db_playlist

@@ -83,7 +83,6 @@ ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.LIBRARY_PODCASTS,
 }
 
@@ -161,7 +160,7 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label=f"Successfully signed in as {values.get(CONF_DISPLAY_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",  # noqa: E501
+            label=f"Successfully signed in as {values.get(CONF_DISPLAY_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",
             hidden=not authenticated,
         ),
         ConfigEntry(
@@ -321,12 +320,14 @@ class ARDAudiothek(MusicProvider):
             )
         return False, 0
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
         await self._update_progress()
 
-        return self._get_progress(item_id)
+        return *self._get_progress(item_id), None
 
     async def on_played(
         self,
