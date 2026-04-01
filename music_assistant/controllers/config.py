@@ -1833,58 +1833,48 @@ class ConfigController:
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
         auto_option = ConfigValueOption(
-            title="Auto-select (based on player capabilities)", value="auto"
+            title="Auto-select (based on active/preferred protocol)", value="auto"
         )
         # work out player supported features
-        base_power_options: list[ConfigValueOption] = [auto_option]
+        power_options: list[ConfigValueOption] = []
         if player.supports_feature(PlayerFeature.POWER):
-            base_power_options.append(
+            power_options.append(
                 ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
             )
-        base_volume_options: list[ConfigValueOption] = [auto_option]
+        volume_options: list[ConfigValueOption] = []
         if player.supports_feature(PlayerFeature.VOLUME_SET):
-            base_volume_options.append(
+            volume_options.append(
                 ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
             )
-        base_mute_options: list[ConfigValueOption] = [auto_option]
+        mute_options: list[ConfigValueOption] = []
         if player.supports_feature(PlayerFeature.VOLUME_MUTE):
-            base_mute_options.append(
+            mute_options.append(
                 ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
             )
-        # append protocol-specific volume and mute controls to the base options
+        # add 'auto' option if any linked protocol players support the feature
         for linked_protocol in player.linked_output_protocols:
             if protocol_player := self.mass.players.get_player(linked_protocol.output_protocol_id):
                 if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
-                    base_volume_options.append(
-                        ConfigValueOption(
-                            title=linked_protocol.name, value=linked_protocol.output_protocol_id
-                        )
-                    )
+                    if auto_option not in volume_options:
+                        volume_options.append(auto_option)
                 if protocol_player.supports_feature(PlayerFeature.VOLUME_MUTE):
-                    base_mute_options.append(
-                        ConfigValueOption(
-                            title=linked_protocol.name,
-                            value=linked_protocol.output_protocol_id,
-                        )
-                    )
-                # NOTE: we do not add power control options for linked protocols
-                # because power control is protocol-specific and can cause issues
-                # if you try to control power on a protocol that is not
-                # currently active for the player
-                # the power control will be added dynamically if the linked
-                # protocol becomes active and supports power control
+                    if auto_option not in mute_options:
+                        mute_options.append(auto_option)
+                if protocol_player.supports_feature(PlayerFeature.POWER):
+                    if auto_option not in power_options:
+                        power_options.append(auto_option)
 
         # append none+fake options
-        base_power_options += [
+        power_options += [
             ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
             ConfigValueOption(title="Fake power control", value=PLAYER_CONTROL_FAKE),
         ]
-        base_volume_options += [
+        volume_options += [
             ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
         ]
-        base_mute_options.append(ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE))
+        mute_options.append(ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE))
         if player.supports_feature(PlayerFeature.VOLUME_SET):
-            base_mute_options.append(
+            mute_options.append(
                 ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE)
             )
 
@@ -1895,10 +1885,10 @@ class ConfigController:
                 key=CONF_POWER_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Power Control",
-                default_value="auto",
+                default_value=power_options[0].value if power_options else PLAYER_CONTROL_NONE,
                 required=False,
                 options=[
-                    *base_power_options,
+                    *power_options,
                     *(ConfigValueOption(x.name, x.id) for x in power_controls),
                 ],
                 category="player_controls",
@@ -1908,10 +1898,10 @@ class ConfigController:
                 key=CONF_VOLUME_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Volume Control",
-                default_value="auto",
+                default_value=volume_options[0].value if volume_options else PLAYER_CONTROL_NONE,
                 required=True,
                 options=[
-                    *base_volume_options,
+                    *volume_options,
                     *(ConfigValueOption(x.name, x.id) for x in volume_controls),
                 ],
                 category="player_controls",
@@ -1921,10 +1911,10 @@ class ConfigController:
                 key=CONF_MUTE_CONTROL,
                 type=ConfigEntryType.STRING,
                 label="Mute Control",
-                default_value="auto",
+                default_value=mute_options[0].value if mute_options else PLAYER_CONTROL_NONE,
                 required=True,
                 options=[
-                    *base_mute_options,
+                    *mute_options,
                     *[ConfigValueOption(x.name, x.id) for x in mute_controls],
                 ],
                 category="player_controls",
