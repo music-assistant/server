@@ -73,9 +73,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SOCKS_URL,
             type=ConfigEntryType.STRING,
-            label="Socks",
-            description="Socks proxy server",
+            label="Socks proxy server",
+            description="This socks proxy is only used to route Pandora network traffic through."
+            "\n\nThe server address should be written as:\n"
+            "<code>ip_address:port</code> (or <code>socks5://ip_address:port</code>)",
             required=False,
             default_value="",
+            advanced=True,
         ),
     )
