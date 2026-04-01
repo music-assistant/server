@@ -520,6 +520,22 @@ class AppleMusicProvider(MusicProvider):
     @use_cache(cache_checksum="stations-metadata-v2")
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
+        if prov_playlist_id.startswith("ra."):
+            # Radio/algorithmic stations are user-specific and have no catalog endpoint.
+            # Return a synthetic Playlist - the station is always dynamic by definition.
+            return Playlist(
+                item_id=prov_playlist_id,
+                provider=self.instance_id,
+                name=prov_playlist_id,
+                is_dynamic=True,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=prov_playlist_id,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
         if not self.is_library_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
@@ -548,6 +564,11 @@ class AppleMusicProvider(MusicProvider):
     @use_cache(3600 * 3)  # cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
+        if prov_playlist_id.startswith("ra."):
+            # Radio stations don't support paging; each call to next-tracks yields a fresh batch.
+            if page > 0:
+                return []
+            return await self._get_station_tracks(prov_playlist_id)
         if self._is_catalog_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}/tracks"
         else:
@@ -568,6 +589,21 @@ class AppleMusicProvider(MusicProvider):
                 parsed_track = self._parse_track(track, is_favourite)
                 parsed_track.position = offset + index + 1
                 result.append(parsed_track)
+        return result
+
+    async def _get_station_tracks(self, station_id: str) -> list[Track]:
+        """Fetch the next batch of tracks for a radio station."""
+        response = await self._post_data(f"me/stations/next-tracks/{station_id}")
+        tracks = response.get("data", [])
+        if not tracks:
+            return []
+        track_ids = [t["id"] for t in tracks if t and t.get("id")]
+        rating_response = await self._get_ratings(track_ids, MediaType.TRACK)
+        result = []
+        for track_obj in tracks:
+            if track_obj and track_obj.get("id"):
+                parsed = self._parse_track(track_obj, rating_response.get(track_obj["id"]))
+                result.append(parsed)
         return result
 
     @use_cache(3600 * 24 * 7)  # cache for 7 days
