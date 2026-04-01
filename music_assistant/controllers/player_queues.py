@@ -2109,28 +2109,36 @@ class PlayerQueuesController(CoreController):
             None,
         )
         if dynamic_playlist is not None:
+            # Dynamic playlist (e.g. a station): fetch next batch of tracks from the provider.
+            # Do NOT fall back to generic radio - stations manage their own track supply.
             try:
                 dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
                 queue_items = [
                     QueueItem.from_media_item(queue_id, x) for x in dynamic_tracks if x.available
                 ]
-                if queue_items:
-                    cur_index = self._queues[queue_id].current_index or 0
-                    await self.load(
-                        queue_id,
-                        queue_items,
-                        insert_at_index=cur_index + 1,
-                        keep_remaining=False,
-                        keep_played=True,
+                if not queue_items:
+                    self.logger.warning(
+                        "Dynamic playlist %s returned no playable tracks for queue %s",
+                        dynamic_playlist.name,
+                        queue.display_name,
                     )
                     return
+                cur_index = self._queues[queue_id].current_index or 0
+                await self.load(
+                    queue_id,
+                    queue_items,
+                    insert_at_index=cur_index + 1,
+                    keep_remaining=False,
+                    keep_played=True,
+                )
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Failed to refill dynamic playlist %s for queue %s: %s",
-                    getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                    dynamic_playlist.name,
                     queue.display_name,
                     err,
                 )
+            return
         radio_tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in radio_tracks if x.available]
