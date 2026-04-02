@@ -225,7 +225,7 @@ class MPDPlayer(Player):
             self.logger.warning("Failed to fetch MPD status: %s", err)
 
     async def _sync_state(self, status: dict[str, Any]) -> None:
-        """Map MPD status dict onto MA player attributes."""
+        """Map MPD status dict onto player attributes."""
         mpd_state = status.get("state", "stop")
         self._attr_playback_state = MPD_STATE_MAP.get(mpd_state, PlaybackState.IDLE)
 
