@@ -493,6 +493,7 @@ class SonosPlayer(Player):
         self._attr_volume_muted = self.client.player.volume_muted
 
         group_parent: SonosPlayer | None = None
+        active_group: SonosGroup | None
         if self.client.player.is_coordinator:
             # player is group coordinator - always report native group members
             active_group = self.group_controller
@@ -510,7 +511,6 @@ class SonosPlayer(Player):
             if not group_parent or not group_parent.client or not group_parent.client.player:
                 # handle race condition where the group parent is not yet discovered
                 return
-            assert group_parent.client.player.group is not None
             active_group = group_parent.client.player.group
             self._attr_group_members.clear()
 
