@@ -369,14 +369,90 @@ class AppleMusicProvider(MusicProvider):
         return searchresult
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Apple Music with support for playlist folders."""
-        if not path or "://" not in path:
-            return await super().browse(path)
-        sub_path = path.split("://", 1)[1]
+        """Browse Apple Music with support for playlist folders and radio stations."""
+        sub_path = path.split("://", 1)[1] if "://" in path else ""
         path_parts = [part for part in sub_path.split("/") if part]
-        if path_parts and path_parts[0] == "playlists":
+        if not path_parts:
+            # Top-level: add a "Radio Stations" folder alongside the default items
+            items = list(await super().browse(path))
+            items.append(
+                BrowseFolder(
+                    item_id="stations",
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://stations",
+                    name="Radio Stations",
+                )
+            )
+            return items
+        if path_parts[0] == "playlists":
             return await browse_playlists(self, path, path_parts)
+        if path_parts[0] == "stations":
+            return await self._browse_stations()
         return await super().browse(path)
+
+    async def _browse_stations(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Return recommended radio stations from personal recommendations."""
+        response = await self._get_data(
+            "me/recommendations?include[personal-recommendation]=contents"
+        )
+        seen: set[str] = set()
+        result: list[MediaItemType | ItemMapping | BrowseFolder] = []
+        for recommendation in response.get("data", []):
+            contents = recommendation.get("relationships", {}).get("contents", {})
+            for item in contents.get("data", []):
+                if item.get("type") != "stations":
+                    continue
+                station_id = item.get("id")
+                if not station_id or station_id in seen:
+                    continue
+                seen.add(station_id)
+                attributes = item.get("attributes", {})
+                if attributes.get("isLive", False):
+                    # Live broadcast stations (e.g. Apple Music 1) require Widevine DRM
+                    # which is not supported; skip them.
+                    continue
+                if attributes.get("name"):
+                    result.append(self._parse_station_as_playlist(item))
+                else:
+                    playlist = await self.get_playlist(station_id)
+                    if playlist.name != station_id:
+                        result.append(playlist)
+        return result
+
+    def _parse_station_as_playlist(self, station_obj: dict[str, Any]) -> Playlist:
+        """Parse a station object from recommendations into a Playlist."""
+        station_id = station_obj["id"]
+        attributes = station_obj.get("attributes", {})
+        name = attributes.get("name", station_id)
+        playlist = Playlist(
+            item_id=station_id,
+            provider=self.instance_id,
+            name=name,
+            is_dynamic=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=station_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        if artwork := attributes.get("artwork"):
+            url = artwork["url"]
+            if artwork.get("width") and artwork.get("height"):
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
+            playlist.metadata.add_image(
+                MediaItemImage(
+                    provider=self.instance_id,
+                    type=ImageType.THUMB,
+                    path=url,
+                    remotely_accessible=True,
+                )
+            )
+        return playlist
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
