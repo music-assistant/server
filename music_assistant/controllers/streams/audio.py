@@ -1573,26 +1573,23 @@ class StreamsAudio:
             fade_out_data = buffer
             buffer = b""
             try:
-                # request next track's intro-part (in current track's pcm_format)
-                async for chunk in self.get_queue_item_stream(
+                # pass next track's audio stream directly to the mixer so FFmpeg can
+                # start processing as chunks arrive (no pre-collection needed)
+                fade_in_source = self.get_queue_item_stream(
                     next_queue_item,
                     pcm_format,
                     playback_speed=cast(
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
-                ):
-                    buffer += chunk
-                    del chunk
-                    if len(buffer) >= crossfade_buffer_size:
-                        break
-                # both fade_out_data and buffer are in pcm_format — mix directly
+                )
                 crossfade_buf = bytearray()
                 async for mix_chunk in self.smart_fades_mixer.mix(
-                    fade_in_part=buffer,
+                    fade_in_part=fade_in_source,
                     fade_out_part=fade_out_data,
                     fade_in_streamdetails=cast("StreamDetails", next_queue_item.streamdetails),
                     fade_out_streamdetails=streamdetails,
                     pcm_format=pcm_format,
+                    fade_in_buffer_size=crossfade_buffer_size,
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
                 ):
@@ -1610,7 +1607,7 @@ class StreamsAudio:
                 # causing the FFMpeg stdin feeder to be cancelled)
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
                     data=crossfade_second,
-                    fade_in_size=len(buffer),
+                    fade_in_size=self.smart_fades_mixer.fade_in_bytes_consumed,
                     pcm_format=pcm_format,
                     fade_in_pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,

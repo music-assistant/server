@@ -70,14 +70,14 @@ class SmartFade(ABC):
     async def apply(
         self,
         fade_out_part: bytes,
-        fade_in_part: bytes,
+        fade_in_part: bytes | AsyncGenerator[bytes, None],
         pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes, None]:
         """
         Apply the smart fade, yielding PCM audio chunks as they become available.
 
         :param fade_out_part: Raw PCM bytes for the outgoing track's tail.
-        :param fade_in_part: Raw PCM bytes for the incoming track's head.
+        :param fade_in_part: Raw PCM bytes or async generator for the incoming track's head.
         :param pcm_format: Audio format of both input parts and the output.
         """
         # Write the fade_out_part to a temporary file
@@ -149,7 +149,11 @@ class SmartFade(ABC):
             async with proc:
 
                 async def _feed_stdin() -> None:
-                    await proc.write(fade_in_part)
+                    if isinstance(fade_in_part, bytes):
+                        await proc.write(fade_in_part)
+                    else:
+                        async for fade_chunk in fade_in_part:
+                            await proc.write(fade_chunk)
                     await proc.write_eof()
 
                 async def _drain_stderr() -> None:
@@ -514,13 +518,18 @@ class StandardCrossFade(SmartFade):
         ]
 
     async def apply(
-        self, fade_out_part: bytes, fade_in_part: bytes, pcm_format: AudioFormat
+        self,
+        fade_out_part: bytes,
+        fade_in_part: bytes | AsyncGenerator[bytes, None],
+        pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes, None]:
         """
         Apply standard crossfade, yielding PCM audio chunks.
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
+        # StandardCrossFade needs full bytes for slicing - caller must ensure this
+        assert isinstance(fade_in_part, bytes)
         crossfade_size = int(pcm_format.pcm_sample_size * self.crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
