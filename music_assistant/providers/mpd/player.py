@@ -95,6 +95,12 @@ class MPDPlayer(Player):
             PlayerFeature.SEEK,
             PlayerFeature.VOLUME_SET,
         }
+        self._idle_task: asyncio.Task[None] | None = None
+
+        def _schedule_disconnect() -> None:
+            self.mass.call_later(0, self._disconnect, task_id=f"mpd_disconnect_{self.player_id}")
+
+        self._on_unload_callbacks.append(_schedule_disconnect)
 
     @property
     def needs_poll(self) -> bool:
@@ -128,10 +134,6 @@ class MPDPlayer(Player):
         """Poll MPD for current state (elapsed time while playing)."""
         await self._fetch_and_sync_state()
 
-    async def on_unload(self) -> None:
-        """Handle cleanup when the player is unloaded."""
-        await self._disconnect()
-
     # ------------------------------------------------------------------
     # Connection helpers
     # ------------------------------------------------------------------
@@ -157,7 +159,7 @@ class MPDPlayer(Player):
             )
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.host)
             self.logger.info("Connected to MPD at %s:%s", self.host, self.port)
-            self.mass.create_task(self._idle_loop())
+            self._idle_task = self.mass.create_task(self._idle_loop())
             await self._sync_state(status)
             self.update_state()
 
@@ -165,7 +167,7 @@ class MPDPlayer(Player):
             self.logger.warning("Failed to connect to MPD at %s:%s: %s", self.host, self.port, err)
             self._attr_available = False
             self.update_state()
-            self.mass.create_task(self._reconnect())
+            self.reconnect()
 
     async def _disconnect(self) -> None:
         """Disconnect both MPD clients."""
@@ -174,12 +176,14 @@ class MPDPlayer(Player):
                 client.disconnect()
         self._client = None
         self._idle_client = None
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
 
-    async def _reconnect(self) -> None:
-        """Wait then attempt to reconnect."""
-        await asyncio.sleep(RECONNECT_DELAY)
-        self.logger.debug("Attempting reconnect to MPD at %s:%s", self.host, self.port)
-        await self._connect()
+    def reconnect(self) -> None:
+        """Schedule a reconnect, deduplicating any pending reconnect tasks."""
+        task_id = f"mpd_reconnect_{self.player_id}"
+        self.mass.call_later(RECONNECT_DELAY, self._connect, task_id=task_id)
 
     # ------------------------------------------------------------------
     # Background idle loop
@@ -201,7 +205,7 @@ class MPDPlayer(Player):
             self.logger.warning("MPD idle loop disconnected: %s", err)
             self._attr_available = False
             self.update_state()
-            self.mass.create_task(self._reconnect())
+            self.reconnect()
 
     # ------------------------------------------------------------------
     # State sync
@@ -245,7 +249,7 @@ class MPDPlayer(Player):
         if self._client is None:
             return
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        self.logger.debug("PLAY_MEDIA on %s: %s", self.display_name, url)
+        self.logger.debug("Sending stream URL to MPD: %s", url)
         try:
             await self._client.clear()
             await self._client.add(url)
