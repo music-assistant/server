@@ -602,6 +602,13 @@ class AudioTags:
     @classmethod
     def parse(cls, raw: dict[str, Any]) -> AudioTags:
         """Parse instance from raw ffmpeg info output."""
+        filename = raw["format"]["filename"]
+        try:
+            filename.encode("utf-8")
+        except UnicodeEncodeError:
+            raise InvalidDataError(
+                f"File skipped, filename contains non-UTF-8 characters: {filename!r}"
+            )
         audio_stream = next((x for x in raw["streams"] if x["codec_type"] == "audio"), None)
         if audio_stream is None:
             msg = "No audio stream found"
@@ -623,7 +630,6 @@ class AudioTags:
                 if alt_key in tags:
                     continue
                 tags[alt_key] = value
-
         return AudioTags(
             raw=raw,
             sample_rate=int(audio_stream.get("sample_rate", 44100)),
@@ -636,7 +642,7 @@ class AudioTags:
             duration=float(raw["format"].get("duration", 0)) or None,
             tags=tags,
             has_cover_image=has_cover_image,
-            filename=raw["format"]["filename"],
+            filename=filename,
         )
 
     def get(self, key: str, default: Any | None = None) -> Any:
@@ -716,7 +722,11 @@ def parse_tags(
                 error_msg = f"{error_msg} ({err_details['error']['string']})"
         raise InvalidDataError(error_msg) from err
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-        msg = f"Unable to retrieve info for {input_file}: {err!s}"
+        try:
+            msg = f"Unable to retrieve info for {input_file}: {err!s}"
+            msg.encode("utf-8")
+        except UnicodeEncodeError:
+            msg = f"Unable to retrieve info for a file with a non-UTF-8 filename: {input_file!r}"
         raise InvalidDataError(msg) from err
 
 
