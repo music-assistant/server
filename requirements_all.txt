@@ -78,4 +78,4 @@ xmltodict==1.0.4
 yandex-music==2.2.0
 ytmusicapi==1.11.5
 zeroconf==0.148.0
-zvuk-music[async]==0.5.3
+zvuk-music[async]==0.6.1
