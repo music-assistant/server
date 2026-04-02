@@ -2599,9 +2599,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         final_player_ids_to_remove: list[str] = []
         if player_ids_to_remove:
             for child_player_id in player_ids_to_remove:
-                if child_player_id not in parent_player.state.group_members:
+                if child_player_id in parent_player.state.group_members:
+                    final_player_ids_to_remove.append(child_player_id)
                     continue
-                final_player_ids_to_remove.append(child_player_id)
+                # also accept the removal if the child player itself reports
+                # being synced to this parent - handles race conditions where the
+                # parent's group_members state is stale/not yet updated
+                child_player = self.get_player(child_player_id)
+                if child_player and child_player.state.synced_to == target_player:
+                    final_player_ids_to_remove.append(child_player_id)
+                    continue
 
         # Forward command to the appropriate player after all (base) sanity checks
         # GROUP players (sync_group, universal_group) manage their own members internally
