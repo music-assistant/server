@@ -1524,8 +1524,6 @@ class StreamsAudio:
         #### HANDLE END OF TRACK
 
         # get next track for crossfade
-        # NOTE: during this phase (loading next track + mixing crossfade),
-        # no audio is yielded to the player. The player must survive on its buffer.
         crossfade_start_time = asyncio.get_event_loop().time()
         next_queue_item: QueueItem | None
         try:
@@ -1569,7 +1567,7 @@ class StreamsAudio:
             yield buffer
         else:
             assert next_queue_item is not None
-            # if crossfade is enabled, save fadeout part in buffer to pickup for next track
+            # the remaining buffer is the fade-out tail of the current track
             fade_out_data = buffer
             buffer = b""
             try:
@@ -1803,7 +1801,7 @@ class StreamsAudio:
                     fadein_part = crossfade_buffer[:crossfade_buffer_size]
                     remaining_bytes = crossfade_buffer[crossfade_buffer_size:]
                     try:
-                        crossfade_buf = bytearray()
+                        crossfade_bytes_written = 0
                         async for mix_chunk in self.smart_fades_mixer.mix(
                             fade_in_part=fadein_part,
                             fade_out_part=last_fadeout_part,
@@ -1813,8 +1811,8 @@ class StreamsAudio:
                             standard_crossfade_duration=standard_crossfade_duration,
                             mode=smart_fades_mode,
                         ):
-                            crossfade_buf.extend(mix_chunk)
-                        crossfade_part = bytes(crossfade_buf)
+                            yield mix_chunk
+                            crossfade_bytes_written += len(mix_chunk)
                     except Exception as mix_err:
                         self.logger.warning(
                             "Crossfade mixer failed for %s, falling back to simple concat: %s",
@@ -1823,18 +1821,15 @@ class StreamsAudio:
                         )
                         yield last_fadeout_part
                         bytes_written += len(last_fadeout_part)
-                        crossfade_part = b""
+                        crossfade_bytes_written = 0
                         remaining_bytes = crossfade_buffer
-                    if crossfade_part:
-                        crossfade_part_len = len(crossfade_part)
-                        bytes_written += int(crossfade_part_len / 2)
+                    if crossfade_bytes_written:
+                        bytes_written += int(crossfade_bytes_written / 2)
                         if last_play_log_entry:
                             assert last_play_log_entry.seconds_streamed is not None
                             last_play_log_entry.seconds_streamed += (
-                                crossfade_part_len / 2 / pcm_sample_size
+                                crossfade_bytes_written / 2 / pcm_sample_size
                             )
-                        yield crossfade_part
-                        del crossfade_part
                     if remaining_bytes:
                         yield remaining_bytes
                         bytes_written += len(remaining_bytes)
