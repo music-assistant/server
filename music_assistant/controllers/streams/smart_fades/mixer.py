@@ -31,7 +31,6 @@ class SmartFadesMixer:
         """Initialize smart fades mixer."""
         self.streams = streams
         self.logger = streams.logger.getChild("smart_fades_mixer")
-        self.fade_in_bytes_consumed: int = 0
 
     async def mix(
         self,
@@ -40,7 +39,6 @@ class SmartFadesMixer:
         fade_in_streamdetails: StreamDetails,
         fade_out_streamdetails: StreamDetails,
         pcm_format: AudioFormat,
-        fade_in_buffer_size: int = 0,
         standard_crossfade_duration: int = 10,
         mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
     ) -> AsyncGenerator[bytes, None]:
@@ -52,17 +50,14 @@ class SmartFadesMixer:
         :param fade_in_streamdetails: Stream details for the incoming track.
         :param fade_out_streamdetails: Stream details for the outgoing track.
         :param pcm_format: Audio format of both input parts and the output.
-        :param fade_in_buffer_size: Max bytes to read from fade_in_part generator (0 = unlimited).
         :param standard_crossfade_duration: Duration in seconds for standard crossfade fallback.
         :param mode: Smart fades mode to use.
         """
-        self.fade_in_bytes_consumed = 0
-
         if mode == SmartFadesMode.DISABLED:
             # No crossfade, just concatenate
             # Note that this should not happen since we check this before calling mix()
             # but just to be sure...
-            fade_in_bytes = await self._ensure_bytes(fade_in_part, fade_in_buffer_size)
+            fade_in_bytes = await self._ensure_bytes(fade_in_part)
             yield fade_out_part + fade_in_bytes
             return
 
@@ -79,12 +74,9 @@ class SmartFadesMixer:
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
             )
-            # pass fade_in through directly - StandardCrossFade handles both bytes and generators
             async for chunk in smart_fade.apply(
                 fade_out_part,
-                self._limit_generator(fade_in_part, fade_in_buffer_size)
-                if not isinstance(fade_in_part, bytes)
-                else fade_in_part,
+                fade_in_part,
                 pcm_format,
             ):
                 yield chunk
@@ -116,7 +108,7 @@ class SmartFadesMixer:
             fade_in_analysis = stored_analysis
         else:
             # analysis not cached, need full bytes for beat analysis
-            fade_in_part = await self._ensure_bytes(fade_in_part, fade_in_buffer_size)
+            fade_in_part = await self._ensure_bytes(fade_in_part)
             fade_in_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
                 fade_in_streamdetails.item_id,
                 fade_in_streamdetails.provider,
@@ -137,13 +129,10 @@ class SmartFadesMixer:
                     fade_out_analysis=fade_out_analysis,
                     fade_in_analysis=fade_in_analysis,
                 )
-                # stream fade_in directly to FFmpeg when possible (generator not yet consumed)
                 got_chunks = False
                 async for chunk in smart_fade.apply(
                     fade_out_part,
-                    self._limit_generator(fade_in_part, fade_in_buffer_size)
-                    if not isinstance(fade_in_part, bytes)
-                    else fade_in_part,
+                    fade_in_part,
                     pcm_format,
                 ):
                     got_chunks = True
@@ -159,7 +148,7 @@ class SmartFadesMixer:
 
         # Always fallback to Standard Crossfade in case something goes wrong
         # StandardCrossFade needs full bytes for slicing
-        fade_in_bytes = await self._ensure_bytes(fade_in_part, fade_in_buffer_size)
+        fade_in_bytes = await self._ensure_bytes(fade_in_part)
         smart_fade = StandardCrossFade(
             logger=self.logger,
             crossfade_duration=standard_crossfade_duration,
@@ -171,38 +160,14 @@ class SmartFadesMixer:
         ):
             yield chunk
 
+    @staticmethod
     async def _ensure_bytes(
-        self,
         data: bytes | AsyncGenerator[bytes, None],
-        max_bytes: int = 0,
     ) -> bytes:
         """Consume an async generator into bytes, or return bytes as-is."""
         if isinstance(data, bytes):
-            self.fade_in_bytes_consumed = len(data)
             return data
         buf = bytearray()
         async for chunk in data:
             buf.extend(chunk)
-            self.fade_in_bytes_consumed += len(chunk)
-            if max_bytes and len(buf) >= max_bytes:
-                break
         return bytes(buf)
-
-    async def _limit_generator(
-        self,
-        source: AsyncGenerator[bytes, None],
-        max_bytes: int,
-    ) -> AsyncGenerator[bytes, None]:
-        """Yield chunks from source up to max_bytes total."""
-        total = 0
-        async for chunk in source:
-            remaining = max_bytes - total if max_bytes else len(chunk)
-            if remaining <= 0:
-                break
-            if len(chunk) > remaining:
-                self.fade_in_bytes_consumed += remaining
-                yield chunk[:remaining]
-                break
-            self.fade_in_bytes_consumed += len(chunk)
-            yield chunk
-            total += len(chunk)

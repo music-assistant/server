@@ -1573,15 +1573,31 @@ class StreamsAudio:
             fade_out_data = buffer
             buffer = b""
             try:
-                # pass next track's audio stream directly to the mixer so FFmpeg can
-                # start processing as chunks arrive (no pre-collection needed)
-                fade_in_source = self.get_queue_item_stream(
-                    next_queue_item,
-                    pcm_format,
-                    playback_speed=cast(
-                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
-                    ),
-                )
+                # wrap the next track's stream in a counting generator that caps
+                # at crossfade_buffer_size and tracks how many bytes were consumed
+                fade_in_bytes_consumed = 0
+
+                _next_item = next_queue_item
+
+                async def _limited_fade_in() -> AsyncGenerator[bytes, None]:
+                    nonlocal fade_in_bytes_consumed
+                    async for chunk in self.get_queue_item_stream(
+                        _next_item,
+                        pcm_format,
+                        playback_speed=cast(
+                            "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                        ),
+                    ):
+                        remaining = crossfade_buffer_size - fade_in_bytes_consumed
+                        if remaining <= 0:
+                            break
+                        if len(chunk) > remaining:
+                            fade_in_bytes_consumed += remaining
+                            yield chunk[:remaining]
+                            break
+                        fade_in_bytes_consumed += len(chunk)
+                        yield chunk
+
                 # yield first half of crossfade output directly to the player as chunks
                 # arrive from FFmpeg, keeping the stream alive during crossfade mixing.
                 # the second half is buffered for the next track's intro.
@@ -1590,12 +1606,11 @@ class StreamsAudio:
                 first_half_written = 0
                 second_half_buf = bytearray()
                 async for mix_chunk in self.smart_fades_mixer.mix(
-                    fade_in_part=fade_in_source,
+                    fade_in_part=_limited_fade_in(),
                     fade_out_part=fade_out_data,
                     fade_in_streamdetails=cast("StreamDetails", next_queue_item.streamdetails),
                     fade_out_streamdetails=streamdetails,
                     pcm_format=pcm_format,
-                    fade_in_buffer_size=crossfade_buffer_size,
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
                 ):
@@ -1607,7 +1622,7 @@ class StreamsAudio:
                         second_half_buf.extend(mix_chunk)
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
                     data=second_half_buf,
-                    fade_in_size=self.smart_fades_mixer.fade_in_bytes_consumed,
+                    fade_in_size=fade_in_bytes_consumed,
                     pcm_format=pcm_format,
                     fade_in_pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
