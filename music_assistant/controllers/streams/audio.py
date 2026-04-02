@@ -1582,7 +1582,13 @@ class StreamsAudio:
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
                 )
-                crossfade_buf = bytearray()
+                # yield first half of crossfade output directly to the player as chunks
+                # arrive from FFmpeg, keeping the stream alive during crossfade mixing.
+                # the second half is buffered for the next track's intro.
+                # the midpoint estimate is one buffer's worth (the fade-out contribution).
+                estimated_first_half = len(fade_out_data)
+                first_half_written = 0
+                second_half_buf = bytearray()
                 async for mix_chunk in self.smart_fades_mixer.mix(
                     fade_in_part=fade_in_source,
                     fade_out_part=fade_out_data,
@@ -1593,20 +1599,14 @@ class StreamsAudio:
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
                 ):
-                    crossfade_buf.extend(mix_chunk)
-                crossfade_bytes = bytes(crossfade_buf)
-                del crossfade_buf
-                # first half yielded now, second half stored for next track
-                split_point = (len(crossfade_bytes) + 1) // 2
-                crossfade_first = crossfade_bytes[:split_point]
-                crossfade_second = crossfade_bytes[split_point:]
-                del crossfade_bytes
-                bytes_written += len(crossfade_first)
-                # store second half BEFORE yielding first half to prevent data loss
-                # if the generator is interrupted after the yield (e.g., player disconnect
-                # causing the FFMpeg stdin feeder to be cancelled)
+                    if first_half_written < estimated_first_half:
+                        yield mix_chunk
+                        first_half_written += len(mix_chunk)
+                        bytes_written += len(mix_chunk)
+                    else:
+                        second_half_buf.extend(mix_chunk)
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
-                    data=crossfade_second,
+                    data=bytes(second_half_buf),
                     fade_in_size=self.smart_fades_mixer.fade_in_bytes_consumed,
                     pcm_format=pcm_format,
                     fade_in_pcm_format=pcm_format,
@@ -1620,7 +1620,6 @@ class StreamsAudio:
                     next_queue_item.queue_item_id,
                     crossfade_elapsed,
                 )
-                yield crossfade_first
             except Exception as err:
                 # crossfade failed, fall back to just yielding the fade_out_data
                 self.logger.warning(
