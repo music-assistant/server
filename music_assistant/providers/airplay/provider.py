@@ -141,33 +141,19 @@ class AirPlayProvider(PlayerProvider):
         raop_discovery_info: AsyncServiceInfo | None = None
         airplay_discovery_info: AsyncServiceInfo | None = None
         if discovery_info.type == RAOP_DISCOVERY_TYPE:
-            # RAOP service discovered
+            # RAOP service discovered - try to also find the AirPlay service
             raop_discovery_info = discovery_info
             self.logger.debug("Discovered RAOP service for %s", display_name)
-            # always prefer airplay mdns info as it has more details
-            # fallback to raop info if airplay info is not available,
-            # (old device only announcing raop)
-            airplay_discovery_info = AsyncServiceInfo(
-                AIRPLAY_DISCOVERY_TYPE,
-                discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
+            airplay_discovery_info = await self.mass.discovery.async_find_mdns_service(
+                AIRPLAY_DISCOVERY_TYPE, display_name, timeout=10.0
             )
-            if not await airplay_discovery_info.async_request(
-                self.mass.discovery.aiozc.zeroconf, 3000
-            ):
-                airplay_discovery_info = None
         else:
-            # AirPlay service discovered
+            # AirPlay service discovered - try to also find the RAOP service
             self.logger.debug("Discovered AirPlay service for %s", display_name)
             airplay_discovery_info = discovery_info
-            # also try to get the raop info if available
-            raop_discovery_info = AsyncServiceInfo(
-                RAOP_DISCOVERY_TYPE,
-                discovery_info.name.split("@")[-1].replace("_airplay", "_raop"),
+            raop_discovery_info = await self.mass.discovery.async_find_mdns_service(
+                RAOP_DISCOVERY_TYPE, display_name, timeout=10.0
             )
-            if not await raop_discovery_info.async_request(
-                self.mass.discovery.aiozc.zeroconf, 3000
-            ):
-                raop_discovery_info = None
 
         if airplay_discovery_info:
             manufacturer, model = get_model_info(airplay_discovery_info)
