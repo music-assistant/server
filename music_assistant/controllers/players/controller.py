@@ -62,6 +62,7 @@ from music_assistant.constants import (
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
     ATTR_GROUP_MEMBERS,
+    ATTR_GROUP_VOLUME_SNAPSHOT,
     ATTR_LAST_POLL,
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
@@ -624,6 +625,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param volume_level: volume level (0..100) to set on the player.
         """
         await self._handle_cmd_volume_set(player_id, volume_level)
+        # individual child volume change invalidates any cached group volume snapshot
+        self._invalidate_group_volume_snapshot(player_id)
 
     @api_command("players/cmd/volume_up")
     @handle_player_command
@@ -1738,26 +1741,74 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         return None
 
     async def set_group_volume(self, group_player: Player, volume_level: int) -> None:
-        """Handle adjusting the overall/group volume to a playergroup (or synced players)."""
+        """
+        Set the overall volume for a player group or synced players.
+
+        Uses interpolation to adjust all child volumes while preserving their
+        relative balance. A snapshot of child volumes is cached on first call and
+        used as the reference point for subsequent adjustments.
+
+        :param group_player: The group player or sync leader.
+        :param volume_level: Target volume level (0..100).
+        """
         cur_volume = group_player.state.group_volume
         if cur_volume is None:
             return
-        volume_dif = volume_level - cur_volume
-        coros = []
-        # handle group volume by only applying the volume to powered members
+
+        children: list[Player] = []
         for child_player in self.iter_group_members(
             group_player, only_powered=True, exclude_self=False
         ):
             if child_player.state.volume_control == PLAYER_CONTROL_NONE:
                 continue
-            cur_child_volume = child_player.state.volume_level or 0
-            new_child_volume = int(cur_child_volume + volume_dif)
-            new_child_volume = max(0, new_child_volume)
-            new_child_volume = min(100, new_child_volume)
-            # Use private method to skip permission check - already validated on group
-            # ATTR_MUTE_LOCK on muted players prevents auto-unmute during group volume changes
+            children.append(child_player)
+        if not children:
+            return
+
+        # cache a snapshot of child volumes on the group player as reference for interpolation.
+        # scaling up: each child interpolates from its snapshot value toward 100.
+        # scaling down: each child interpolates from its snapshot value toward 0.
+        # this ensures the relative balance is preserved and all children converge
+        # to 0 and 100 at the extremes. the snapshot is invalidated when a child's
+        # individual volume changes or group membership changes.
+        snapshot: dict[str, int] | None = group_player.extra_data.get(ATTR_GROUP_VOLUME_SNAPSHOT)
+        if snapshot is None or not all(c.player_id in snapshot for c in children):
+            snapshot = {c.player_id: c.state.volume_level or 0 for c in children}
+            group_player.extra_data[ATTR_GROUP_VOLUME_SNAPSHOT] = snapshot
+
+        base_group = max(snapshot.values())
+
+        coros = []
+        for child_player in children:
+            child_base = snapshot.get(child_player.player_id, 0)
+            if volume_level >= base_group:
+                # scaling up: interpolate each child from snapshot toward 100
+                if base_group >= 100:
+                    new_child_volume = child_base
+                else:
+                    progress = (volume_level - base_group) / (100 - base_group)
+                    new_child_volume = round(child_base + (100 - child_base) * progress)
+            elif base_group == 0:
+                new_child_volume = 0
+            else:
+                # scaling down: interpolate each child from snapshot toward 0
+                progress = volume_level / base_group
+                new_child_volume = round(child_base * progress)
+            new_child_volume = max(0, min(100, new_child_volume))
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
+
+    def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
+        """Clear the cached group volume snapshot for all groups this player belongs to."""
+        player = self.get_player(player_id)
+        if not player:
+            return
+        if player.state.group_members:
+            player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
+        for group_player in self._get_player_groups(player, powered_only=False):
+            group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
+        if player.state.synced_to and (leader := self.get_player(player.state.synced_to)):
+            leader.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
         """Get the (player specific) volume for a announcement."""
@@ -2377,6 +2428,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self, player: Player, prev_group_members: list[str], new_group_members: list[str]
     ) -> None:
         """Handle DSP reload when group membership changes."""
+        # reset cached group volume snapshot since membership changed
+        player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
         prev_child_count = len(prev_group_members)
         new_child_count = len(new_group_members)
         is_player_group = player.state.type == PlayerType.GROUP
