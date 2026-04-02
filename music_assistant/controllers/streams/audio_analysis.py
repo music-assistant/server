@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderType
 
-from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 CHUNK_PROCESS_TIMEOUT = 0.8
@@ -32,7 +30,7 @@ class AudioAnalysisController:
         """
         self.streams = streams
         self.mass = streams.mass
-        self.logger = logging.getLogger(MASS_LOGGER_NAME).getChild("audio_analysis")
+        self.logger = self.mass.logger.getChild("audio_analysis")
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
 

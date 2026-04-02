@@ -103,7 +103,12 @@ class StreamsController(CoreController):
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
         self._smart_fades_analyzer = SmartFadesAnalyzer(self)
-        self.audio_analysis = AudioAnalysisController(self)
+        self._audio_analysis = AudioAnalysisController(self)
+
+    @property
+    def audio_analysis(self) -> AudioAnalysisController:
+        """Return the AudioAnalysisController instance."""
+        return self._audio_analysis
 
     @property
     def base_url(self) -> str:
