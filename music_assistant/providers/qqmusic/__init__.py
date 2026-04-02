@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import importlib
 import logging
 import re
 import time
@@ -48,6 +47,44 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from qqmusic_api import (
+    album as qq_album_mod,
+)
+from qqmusic_api import (
+    login as qq_login_mod,
+)
+from qqmusic_api import (
+    lyric as qq_lyric_mod,
+)
+from qqmusic_api import (
+    recommend as qq_recommend_mod,
+)
+from qqmusic_api import (
+    search as qq_search_mod,
+)
+from qqmusic_api import (
+    singer as qq_singer_mod,
+)
+from qqmusic_api import (
+    song as qq_song_mod,
+)
+from qqmusic_api import (
+    songlist as qq_songlist_mod,
+)
+from qqmusic_api import (
+    user as qq_user_mod,
+)
+from qqmusic_api.exceptions import CredentialExpiredError, LoginError, ResponseCodeError
+from qqmusic_api.utils.credential import Credential
+from qqmusic_api.utils.session import (
+    Session as QQSession,
+)
+from qqmusic_api.utils.session import (
+    clear_session as qq_clear_session,
+)
+from qqmusic_api.utils.session import (
+    set_session as qq_set_session,
+)
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
@@ -240,8 +277,7 @@ async def get_config_entries(  # noqa: PLR0915
         _clear_qr_route(_get_qr_route_path(values))
     elif action == CONF_ACTION_START_QR_AUTH:
         _clear_qr_route(_get_qr_route_path(values))
-        login_mod = importlib.import_module("qqmusic_api.login")
-        qr = await login_mod.get_qrcode(login_mod.QRLoginType.QQ)
+        qr = await qq_login_mod.get_qrcode(qq_login_mod.QRLoginType.QQ)
         if not getattr(qr, "identifier", None) or not getattr(qr, "data", None):
             raise LoginFailed("Failed to generate QQ Music login QR code")
         values[CONF_QR_IDENTIFIER] = str(qr.identifier)
@@ -258,27 +294,27 @@ async def get_config_entries(  # noqa: PLR0915
             values[CONF_QR_PAGE_URL] = qr_page_url
             mass.signal_event(EventType.AUTH_SESSION, str(session_id), qr_page_url)
         # Auto-poll like other providers: user clicks once, scans, and auth completes.
-        if hasattr(login_mod, "QR") and hasattr(login_mod, "check_qrcode"):
+        if hasattr(qq_login_mod, "QR") and hasattr(qq_login_mod, "check_qrcode"):
             deadline = time.monotonic() + 120
             qr_type_value = str(values.get(CONF_QR_TYPE))
             qr_type = next(
-                (item for item in login_mod.QRLoginType if item.value == qr_type_value),
-                login_mod.QRLoginType.QQ,
+                (item for item in qq_login_mod.QRLoginType if item.value == qr_type_value),
+                qq_login_mod.QRLoginType.QQ,
             )
             while time.monotonic() < deadline:
-                qr_ref = login_mod.QR(
+                qr_ref = qq_login_mod.QR(
                     data=b"",
                     qr_type=qr_type,
                     mimetype="image/png",
                     identifier=str(values.get(CONF_QR_IDENTIFIER) or ""),
                 )
                 try:
-                    event, credential = await login_mod.check_qrcode(qr_ref)
+                    event, credential = await qq_login_mod.check_qrcode(qr_ref)
                 except Exception:
                     # Keep polling through transient network/API hiccups.
                     await asyncio.sleep(1.5)
                     continue
-                if event == login_mod.QRCodeLoginEvents.DONE and credential:
+                if event == qq_login_mod.QRCodeLoginEvents.DONE and credential:
                     if not credential.musicid or not credential.musickey:
                         raise LoginFailed("QR login succeeded but credential is incomplete")
                     values[CONF_UIN] = str(credential.musicid)
@@ -291,13 +327,13 @@ async def get_config_entries(  # noqa: PLR0915
                     is_verified = True
                     has_qr_pending = False
                     break
-                if event == login_mod.QRCodeLoginEvents.TIMEOUT:
+                if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
                     values[CONF_QR_IDENTIFIER] = None
                     values[CONF_QR_TYPE] = None
                     values[CONF_QR_PAGE_URL] = None
                     has_qr_pending = False
                     raise InvalidDataError("QR code expired, please generate a new one")
-                if event == login_mod.QRCodeLoginEvents.REFUSE:
+                if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
                     raise InvalidDataError("Login was rejected in QQ app")
                 await asyncio.sleep(1)
             if not is_verified and values.get(CONF_QR_IDENTIFIER):
@@ -308,20 +344,19 @@ async def get_config_entries(  # noqa: PLR0915
     elif action == CONF_ACTION_CHECK_QR_AUTH:
         if not qr_identifier:
             raise InvalidDataError("Please generate a QR code first")
-        login_mod = importlib.import_module("qqmusic_api.login")
         qr_type_val = str(values.get(CONF_QR_TYPE) or "qq")
         qr_type = next(
-            (item for item in login_mod.QRLoginType if item.value == qr_type_val),
-            login_mod.QRLoginType.QQ,
+            (item for item in qq_login_mod.QRLoginType if item.value == qr_type_val),
+            qq_login_mod.QRLoginType.QQ,
         )
-        qr = login_mod.QR(
+        qr = qq_login_mod.QR(
             data=b"",
             qr_type=qr_type,
             mimetype="image/png",
             identifier=qr_identifier,
         )
-        event, credential = await login_mod.check_qrcode(qr)
-        if event == login_mod.QRCodeLoginEvents.DONE and credential:
+        event, credential = await qq_login_mod.check_qrcode(qr)
+        if event == qq_login_mod.QRCodeLoginEvents.DONE and credential:
             if not credential.musicid or not credential.musickey:
                 raise LoginFailed("QR login succeeded but credential is incomplete")
             values[CONF_UIN] = str(credential.musicid)
@@ -333,17 +368,17 @@ async def get_config_entries(  # noqa: PLR0915
             values[CONF_QR_PAGE_URL] = None
             is_verified = True
             has_qr_pending = False
-        elif event == login_mod.QRCodeLoginEvents.SCAN:
+        elif event == qq_login_mod.QRCodeLoginEvents.SCAN:
             raise InvalidDataError("QR code not scanned yet")
-        elif event == login_mod.QRCodeLoginEvents.CONF:
+        elif event == qq_login_mod.QRCodeLoginEvents.CONF:
             raise InvalidDataError("QR scanned, please confirm login in QQ app")
-        elif event == login_mod.QRCodeLoginEvents.TIMEOUT:
+        elif event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
             values[CONF_QR_IDENTIFIER] = None
             values[CONF_QR_TYPE] = None
             values[CONF_QR_PAGE_URL] = None
             has_qr_pending = False
             raise InvalidDataError("QR code expired, please generate a new one")
-        elif event == login_mod.QRCodeLoginEvents.REFUSE:
+        elif event == qq_login_mod.QRCodeLoginEvents.REFUSE:
             raise InvalidDataError("Login was rejected in QQ app")
         else:
             raise LoginFailed("Unable to determine QR login status")
@@ -477,17 +512,11 @@ class QQMusicProvider(MusicProvider):
     _qq_song: Any = None
     _qq_album: Any = None
     _qq_singer: Any = None
-    _qq_session_cls: Any = None
-    _qq_set_session: Any = None
-    _qq_clear_session: Any = None
     _qq_session: Any = None
     _qq_user: Any = None
     _qq_songlist: Any = None
     _qq_lyric: Any = None
     _qq_recommend: Any = None
-    _qq_response_code_error: Any = None
-    _qq_credential_expired_error: Any = None
-    _qq_login_error: Any = None
     _api_semaphore: Semaphore
     _musicid: int = 0
     _euin: str = ""
@@ -506,34 +535,24 @@ class QQMusicProvider(MusicProvider):
         login_type_raw = str(config_login_type or "2")
         login_type = int(login_type_raw) if login_type_raw.isdigit() else 2
 
-        credential_mod = importlib.import_module("qqmusic_api.utils.credential")
-        session_mod = importlib.import_module("qqmusic_api.utils.session")
-        exception_mod = importlib.import_module("qqmusic_api.exceptions")
-        self._qq_search = importlib.import_module("qqmusic_api.search")
-        self._qq_song = importlib.import_module("qqmusic_api.song")
-        self._qq_album = importlib.import_module("qqmusic_api.album")
-        self._qq_singer = importlib.import_module("qqmusic_api.singer")
-        self._qq_user = importlib.import_module("qqmusic_api.user")
-        self._qq_songlist = importlib.import_module("qqmusic_api.songlist")
-        self._qq_lyric = importlib.import_module("qqmusic_api.lyric")
-        self._qq_recommend = importlib.import_module("qqmusic_api.recommend")
-        self._qq_session_cls = session_mod.Session
-        self._qq_set_session = session_mod.set_session
-        self._qq_clear_session = session_mod.clear_session
+        self._qq_search = qq_search_mod
+        self._qq_song = qq_song_mod
+        self._qq_album = qq_album_mod
+        self._qq_singer = qq_singer_mod
+        self._qq_user = qq_user_mod
+        self._qq_songlist = qq_songlist_mod
+        self._qq_lyric = qq_lyric_mod
+        self._qq_recommend = qq_recommend_mod
         # Keep qqmusic_api internal logs in sync with MA log level.
         logging.getLogger("qqmusicapi").setLevel(self.logger.level + 10)
-        self._credential = credential_mod.Credential.from_cookies_dict(
+        self._credential = Credential.from_cookies_dict(
             {
                 "musicid": str(uin),
                 "musickey": musickey,
                 "loginType": login_type,
             }
         )
-        self._qq_session = self._qq_session_cls(credential=self._credential, enable_sign=True)
-        self._qq_set_session(self._qq_session)
-        self._qq_response_code_error = getattr(exception_mod, "ResponseCodeError", None)
-        self._qq_credential_expired_error = getattr(exception_mod, "CredentialExpiredError", None)
-        self._qq_login_error = getattr(exception_mod, "LoginError", None)
+        self._qq_session = QQSession(credential=self._credential, enable_sign=True)
         self._api_semaphore = Semaphore(4)
         self._musicid = int(uin)
         self._recommend_payload_cache = {}
@@ -542,20 +561,22 @@ class QQMusicProvider(MusicProvider):
     async def _run_with_session(self, coro: Awaitable[Any]) -> Any:
         """Run qqmusic_api call with the provider-bound Session."""
         try:
-            if self._qq_set_session and self._qq_session:
-                self._qq_set_session(self._qq_session)
+            if self._qq_session:
+                qq_set_session(self._qq_session)
             async with self._api_semaphore:
                 return await coro
         except Exception as err:
             raise self._translate_qq_exception(err) from err
+        finally:
+            qq_clear_session()
 
     def _translate_qq_exception(self, err: Exception) -> Exception:
         """Translate qqmusic_api/http exceptions to MA domain exceptions."""
-        if self._qq_credential_expired_error and isinstance(err, self._qq_credential_expired_error):
+        if isinstance(err, CredentialExpiredError):
             return LoginFailed("QQ Music credential expired, please re-authenticate")
-        if self._qq_login_error and isinstance(err, self._qq_login_error):
+        if isinstance(err, LoginError):
             return LoginFailed(f"QQ Music login failed: {err}")
-        if self._qq_response_code_error and isinstance(err, self._qq_response_code_error):
+        if isinstance(err, ResponseCodeError):
             code = getattr(err, "code", None)
             if code in (1000, 2000):
                 return LoginFailed(f"QQ Music API auth/sign failure (code={code})")
@@ -581,8 +602,7 @@ class QQMusicProvider(MusicProvider):
         """Handle unload/close of provider."""
         if self._qq_session:
             await self._qq_session.aclose()
-        if self._qq_clear_session:
-            self._qq_clear_session()
+        qq_clear_session()
         if is_removed:
             route_path = _get_qr_route_path(
                 {CONF_QR_PAGE_URL: str(self.config.get_value(CONF_QR_PAGE_URL) or "")}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Final
 
-CONF_COOKIE: Final[str] = "cookie"
 CONF_UIN: Final[str] = "uin"
 CONF_MUSICID: Final[str] = "musicid"
 CONF_MUSICKEY: Final[str] = "musickey"
@@ -13,13 +12,9 @@ CONF_QR_IDENTIFIER: Final[str] = "qr_identifier"
 CONF_QR_TYPE: Final[str] = "qr_type"
 CONF_QR_PAGE_URL: Final[str] = "qr_page_url"
 CONF_QUALITY: Final[str] = "quality"
-CONF_ACTION_VERIFY_AUTH: Final[str] = "verify_auth"
 CONF_ACTION_START_QR_AUTH: Final[str] = "start_qr_auth"
 CONF_ACTION_CHECK_QR_AUTH: Final[str] = "check_qr_auth"
 CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
-
-QQMUSIC_WEB_BASE_URL: Final[str] = "https://y.qq.com"
-QQMUSIC_MUSICU_URL: Final[str] = "https://u.y.qq.com/cgi-bin/musicu.fcg"
 
 QUALITY_MP3_128: Final[str] = "mp3_128"
 QUALITY_MP3_320: Final[str] = "mp3_320"
