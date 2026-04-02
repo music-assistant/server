@@ -7,7 +7,6 @@ import contextlib
 import logging
 import os
 import os.path
-import time
 import urllib.parse
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
@@ -333,14 +332,9 @@ class LocalFileSystemProvider(MusicProvider):
             # artists and albums are synced as part of track sync
             return
         assert self.mass.music.database
-        start_time = time.time()
         if self.sync_running:
             self.logger.warning("Library sync already running for %s", self.name)
             return
-        self.logger.info(
-            "Started Library sync for %s",
-            self.name,
-        )
         file_checksums: dict[str, str] = {}
         # NOTE: we always run a scan of the entire library, as we need to detect changes
         # we ignore any given mediatype(s) and just scan all supported files
@@ -358,12 +352,6 @@ class LocalFileSystemProvider(MusicProvider):
         # Run the sync implementation (can be overridden by subclasses)
         cur_filenames = await self._sync_library_impl(file_checksums)
 
-        end_time = time.time()
-        self.logger.info(
-            "Library sync for %s completed in %.2f seconds",
-            self.name,
-            end_time - start_time,
-        )
         # work out deletions
         deleted_files = prev_filenames - cur_filenames
         await self._process_deletions(deleted_files)
