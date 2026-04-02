@@ -51,7 +51,7 @@ SerializableType = str | int | float | bool | None | list[Any] | dict[str, Any]
 
 
 class CacheController(CoreController):
-    """Basic cache controller using a database."""
+    """Controller handling caching of data throughout the application."""
 
     domain: str = "cache"
 
@@ -111,11 +111,16 @@ class CacheController(CoreController):
         checksum: str | int | None = None,
         default: Any = None,
         allow_bypass: bool = True,
+        base_class: Any = None,
     ) -> Any:
-        """Get data from cache.
+        """
+        Get data from cache.
 
         Returns JSON-deserialized data (dicts, lists, strings, numbers, booleans, None).
-        Model objects must be reconstructed by the caller using e.g. Model.from_dict().
+
+        If base_class is provided, the raw data is automatically reconstructed using
+        its from_dict() method. If the cached data is a list of dicts, each item is
+        reconstructed individually.
 
         :param key: The (unique) lookup key of the cache object.
         :param provider: Provider id to group cache objects.
@@ -123,6 +128,7 @@ class CacheController(CoreController):
         :param checksum: If provided, only return data if the stored checksum matches.
         :param default: Value to return if no cache object is found.
         :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
+        :param base_class: If provided, reconstruct data using base_class.from_dict().
         """
         assert self.database is not None
         assert key, "No key provided"
@@ -141,7 +147,7 @@ class CacheController(CoreController):
             and (not checksum or db_row["checksum"] == checksum)
         ):
             try:
-                return await async_json_loads(db_row["data"])
+                data = await async_json_loads(db_row["data"])
             except Exception as exc:
                 LOGGER.error(
                     "Error parsing cache data for %s/%s/%s: %s",
@@ -151,6 +157,12 @@ class CacheController(CoreController):
                     str(exc),
                     exc_info=exc if self.logger.isEnabledFor(10) else None,
                 )
+            else:
+                if base_class is not None and data is not None:
+                    if isinstance(data, list):
+                        return [base_class.from_dict(item) for item in data]
+                    return base_class.from_dict(data)
+                return data
         return default
 
     async def set(

@@ -722,9 +722,10 @@ class LocalFileSystemProvider(MusicProvider):
             provider=self.instance_id,
             checksum=cache_checksum,
             category=0,
+            base_class=Track,
         )
         if cached_data is not None:
-            return [Track.from_dict(track_dict) for track_dict in cached_data]
+            return cached_data  # type: ignore[no-any-return]
 
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
@@ -1092,10 +1093,13 @@ class LocalFileSystemProvider(MusicProvider):
         # prefer (short lived) cache for a bit more speed
         if artist_path and (
             cache := await self.cache.get(
-                key=artist_path, provider=self.instance_id, category=CACHE_CATEGORY_ARTIST_INFO
+                key=artist_path,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_ARTIST_INFO,
+                base_class=Artist,
             )
         ):
-            return Artist.from_dict(cache)
+            return cache  # type: ignore[no-any-return]
 
         prov_artist_id = artist_path or name
         artist = Artist(
@@ -1436,9 +1440,10 @@ class LocalFileSystemProvider(MusicProvider):
                 key=album_dir,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_ALBUM_INFO,
+                base_class=Album,
             )
         ):
-            return Album.from_dict(cache)
+            return cache  # type: ignore[no-any-return]
 
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -1597,10 +1602,13 @@ class LocalFileSystemProvider(MusicProvider):
         """Return local images found in a given folderpath."""
         if (
             cache := await self.cache.get(
-                key=folder, provider=self.instance_id, category=CACHE_CATEGORY_FOLDER_IMAGES
+                key=folder,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_FOLDER_IMAGES,
+                base_class=MediaItemImage,
             )
         ) is not None:
-            return UniqueList(MediaItemImage.from_dict(img) for img in cache)
+            return UniqueList(cache)
         if extra_thumb_names is None:
             extra_thumb_names = ()
         images: UniqueList[MediaItemImage] = UniqueList()

@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -10,6 +11,19 @@ import pytest
 
 from music_assistant.controllers.cache import MAX_CACHE_DB_SIZE_MB, CacheController
 from music_assistant.mass import MusicAssistant
+
+
+@dataclass
+class _FakeModel:
+    """Simple model for testing base_class reconstruction."""
+
+    name: str = ""
+    value: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "_FakeModel":
+        """Reconstruct from dict."""
+        return cls(name=data.get("name", ""), value=data.get("value", 0))
 
 
 @pytest.fixture
@@ -103,6 +117,32 @@ async def test_data_always_deserialized_from_json(cache: CacheController) -> Non
     result = await cache.get("list_data", provider="test")
     assert isinstance(result, list)
     assert result == [1, 2, 3]
+
+
+async def test_base_class_single_dict(cache: CacheController) -> None:
+    """Test that base_class reconstructs a single dict into a model."""
+    await cache.set("model", {"name": "test", "value": 42}, provider="test")
+    result = await cache.get("model", provider="test", base_class=_FakeModel)
+    assert isinstance(result, _FakeModel)
+    assert result.name == "test"
+    assert result.value == 42
+
+
+async def test_base_class_list_of_dicts(cache: CacheController) -> None:
+    """Test that base_class reconstructs each item in a list of dicts."""
+    await cache.set("models", [{"name": "a"}, {"name": "b"}], provider="test")
+    result = await cache.get("models", provider="test", base_class=_FakeModel)
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert all(isinstance(item, _FakeModel) for item in result)
+    assert result[0].name == "a"
+    assert result[1].name == "b"
+
+
+async def test_base_class_not_applied_to_none(cache: CacheController) -> None:
+    """Test that base_class is not applied when cache returns default."""
+    result = await cache.get("nonexistent", provider="test", base_class=_FakeModel)
+    assert result is None
 
 
 async def test_non_serializable_raises(cache: CacheController) -> None:

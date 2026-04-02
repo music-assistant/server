@@ -310,9 +310,12 @@ class MusicController(CoreController):
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
         if cache := await self.mass.cache.get(
-            key=cache_key, provider=self.domain, category=CACHE_CATEGORY_SEARCH_RESULTS
+            key=cache_key,
+            provider=self.domain,
+            category=CACHE_CATEGORY_SEARCH_RESULTS,
+            base_class=SearchResults,
         ):
-            return SearchResults.from_dict(cache)
+            return cache
         if not media_types:
             media_types = MediaType.ALL
         # Check if the search query is a streaming provider public shareable URL
