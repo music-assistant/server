@@ -678,10 +678,8 @@ class BandcampProvider(MusicProvider):
             raise MediaNotFoundError(context) from error
 
     @staticmethod
-    def _deserialize_content_item(item: dict[str, object] | Album | Track) -> Album | Track:
+    def _deserialize_content_item(item: dict[str, object]) -> Album | Track:
         """Deserialize a cached content item back to its model type."""
-        if not isinstance(item, dict):
-            return item
         media_type = item.get("media_type")
         if media_type == MediaType.ALBUM:
             return Album.from_dict(item)
@@ -717,7 +715,7 @@ class BandcampProvider(MusicProvider):
                         results.append(await self.get_track(f"{item.band_id}-0-{item.item_id}"))
         await self.mass.cache.set(
             cache_key,
-            results,
+            [item.to_dict() for item in results],
             expiration=CACHE_USER_LISTS if results else CACHE_EMPTY_RESULTS,
             provider=self.instance_id,
         )
@@ -730,12 +728,9 @@ class BandcampProvider(MusicProvider):
         :param person_id: Person to query. None = authenticated user.
         """
         cache_key = f"_browse_person_following_{person_id}"
-        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id, base_class=Artist)
         if cached is not None:
-            try:
-                return [Artist.from_dict(a) if isinstance(a, dict) else a for a in cached]
-            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
-                self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
+            return cached  # type: ignore[no-any-return]
         artists: list[Artist] = []
         async with self._map_api_errors(f"Failed to get following for person {person_id}"):
             collection = await self._get_all_collection_items(
@@ -750,7 +745,7 @@ class BandcampProvider(MusicProvider):
                     )
         await self.mass.cache.set(
             cache_key,
-            artists,
+            [a.to_dict() for a in artists],
             expiration=CACHE_USER_LISTS if artists else CACHE_EMPTY_RESULTS,
             provider=self.instance_id,
         )
@@ -771,26 +766,23 @@ class BandcampProvider(MusicProvider):
         """
         # base_path included intentionally: folder links differ per navigation path.
         cache_key = f"_browse_person_people_{person_id}_{collection_type.value}_{base_path}"
-        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
+        cached = await self.mass.cache.get(
+            cache_key, provider=self.instance_id, base_class=BrowseFolder
+        )
         if cached is not None:
-            try:
-                folders = [BrowseFolder.from_dict(f) if isinstance(f, dict) else f for f in cached]
-            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
-                self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
-            else:
-                for folder in folders:
-                    segment = folder.path.rstrip("/").rsplit("/", 1)[-1]
-                    fan_id_str = folder.item_id.removeprefix("person_")
-                    with suppress(ValueError):
-                        self._slug_to_fan_id[segment] = int(fan_id_str)
-                return folders
+            for folder in cached:
+                segment = folder.path.rstrip("/").rsplit("/", 1)[-1]
+                fan_id_str = folder.item_id.removeprefix("person_")
+                with suppress(ValueError):
+                    self._slug_to_fan_id[segment] = int(fan_id_str)
+            return cached  # type: ignore[no-any-return]
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):
             collection = await self._get_all_collection_items(collection_type, fan_id=person_id)
             folders = self._people_to_folders(collection, base_path)
         await self.mass.cache.set(
             cache_key,
-            folders,
+            [f.to_dict() for f in folders],
             expiration=CACHE_USER_LISTS if folders else CACHE_EMPTY_RESULTS,
             provider=self.instance_id,
         )

@@ -310,7 +310,10 @@ class MusicController(CoreController):
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"  # noqa: E501
         if cache := await self.mass.cache.get(
-            key=cache_key, provider=self.domain, category=CACHE_CATEGORY_SEARCH_RESULTS
+            key=cache_key,
+            provider=self.domain,
+            category=CACHE_CATEGORY_SEARCH_RESULTS,
+            base_class=SearchResults,
         ):
             return cache
         if not media_types:
@@ -444,7 +447,7 @@ class MusicController(CoreController):
         result.podcasts = self._sort_search_result(search_query, result.podcasts)
         await self.mass.cache.set(
             key=cache_key,
-            data=result,
+            data=result.to_dict(),
             expiration=600,
             provider=self.domain,
             category=CACHE_CATEGORY_SEARCH_RESULTS,
