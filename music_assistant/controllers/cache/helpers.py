@@ -25,11 +25,23 @@ def use_cache(
     persistent: bool = False,
     cache_checksum: str | None = None,
     allow_bypass: bool = True,
+    base_class: Any = None,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
     Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
 ]:
-    """Return decorator that can be used to cache a method's result."""
+    """
+    Return decorator that can be used to cache a method's result.
+
+    :param expiration: Time in seconds the cache entry should be valid.
+    :param category: Category to group cache objects.
+    :param persistent: If True, the entry survives cache clears.
+    :param cache_checksum: Optional checksum to store with the cache object.
+    :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
+    :param base_class: If provided, reconstruct cached data using base_class.from_dict().
+        Handles both single dicts and lists of dicts automatically.
+        If not provided, falls back to type-annotation based reconstruction.
+    """
 
     def _decorator(
         func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
@@ -51,8 +63,12 @@ def use_cache(
                 checksum=cache_checksum,
                 category=category,
                 allow_bypass=allow_bypass,
+                base_class=base_class,
             )
             if cachedata is not None:
+                if base_class is not None:
+                    return cast("R", cachedata)
+                # fallback: reconstruct using type annotations
                 type_hints = get_type_hints(func)
                 return cast("R", parse_value(func.__name__, cachedata, type_hints["return"]))
             # get data from method/provider
