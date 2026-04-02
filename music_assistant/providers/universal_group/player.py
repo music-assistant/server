@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -218,13 +217,21 @@ class UniversalGroupPlayer(Player):
                             other_group.supports_feature(PlayerFeature.SET_MEMBERS)
                             and member.player_id not in other_group.static_group_members
                         ):
-                            await other_group.set_members(player_ids_to_remove=[member.player_id])
+                            await self.mass.players.wait_for_player_update(
+                                member.player_id,
+                                timeout=5,
+                                action=other_group.set_members(
+                                    player_ids_to_remove=[member.player_id]
+                                ),
+                            )
                         else:
                             # if the other group does not support SET_MEMBERS or it is a static
                             # member, we need to power it off to leave the group
-                            await other_group.power(False)
-                            await asyncio.sleep(1)
-                    await asyncio.sleep(1)
+                            await self.mass.players.wait_for_player_update(
+                                member.player_id,
+                                timeout=5,
+                                action=other_group.power(False),
+                            )
                 if member.synced_to:
                     # edge case: the member is part of a syncgroup - ungroup it first
                     await member.ungroup()
