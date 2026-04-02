@@ -112,14 +112,17 @@ class CacheController(CoreController):
         default: Any = None,
         allow_bypass: bool = True,
     ) -> Any:
-        """Get object from cache and return the results.
+        """Get data from cache.
 
-        - key: the (unique) lookup key of the cache object as reference
-        - provider: optional provider id to group cache objects
-        - category: optional category to group cache objects
-        - checksum: optional argument to check if the checksum in the
-                    cache object matches the checksum provided
-        - default: value to return if no cache object is found
+        Returns JSON-deserialized data (dicts, lists, strings, numbers, booleans, None).
+        Model objects must be reconstructed by the caller using e.g. Model.from_dict().
+
+        :param key: The (unique) lookup key of the cache object.
+        :param provider: Provider id to group cache objects.
+        :param category: Category to group cache objects.
+        :param checksum: If provided, only return data if the stored checksum matches.
+        :param default: Value to return if no cache object is found.
+        :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
         """
         assert self.database is not None
         assert key, "No key provided"
@@ -161,15 +164,19 @@ class CacheController(CoreController):
         persistent: bool = False,
     ) -> None:
         """
-        Set data in cache.
+        Store data in cache.
 
-        - key: the (unique) lookup key of the cache object as reference
-        - data: the actual data to store in the cache
-        - expiration: time in seconds the cache object should be valid
-        - provider: optional provider id to group cache objects
-        - category: optional category to group cache objects
-        - checksum: optional argument to store with the cache object
-        - persistent: if True the cache object will not be deleted when clearing the cache
+        Data must be JSON-serializable (str, int, float, bool, None, list, dict).
+        Do not pass model objects directly — use .to_dict() first.
+        Non-serializable data will raise TypeError.
+
+        :param key: The (unique) lookup key of the cache object.
+        :param data: JSON-serializable data to store.
+        :param expiration: Time in seconds the cache object should be valid.
+        :param provider: Provider id to group cache objects.
+        :param category: Category to group cache objects.
+        :param checksum: Optional checksum to store with the cache object.
+        :param persistent: If True, the entry survives cache clears.
         """
         assert self.database is not None
         if not key:
