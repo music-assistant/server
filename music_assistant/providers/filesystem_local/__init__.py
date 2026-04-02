@@ -94,6 +94,7 @@ from .constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PATH,
     CONF_ENTRY_PROPAGATE_GENRES,
+    DEFAULT_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
@@ -1240,7 +1241,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         # parse other info
         audio_book.authors.set(tags.writers or tags.album_artists or tags.artists)
-        audio_book.metadata.genres = set(tags.genres) if tags.genres else {"Spoken Word"}
+        audio_book.metadata.genres = set(tags.genres) if tags.genres else {DEFAULT_PODCAST_GENRE}
         audio_book.metadata.copyright = tags.get("copyright")
         audio_book.metadata.lyrics = tags.lyrics
         audio_book.metadata.description = tags.get("comment")
@@ -1297,8 +1298,6 @@ class LocalFileSystemProvider(MusicProvider):
         """Parse full PodcastEpisode details from file tags."""
         # ruff: noqa: PLR0915
         podcast_name = tags.album or file_item.parent_name
-        # Use relative_parent_path for WebDAV compatibility (parent_path uses os.path.dirname
-        # which doesn't work correctly for URLs)
         podcast_path = file_item.relative_parent_path
         episode = PodcastEpisode(
             item_id=file_item.relative_path,
@@ -1354,7 +1353,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             )
         # parse other info
-        episode.metadata.genres = set(tags.genres) if tags.genres else {"Spoken Word"}
+        episode.metadata.genres = set(tags.genres) if tags.genres else {DEFAULT_PODCAST_GENRE}
         episode.metadata.copyright = tags.get("copyright")
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
