@@ -59,7 +59,8 @@ MPD_STATE_MAP: dict[str, PlaybackState] = {
 
 
 class MPDPlayer(Player):
-    """Represents a single MPD server as a Music Assistant player.
+    """
+    Represents a single MPD server as a Music Assistant player.
 
     Audio is delivered by telling MPD to fetch MA's HTTP stream URL.
     State changes are received via MPD's idle mechanism (push-based),
