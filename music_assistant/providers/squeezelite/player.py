@@ -180,7 +180,7 @@ class SqueezelitePlayer(Player):
         # store last state in cache
         await self.mass.cache.set(
             key=self.player_id,
-            data=(powered, self.client.volume_level),
+            data=[powered, self.client.volume_level],
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_STATE,
         )
@@ -191,7 +191,7 @@ class SqueezelitePlayer(Player):
         # store last state in cache
         await self.mass.cache.set(
             key=self.player_id,
-            data=(self.client.powered, volume_level),
+            data=[self.client.powered, volume_level],
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_STATE,
         )
