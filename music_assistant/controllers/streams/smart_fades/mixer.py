@@ -124,14 +124,19 @@ class SmartFadesMixer:
                     fade_out_analysis=fade_out_analysis,
                     fade_in_analysis=fade_in_analysis,
                 )
+                got_chunks = False
                 async for chunk in smart_fade.apply(
                     fade_out_part,
                     fade_in_part,
                     pcm_format,
                 ):
+                    got_chunks = True
                     yield chunk
                 return
             except Exception as e:
+                if got_chunks:
+                    # partial output already yielded, can't fall back safely
+                    raise
                 self.logger.warning(
                     "Smart crossfade failed: %s, falling back to standard crossfade", e
                 )
