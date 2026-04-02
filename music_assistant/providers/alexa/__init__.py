@@ -50,8 +50,10 @@ CONF_ALEXA_LANGUAGE = "alexa_language"
 
 ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_de-DE": "sag music assistant spiele audio",
+    "play_audio_en-CA": "ask music assistant to play audio",
     "play_audio_en-US": "ask music assistant to play audio",
     "play_audio_es-ES": "pídele a music assistant que reproduzca audio",
+    "play_audio_fr-CA": "music assistant",
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
