@@ -144,7 +144,8 @@ class SmartFade(ABC):
 
         got_output = False
         try:
-            proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="smartfade")
+            # stderr=False sends it to DEVNULL; a pipe would deadlock if unread
+            proc = AsyncProcess(args, stdin=True, stdout=True, stderr=False, name="smartfade")
             async with proc:
 
                 async def _feed_stdin() -> None:
