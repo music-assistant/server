@@ -2219,7 +2219,8 @@ class StreamsAudio:
             streamdetails.stream_title = cleaned_stream_title
 
     async def _validate_shoutcast_stream(self, url: str) -> bool:
-        """Validate if a URL is a legacy Shoutcast stream that returns "ICY 200 OK".
+        """
+        Validate if a URL is a legacy Shoutcast stream that returns "ICY 200 OK".
 
         Makes a raw socket connection to check the response line.
 
