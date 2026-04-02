@@ -957,6 +957,8 @@ class StreamsAudio:
             audio_buffer.register_chunk_callback(_on_chunk)
 
             def _on_cancel() -> None:
+                if chunk_queue.full():
+                    chunk_queue.get_nowait()
                 chunk_queue.put_nowait(None)
 
             audio_buffer.register_cancel_callback(_on_cancel)
