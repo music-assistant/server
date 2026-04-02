@@ -17,7 +17,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
 )
-from music_assistant.providers.airplay.helpers import get_cli_binary
+from music_assistant.providers.airplay.helpers import get_cli_binary, resolve_if_ip
 
 from ._protocol import AirPlayProtocol
 
@@ -40,15 +40,17 @@ class RaopStream(AirPlayProtocol):
         assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
-        # Only pass the -if (interface/bind) flag to cliraop when the bind IP is a
-        # specific address and matches the address family of the target player,
-        # since cliraop cannot use an IPv6 source to connect to an IPv4 target or vice versa
-        bind_ip = self.mass.streams.bind_ip
-        if bind_ip not in ("0.0.0.0", "::"):
-            bind_is_ipv6 = isinstance(ipaddress.ip_address(bind_ip), ipaddress.IPv6Address)
-            target_is_ipv6 = ":" in self.player.address
-            if bind_is_ipv6 == target_is_ipv6:
-                extra_args += ["-if", bind_ip]
+        if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
+        # Only pass -if when source and target use the same address family.
+        # cliraop cannot use IPv6 source for IPv4 target (or vice versa).
+        if if_ip not in ("0.0.0.0", "::", ""):
+            try:
+                source_is_ipv6 = isinstance(ipaddress.ip_address(if_ip), ipaddress.IPv6Address)
+                target_is_ipv6 = ":" in self.player.address
+                if source_is_ipv6 == target_is_ipv6:
+                    extra_args += ["-if", if_ip]
+            except ValueError:
+                self.player.logger.debug("Skipping invalid interface value for -if: %s", if_ip)
         if self.player.config.get_value(CONF_ENCRYPTION, True):
             extra_args += ["-encrypt"]
         if self.player.config.get_value(CONF_ALAC_ENCODE, True):
