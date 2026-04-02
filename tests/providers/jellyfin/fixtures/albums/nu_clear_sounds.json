@@ -1,0 +1,43 @@
+{
+    "Name": "Nu-Clear Sounds",
+    "ServerId": "58f180d8d2b34927bcfd73eee400ffad",
+    "Id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "SortName": "nu-clear sounds",
+    "ChannelId": null,
+    "ProductionYear": 1998,
+    "ProviderIds": {
+        "MusicBrainzAlbum": "4e8b3c7a-1234-5678-abcd-ef0123456789",
+        "MusicBrainzReleaseGroup": "5f9c4d8b-2345-6789-bcde-f01234567890"
+    },
+    "IsFolder": true,
+    "Type": "MusicAlbum",
+    "AlbumArtists": [
+        {
+            "Name": "Ash",
+            "Id": "dd954bbf54398e247d803186d3585b79"
+        }
+    ],
+    "ArtistItems": [
+        {
+            "Name": "Ash",
+            "Id": "dd954bbf54398e247d803186d3585b79"
+        }
+    ],
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Album-MusicBrainz-4e8b3c7a-1234-5678-abcd-ef0123456789"
+    },
+    "ImageTags": {
+        "Primary": "abc123def456abc123def456abc123de"
+    },
+    "ImageBlurHashes": {
+        "Primary": {
+            "abc123def456abc123def456abc123de": "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Unknown"
+}
