@@ -163,7 +163,7 @@ def _get_connector(
     socks_url: str | None = None,
     family: socket.AddressFamily = socket.AF_UNSPEC,
     ssl_cipher: ssl_util.SSLCipherList = ssl_util.SSLCipherList.PYTHON_DEFAULT,
-) -> aiohttp.BaseConnector:
+) -> aiohttp.BaseConnector | ProxyConnector:
     """
     Return the connector pool for aiohttp.
 
