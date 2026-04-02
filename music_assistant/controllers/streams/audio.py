@@ -2178,7 +2178,8 @@ class StreamsAudio:
     # --- Private methods ---
 
     def _parse_icy_metadata(self, meta_data: bytes, streamdetails: StreamDetails) -> None:
-        """Parse ICY metadata and update streamdetails with stream title.
+        """
+        Parse ICY metadata and update streamdetails with stream title.
 
         :param meta_data: Raw metadata bytes from ICY stream.
         :param streamdetails: StreamDetails object to update with parsed title.
