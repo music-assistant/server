@@ -20,7 +20,11 @@ class MPDPlayerProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.logger.info("Initializing MPDPlayerProvider with config: %s", self.config)
+        self.logger.debug(
+            "Initializing MPD provider for %s:%s",
+            self.config.get_value(CONF_HOST),
+            self.config.get_value(CONF_PORT),
+        )
 
     async def discover_players(self) -> None:
         """Set up the single MPD player from provider config."""
