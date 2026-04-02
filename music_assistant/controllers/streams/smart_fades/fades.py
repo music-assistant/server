@@ -162,8 +162,10 @@ class SmartFade(ABC):
                     with suppress(asyncio.CancelledError):
                         await feed_task
 
-            if not got_output:
-                raise RuntimeError("Smart crossfade failed: FFmpeg produced no output")
+            if proc.returncode not in (None, 0) or not got_output:
+                raise RuntimeError(
+                    f"Smart crossfade FFmpeg failed (rc={proc.returncode}, output={got_output})"
+                )
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
