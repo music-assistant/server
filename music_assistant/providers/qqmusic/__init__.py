@@ -113,12 +113,27 @@ _RECOMMEND_NEWSONG_TTL = 60 * 60 * 6
 _RECOMMEND_PLAYLIST_TTL = 60 * 60 * 6
 
 
-def _clear_qr_routes() -> None:
-    """Unregister all temporary QR routes."""
-    for unregister in list(_QR_ROUTE_UNREGISTER.values()):
+def _clear_qr_route(route_path: str | None) -> None:
+    """Unregister one temporary QR route if present."""
+    if not route_path:
+        return
+    if unregister := _QR_ROUTE_UNREGISTER.pop(route_path, None):
         with suppress(Exception):
             unregister()
-    _QR_ROUTE_UNREGISTER.clear()
+
+
+def _get_qr_route_path(values: dict[str, ConfigValueType]) -> str | None:
+    """Resolve current session QR route path from config values."""
+    if session_id := values.get("session_id"):
+        return f"/auth/qqmusic/qr/{session_id}"
+    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
+    if not qr_page_url:
+        return None
+    parsed = urlparse(qr_page_url)
+    path = parsed.path or qr_page_url
+    if path.startswith("/auth/qqmusic/qr/"):
+        return path
+    return None
 
 
 def _register_qr_auth_page(
@@ -133,8 +148,7 @@ def _register_qr_auth_page(
         return f"data:{mime_type};base64,{b64}"
 
     route_path = f"/auth/qqmusic/qr/{session_id}"
-    if unregister := _QR_ROUTE_UNREGISTER.pop(route_path, None):
-        unregister()
+    _clear_qr_route(route_path)
 
     async def _serve_qr(_: web.Request) -> web.Response:
         return web.Response(
@@ -223,9 +237,9 @@ async def get_config_entries(  # noqa: PLR0915
         values[CONF_QR_PAGE_URL] = None
         has_qr_pending = False
         is_verified = False
-        _clear_qr_routes()
+        _clear_qr_route(_get_qr_route_path(values))
     elif action == CONF_ACTION_START_QR_AUTH:
-        _clear_qr_routes()
+        _clear_qr_route(_get_qr_route_path(values))
         login_mod = importlib.import_module("qqmusic_api.login")
         qr = await login_mod.get_qrcode(login_mod.QRLoginType.QQ)
         if not getattr(qr, "identifier", None) or not getattr(qr, "data", None):
@@ -570,7 +584,10 @@ class QQMusicProvider(MusicProvider):
         if self._qq_clear_session:
             self._qq_clear_session()
         if is_removed:
-            _clear_qr_routes()
+            route_path = _get_qr_route_path(
+                {CONF_QR_PAGE_URL: str(self.config.get_value(CONF_QR_PAGE_URL) or "")}
+            )
+            _clear_qr_route(route_path)
         self._qq_session = None
         self._recommend_payload_cache = {}
         await super().unload(is_removed)
