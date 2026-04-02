@@ -1,1 +1,11 @@
+{
+  "type": "plugin",
+  "domain": "spotify_connect_go",
+  "stage": "alpha",
+  "name": "Spotify Connect Go",
+  "description": "Add Spotify Connect Go support to ANY Music Assistant player.",
+  "codeowners": ["@music-assistant"],
+  "documentation": "https://music-assistant.io/plugins/spotify-connect/",
+  "multi_instance": true
+}
 
