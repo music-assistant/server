@@ -67,9 +67,8 @@ class SmartFadesMixer:
             return
 
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
-            # standard crossfade needs full bytes for strip_silence
             fade_in_bytes = await self._ensure_bytes(fade_in_part, fade_in_buffer_size)
-            # strip silence from end of audio of fade_out_part
+            # strip silence from end of outgoing track (common in song outros)
             fade_out_part = await strip_silence(
                 fade_out_part,
                 pcm_format=pcm_format,
@@ -77,14 +76,6 @@ class SmartFadesMixer:
             )
             # Ensure frame alignment after silence stripping
             fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
-            # strip silence from begin of audio of fade_in_part
-            fade_in_bytes = await strip_silence(
-                fade_in_bytes,
-                pcm_format=pcm_format,
-                reverse=False,
-            )
-            # Ensure frame alignment after silence stripping
-            fade_in_bytes = align_audio_to_frame_boundary(fade_in_bytes, pcm_format)
             smart_fade: SmartFade = StandardCrossFade(
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
