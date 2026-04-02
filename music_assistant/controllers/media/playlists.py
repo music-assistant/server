@@ -137,15 +137,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not allow_dynamic_tracks:
             if library_item is not None and library_item.is_dynamic:
                 return
-            # Generic guard for requests where the library item may not carry is_dynamic yet.
-            with suppress(MediaNotFoundError):
-                provider_item = await self.get_provider_item(
-                    item_id,
-                    provider_instance_id_or_domain,
-                    force_refresh=force_refresh,
-                )
-                if provider_item.is_dynamic:
-                    return
 
         # playlist tracks are not stored in the db,
         # we always fetched them (cached) from the provider

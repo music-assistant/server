@@ -827,18 +827,6 @@ class MusicController(CoreController):
             provider_instance_id_or_domain = "library"
         if provider_instance_id_or_domain == "builtin":
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
-            # but first check if the url is a share URL from a known provider
-            if item_id.startswith(("http://", "https://")):
-                with suppress(InvalidProviderURI, InvalidProviderID):
-                    parsed_media_type, parsed_provider, parsed_item_id = await parse_uri(
-                        item_id, validate_id=True
-                    )
-                    if parsed_provider in PROVIDERS_WITH_SHAREABLE_URLS:
-                        return await self.get_item(
-                            media_type=parsed_media_type,
-                            item_id=parsed_item_id,
-                            provider_instance_id_or_domain=parsed_provider,
-                        )
             return await self.mass.get_provider("builtin").parse_item(item_id)
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
