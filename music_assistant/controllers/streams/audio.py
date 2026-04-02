@@ -110,7 +110,7 @@ if TYPE_CHECKING:
 class CrossfadeData:
     """Data class to hold crossfade data."""
 
-    data: bytes
+    data: bytes | bytearray
     fade_in_size: int
     pcm_format: AudioFormat  # Format of the 'data' bytes (current/previous track's format)
     fade_in_pcm_format: AudioFormat  # Format for 'fade_in_size' (next track's format)
@@ -1606,7 +1606,7 @@ class StreamsAudio:
                     else:
                         second_half_buf.extend(mix_chunk)
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
-                    data=bytes(second_half_buf),
+                    data=second_half_buf,
                     fade_in_size=self.smart_fades_mixer.fade_in_bytes_consumed,
                     pcm_format=pcm_format,
                     fade_in_pcm_format=pcm_format,
