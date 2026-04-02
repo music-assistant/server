@@ -444,9 +444,9 @@ class SendspinAirPlayBridge:
 
         # Align the first written chunk so byte 0 of stdin matches start_ntp.
         if not self._start_aligned:
-            self._start_aligned = True
-            self._align_first_chunk(chunk)
-            self._next_expected_timestamp_us = chunk.timestamp_us + chunk.duration_us
+            if self._align_first_chunk(chunk):
+                self._start_aligned = True
+                self._next_expected_timestamp_us = chunk.timestamp_us + chunk.duration_us
             return
 
         if self._next_expected_timestamp_us is not None:
@@ -461,7 +461,7 @@ class SendspinAirPlayBridge:
         self._next_expected_timestamp_us = chunk.timestamp_us + chunk.duration_us
         self._write_queue.put_nowait(chunk.data)
 
-    def _align_first_chunk(self, chunk: AudioChunk) -> None:
+    def _align_first_chunk(self, chunk: AudioChunk) -> bool:
         """
         Align the first audio chunk so byte 0 of CLI stdin matches start_ntp.
 
@@ -469,6 +469,7 @@ class SendspinAirPlayBridge:
         the beginning if the chunk straddles it.
 
         :param chunk: The first audio chunk that overlaps with the start time.
+        :return: True if aligned audio was queued successfully.
         """
         bytes_per_frame = BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
 
@@ -484,7 +485,8 @@ class SendspinAirPlayBridge:
                 )
                 self._write_queue.put_nowait(b"\x00" * (silence_frames * bytes_per_frame))
             self._write_queue.put_nowait(chunk.data)
-        elif chunk.timestamp_us < self._drop_until_us:
+            return True
+        if chunk.timestamp_us < self._drop_until_us:
             # Chunk straddles start_ntp — trim the beginning
             trim_us = self._drop_until_us - chunk.timestamp_us
             trim_frames = int(trim_us * BRIDGE_SAMPLE_RATE / 1_000_000)
@@ -496,8 +498,10 @@ class SendspinAirPlayBridge:
                     self.airplay_player.display_name,
                 )
                 self._write_queue.put_nowait(chunk.data[trim_bytes:])
-        else:
-            self._write_queue.put_nowait(chunk.data)
+                return True
+            return False
+        self._write_queue.put_nowait(chunk.data)
+        return True
 
     async def _cli_writer(self) -> None:
         """Write queued audio data to the CLI process stdin.
