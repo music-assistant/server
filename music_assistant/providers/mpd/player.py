@@ -245,7 +245,7 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Send play command with MA stream URL to MPD."""
+        """Handle play media command on MPD Player."""
         if self._client is None:
             return
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
