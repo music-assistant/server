@@ -93,7 +93,9 @@ class SonosPlayer(Player):
     @property
     def group_controller(self) -> SonosGroup:
         """Get the group controller, raising if unavailable."""
-        assert self.client.player.group is not None, "Group controller unavailable"
+        if self.client.player.group is None:
+            msg = "Group controller unavailable"
+            raise RuntimeError(msg)
         return self.client.player.group
 
     @property
@@ -113,7 +115,7 @@ class SonosPlayer(Player):
 
     async def setup(self) -> None:
         """Handle setup of the player."""
-        assert self.device_info.ip_address is not None, "IP address required for setup"
+        assert self.device_info.ip_address is not None  # for type checking
         # connect the player first so we can fail early
         self.client = SonosLocalApiClient(
             self.device_info.ip_address, self.mass.http_session_no_ssl
