@@ -44,7 +44,8 @@ async def webdav_propfind(
     timeout: int = 30,
     auth: aiohttp.BasicAuth | None = None,
 ) -> list[WebDAVItem]:
-    """Execute a PROPFIND request on a WebDAV resource.
+    """
+    Execute a PROPFIND request on a WebDAV resource.
 
     :param session: Active HTTP session.
     :param url: WebDAV URL to query.
