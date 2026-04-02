@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.fades import (
@@ -33,23 +34,35 @@ class SmartFadesMixer:
 
     async def mix(
         self,
-        fade_in_part: bytes,
+        fade_in_part: bytes | AsyncGenerator[bytes, None],
         fade_out_part: bytes,
         fade_in_streamdetails: StreamDetails,
         fade_out_streamdetails: StreamDetails,
         pcm_format: AudioFormat,
         standard_crossfade_duration: int = 10,
         mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
-    ) -> bytes:
-        """Apply crossfade with internal state management and smart/standard fallback logic."""
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Apply crossfade, yielding mixed PCM audio chunks as they become available.
+
+        :param fade_in_part: Raw PCM bytes or async generator for the incoming track's head.
+        :param fade_out_part: Raw PCM bytes for the outgoing track's tail.
+        :param fade_in_streamdetails: Stream details for the incoming track.
+        :param fade_out_streamdetails: Stream details for the outgoing track.
+        :param pcm_format: Audio format of both input parts and the output.
+        :param standard_crossfade_duration: Duration in seconds for standard crossfade fallback.
+        :param mode: Smart fades mode to use.
+        """
         if mode == SmartFadesMode.DISABLED:
             # No crossfade, just concatenate
             # Note that this should not happen since we check this before calling mix()
             # but just to be sure...
-            return fade_out_part + fade_in_part
+            fade_in_bytes = await self._ensure_bytes(fade_in_part)
+            yield fade_out_part + fade_in_bytes
+            return
 
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
-            # strip silence from end of audio of fade_out_part
+            # strip silence from end of outgoing track (common in song outros)
             fade_out_part = await strip_silence(
                 fade_out_part,
                 pcm_format=pcm_format,
@@ -57,23 +70,18 @@ class SmartFadesMixer:
             )
             # Ensure frame alignment after silence stripping
             fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
-            # strip silence from begin of audio of fade_in_part
-            fade_in_part = await strip_silence(
-                fade_in_part,
-                pcm_format=pcm_format,
-                reverse=False,
-            )
-            # Ensure frame alignment after silence stripping
-            fade_in_part = align_audio_to_frame_boundary(fade_in_part, pcm_format)
             smart_fade: SmartFade = StandardCrossFade(
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
             )
-            return await smart_fade.apply(
+            async for chunk in smart_fade.apply(
                 fade_out_part,
                 fade_in_part,
                 pcm_format,
-            )
+            ):
+                yield chunk
+            return
+
         # Attempt smart crossfade with analysis data
         fade_out_analysis: SmartFadesAnalysis | None
         if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
@@ -99,6 +107,8 @@ class SmartFadesMixer:
         ):
             fade_in_analysis = stored_analysis
         else:
+            # analysis not cached, need full bytes for beat analysis
+            fade_in_part = await self._ensure_bytes(fade_in_part)
             fade_in_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
                 fade_in_streamdetails.item_id,
                 fade_in_streamdetails.provider,
@@ -119,23 +129,45 @@ class SmartFadesMixer:
                     fade_out_analysis=fade_out_analysis,
                     fade_in_analysis=fade_in_analysis,
                 )
-                return await smart_fade.apply(
+                got_chunks = False
+                async for chunk in smart_fade.apply(
                     fade_out_part,
                     fade_in_part,
                     pcm_format,
-                )
+                ):
+                    got_chunks = True
+                    yield chunk
+                return
             except Exception as e:
+                if got_chunks:
+                    # partial output already yielded, can't fall back safely
+                    raise
                 self.logger.warning(
                     "Smart crossfade failed: %s, falling back to standard crossfade", e
                 )
 
         # Always fallback to Standard Crossfade in case something goes wrong
+        # StandardCrossFade needs full bytes for slicing
+        fade_in_bytes = await self._ensure_bytes(fade_in_part)
         smart_fade = StandardCrossFade(
             logger=self.logger,
             crossfade_duration=standard_crossfade_duration,
         )
-        return await smart_fade.apply(
+        async for chunk in smart_fade.apply(
             fade_out_part,
-            fade_in_part,
+            fade_in_bytes,
             pcm_format,
-        )
+        ):
+            yield chunk
+
+    @staticmethod
+    async def _ensure_bytes(
+        data: bytes | AsyncGenerator[bytes, None],
+    ) -> bytes:
+        """Consume an async generator into bytes, or return bytes as-is."""
+        if isinstance(data, bytes):
+            return data
+        buf = bytearray()
+        async for chunk in data:
+            buf.extend(chunk)
+        return bytes(buf)
