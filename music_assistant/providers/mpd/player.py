@@ -214,7 +214,7 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def _fetch_and_sync_state(self) -> None:
-        """Fetch current MPD status and update MA player state."""
+        """Fetch current MPD status and update player state."""
         if self._client is None:
             return
         try:
