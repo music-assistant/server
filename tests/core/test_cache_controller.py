@@ -334,7 +334,9 @@ async def test_all_three_db_files_included_in_size(mass_minimal: MusicAssistant)
             await f.write(b"\0" * 100)
 
     size_threshold_mb = 0.0002
-    with patch("music_assistant.controllers.cache.MAX_CACHE_DB_SIZE_MB", size_threshold_mb):
+    with patch(
+        "music_assistant.controllers.cache.controller.MAX_CACHE_DB_SIZE_MB", size_threshold_mb
+    ):
         result = await cache._check_and_reset_oversized_cache()
 
     assert result is True

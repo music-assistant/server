@@ -1,28 +1,34 @@
-"""Provides a simple stateless caching system."""
+"""Cache controller implementation."""
 
 from __future__ import annotations
 
 import asyncio
-import functools
-import logging
 import os
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, get_type_hints
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
+from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS
+from music_assistant.controllers.cache.constants import (
+    BYPASS_CACHE,
+    CACHE_DATABASE_CLEANUP_TASK_ID,
+    CONF_CLEAR_CACHE,
+    DB_SCHEMA_VERSION,
+    DEFAULT_CACHE_EXPIRATION,
+    LOGGER,
+    MAX_CACHE_DB_SIZE_MB,
+    SerializableType,
+)
 from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import async_json_loads, json_dumps
@@ -32,22 +38,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.provider import Provider
-
-LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
-CONF_CLEAR_CACHE = "clear_cache"
-DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
-DB_SCHEMA_VERSION = 7
-MAX_CACHE_DB_SIZE_MB = 2048
-CACHE_DATABASE_CLEANUP_TASK_ID = "cache_database_cleanup"
-
-BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
-
-# Type alias for data that can be stored in the cache.
-# Only JSON-serializable types are accepted - storing model objects directly
-# is not allowed as the cache always serializes/deserializes through JSON.
-# Note: tuples are not valid because JSON round-trips convert them to lists.
-SerializableType = str | int | float | bool | None | list[Any] | dict[str, Any]
 
 
 class CacheController(CoreController):
@@ -437,69 +427,3 @@ class CacheController(CoreController):
             metadata={"task_domain": "cache_database_cleanup"},
             allow_retry=True,
         )
-
-
-Param = ParamSpec("Param")
-RetType = TypeVar("RetType")
-
-
-ProviderT = TypeVar("ProviderT", bound="Provider | CoreController")
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
-def use_cache(
-    expiration: int = DEFAULT_CACHE_EXPIRATION,
-    category: int = 0,
-    persistent: bool = False,
-    cache_checksum: str | None = None,
-    allow_bypass: bool = True,
-) -> Callable[
-    [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
-    Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
-]:
-    """Return decorator that can be used to cache a method's result."""
-
-    def _decorator(
-        func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
-    ) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
-        @functools.wraps(func)
-        async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
-            cache = self.mass.cache
-            provider_id = getattr(self, "instance_id", self.domain)
-
-            # create a cache key dynamically based on the (remaining) args/kwargs
-            cache_key_parts = [func.__name__, *args]
-            for key in sorted(kwargs.keys()):
-                cache_key_parts.append(f"{key}{kwargs[key]}")
-            cache_key = ".".join(map(str, cache_key_parts))
-            # try to retrieve data from the cache
-            cachedata = await cache.get(
-                cache_key,
-                provider=provider_id,
-                checksum=cache_checksum,
-                category=category,
-                allow_bypass=allow_bypass,
-            )
-            if cachedata is not None:
-                type_hints = get_type_hints(func)
-                return cast("R", parse_value(func.__name__, cachedata, type_hints["return"]))
-            # get data from method/provider
-            result = await func(self, *args, **kwargs)
-            # store result in cache (but don't await)
-            self.mass.create_task(
-                cache.set(
-                    key=cache_key,
-                    data=cast("SerializableType", result),
-                    expiration=expiration,
-                    provider=provider_id,
-                    category=category,
-                    checksum=cache_checksum,
-                    persistent=persistent,
-                )
-            )
-            return result
-
-        return wrapper
-
-    return _decorator
