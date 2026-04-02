@@ -841,21 +841,18 @@ class Player(ABC):
         """
         Return the group volume level.
 
-        If this player is a group player or syncgroup, this will return the average volume
-        level of all (powered on) child players in the group or None if none of the players
-        within the group support volume control.
+        For group players or syncgroups, returns the maximum volume level of all
+        powered-on child players, or None if no children support volume control.
 
-        If the player is not a group player or syncgroup, this will return the volume level
-        of the player itself (if set), or None if not supported.
+        For non-group players, returns the player's own volume level.
         """
         if len(self.state.group_members) == 0:
             # player is not a group or syncgroup
             if self.state.volume_control == PLAYER_CONTROL_NONE:
                 return None
             return self.state.volume_level
-        # calculate group volume from all (turned on) players
-        group_volume = 0
-        active_players = 0
+        # return the maximum volume of all (turned on) child players
+        group_volume: int | None = None
         for child_player in self.mass.players.iter_group_members(
             self, only_powered=True, exclude_self=self.type != PlayerType.PLAYER
         ):
@@ -863,11 +860,9 @@ class Player(ABC):
                 continue
             if (child_volume := child_player.state.volume_level) is None:
                 continue
-            group_volume += child_volume
-            active_players += 1
-        if active_players:
-            group_volume = int(group_volume / active_players)
-        return group_volume if active_players else None
+            if group_volume is None or child_volume > group_volume:
+                group_volume = child_volume
+        return group_volume
 
     @cached_property
     @final
