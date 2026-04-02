@@ -220,7 +220,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
-PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
+PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music")
 
 
 ####### REUSABLE CONFIG ENTRIES #######
