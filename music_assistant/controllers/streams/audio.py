@@ -1586,7 +1586,8 @@ class StreamsAudio:
                     if len(buffer) >= crossfade_buffer_size:
                         break
                 # both fade_out_data and buffer are in pcm_format — mix directly
-                crossfade_bytes = await self.smart_fades_mixer.mix(
+                crossfade_buf = bytearray()
+                async for mix_chunk in self.smart_fades_mixer.mix(
                     fade_in_part=buffer,
                     fade_out_part=fade_out_data,
                     fade_in_streamdetails=cast("StreamDetails", next_queue_item.streamdetails),
@@ -1594,7 +1595,10 @@ class StreamsAudio:
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
-                )
+                ):
+                    crossfade_buf.extend(mix_chunk)
+                crossfade_bytes = bytes(crossfade_buf)
+                del crossfade_buf
                 # first half yielded now, second half stored for next track
                 split_point = (len(crossfade_bytes) + 1) // 2
                 crossfade_first = crossfade_bytes[:split_point]
@@ -1788,7 +1792,8 @@ class StreamsAudio:
                     fadein_part = crossfade_buffer[:crossfade_buffer_size]
                     remaining_bytes = crossfade_buffer[crossfade_buffer_size:]
                     try:
-                        crossfade_part = await self.smart_fades_mixer.mix(
+                        crossfade_buf = bytearray()
+                        async for mix_chunk in self.smart_fades_mixer.mix(
                             fade_in_part=fadein_part,
                             fade_out_part=last_fadeout_part,
                             fade_in_streamdetails=queue_track.streamdetails,
@@ -1796,7 +1801,9 @@ class StreamsAudio:
                             pcm_format=pcm_format,
                             standard_crossfade_duration=standard_crossfade_duration,
                             mode=smart_fades_mode,
-                        )
+                        ):
+                            crossfade_buf.extend(mix_chunk)
+                        crossfade_part = bytes(crossfade_buf)
                     except Exception as mix_err:
                         self.logger.warning(
                             "Crossfade mixer failed for %s, falling back to simple concat: %s",

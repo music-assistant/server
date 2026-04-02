@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.fades import (
@@ -40,13 +41,14 @@ class SmartFadesMixer:
         pcm_format: AudioFormat,
         standard_crossfade_duration: int = 10,
         mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
-    ) -> bytes:
-        """Apply crossfade with internal state management and smart/standard fallback logic."""
+    ) -> AsyncGenerator[bytes, None]:
+        """Apply crossfade, yielding mixed PCM audio chunks as they become available."""
         if mode == SmartFadesMode.DISABLED:
             # No crossfade, just concatenate
             # Note that this should not happen since we check this before calling mix()
             # but just to be sure...
-            return fade_out_part + fade_in_part
+            yield fade_out_part + fade_in_part
+            return
 
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
             # strip silence from end of audio of fade_out_part
@@ -69,11 +71,14 @@ class SmartFadesMixer:
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
             )
-            return await smart_fade.apply(
+            async for chunk in smart_fade.apply(
                 fade_out_part,
                 fade_in_part,
                 pcm_format,
-            )
+            ):
+                yield chunk
+            return
+
         # Attempt smart crossfade with analysis data
         fade_out_analysis: SmartFadesAnalysis | None
         if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
@@ -119,11 +124,13 @@ class SmartFadesMixer:
                     fade_out_analysis=fade_out_analysis,
                     fade_in_analysis=fade_in_analysis,
                 )
-                return await smart_fade.apply(
+                async for chunk in smart_fade.apply(
                     fade_out_part,
                     fade_in_part,
                     pcm_format,
-                )
+                ):
+                    yield chunk
+                return
             except Exception as e:
                 self.logger.warning(
                     "Smart crossfade failed: %s, falling back to standard crossfade", e
@@ -134,8 +141,9 @@ class SmartFadesMixer:
             logger=self.logger,
             crossfade_duration=standard_crossfade_duration,
         )
-        return await smart_fade.apply(
+        async for chunk in smart_fade.apply(
             fade_out_part,
             fade_in_part,
             pcm_format,
-        )
+        ):
+            yield chunk

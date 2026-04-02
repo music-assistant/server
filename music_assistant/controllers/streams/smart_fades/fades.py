@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -19,7 +22,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     TimeStretchFilter,
     TrimFilter,
 )
-from music_assistant.helpers.process import communicate
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.smart_fades import (
     SmartFadesAnalysis,
@@ -69,8 +72,14 @@ class SmartFade(ABC):
         fade_out_part: bytes,
         fade_in_part: bytes,
         pcm_format: AudioFormat,
-    ) -> bytes:
-        """Apply the smart fade to the given PCM audio parts."""
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Apply the smart fade, yielding PCM audio chunks as they become available.
+
+        :param fade_out_part: Raw PCM bytes for the outgoing track's tail.
+        :param fade_in_part: Raw PCM bytes for the incoming track's head.
+        :param pcm_format: Audio format of both input parts and the output.
+        """
         # Write the fade_out_part to a temporary file
         fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
@@ -133,14 +142,28 @@ class SmartFade(ABC):
         )
         self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
+        got_output = False
         try:
-            # Execute the enhanced smart fade with full buffer
-            _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
+            proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="smartfade")
+            async with proc:
 
-            if raw_crossfade_output:
-                return raw_crossfade_output
-            stderr_msg = stderr.decode() if stderr else "(no stderr output)"
-            raise RuntimeError(f"Smart crossfade failed. FFmpeg stderr: {stderr_msg}")
+                async def _feed_stdin() -> None:
+                    await proc.write(fade_in_part)
+                    await proc.write_eof()
+
+                feed_task = asyncio.create_task(_feed_stdin())
+                try:
+                    async for chunk in proc.iter_any():
+                        got_output = True
+                        yield chunk
+                finally:
+                    if not feed_task.done():
+                        feed_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await feed_task
+
+            if not got_output:
+                raise RuntimeError("Smart crossfade failed: FFmpeg produced no output")
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
@@ -480,10 +503,12 @@ class StandardCrossFade(SmartFade):
 
     async def apply(
         self, fade_out_part: bytes, fade_in_part: bytes, pcm_format: AudioFormat
-    ) -> bytes:
-        """Apply the standard crossfade to the given PCM audio parts."""
-        # We need to override the default apply here, since standard crossfade only needs to be
-        # applied to the overlapping parts, not the full buffers.
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Apply standard crossfade, yielding PCM audio chunks.
+
+        Only the overlapping portions are crossfaded, not the full buffers.
+        """
         crossfade_size = int(pcm_format.pcm_sample_size * self.crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
@@ -497,12 +522,11 @@ class StandardCrossFade(SmartFade):
             len(adjusted_fade_in_part) / pcm_format.pcm_sample_size,
             len(adjusted_fade_out_part) / pcm_format.pcm_sample_size,
         )
-        # Crossfaded portion: user's configured duration
-        crossfaded_section = await super().apply(
-            adjusted_fade_out_part, adjusted_fade_in_part, pcm_format
-        )
-        # Full result: everything concatenated
-        return pre_crossfade + crossfaded_section + post_crossfade
+        # Yield pre-crossfade, crossfaded section, and post-crossfade
+        yield pre_crossfade
+        async for chunk in super().apply(adjusted_fade_out_part, adjusted_fade_in_part, pcm_format):
+            yield chunk
+        yield post_crossfade
 
 
 # HELPER METHODS
