@@ -162,6 +162,8 @@ class DiscoveryController(CoreController):
         self._mdns_waiters.append(event)
         try:
             while True:
+                # Clear before scanning so events arriving during the scan are not lost
+                event.clear()
                 # Check cache for a matching entry
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
                     if (
@@ -176,7 +178,6 @@ class DiscoveryController(CoreController):
                 if remaining <= 0:
                     return None
                 # Wait for the next mDNS state change event, then re-check the cache
-                event.clear()
                 try:
                     await asyncio.wait_for(event.wait(), timeout=remaining)
                 except TimeoutError:
