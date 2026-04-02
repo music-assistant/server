@@ -291,7 +291,7 @@ class LocalFileSystemProvider(MusicProvider):
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
-        for item in await self._scandir_impl(item_path):
+        for item in await self._scandir(item_path):
             if not item.is_dir and ("." not in item.filename or not item.ext):
                 # skip system files and files without extension
                 continue
@@ -348,25 +348,8 @@ class LocalFileSystemProvider(MusicProvider):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # find all supported files in the base directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
-        prev_filenames = set(file_checksums.keys())
-
-        # Run the sync implementation (can be overridden by subclasses)
-        cur_filenames = await self._sync_library_impl(file_checksums)
-
-        # work out deletions
-        deleted_files = prev_filenames - cur_filenames
-        await self._process_deletions(deleted_files)
-
-        # process orphaned albums and artists
-        await self._process_orphaned_albums_and_artists()
-
-    async def _sync_library_impl(self, file_checksums: dict[str, str]) -> set[str]:
-        """Scan and process all files. Override in subclasses for different scan methods.
-
-        :param file_checksums: Dict mapping relative paths to their previous checksums.
-        :returns: Set of current filenames that were successfully processed.
-        """
         cur_filenames: set[str] = set()
+        prev_filenames = set(file_checksums.keys())
 
         # Phase 1: Enumerate all files in an executor thread.
         # This is fast (just filesystem metadata) and separates unchanged files
@@ -432,7 +415,12 @@ class LocalFileSystemProvider(MusicProvider):
         finally:
             self.sync_running = False
 
-        return cur_filenames
+        # work out deletions
+        deleted_files = prev_filenames - cur_filenames
+        await self._process_deletions(deleted_files)
+
+        # process orphaned albums and artists
+        await self._process_orphaned_albums_and_artists()
 
     async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item asynchronously.
@@ -731,11 +719,9 @@ class LocalFileSystemProvider(MusicProvider):
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
             # get playlist file contents
-            playlist_filename = self.get_absolute_path(prov_playlist_id)
-            async with aiofiles.open(playlist_filename, mode="rb") as _file:
-                playlist_data_raw = await _file.read()
-                encoding = await detect_charset(playlist_data_raw)
-                playlist_data = playlist_data_raw.decode(encoding, errors="replace")
+            playlist_data_raw = await self._read_file(prov_playlist_id)
+            encoding = await detect_charset(playlist_data_raw)
+            playlist_data = playlist_data_raw.decode(encoding, errors="replace")
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = parse_m3u(playlist_data)
@@ -790,7 +776,7 @@ class LocalFileSystemProvider(MusicProvider):
                 episodes.append(episode)
 
         async with TaskManager(self.mass, 25) as tm:
-            for item in await self._scandir_impl(prov_podcast_id):
+            for item in await self._scandir(prov_podcast_id):
                 if "." not in item.relative_path or item.is_dir:
                     continue
                 if item.ext not in PODCAST_EPISODE_EXTENSIONS:
@@ -1040,11 +1026,11 @@ class LocalFileSystemProvider(MusicProvider):
         # synced lyrics are saved as "filename.lrc" by lrcget alongside
         # the actual file location - just change the file extension
         assert file_item.ext is not None  # for type checking
-        lrc_path = f"{file_item.absolute_path.removesuffix(file_item.ext)}lrc"
+        lrc_path = f"{file_item.relative_path.removesuffix(file_item.ext)}lrc"
         if await self.exists(lrc_path):
             try:
-                async with aiofiles.open(lrc_path, encoding="utf-8") as lrc_file:
-                    track.metadata.lrc_lyrics = await lrc_file.read()
+                raw = await self._read_file(lrc_path)
+                track.metadata.lrc_lyrics = raw.decode("utf-8")
             except Exception as err:
                 self.logger.warning(
                     "Failed to read lyrics file %s: %s",
@@ -1125,10 +1111,8 @@ class LocalFileSystemProvider(MusicProvider):
         if await self.exists(nfo_file):
             # found NFO file with metadata
             # https://kodi.wiki/view/NFO_files/Artists
-            nfo_file = self.get_absolute_path(nfo_file)
             try:
-                async with aiofiles.open(nfo_file) as _file:
-                    data = await _file.read()
+                data = (await self._read_file(nfo_file)).decode("utf-8")
                 info = await asyncio.to_thread(xmltodict.parse, data)
                 info = info["artist"]
                 artist.name = info.get("title", info.get("name", name))
@@ -1174,7 +1158,7 @@ class LocalFileSystemProvider(MusicProvider):
                 raise IsChapterFile
         else:
             # No track tag - only process the first file alphabetically
-            items = await self._scandir_impl(file_item.parent_path)
+            items = await self._scandir(file_item.parent_path)
             # Sort by filename for alphabetical ordering
             items.sort(key=lambda x: x.filename.lower())
             for item in items:
@@ -1254,7 +1238,7 @@ class LocalFileSystemProvider(MusicProvider):
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
             # try to get an image by traversing files in the same folder
-            for _item in await self._scandir_impl(file_item.parent_path):
+            for _item in await self._scandir(file_item.parent_path):
                 if "." not in _item.relative_path or _item.is_dir:
                     continue
                 if _item.ext in IMAGE_EXTENSIONS and not audio_book.image:
@@ -1269,9 +1253,8 @@ class LocalFileSystemProvider(MusicProvider):
                 if _item.ext == "txt" and not audio_book.metadata.description:
                     # try to parse a description from a text file
                     try:
-                        async with aiofiles.open(_item.absolute_path, encoding="utf-8") as _file:
-                            description = await _file.read()
-                        audio_book.metadata.description = description
+                        raw = await self._read_file(_item.relative_path)
+                        audio_book.metadata.description = raw.decode("utf-8")
                     except Exception as err:
                         self.logger.warning(
                             "Could not read description from file %s: %s",
@@ -1328,7 +1311,6 @@ class LocalFileSystemProvider(MusicProvider):
                 name=podcast_name,
                 sort_name=tags.album_sort,
                 publisher=tags.tags.get("publisher"),
-                total_episodes=0,
                 provider_mappings={
                     ProviderMapping(
                         item_id=podcast_path,
@@ -1551,10 +1533,8 @@ class LocalFileSystemProvider(MusicProvider):
             if await self.exists(nfo_file):
                 # found NFO file with metadata
                 # https://kodi.wiki/view/NFO_files/Artists
-                nfo_file = self.get_absolute_path(nfo_file)
                 try:
-                    async with aiofiles.open(nfo_file) as _file:
-                        data = await _file.read()
+                    data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
                     info = info["album"]
                     album.name = info.get("title", info.get("name", name))
@@ -1609,7 +1589,7 @@ class LocalFileSystemProvider(MusicProvider):
         if extra_thumb_names is None:
             extra_thumb_names = ()
         images: UniqueList[MediaItemImage] = UniqueList()
-        folder_files = await self._scandir_impl(folder)
+        folder_files = await self._scandir(folder)
         for item in folder_files:
             if "." not in item.relative_path or item.is_dir or not item.ext:
                 continue
@@ -1668,11 +1648,34 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
-        return await self._resolve_impl(file_path)
+        absolute_path = self.get_absolute_path(file_path)
+
+        def _create_item() -> FileSystemItem:
+            if os.path.isdir(absolute_path):
+                return FileSystemItem(
+                    filename=os.path.basename(file_path),
+                    relative_path=get_relative_path(self.base_path, file_path),
+                    absolute_path=absolute_path,
+                    is_dir=True,
+                )
+            stat_info = os.stat(absolute_path, follow_symlinks=False)
+            return FileSystemItem(
+                filename=os.path.basename(file_path),
+                relative_path=get_relative_path(self.base_path, file_path),
+                absolute_path=absolute_path,
+                is_dir=False,
+                checksum=str(int(stat_info.st_mtime)),
+                file_size=stat_info.st_size,
+            )
+
+        return await asyncio.to_thread(_create_item)
 
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
-        return await self._exists_impl(file_path)
+        if not file_path:
+            return False
+        abs_path = self.get_absolute_path(file_path)
+        return bool(await exists(abs_path))
 
     def get_absolute_path(self, file_path: str) -> str:
         """Return absolute path for given file path."""
@@ -1775,11 +1778,10 @@ class LocalFileSystemProvider(MusicProvider):
                 duration=duration,
                 path=[
                     MultiPartPath(
-                        # For WebDAV, paths are already full URLs; for local files, join with base
-                        path=path if path.startswith("http") else self.get_absolute_path(path),
-                        duration=duration,
+                        path=self._get_chapter_path(chapter_path),
+                        duration=chapter_duration,
                     )
-                    for path, duration in file_based_chapters
+                    for chapter_path, chapter_duration in file_based_chapters
                 ],
                 allow_seek=True,
             )
@@ -1799,6 +1801,10 @@ class LocalFileSystemProvider(MusicProvider):
             can_seek=True,
         )
 
+    def _get_chapter_path(self, relative_path: str) -> str:
+        """Return absolute path for a chapter file. Override for network storage."""
+        return self.get_absolute_path(relative_path)
+
     async def _get_chapters_for_audiobook(
         self, audiobook_file_item: FileSystemItem, tags: AudioTags
     ) -> tuple[int, list[MediaItemChapter]]:
@@ -1817,7 +1823,7 @@ class LocalFileSystemProvider(MusicProvider):
         chapter_file_items: list[tuple[FileSystemItem, AudioTags]] = []
         untagged_file_items: list[tuple[FileSystemItem, AudioTags]] = []
 
-        items = await self._scandir_impl(audiobook_file_item.parent_path)
+        items = await self._scandir(audiobook_file_item.parent_path)
         # Sort by filename for consistent alphabetical ordering
         items.sort(key=lambda x: x.filename.lower())
 
@@ -1876,7 +1882,7 @@ class LocalFileSystemProvider(MusicProvider):
                         chapter_item.relative_path,
                     )
                     continue
-                self.logger.debug(f"Chapter filename: {chapter_item.relative_path}")
+                self.logger.debug("Chapter filename: %s", chapter_item.relative_path)
                 chapters.append(
                     MediaItemChapter(
                         position=position,
@@ -1887,7 +1893,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 all_chapter_files.append(
                     (
-                        chapter_item.absolute_path,
+                        chapter_item.relative_path,
                         chapter_tags.duration,
                     )
                 )
@@ -1924,9 +1930,8 @@ class LocalFileSystemProvider(MusicProvider):
         metadata_file = os.path.join(podcast_folder, "metadata.json")
         if await self.exists(metadata_file):
             # found json file with metadata
-            metadata_file = self.get_absolute_path(metadata_file)
-            async with aiofiles.open(metadata_file) as _file:
-                data.update(json_loads(await _file.read()))
+            raw = await self._read_file(metadata_file)
+            data.update(json_loads(raw.decode("utf-8")))
         await self.cache.set(
             key=podcast_folder,
             data=data,
@@ -1935,38 +1940,12 @@ class LocalFileSystemProvider(MusicProvider):
         )
         return data
 
-    async def _exists_impl(self, file_path: str) -> bool:
-        """Check if file/directory exists - override for network storage."""
-        if not file_path:
-            return False
-        abs_path = self.get_absolute_path(file_path)
-        return bool(await exists(abs_path))
-
-    async def _resolve_impl(self, file_path: str) -> FileSystemItem:
-        """Resolve path to FileSystemItem - override for network storage."""
-        absolute_path = self.get_absolute_path(file_path)
-
-        def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
-                return FileSystemItem(
-                    filename=os.path.basename(file_path),
-                    relative_path=get_relative_path(self.base_path, file_path),
-                    absolute_path=absolute_path,
-                    is_dir=True,
-                )
-            stat_info = os.stat(absolute_path, follow_symlinks=False)
-            return FileSystemItem(
-                filename=os.path.basename(file_path),
-                relative_path=get_relative_path(self.base_path, file_path),
-                absolute_path=absolute_path,
-                is_dir=False,
-                checksum=str(int(stat_info.st_mtime)),
-                file_size=stat_info.st_size,
-            )
-
-        return await asyncio.to_thread(_create_item)
-
-    async def _scandir_impl(self, path: str) -> list[FileSystemItem]:
-        """List directory contents - override for network storage."""
+    async def _scandir(self, path: str) -> list[FileSystemItem]:
+        """List directory contents."""
         abs_path = self.get_absolute_path(path)
         return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path)
+
+    async def _read_file(self, path: str) -> bytes:
+        """Read file contents. Override for network storage."""
+        async with aiofiles.open(self.get_absolute_path(path), mode="rb") as f:
+            return cast("bytes", await f.read())
