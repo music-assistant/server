@@ -626,7 +626,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         await self._handle_cmd_volume_set(player_id, volume_level)
         # individual child volume change invalidates any cached group volume snapshot
-        self._invalidate_group_volume_snapshot(player_id)
+        # skip for group players since _handle_cmd_volume_set redirects those to
+        # set_group_volume which creates/uses the snapshot itself
+        if (player := self.get_player(player_id)) and player.type != PlayerType.GROUP:
+            self._invalidate_group_volume_snapshot(player_id)
 
     @api_command("players/cmd/volume_up")
     @handle_player_command
