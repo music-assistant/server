@@ -624,6 +624,15 @@ class PlayerQueuesController(CoreController):
                     # Type guard for mypy - only add full MediaItemType to radio_source
                     if not isinstance(media_item, (ItemMapping, BrowseFolder)):
                         radio_source.append(media_item)
+                elif isinstance(media_item, Playlist) and media_item.is_dynamic:
+                    # Dynamic playlists supply their own tracks on demand; fetch first batch now.
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item, userid=queue.userid, queue_id=queue_id, user_initiated=True
+                        )
+                    )
+                    initial_tracks = await self.get_playlist_tracks(media_item, start_item=None)
+                    media_items += initial_tracks
                 else:
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
@@ -652,18 +661,27 @@ class PlayerQueuesController(CoreController):
             media_items = list(radio_tracks)
 
         # only add valid/available items
-        queue_items: list[QueueItem] = []
-        for x in media_items:
-            if not x or not x.available:
-                continue
-            queue_items.append(
-                QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
-            )
+        queue_items: list[QueueItem] = [
+            QueueItem.from_media_item(queue_id, cast("PlayableMediaItemType", x))
+            for x in media_items
+            if x and x.available
+        ]
 
         if not queue_items:
             raise MediaNotFoundError("No playable items found")
 
         # load the items into the queue
+        await self._enqueue_with_option(queue_id, queue_items, option, radio_mode)
+
+    async def _enqueue_with_option(
+        self,
+        queue_id: str,
+        queue_items: list[QueueItem],
+        option: QueueOption | None,
+        radio_mode: bool,
+    ) -> None:
+        """Load queue items into the queue according to the given enqueue option."""
+        queue = self._queues[queue_id]
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             cur_index = (
                 queue.index_in_buffer
@@ -1918,6 +1936,7 @@ class PlayerQueuesController(CoreController):
             playlist.item_id,
             playlist.provider,
             force_refresh=force_refresh,
+            allow_dynamic_tracks=playlist.is_dynamic,
         ):
             if not playlist_track.available:
                 continue
@@ -2098,28 +2117,36 @@ class PlayerQueuesController(CoreController):
             None,
         )
         if dynamic_playlist is not None:
+            # Dynamic playlist (e.g. a station): fetch next batch of tracks from the provider.
+            # Do NOT fall back to generic radio - stations manage their own track supply.
             try:
                 dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
                 queue_items = [
                     QueueItem.from_media_item(queue_id, x) for x in dynamic_tracks if x.available
                 ]
-                if queue_items:
-                    cur_index = self._queues[queue_id].current_index or 0
-                    await self.load(
-                        queue_id,
-                        queue_items,
-                        insert_at_index=cur_index + 1,
-                        keep_remaining=False,
-                        keep_played=True,
+                if not queue_items:
+                    self.logger.warning(
+                        "Dynamic playlist %s returned no playable tracks for queue %s",
+                        dynamic_playlist.name,
+                        queue.display_name,
                     )
                     return
+                cur_index = self._queues[queue_id].current_index or 0
+                await self.load(
+                    queue_id,
+                    queue_items,
+                    insert_at_index=cur_index + 1,
+                    keep_remaining=False,
+                    keep_played=True,
+                )
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Failed to refill dynamic playlist %s for queue %s: %s",
-                    getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                    dynamic_playlist.name,
                     queue.display_name,
                     err,
                 )
+            return
         radio_tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in radio_tracks if x.available]
@@ -2500,25 +2527,12 @@ class PlayerQueuesController(CoreController):
 
         return tracks
 
-    def _update_queue_from_player(
-        self,
-        player: Player,
-    ) -> None:
-        """Update the Queue when the player state changed."""
-        queue_id = player.player_id
-        queue = self._queues[queue_id]
+    def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
+        """Update the current item/index/elapsed time on the queue from the player state.
 
-        # basic properties
-        queue.display_name = player.state.name
-        queue.available = player.state.available
-        queue.items = len(self._queue_items[queue_id])
-
-        queue.state = (
-            player.state.playback_state or PlaybackState.IDLE
-            if queue.active
-            else PlaybackState.IDLE
-        )
-        # update current item/index from player report
+        Returns True if the update was successful, False if the caller should return early.
+        """
+        queue_id = queue.queue_id
         if queue.active and queue.state in (
             PlaybackState.PLAYING,
             PlaybackState.PAUSED,
@@ -2536,7 +2550,7 @@ class PlayerQueuesController(CoreController):
             else:
                 # this may happen if the player is still transitioning between tracks
                 # we ignore this for now and keep the current index as is
-                return
+                return False
 
             # get current/next item based on current index
             queue.current_index = current_index
@@ -2566,6 +2580,29 @@ class PlayerQueuesController(CoreController):
                 if current_item and current_index is not None
                 else None
             )
+        return True
+
+    def _update_queue_from_player(
+        self,
+        player: Player,
+    ) -> None:
+        """Update the Queue when the player state changed."""
+        queue_id = player.player_id
+        queue = self._queues[queue_id]
+
+        # basic properties
+        queue.display_name = player.state.name
+        queue.available = player.state.available
+        queue.items = len(self._queue_items[queue_id])
+
+        queue.state = (
+            player.state.playback_state or PlaybackState.IDLE
+            if queue.active
+            else PlaybackState.IDLE
+        )
+        # update current item/index from player report
+        if not self._update_current_index_from_player(queue, player):
+            return
 
         # This is enough to detect any changes in the DSPDetails
         # (so child count changed, or any output format changed)
