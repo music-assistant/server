@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -442,20 +441,25 @@ class SyncGroupPlayer(Player):
                 self.sync_leader.display_name,
                 self.display_name,
             )
-            await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
-            await asyncio.sleep(1)
+            await self.mass.players.wait_for_player_update(
+                self.sync_leader.player_id,
+                timeout=5,
+                action=self.mass.players._handle_cmd_stop(self.sync_leader.player_id),
+            )
             await self._dissolve_syncgroup()
             # remove the old leader from the group members list so it won't be re-selected
             if old_leader_id in self._attr_group_members:
                 self._attr_group_members.remove(old_leader_id)
             if was_playing and self._attr_group_members:
-                await asyncio.sleep(2)
                 await self.play()
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
-            await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
-            await asyncio.sleep(1)
+            await self.mass.players.wait_for_player_update(
+                self.sync_leader.player_id,
+                timeout=5,
+                action=self.mass.players._handle_cmd_stop(self.sync_leader.player_id),
+            )
             await self._dissolve_syncgroup()
 
         elif self.sync_leader:
@@ -516,7 +520,14 @@ class SyncGroupPlayer(Player):
                 x for x in sync_leader.state.group_members if x != sync_leader.player_id
             ]
             if sync_children:
-                await self.mass.players.cmd_set_members(sync_leader.player_id, [], sync_children)
+                # wait for the leader's state to reflect the ungroup
+                await self.mass.players.wait_for_player_update(
+                    sync_leader.player_id,
+                    timeout=5,
+                    action=self.mass.players.cmd_set_members(
+                        sync_leader.player_id, [], sync_children
+                    ),
+                )
         self.sync_leader = None
         self.update_state()
 
