@@ -143,16 +143,22 @@ class SmartFade(ABC):
         self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
         got_output = False
+        stderr_lines: list[str] = []
         try:
-            # stderr=False sends it to DEVNULL; a pipe would deadlock if unread
-            proc = AsyncProcess(args, stdin=True, stdout=True, stderr=False, name="smartfade")
+            proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="smartfade")
             async with proc:
 
                 async def _feed_stdin() -> None:
                     await proc.write(fade_in_part)
                     await proc.write_eof()
 
+                async def _drain_stderr() -> None:
+                    """Read stderr to prevent pipe deadlock."""
+                    async for line in proc.iter_stderr():
+                        stderr_lines.append(line)
+
                 feed_task = asyncio.create_task(_feed_stdin())
+                stderr_task = asyncio.create_task(_drain_stderr())
                 try:
                     async for chunk in proc.iter_any():
                         got_output = True
@@ -162,10 +168,13 @@ class SmartFade(ABC):
                         feed_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await feed_task
+                    with suppress(asyncio.CancelledError):
+                        await stderr_task
 
             if proc.returncode not in (None, 0) or not got_output:
+                stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
                 raise RuntimeError(
-                    f"Smart crossfade FFmpeg failed (rc={proc.returncode}, output={got_output})"
+                    f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
                 )
         finally:
             # Always cleanup temp file, even if ffmpeg fails
