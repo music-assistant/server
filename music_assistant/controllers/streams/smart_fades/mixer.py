@@ -67,7 +67,6 @@ class SmartFadesMixer:
             return
 
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
-            fade_in_bytes = await self._ensure_bytes(fade_in_part, fade_in_buffer_size)
             # strip silence from end of outgoing track (common in song outros)
             fade_out_part = await strip_silence(
                 fade_out_part,
@@ -80,9 +79,12 @@ class SmartFadesMixer:
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
             )
+            # pass fade_in through directly - StandardCrossFade handles both bytes and generators
             async for chunk in smart_fade.apply(
                 fade_out_part,
-                fade_in_bytes,
+                self._limit_generator(fade_in_part, fade_in_buffer_size)
+                if not isinstance(fade_in_part, bytes)
+                else fade_in_part,
                 pcm_format,
             ):
                 yield chunk

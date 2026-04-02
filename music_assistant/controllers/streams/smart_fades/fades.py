@@ -528,16 +528,34 @@ class StandardCrossFade(SmartFade):
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
-        # StandardCrossFade needs full bytes for slicing - caller must ensure this
-        assert isinstance(fade_in_part, bytes)
         crossfade_size = int(pcm_format.pcm_sample_size * self.crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
-        # Post-crossfade: incoming track minus the crossfaded portion
-        post_crossfade = fade_in_part[crossfade_size:]
-        # Adjust portions to exact crossfade size
-        adjusted_fade_in_part = fade_in_part[:crossfade_size]
         adjusted_fade_out_part = fade_out_part[-crossfade_size:]
+
+        # Collect only the crossfade portion from fade_in, keep the rest as a generator
+        if isinstance(fade_in_part, bytes):
+            adjusted_fade_in_part = fade_in_part[:crossfade_size]
+            post_crossfade: bytes | AsyncGenerator[bytes, None] = fade_in_part[crossfade_size:]
+        else:
+            # read exactly crossfade_size bytes from the generator
+            buf = bytearray()
+            async for chunk in fade_in_part:
+                buf.extend(chunk)
+                if len(buf) >= crossfade_size:
+                    break
+            adjusted_fade_in_part = bytes(buf[:crossfade_size])
+            # anything beyond crossfade_size plus the remaining generator is post_crossfade
+            leftover = bytes(buf[crossfade_size:])
+
+            async def _post_crossfade() -> AsyncGenerator[bytes, None]:
+                if leftover:
+                    yield leftover
+                async for remaining_chunk in fade_in_part:
+                    yield remaining_chunk
+
+            post_crossfade = _post_crossfade()
+
         # Adjust the duration to match actual sizes
         self.crossfade_duration = min(
             len(adjusted_fade_in_part) / pcm_format.pcm_sample_size,
@@ -547,7 +565,11 @@ class StandardCrossFade(SmartFade):
         yield pre_crossfade
         async for chunk in super().apply(adjusted_fade_out_part, adjusted_fade_in_part, pcm_format):
             yield chunk
-        yield post_crossfade
+        if isinstance(post_crossfade, bytes):
+            yield post_crossfade
+        else:
+            async for chunk in post_crossfade:
+                yield chunk
 
 
 # HELPER METHODS
