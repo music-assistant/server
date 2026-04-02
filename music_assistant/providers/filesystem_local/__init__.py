@@ -761,7 +761,7 @@ class LocalFileSystemProvider(MusicProvider):
         await self.mass.cache.set(
             key=cache_key,
             data=result,
-            expiration=3600 * 24 * 365,  # Cache for 1 year
+            expiration=3600 * 24 * 365,  # File timestamp checksum handles invalidation
             provider=self.instance_id,
             checksum=cache_checksum,
             category=0,
