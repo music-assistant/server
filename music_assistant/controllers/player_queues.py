@@ -1933,7 +1933,7 @@ class PlayerQueuesController(CoreController):
             playlist.item_id,
             playlist.provider,
             force_refresh=force_refresh,
-            allow_dynamic_tracks=True,
+            allow_dynamic_tracks=playlist.is_dynamic,
         ):
             if not playlist_track.available:
                 continue
