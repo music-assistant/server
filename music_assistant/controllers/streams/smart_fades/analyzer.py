@@ -156,7 +156,7 @@ class SmartFadesAnalyzer:
                 fragment_duration,
                 len(audio_data),
             )
-            mono_audio = await asyncio.to_thread(self._pcm_to_mono_float32, audio_data, pcm_format)
+            mono_audio = await self._pcm_to_mono_float32(audio_data, pcm_format)
             if mono_audio is None:
                 self.logger.error(
                     "Audio buffer contains non-finite values (NaN/Inf) for %s, cannot analyze",
@@ -324,7 +324,7 @@ class SmartFadesAnalyzer:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
 
-    def _pcm_to_mono_float32(
+    async def _pcm_to_mono_float32(
         self,
         audio_data: bytes,
         pcm_format: AudioFormat,
@@ -335,25 +335,30 @@ class SmartFadesAnalyzer:
         :param audio_data: Raw PCM audio data.
         :param pcm_format: Audio format of the PCM data.
         """
-        audio_array = self._pcm_bytes_to_float32(audio_data, pcm_format)
-        if pcm_format.channels > 1:
-            # Ensure array size is divisible by channel count
-            samples_per_channel = len(audio_array) // pcm_format.channels
-            valid_samples = samples_per_channel * pcm_format.channels
-            if valid_samples != len(audio_array):
-                audio_array = audio_array[:valid_samples]
 
-            # Reshape to separate channels and take average for mono conversion
-            audio_array = audio_array.reshape(-1, pcm_format.channels)
-            mono_audio = np.asarray(np.mean(audio_array, axis=1, dtype=np.float32))
-        else:
-            # Single channel - ensure consistent array type
-            mono_audio = np.asarray(audio_array, dtype=np.float32)
+        def _convert() -> npt.NDArray[np.float32] | None:
+            # CPU-intensive numpy operations, must run in executor
+            audio_array = self._pcm_bytes_to_float32(audio_data, pcm_format)
+            if pcm_format.channels > 1:
+                # Ensure array size is divisible by channel count
+                samples_per_channel = len(audio_array) // pcm_format.channels
+                valid_samples = samples_per_channel * pcm_format.channels
+                if valid_samples != len(audio_array):
+                    audio_array = audio_array[:valid_samples]
 
-        # Validate that the audio is finite (no NaN or Inf values)
-        if not np.all(np.isfinite(mono_audio)):
-            return None
-        return mono_audio
+                # Reshape to separate channels and take average for mono conversion
+                audio_array_reshaped = audio_array.reshape(-1, pcm_format.channels)
+                mono_audio = np.asarray(np.mean(audio_array_reshaped, axis=1, dtype=np.float32))
+            else:
+                # Single channel - ensure consistent array type
+                mono_audio = np.asarray(audio_array, dtype=np.float32)
+
+            # Validate that the audio is finite (no NaN or Inf values)
+            if not np.all(np.isfinite(mono_audio)):
+                return None
+            return mono_audio
+
+        return await asyncio.to_thread(_convert)
 
     def _pcm_bytes_to_float32(
         self,
