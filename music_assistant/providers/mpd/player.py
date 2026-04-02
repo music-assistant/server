@@ -191,7 +191,8 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def _idle_loop(self) -> None:
-        """Listen for MPD state changes and sync to MA.
+        """
+        Listen for MPD state changes and sync to MA.
 
         MPD's idle command blocks until a subsystem changes, then yields
         the subsystem name. We act on player/mixer/playlist changes.
