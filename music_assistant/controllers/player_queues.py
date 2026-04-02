@@ -605,6 +605,11 @@ class PlayerQueuesController(CoreController):
                         radio_source.append(media_item)
                 elif isinstance(media_item, Playlist) and media_item.is_dynamic:
                     # Dynamic playlists supply their own tracks on demand; fetch first batch now.
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item, userid=queue.userid, queue_id=queue_id, user_initiated=True
+                        )
+                    )
                     initial_tracks = await self.get_playlist_tracks(media_item, start_item=None)
                     media_items += initial_tracks
                 else:

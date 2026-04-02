@@ -123,7 +123,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
-        else:
+        elif not allow_dynamic_tracks:
             library_item = await self.get_library_item_by_prov_id(
                 item_id, provider_instance_id_or_domain
             )
