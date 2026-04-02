@@ -68,6 +68,19 @@ class AudioAnalysisData(DataClassDictMixin):
     instrumentalness: float | None = None
     # Acoustic character: 0.0 = electronic/produced, 1.0 = purely acoustic.
     acousticness: float | None = None
+    # Tonal brightness: 0.0 = warm/dark, 1.0 = bright/sharp.
+    brightness: float | None = None
+    # Harmonic variety: 0.0 = simple/repetitive, 1.0 = complex/varied.
+    harmonic_complexity: float | None = None
+    # Timbral roughness: 0.0 = smooth/clean, 1.0 = rough/distorted.
+    roughness: float | None = None
+    # Beat consistency: 0.0 = free/rubato, 1.0 = metronomic.
+    rhythmic_regularity: float | None = None
+
+    # Visualization
+
+    # Peak amplitude waveform for frontend display, normalized 0.0-1.0. Fixed 800 bins.
+    wave_form: npt.NDArray[np.float32] | None = None
 
     # Provider-Specific
 
