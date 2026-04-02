@@ -74,18 +74,18 @@ class SonosPlayerProvider(PlayerProvider):
             # we don't listen for removed players here.
             # instead we just wait for the player connection to fail
             return
-        assert info is not None  # info is always present for Added/Updated states
+        assert info is not None  # for type checking
         if "uuid" not in info.decoded_properties:
             # not a S2 player
             return
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]
-        assert isinstance(player_id, str)  # UUID is always a string
+        assert isinstance(player_id, str)  # for type checking
         # handle update for existing device
         if sonos_player := self.mass.players.get_player(player_id):
-            assert isinstance(sonos_player, SonosPlayer), (
-                "Player ID already exists but is not a SonosPlayer"
-            )
+            if not isinstance(sonos_player, SonosPlayer):
+                msg = f"Player {player_id} already exists but is not a SonosPlayer"
+                raise TypeError(msg)
             cur_address = get_primary_ip_address(info)
             if cur_address and cur_address != sonos_player.device_info.ip_address:
                 sonos_player.logger.debug(
@@ -108,7 +108,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        assert not self.mass.players.get_player(player_id)
+        if self.mass.players.get_player(player_id):
+            msg = f"Player {player_id} already exists"
+            raise ValueError(msg)
         address = get_primary_ip_address(info)
         if address is None:
             return
