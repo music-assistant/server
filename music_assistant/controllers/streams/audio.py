@@ -557,7 +557,7 @@ class StreamsAudio:
         cache_expiration = 3600 * 3
         await mass.cache.set(
             url,
-            result,
+            [resolved_url, stream_type],
             expiration=cache_expiration,
             provider=CACHE_PROVIDER,
             category=CACHE_CATEGORY_RESOLVED_RADIO_URL,

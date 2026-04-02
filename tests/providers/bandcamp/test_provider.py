@@ -1600,18 +1600,20 @@ async def test_browse_person_following_with_person_id(provider: BandcampProvider
 
 
 async def test_browse_person_following_cache_hit(provider: BandcampProvider) -> None:
-    """Test _browse_person_following deserializes cached dicts back to Artist objects."""
-    cached_items = [
+    """Test _browse_person_following returns cached Artist objects without calling API."""
+    cached_artists = [
         Artist(
             item_id="100",
             provider="bandcamp",
             name="Cached Artist",
             provider_mappings=set(),
-        ).to_dict(),
+        ),
     ]
 
     with (
-        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_items),
+        patch.object(
+            provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_artists
+        ),
         patch.object(
             provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
@@ -1644,26 +1646,6 @@ async def test_browse_person_following_skips_not_found(provider: BandcampProvide
         result = await provider._browse_person_following(42)
 
         assert len(result) == 1
-
-
-async def test_browse_person_following_cache_hit_stale_data(
-    provider: BandcampProvider, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Test _browse_person_following falls through to API on stale/corrupt cache."""
-    stale_cache = [{"garbage": True}]
-
-    with (
-        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=stale_cache),
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-    ):
-        mock_get_collection.return_value = []
-        result = await provider._browse_person_following(42)
-
-        mock_get_collection.assert_called_once()
-        assert result == []
-        assert "Stale cache" in caplog.text
 
 
 # --- _browse_person_people tests ---
@@ -1713,16 +1695,16 @@ async def test_browse_person_people_cache_hit_rebuilds_slugs(
             provider="bandcamp_test",
             path="bandcamp_test://fans/coolslug",
             name="Cool User",
-        ).to_dict(),
+        ),
         BrowseFolder(
             item_id="person_222",
             provider="bandcamp_test",
             path="bandcamp_test://fans/anotherslug",
             name="Another User",
-        ).to_dict(),
+        ),
     ]
 
-    async def fake_cache_get(key: str, **kwargs: object) -> list[dict[str, object]] | None:  # noqa: ARG001
+    async def fake_cache_get(key: str, **kwargs: object) -> list[BrowseFolder] | None:  # noqa: ARG001
         if "_browse_person_people_" in key:
             return cached_folders
         return None
@@ -1742,34 +1724,6 @@ async def test_browse_person_people_cache_hit_rebuilds_slugs(
     assert result[1].name == "Another User"
     assert provider._slug_to_fan_id["coolslug"] == 111
     assert provider._slug_to_fan_id["anotherslug"] == 222
-
-
-async def test_browse_person_people_cache_hit_stale_data(
-    provider: BandcampProvider, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Test _browse_person_people falls through to API on stale/corrupt cache."""
-    stale_cache = [{"garbage": True}]
-
-    async def fake_cache_get(key: str, **kwargs: object) -> object:  # noqa: ARG001
-        if "_browse_person_people_" in key:
-            return stale_cache
-        return None
-
-    with (
-        patch.object(provider.mass.cache, "get", new_callable=AsyncMock) as mock_cache_get,
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-    ):
-        mock_cache_get.side_effect = fake_cache_get
-        mock_get_collection.return_value = []
-        result = await provider._browse_person_people(
-            CollectionType.FOLLOWING_FANS, "bandcamp_test://fans"
-        )
-
-        mock_get_collection.assert_called_once()
-        assert result == []
-        assert "Stale cache" in caplog.text
 
 
 async def test_rebuild_slug_cache_calls_browse_person_people(
