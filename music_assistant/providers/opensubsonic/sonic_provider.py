@@ -14,6 +14,7 @@ from libopensonic.errors import (
     ParameterError,
     SonicError,
 )
+from libopensonic.media import PodcastChannel
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -67,7 +68,7 @@ if TYPE_CHECKING:
     from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicItem
     from libopensonic.media import Lyrics as SonicLyrics
-    from libopensonic.media import OpenSubsonicExtension, PodcastChannel, StructuredLyrics
+    from libopensonic.media import OpenSubsonicExtension, StructuredLyrics
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
@@ -787,13 +788,14 @@ class OpenSonicProvider(MusicProvider):
             key=chan_id,
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST_CHANNEL,
+            base_class=PodcastChannel,
         ):
             return cache
         if channels := await self.conn.get_podcasts(inc_episodes=True, pid=chan_id):
             channel = channels[0]
             await self.mass.cache.set(
                 key=chan_id,
-                data=channel,
+                data=channel.to_dict(),
                 provider=self.instance_id,
                 expiration=600,
                 category=CACHE_CATEGORY_PODCAST_CHANNEL,

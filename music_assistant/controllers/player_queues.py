@@ -1267,34 +1267,13 @@ class PlayerQueuesController(CoreController):
                     category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                     default=[],
                 )
-                queue_items = []
-                for idx, item_data in enumerate(prev_items):
-                    qi = QueueItem.from_cache(item_data)
-                    if not qi.media_item:
-                        # Skip items with missing media_item - this can happen if
-                        # MA was killed during shutdown while cache was being written
-                        self.logger.debug(
-                            "Skipping queue item %s (index %d) restored from cache "
-                            "without media_item",
-                            qi.name,
-                            idx,
-                        )
-                        continue
-                    queue_items.append(qi)
+                queue_items = [QueueItem.from_cache(item_data) for item_data in prev_items]
                 if queue.enqueued_media_items:
-                    # we need to restore the MediaItem objects for the enqueued media items
-                    # Items from cache may be dicts that need deserialization
-                    restored_enqueued_items: list[MediaItemType] = []
-                    cached_items: list[dict[str, Any] | MediaItemType] = cast(
-                        "list[dict[str, Any] | MediaItemType]", queue.enqueued_media_items
-                    )
-                    for item in cached_items:
-                        if isinstance(item, dict):
-                            restored_item = media_from_dict(item)
-                            restored_enqueued_items.append(cast("MediaItemType", restored_item))
-                        else:
-                            restored_enqueued_items.append(item)
-                    queue.enqueued_media_items = restored_enqueued_items
+                    # after deserialization from cache, enqueued_media_items are dicts
+                    queue.enqueued_media_items = [
+                        cast("MediaItemType", media_from_dict(cast("dict[str, Any]", item)))
+                        for item in queue.enqueued_media_items
+                    ]
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
