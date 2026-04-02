@@ -297,20 +297,7 @@ class WebsocketClientHandler:
 
         Serializes inline without executor overhead since events are typically small.
         """
-        try:
-            _message = message.to_json()
-        except (UnicodeEncodeError, TypeError):
-            if isinstance(message, MassEvent):
-                self._logger.warning(
-                    "Dropping websocket event '%s' for '%s': contains non-UTF-8 characters.",
-                    message.event,
-                    message.object_id,
-                )
-            else:
-                self._logger.warning(
-                    "Dropping websocket message: contains non-UTF-8 characters.",
-                )
-            return
+        _message = message.to_json()
 
         try:
             self._to_write.put_nowait(_message)
