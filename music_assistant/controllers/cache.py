@@ -7,8 +7,7 @@ import functools
 import logging
 import os
 import time
-from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator, MutableMapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -44,9 +43,15 @@ CACHE_DATABASE_CLEANUP_TASK_ID = "cache_database_cleanup"
 
 BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
 
+# Type alias for data that can be stored in the cache.
+# Only JSON-serializable types are accepted - storing model objects directly
+# is not allowed as the cache always serializes/deserializes through JSON.
+# Note: tuples are not valid because JSON round-trips convert them to lists.
+SerializableType = str | int | float | bool | None | list[Any] | dict[str, Any]
+
 
 class CacheController(CoreController):
-    """Basic cache controller using both memory and database."""
+    """Basic cache controller using a database."""
 
     domain: str = "cache"
 
@@ -54,7 +59,6 @@ class CacheController(CoreController):
         """Initialize core controller."""
         super().__init__(mass)
         self.database: DatabaseConnection | None = None
-        self._mem_cache = MemoryCache(500)
         self.manifest.name = "Cache controller"
         self.manifest.description = (
             "Music Assistant's core controller for caching data throughout the application."
@@ -124,12 +128,6 @@ class CacheController(CoreController):
         cur_time = int(time.time())
         if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
-        # try memory cache first
-        memory_key = f"{provider}/{category}/{key}"
-        cache_data = self._mem_cache.get(memory_key)
-        if cache_data and (not checksum or cache_data[1] == checksum) and cache_data[2] >= cur_time:
-            return cache_data[0]
-        # fall back to db cache
         if (
             (
                 db_row := await self.database.get_row(
@@ -140,28 +138,22 @@ class CacheController(CoreController):
             and (not checksum or db_row["checksum"] == checksum)
         ):
             try:
-                data = await async_json_loads(db_row["data"])
+                return await async_json_loads(db_row["data"])
             except Exception as exc:
                 LOGGER.error(
-                    "Error parsing cache data for %s: %s",
-                    memory_key,
+                    "Error parsing cache data for %s/%s/%s: %s",
+                    provider,
+                    category,
+                    key,
                     str(exc),
                     exc_info=exc if self.logger.isEnabledFor(10) else None,
                 )
-            else:
-                # also store in memory cache for faster access
-                self._mem_cache[memory_key] = (
-                    data,
-                    db_row["checksum"],
-                    db_row["expires"],
-                )
-                return data
         return default
 
     async def set(
         self,
         key: str,
-        data: Any,
+        data: SerializableType,
         expiration: int = DEFAULT_CACHE_EXPIRATION,
         provider: str = "default",
         category: int = 0,
@@ -185,11 +177,8 @@ class CacheController(CoreController):
         if checksum is not None:
             checksum = str(checksum)
         expires = int(time.time() + expiration)
-        memory_key = f"{provider}/{category}/{key}"
-        self._mem_cache[memory_key] = (data, checksum, expires)
-        if (expires - time.time()) < 1800:
-            # do not cache items in db with short expiration
-            return
+        # always serialize to JSON to ensure data is serializable
+        # this raises if the data contains non-serializable objects
         data = await asyncio.to_thread(json_dumps, data)
         await self.database.insert_or_replace(
             DB_TABLE_CACHE,
@@ -216,10 +205,6 @@ class CacheController(CoreController):
             match["category"] = category
         if provider is not None:
             match["provider"] = provider
-        if key is not None and category is not None and provider is not None:
-            self._mem_cache.pop(f"{provider}/{category}/{key}", None)
-        else:
-            self._mem_cache.clear()
         await self.database.delete(DB_TABLE_CACHE, match)
 
     async def clear(
@@ -231,7 +216,6 @@ class CacheController(CoreController):
     ) -> None:
         """Clear all/partial items from cache."""
         assert self.database is not None
-        self._mem_cache.clear()
         self.logger.info("Clearing database...")
         query_parts: list[str] = []
         if category_filter is not None:
@@ -251,8 +235,6 @@ class CacheController(CoreController):
         assert self.database is not None
         self.logger.debug("Running automatic cleanup...")
         update_current_task_progress_text("Loading cache records")
-        # simply reset the memory cache
-        self._mem_cache.clear()
         cur_timestamp = int(time.time())
         cleaned_records = 0
         db_rows = await self.database.get_rows(DB_TABLE_CACHE)
@@ -489,7 +471,7 @@ def use_cache(
             self.mass.create_task(
                 cache.set(
                     key=cache_key,
-                    data=result,
+                    data=cast("SerializableType", result),
                     expiration=expiration,
                     provider=provider_id,
                     category=category,
@@ -502,54 +484,3 @@ def use_cache(
         return wrapper
 
     return _decorator
-
-
-class MemoryCache(MutableMapping[str, Any]):
-    """Simple limited in-memory cache implementation."""
-
-    def __init__(self, maxlen: int) -> None:
-        """Initialize."""
-        self._maxlen = maxlen
-        self.d: OrderedDict[str, Any] = OrderedDict()
-
-    @property
-    def maxlen(self) -> int:
-        """Return max length."""
-        return self._maxlen
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return item or default."""
-        return self.d.get(key, default)
-
-    def pop(self, key: str, default: Any = None) -> Any:
-        """Pop item from collection."""
-        return self.d.pop(key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        """Get item."""
-        self.d.move_to_end(key)
-        return self.d[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        """Set item."""
-        if key in self.d:
-            self.d.move_to_end(key)
-        elif len(self.d) == self.maxlen:
-            self.d.popitem(last=False)
-        self.d[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        """Delete item."""
-        del self.d[key]
-
-    def __iter__(self) -> Iterator[str]:
-        """Iterate items."""
-        return self.d.__iter__()
-
-    def __len__(self) -> int:
-        """Return length."""
-        return len(self.d)
-
-    def clear(self) -> None:
-        """Clear cache."""
-        self.d.clear()

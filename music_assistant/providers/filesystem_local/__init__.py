@@ -724,9 +724,7 @@ class LocalFileSystemProvider(MusicProvider):
             category=0,
         )
         if cached_data is not None:
-            if cached_data and isinstance(cached_data[0], dict):
-                return [Track.from_dict(track_dict) for track_dict in cached_data]
-            return cast("list[Track]", cached_data)
+            return [Track.from_dict(track_dict) for track_dict in cached_data]
 
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
@@ -761,7 +759,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.mass.cache.set(
             key=cache_key,
-            data=result,
+            data=[track.to_dict() for track in result],
             expiration=3600 * 24,  # Cache for 24 hours
             provider=self.instance_id,
             checksum=cache_checksum,
@@ -1097,7 +1095,7 @@ class LocalFileSystemProvider(MusicProvider):
                 key=artist_path, provider=self.instance_id, category=CACHE_CATEGORY_ARTIST_INFO
             )
         ):
-            return cast("Artist", cache)
+            return Artist.from_dict(cache)
 
         prov_artist_id = artist_path or name
         artist = Artist(
@@ -1152,7 +1150,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.cache.set(
             key=artist_path,
-            data=artist,
+            data=artist.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ARTIST_INFO,
             expiration=120,
@@ -1440,7 +1438,7 @@ class LocalFileSystemProvider(MusicProvider):
                 category=CACHE_CATEGORY_ALBUM_INFO,
             )
         ):
-            return cast("Album", cache)
+            return Album.from_dict(cache)
 
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -1586,7 +1584,7 @@ class LocalFileSystemProvider(MusicProvider):
                     album.metadata.images += images
         await self.cache.set(
             key=album_dir,
-            data=album,
+            data=album.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ALBUM_INFO,
             expiration=120,
@@ -1602,7 +1600,7 @@ class LocalFileSystemProvider(MusicProvider):
                 key=folder, provider=self.instance_id, category=CACHE_CATEGORY_FOLDER_IMAGES
             )
         ) is not None:
-            return cast("UniqueList[MediaItemImage]", cache)
+            return UniqueList(MediaItemImage.from_dict(img) for img in cache)
         if extra_thumb_names is None:
             extra_thumb_names = ()
         images: UniqueList[MediaItemImage] = UniqueList()
@@ -1644,7 +1642,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.cache.set(
             key=folder,
-            data=images,
+            data=[img.to_dict() for img in images],
             provider=self.instance_id,
             category=CACHE_CATEGORY_FOLDER_IMAGES,
             expiration=120,
