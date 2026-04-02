@@ -161,7 +161,8 @@ async def webdav_test_connection(
     verify_ssl: bool,
     timeout: int = 10,
 ) -> None:
-    """Test WebDAV connection and authentication.
+    """
+    Test WebDAV connection and authentication.
 
     :param base_url: WebDAV server URL.
     :param username: Optional username.
