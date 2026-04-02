@@ -164,7 +164,6 @@ class SonosPlayer(Player):
         await self.mass.players.register_or_update(self)
 
         # register callback for state changed
-        # aiosonos typed event_filter as tuple[EventType] but accepts multiple elements
         self._on_unload_callbacks.append(
             self.client.subscribe(
                 self.on_player_event,
