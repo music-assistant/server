@@ -91,7 +91,7 @@ class AudioAnalysisData(DataClassDictMixin):
         serialization_strategy = {
             np.ndarray: {
                 "serialize": lambda x: x.tolist(),
-                "deserialize": lambda x: np.array(x),
+                "deserialize": lambda x: np.asarray(x, dtype=np.float32),
             }
         }
 
