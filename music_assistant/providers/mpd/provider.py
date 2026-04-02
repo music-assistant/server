@@ -12,7 +12,8 @@ from .player import MPDPlayer
 
 
 class MPDPlayerProvider(PlayerProvider):
-    """MPD Player provider.
+    """
+    MPD Player provider.
 
     One provider instance represents one MPD server. The host, port and
     optional password are configured at the provider level.
