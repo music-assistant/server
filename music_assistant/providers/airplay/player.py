@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING, cast
 
@@ -281,16 +282,21 @@ class AirPlayPlayer(Player):
         return base_entries
 
     def _get_flags(self) -> int:
-        # Flags are either present via "sf" or "flags. Taken from pyatv.protocols.airplay.utils"
-        if self.airplay_discovery_info:
-            properties = self.airplay_discovery_info.properties
-        elif self.raop_discovery_info:
-            properties = self.raop_discovery_info.properties
-        else:
-            return 0
-
-        flags = properties.get(b"sf") or properties.get(b"flags") or "0x0"
-        return int(flags, 16)
+        # Flags are either present via "sf" or "flags". Taken from pyatv.protocols.airplay.utils.
+        # We combine flags from both RAOP and AirPlay discovery services because
+        # LEGACY_PAIRING_BIT (0x200) is typically only in the RAOP service sf field
+        # (e.g. Apple TV HD), while PIN_REQUIRED (0x8) may only appear in the AirPlay
+        # service sf/flags field. Using only one source misses the pairing requirement.
+        flags = 0
+        for discovery_info in filter(None, [self.raop_discovery_info, self.airplay_discovery_info]):
+            raw = (
+                discovery_info.properties.get(b"sf")
+                or discovery_info.properties.get(b"flags")
+                or b"0x0"
+            )
+            with contextlib.suppress(ValueError, TypeError):
+                flags |= int(raw, 16)
+        return flags
 
     def _requires_pin_pairing(self) -> bool:
         """Check if this device requires pairing.
@@ -321,6 +327,9 @@ class AirPlayPlayer(Player):
         if self.airplay_discovery_info and is_airplay2_preferred_model(
             self.device_info.manufacturer, self.device_info.model
         ):
+            return StreamingProtocol.AIRPLAY2
+        # Fall back to AirPlay 2 if RAOP service was not discovered
+        if not self.raop_discovery_info and self.airplay_discovery_info:
             return StreamingProtocol.AIRPLAY2
         return StreamingProtocol.RAOP
 
