@@ -211,6 +211,9 @@ class AsyncProcess:
                 for i in range(0, len(mv), chunk_size):
                     self.proc.stdin.write(mv[i : i + chunk_size])
                     await self.proc.stdin.drain()
+                    # yield to the event loop to prevent blocking when
+                    # drain() completes immediately (buffer not full)
+                    await asyncio.sleep(0)
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""

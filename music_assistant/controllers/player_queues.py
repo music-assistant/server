@@ -120,6 +120,9 @@ IN_PLAY_ACTION: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
+PLAY_ACTION_LOCK_TIMEOUT = 60  # seconds to wait for a play action lock before force-resetting
+
+
 def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R](
     func: Callable[Concatenate[PlayerQueuesControllerT, P], Awaitable[R]],
 ) -> Callable[Concatenate[PlayerQueuesControllerT, P], Coroutine[Any, Any, R]]:
@@ -130,6 +133,10 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     and removes it after the function completes. Uses a per-queue lock to
     ensure play actions are serialized per queue. The lock is reentrant so
     nested calls (e.g. play_media calling play_index) pass through without deadlock.
+
+    A timeout prevents permanent deadlocks: if the lock cannot be acquired
+    within PLAY_ACTION_LOCK_TIMEOUT seconds, the lock is force-reset and
+    the new action proceeds.
 
     :param func: The function to wrap.
     """  # noqa: D401
@@ -146,7 +153,19 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
             # already in a play action context (nested call), just execute
             return await func(self, *args, **kwargs)
         lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=PLAY_ACTION_LOCK_TIMEOUT)
+        except TimeoutError:
+            self.logger.warning(
+                "Play action lock for queue %s timed out after %s seconds, forcing reset",
+                queue_id,
+                PLAY_ACTION_LOCK_TIMEOUT,
+            )
+            # Replace the stuck lock so the queue can recover
+            lock = asyncio.Lock()
+            self._play_action_locks[queue_id] = lock
+            await lock.acquire()
+        try:
             token = IN_PLAY_ACTION.set(True)
             try:
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
@@ -156,6 +175,8 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
                 IN_PLAY_ACTION.reset(token)
                 queue.extra_attributes.pop(ATTR_PLAY_ACTION_IN_PROGRESS, None)
                 self.signal_update(queue_id)
+        finally:
+            lock.release()
 
     return wrapper
 
@@ -856,6 +877,7 @@ class PlayerQueuesController(CoreController):
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
+    @handle_play_action
     async def play(self, queue_id: str) -> None:
         """
         Handle PLAY command for given queue.
@@ -1047,6 +1069,7 @@ class PlayerQueuesController(CoreController):
         await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume")
+    @handle_play_action
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """Handle RESUME command for given queue.
 
@@ -1569,6 +1592,7 @@ class PlayerQueuesController(CoreController):
                 queue_item.streamdetails,
                 seek_position_ms=seek_position * 1000,
                 wait_ready=True,
+                reason="prepare",
             )
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
@@ -1769,7 +1793,6 @@ class PlayerQueuesController(CoreController):
         else:
             duration = queue_item.duration
         if queue.session_id is None:
-            # handle error or return early
             raise InvalidDataError("Queue session_id is None")
         media = PlayerMedia(
             uri=queue_item.uri,
@@ -2134,11 +2157,15 @@ class PlayerQueuesController(CoreController):
             return
 
         queue = self._queues[queue_id]
+        session_id = queue.session_id
         if queue.flow_mode:
             # ignore this for flow mode
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
+            if not queue.active or queue.session_id != session_id:
+                # queue is not active anymore or session_id does not match, so we bail out
+                return
             await self.mass.players.enqueue_next_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item),
@@ -2152,7 +2179,7 @@ class PlayerQueuesController(CoreController):
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
+        self.mass.call_later(1, _enqueue_next_item_on_player, next_item, task_id=task_id)
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -2204,9 +2231,10 @@ class PlayerQueuesController(CoreController):
         )
 
     def _prepare_next_audio_buffer(self, queue_id: str) -> None:
-        """Prepare the AudioBuffer for the next track in the queue.
+        """
+        Prepare the AudioBuffer for the next track in the queue.
 
-        Called ~30 seconds before the current track ends to ensure
+        Called ~30-60 seconds before the current track ends to ensure
         the buffer is warm when the next track starts playing.
         """
         queue = self._queues.get(queue_id)
@@ -2236,6 +2264,7 @@ class PlayerQueuesController(CoreController):
                 await AudioBuffer.get_buffer(
                     self.mass,
                     next_item.streamdetails,
+                    reason="prepare_next",
                     wait_ready=True,
                 )
             except (AudioError, MediaNotFoundError) as err:

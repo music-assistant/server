@@ -458,7 +458,7 @@ class SqueezelitePlayer(Player):
         )
         await slimplayer.play_url(
             url=url,
-            mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
+            mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
             metadata=metadata,
             enqueue=enqueue,
             send_flush=send_flush,
@@ -482,7 +482,9 @@ class SqueezelitePlayer(Player):
                 0.2,
                 slimplayer.play_url(
                     url=url,
-                    mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
+                    mime_type=get_mime_type(
+                        url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]
+                    ),
                     metadata=metadata,
                     enqueue=True,
                     send_flush=False,

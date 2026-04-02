@@ -22,6 +22,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
+    AIRPLAY_VOLUME_MUTE,
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
@@ -86,7 +87,7 @@ class AirPlayProvider(PlayerProvider):
         if not info:
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
-                raw_id, display_name = name.split(".")[0].split("@", 1)
+                raw_id, display_name = name.split(".", maxsplit=1)[0].split("@", 1)
             else:
                 # If we are not in a 'Removed' state, we need info to be filled to update the player
                 return
@@ -342,8 +343,20 @@ class AirPlayProvider(PlayerProvider):
                 # In case of a small rounding difference, we ignore this,
                 # to prevent an endless pingpong of volume changes
                 airplay_volume = float(path.split("dmcp.device-volume=", 1)[-1])
-                volume = convert_airplay_volume(airplay_volume)
-                player.update_volume_from_device(volume)
+                if airplay_volume <= AIRPLAY_VOLUME_MUTE:
+                    player._attr_volume_muted = True
+                    if player.stream and player.stream.running:
+                        self.mass.create_task(player.stream.send_cli_command("VOLUME=0"))
+                    player.update_state()
+                else:
+                    if player.volume_muted:
+                        player._attr_volume_muted = False
+                        if player.stream and player.stream.running:
+                            self.mass.create_task(
+                                player.stream.send_cli_command(f"VOLUME={player.volume_level or 0}")
+                            )
+                    volume = convert_airplay_volume(airplay_volume)
+                    player.update_volume_from_device(volume)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
@@ -355,6 +368,10 @@ class AirPlayProvider(PlayerProvider):
                 # Ignore during stream transition (stale message from old CLI process)
                 if player._transitioning or not player.stream:
                     self.logger.debug("Ignoring prevent-playback during stream transition")
+                elif player.stream.prevent_playback:
+                    # Already handling a prevent-playback for this stream
+                    # (duplicate message while ungroup/stop is still in progress)
+                    self.logger.debug("Ignoring duplicate prevent-playback for %s", player.name)
                 else:
                     player.stream.prevent_playback = True
                     if player.stream.session:
@@ -368,8 +385,18 @@ class AirPlayProvider(PlayerProvider):
                             self.mass.create_task(player.stream.session.stop())
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
-                if stream := player.stream:
-                    stream.prevent_playback = False
+                # use a debounced reset to avoid race conditions where a quick
+                # prevent-playback=0 between duplicate prevent-playback=1 messages
+                # would reset the flag and allow the second message to act
+                if (stream := player.stream) and stream.prevent_playback:
+                    self.mass.call_later(
+                        5,
+                        setattr,
+                        stream,
+                        "prevent_playback",
+                        False,
+                        task_id=f"reset_prevent_playback_{player_id}",
+                    )
 
             # send response
             date_str = utc().strftime("%a, %-d %b %Y %H:%M:%S")

@@ -28,6 +28,7 @@ IMPORTANT:
 - Suggest improvements where appropriate
 - Only provide review feedback in the CONSOLE. DO NOT ACT ON GITHUB.
 - No need to run tests or linters, just review the code changes.
+- Always check if existing helper functions exist. These should be used in favour of new code in providers. Example: if a music provider does pls parsing, the author should rewrite this to use `parse_pls` from `music_assistant.helpers.playlists` instead of writing their own parsing code.
 
 Output format:
 - List specific comments per file/line that need attention

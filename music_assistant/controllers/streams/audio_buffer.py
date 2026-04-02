@@ -32,7 +32,6 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
-from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.smart_fades import SmartFadesMode
 
@@ -303,6 +302,7 @@ class AudioBuffer:
         streamdetails: StreamDetails,
         seek_position_ms: int = 0,
         wait_ready: bool = False,
+        reason: str = "",
     ) -> AudioBuffer:
         """
         Get or create an AudioBuffer for the given streamdetails.
@@ -314,7 +314,9 @@ class AudioBuffer:
         :param streamdetails: The stream details for the media.
         :param seek_position_ms: Position in milliseconds to start from.
         :param wait_ready: If True, wait for the first chunk before returning.
+        :param reason: Caller context for logging (e.g. 'prepare', 'streaming').
         """
+        log_prefix = f"get_buffer[{reason}]" if reason else "get_buffer"
         # determine buffer size from config
         buffer_size = BufferSize(
             mass.config.get_raw_core_config_value(
@@ -333,7 +335,8 @@ class AudioBuffer:
             if existing_buffer.has_error or not existing_buffer.is_valid(seek_position_ms):
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
-                    "get_buffer: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
+                    "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
+                    log_prefix,
                     streamdetails.uri,
                     seek_position_ms,
                     existing_buffer._discarded_chunks,
@@ -343,8 +346,8 @@ class AudioBuffer:
                 await asyncio.shield(buffer_to_clear.clear())
             else:
                 LOGGER.debug(
-                    "get_buffer: Reusing buffer for %s - "
-                    "available: %ss, seek_ms: %s, discarded: %s",
+                    "%s: Reusing buffer for %s - available: %ss, seek_ms: %s, discarded: %s",
+                    log_prefix,
                     streamdetails.uri,
                     existing_buffer.seconds_available,
                     seek_position_ms,
@@ -376,17 +379,20 @@ class AudioBuffer:
             if streamdetails.queue_id
             else SmartFadesMode.DISABLED
         )
-        if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE:
-            ready_threshold = SMART_CROSSFADE_DURATION
-        elif smart_fades_mode != SmartFadesMode.STANDARD_CROSSFADE:
+        if smart_fades_mode != SmartFadesMode.DISABLED:
             ready_threshold = 10
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             ready_threshold = 5
         else:
             ready_threshold = 2
 
+        # cap threshold at buffer capacity to prevent deadlock
+        max_size = RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
+        ready_threshold = min(ready_threshold, max_size)
+
         LOGGER.debug(
-            "get_buffer: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
+            "%s: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
+            log_prefix,
             streamdetails.uri,
             mode,
             buffer_size,
@@ -463,6 +469,7 @@ class AudioBuffer:
 
             if not self.ready.is_set() and (
                 self._discarded_chunks + len(self._chunks) >= self._ready_at_chunk
+                or len(self._chunks) >= self.max_size_seconds
             ):
                 self.ready.set()
 
@@ -572,8 +579,14 @@ class AudioBuffer:
 
         result = self._chunks[buffer_index]
 
-        # free space for the producer when buffer is at capacity
-        if len(self._chunks) >= self.max_size_seconds:
+        # free space for the producer when buffer is at capacity,
+        # but only if the producer is still running and needs space
+        if (
+            len(self._chunks) >= self.max_size_seconds
+            and not self._eof_received
+            and self._producer_task
+            and not self._producer_task.done()
+        ):
             self._chunks.popleft()
             self._discarded_chunks += 1
             self._space_available.notify_all()

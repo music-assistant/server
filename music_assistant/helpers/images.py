@@ -12,6 +12,7 @@ from base64 import b64decode
 from collections import OrderedDict
 from collections.abc import Iterable
 from io import BytesIO
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
@@ -275,6 +276,40 @@ async def _generate_and_cache_thumb(
     return thumb_data
 
 
+async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
+    """Remove oldest cached thumbnails when total size exceeds the limit.
+
+    :param cache_path: The base cache directory (mass.cache_path).
+    :param max_size_bytes: Maximum allowed total size in bytes.
+    :returns: Number of files removed.
+    """
+    thumb_dir = os.path.join(cache_path, _THUMB_CACHE_DIR)
+
+    def _cleanup() -> int:
+        if not os.path.isdir(thumb_dir):
+            return 0
+        entries = []
+        for entry in os.scandir(thumb_dir):
+            if entry.is_file():
+                stat = entry.stat()
+                entries.append((entry.path, stat.st_size, stat.st_mtime))
+        entries.sort(key=lambda e: e[2])
+        total_size = sum(e[1] for e in entries)
+        removed = 0
+        for filepath, file_size, _ in entries:
+            if total_size <= max_size_bytes:
+                break
+            try:
+                Path(filepath).unlink()
+                total_size -= file_size
+                removed += 1
+            except OSError:
+                pass
+        return removed
+
+    return await asyncio.to_thread(_cleanup)
+
+
 async def create_collage(
     mass: MusicAssistant,
     images: Iterable[MediaItemImage],
@@ -320,7 +355,7 @@ async def create_collage(
 
 async def get_icon_string(icon_path: str) -> str:
     """Get svg icon as string."""
-    ext = icon_path.rsplit(".")[-1]
+    ext = icon_path.rsplit(".", maxsplit=1)[-1]
     assert ext == "svg"
     async with aiofiles.open(icon_path) as _file:
         xml_data = await _file.read()
