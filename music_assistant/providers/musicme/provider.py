@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
@@ -274,9 +275,23 @@ class MusicMeProvider(MusicProvider):
     @use_cache(3600 * 3)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get MusicMe recommendations for the Discover page."""
+        home_data, news_data, tops_data, radio_data = await asyncio.gather(
+            self._api_get("/home"),
+            self._api_get(
+                "/news/0?filters={style:0}&resources=albums{maxResults:10},focus-albums,styles"
+            ),
+            self._api_get(
+                "/tops?filters={style:0}"
+                "&resources=styles,artists{maxResults:10},videos{maxResults:0}"
+            ),
+            self._api_get(
+                "/radios?filters={theme:0}"
+                "&resources=themes,theme-airplays{maxResults:10},home"
+            ),
+        )
+
         result: list[RecommendationFolder] = []
 
-        home_data = await self._api_get("/home")
         if home_data:
             folder = RecommendationFolder(
                 name="A l'affiche",
@@ -290,9 +305,6 @@ class MusicMeProvider(MusicProvider):
             if folder.items:
                 result.append(folder)
 
-        news_data = await self._api_get(
-            "/news/0?filters={style:0}&resources=albums{maxResults:10},focus-albums,styles"
-        )
         if news_data:
             folder = RecommendationFolder(
                 name="Nouveautés",
@@ -306,9 +318,6 @@ class MusicMeProvider(MusicProvider):
             if folder.items:
                 result.append(folder)
 
-        tops_data = await self._api_get(
-            "/tops?filters={style:0}&resources=styles,artists{maxResults:10},videos{maxResults:0}"
-        )
         if tops_data:
             folder = RecommendationFolder(
                 name="Top artistes",
@@ -322,9 +331,6 @@ class MusicMeProvider(MusicProvider):
             if folder.items:
                 result.append(folder)
 
-        radio_data = await self._api_get(
-            "/radios?filters={theme:0}&resources=themes,theme-airplays{maxResults:10},home"
-        )
         if radio_data:
             folder = RecommendationFolder(
                 name="Radios",
