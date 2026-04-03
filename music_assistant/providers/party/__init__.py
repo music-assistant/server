@@ -271,7 +271,6 @@ async def get_config_entries(
             description=(
                 "When enabled, a progress bar will be displayed on the current playing song "
                 "in the track list, visually indicating the progress of the currently playing song. "
-                "The progrees bar will hide when the song is paused."
             ),
             advanced=True,
         ),
