@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import PlaybackState
@@ -232,8 +233,9 @@ async def test_raid_cancels_pending_unsubscribe(provider: TwitchProvider) -> Non
 
 
 async def test_stale_raid_ignored(provider: TwitchProvider) -> None:
-    """Raid from channel not in active_streams is ignored."""
+    """Raid from channel not in active_streams or grace period is ignored."""
     provider._active_streams = {}
+    provider._unsubscribe_timers = {}
     provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
 
     await provider._on_raid("streamer_b", "streamer_c")
@@ -262,6 +264,126 @@ async def test_raid_error_handled(provider: TwitchProvider) -> None:
 
     # Should not raise
     await provider._on_raid("streamer_a", "streamer_c")
+
+
+# --- Raid During Grace Period (IDLE queues) ---
+
+
+async def test_raid_switches_idle_queue_in_grace_period(provider: TwitchProvider) -> None:
+    """Raid during grace period switches IDLE queues that were playing the raiding channel."""
+    provider._active_streams = {}
+    # Simulate grace period — timer exists for this channel
+    mock_timer = Mock()
+    mock_timer.cancel = Mock()
+    provider._unsubscribe_timers = {"streamer_a": mock_timer}
+
+    queue1 = Mock()
+    queue1.state = PlaybackState.IDLE
+    queue1.current_item = Mock()
+    queue1.current_item.streamdetails = Mock()
+    queue1.current_item.streamdetails.item_id = "streamer_a"
+    queue1.queue_id = "queue_1"
+    queue1.elapsed_time_last_updated = time.time() - 5  # idle for 5s
+
+    provider.mass.player_queues.all = Mock(  # type: ignore[method-assign]
+        return_value=(queue1,)
+    )
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    provider.mass.player_queues.play_media.assert_called_once()
+
+
+async def test_raid_ignores_idle_queue_too_long(provider: TwitchProvider) -> None:
+    """IDLE queue that's been idle longer than 2x grace period is not switched."""
+    provider._active_streams = {}
+    mock_timer = Mock()
+    mock_timer.cancel = Mock()
+    provider._unsubscribe_timers = {"streamer_a": mock_timer}
+
+    queue1 = Mock()
+    queue1.state = PlaybackState.IDLE
+    queue1.current_item = Mock()
+    queue1.current_item.streamdetails = Mock()
+    queue1.current_item.streamdetails.item_id = "streamer_a"
+    queue1.queue_id = "queue_1"
+    queue1.elapsed_time_last_updated = time.time() - 60  # idle for 60s (> 30s threshold)
+
+    provider.mass.player_queues.all = Mock(  # type: ignore[method-assign]
+        return_value=(queue1,)
+    )
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    provider.mass.player_queues.play_media.assert_not_called()
+
+
+async def test_raid_ignores_idle_queue_without_grace_period(provider: TwitchProvider) -> None:
+    """IDLE queue is not switched when NOT in grace period (no timer)."""
+    provider._active_streams = {"streamer_a": 1}
+    provider._unsubscribe_timers = {}  # no grace timer
+
+    queue1 = Mock()
+    queue1.state = PlaybackState.IDLE
+    queue1.current_item = Mock()
+    queue1.current_item.streamdetails = Mock()
+    queue1.current_item.streamdetails.item_id = "streamer_a"
+    queue1.queue_id = "queue_1"
+
+    provider.mass.player_queues.all = Mock(  # type: ignore[method-assign]
+        return_value=(queue1,)
+    )
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    provider.mass.player_queues.play_media.assert_not_called()
+
+
+async def test_raid_ignores_paused_queue_in_grace_period(provider: TwitchProvider) -> None:
+    """Paused queue is never switched, even during grace period."""
+    provider._active_streams = {}
+    mock_timer = Mock()
+    mock_timer.cancel = Mock()
+    provider._unsubscribe_timers = {"streamer_a": mock_timer}
+
+    queue1 = Mock()
+    queue1.state = PlaybackState.PAUSED
+    queue1.current_item = Mock()
+    queue1.current_item.streamdetails = Mock()
+    queue1.current_item.streamdetails.item_id = "streamer_a"
+    queue1.queue_id = "queue_1"
+
+    provider.mass.player_queues.all = Mock(  # type: ignore[method-assign]
+        return_value=(queue1,)
+    )
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    provider.mass.player_queues.play_media.assert_not_called()
+
+
+async def test_raid_in_grace_period_accepted(provider: TwitchProvider) -> None:
+    """Raid is accepted when channel is only in _unsubscribe_timers (not _active_streams)."""
+    provider._active_streams = {}
+    mock_timer = Mock()
+    mock_timer.cancel = Mock()
+    provider._unsubscribe_timers = {"streamer_a": mock_timer}
+
+    # No matching queues (all ended), but raid should still be accepted and timer cancelled
+    provider.mass.player_queues.all = Mock(  # type: ignore[method-assign]
+        return_value=()
+    )
+    provider.mass.player_queues.play_media = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._on_raid("streamer_a", "streamer_c")
+
+    # Timer should be cancelled even with no matching queues
+    mock_timer.cancel.assert_called_once()
+    assert "streamer_a" not in provider._unsubscribe_timers
 
 
 # --- Auto-Raid Toggle ---

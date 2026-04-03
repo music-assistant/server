@@ -429,11 +429,14 @@ class TwitchProvider(MusicProvider):
         if not self._auto_raid:
             return
 
-        if from_login not in self._active_streams:
-            self.logger.debug("Ignoring raid from %s (not in active streams)", from_login)
+        if from_login not in self._active_streams and from_login not in self._unsubscribe_timers:
+            self.logger.debug("Ignoring raid from %s (not active or in grace period)", from_login)
             return
 
         self.logger.info("Raid received: %s → %s", from_login, to_login)
+
+        # Check grace period BEFORE cleanup
+        in_grace_period = from_login in self._unsubscribe_timers
 
         # Cancel any pending unsubscribe for the raiding channel
         timer = self._unsubscribe_timers.pop(from_login, None)
@@ -442,15 +445,22 @@ class TwitchProvider(MusicProvider):
 
         # Clean up the raiding channel's tracking — new streams will register themselves
         self._active_streams.pop(from_login, None)
+        max_idle_age = RAID_UNSUBSCRIBE_GRACE * 2
 
-        # Find all queues currently playing the raiding channel and switch them
         for queue in self.mass.player_queues.all():
-            if queue.state != PlaybackState.PLAYING:
-                continue
             if not queue.current_item or not queue.current_item.streamdetails:
                 continue
             if queue.current_item.streamdetails.item_id != from_login:
                 continue
+
+            if queue.state == PlaybackState.PLAYING:
+                pass  # always switch
+            elif queue.state == PlaybackState.IDLE and in_grace_period:
+                idle_duration = time.time() - queue.elapsed_time_last_updated
+                if idle_duration > max_idle_age:
+                    continue  # idle too long — user likely stopped it
+            else:
+                continue  # paused or other state — don't switch
 
             try:
                 await self.mass.player_queues.play_media(
