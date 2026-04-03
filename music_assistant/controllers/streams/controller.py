@@ -411,6 +411,7 @@ class StreamsController(CoreController):
             player=player,
             content_sample_rate=pcm_format.sample_rate,
             content_bit_depth=pcm_format.bit_depth,
+            media_type=queue_item.media_type,
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
@@ -592,6 +593,7 @@ class StreamsController(CoreController):
             player=player,
             content_sample_rate=flow_pcm_format.sample_rate,
             content_bit_depth=flow_pcm_format.bit_depth,
+            media_type=start_queue_item.media_type,
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
@@ -606,7 +608,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
-            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES,
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
         if enable_icy:
@@ -647,8 +649,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            # allow buffer ahead of 6 seconds and read rest in realtime
-            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "6"],
+            # allow buffer ahead of a few seconds and read rest in (near) realtime
+            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         ):
             try:
@@ -781,6 +783,7 @@ class StreamsController(CoreController):
             player=player,
             content_sample_rate=plugin_source.audio_format.sample_rate,
             content_bit_depth=plugin_source.audio_format.bit_depth,
+            media_type=MediaType.PLUGIN_SOURCE,
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,

@@ -182,12 +182,35 @@ async def test_fill_sets_eof() -> None:
 
 @pytest.mark.asyncio
 async def test_fill_error_propagation() -> None:
-    """Errors from the source generator propagate to consumers."""
+    """When the source errors after producing data, valid chunks are still delivered."""
 
     async def _failing_source() -> AsyncGenerator[bytes, None]:
         yield ONE_SECOND_CHUNK
         msg = "test error"
         raise RuntimeError(msg)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf.fill(_failing_source(), source_name="test")
+    await asyncio.sleep(0.1)
+
+    assert buf.has_error
+
+    # consumer should receive the valid chunk and get a clean EOF
+    result: list[bytes] = []
+    async for chunk in buf.get_raw_stream():
+        result.append(chunk)
+    assert len(result) == 1
+    assert result[0] == ONE_SECOND_CHUNK
+
+
+@pytest.mark.asyncio
+async def test_fill_error_no_data() -> None:
+    """When the source errors without producing any data, the error propagates."""
+
+    async def _failing_source() -> AsyncGenerator[bytes, None]:
+        msg = "test error"
+        raise RuntimeError(msg)
+        yield  # type: ignore[unreachable]
 
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     buf.fill(_failing_source(), source_name="test")
