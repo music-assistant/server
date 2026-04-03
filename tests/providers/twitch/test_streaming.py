@@ -161,10 +161,12 @@ async def test_streamlink_token_passed_as_header(provider: TwitchProvider) -> No
     ):
         provider._resolve_streams("testchannel")
 
-    mock_session.set_option.assert_called_once()
-    call_args = mock_session.set_option.call_args
-    assert "Authorization" in str(call_args)
-    assert "OAuth test_oauth_token" in str(call_args)
+    # set_option called for queue deadline + OAuth header
+    assert mock_session.set_option.call_count == 2
+    calls = mock_session.set_option.call_args_list
+    assert calls[0].args == ("stream-segmented-queue-deadline", 6)
+    assert calls[1].args[0] == "http-headers"
+    assert "OAuth test_oauth_token" in str(calls[1])
 
 
 async def test_streamlink_token_omitted_when_empty(provider: TwitchProvider) -> None:
@@ -183,7 +185,8 @@ async def test_streamlink_token_omitted_when_empty(provider: TwitchProvider) -> 
     ):
         provider._resolve_streams("testchannel")
 
-    mock_session.set_option.assert_not_called()
+    # Only the queue deadline option — no OAuth header
+    mock_session.set_option.assert_called_once_with("stream-segmented-queue-deadline", 6)
 
 
 async def test_invalid_streamlink_token_stream_still_plays(provider: TwitchProvider) -> None:

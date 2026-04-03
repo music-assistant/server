@@ -118,50 +118,12 @@ def config_side_effect(overrides: dict[str, Any] | None = None) -> Any:
     return lambda key, default=None: values.get(key, default)
 
 
-def make_queue_event(
-    state: Any,
-    uri: str | None = None,
-    queue_id: str = "queue_1",
-    provider_domain: str | None = None,
-    provider_item_id: str | None = None,
-) -> Mock:
-    """Create a mock queue update event for _on_queue_updated dispatch tests.
-
-    Args:
-        state: PlaybackState value
-        uri: QueueItem.uri value (e.g., "twitch://radio/x" or "library://radio/8")
-        queue_id: Queue identifier
-        provider_domain: If set, creates a media_item with a provider_mapping
-            matching this domain. Used to test library URI resolution.
-        provider_item_id: The item_id in the provider mapping (e.g., channel login)
-    """
-    event = Mock()
-    event.data = Mock()
-    event.data.state = state
-    if uri is not None:
-        event.data.current_item = Mock()
-        event.data.current_item.uri = uri
-        if provider_domain and provider_item_id:
-            pm = Mock()
-            pm.provider_domain = provider_domain
-            pm.item_id = provider_item_id
-            event.data.current_item.media_item = Mock()
-            event.data.current_item.media_item.provider_mappings = [pm]
-        else:
-            event.data.current_item.media_item = None
-    else:
-        event.data.current_item = None
-    event.data.queue_id = queue_id
-    return event
-
-
 @pytest.fixture
 def mass_mock() -> Mock:
     """Return a mock MusicAssistant instance."""
     mass = Mock()
     mass.http_session = Mock()
     mass.http_session.ws_connect = AsyncMock()
-    mass.subscribe = Mock(return_value=Mock())  # returns unsubscribe callable
     mass.player_queues = Mock()
     mass.player_queues.play_media = AsyncMock()
     mass.cache.get = AsyncMock(return_value=None)
@@ -222,4 +184,8 @@ def config_mock() -> Mock:
 @pytest.fixture
 def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> TwitchProvider:
     """Return a TwitchProvider instance."""
-    return TwitchProvider(mass_mock, manifest_mock, config_mock, SUPPORTED_FEATURES)
+    p = TwitchProvider(mass_mock, manifest_mock, config_mock, SUPPORTED_FEATURES)
+    # Initialize raid state that would normally be set by handle_async_init
+    p._active_streams = {}
+    p._unsubscribe_timers = {}
+    return p

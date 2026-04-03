@@ -50,15 +50,8 @@ async def test_supported_features_no_edit() -> None:
     assert ProviderFeature.LIBRARY_RADIOS_EDIT not in SUPPORTED_FEATURES
 
 
-async def test_loaded_in_mass_subscribes_to_events(provider: TwitchProvider) -> None:
-    """loaded_in_mass() calls mass.subscribe()."""
-    await provider.loaded_in_mass()
-    provider.mass.subscribe.assert_called_once()  # type: ignore[attr-defined]
-
-
 async def test_unload_cleans_up(provider: TwitchProvider) -> None:
     """unload() succeeds and cleans up resources."""
-    await provider.loaded_in_mass()
     await provider.unload()
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from collections.abc import AsyncGenerator, Sequence
@@ -14,7 +13,6 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    EventType,
     ImageType,
     MediaType,
     PlaybackState,
@@ -66,6 +64,7 @@ STREAM_CHUNK_SIZE = 64 * 1024  # 64KB
 MAX_CONSECUTIVE_RECONNECTS = 5
 RECONNECT_DELAY = 0.5  # seconds
 PREFERRED_QUALITIES = ("audio_only", "worst")
+RAID_UNSUBSCRIBE_GRACE = 15.0  # seconds to wait before unsubscribing after last stream ends
 
 # Cache TTL
 LIVE_STATUS_TTL = 300.0  # 5 minutes
@@ -299,12 +298,9 @@ class TwitchProvider(MusicProvider):
 
     # Raid state
     _eventsub: EventSubClient | None = None
-    _unsub_queue_updated: Any | None = None
-    _current_channel_login: str | None = None
-    _current_queue_id: str | None = None
     _auto_raid: bool = True
-    _grace_timer: asyncio.Task[None] | None = None
-    _idle_timer: asyncio.Task[None] | None = None
+    _active_streams: dict[str, int]
+    _unsubscribe_timers: dict[str, asyncio.Task[None]]
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -319,6 +315,8 @@ class TwitchProvider(MusicProvider):
         self._refresh_token = str(self.config.get_value(CONF_REFRESH_TOKEN) or "") or None
         val = self.config.get_value(CONF_AUTO_RAID)
         self._auto_raid = bool(val) if val is not None else True
+        self._active_streams = {}
+        self._unsubscribe_timers = {}
         self.logger.info(
             "Twitch provider initialized: auto_raid=%s, authenticated=%s",
             self._auto_raid,
@@ -337,24 +335,13 @@ class TwitchProvider(MusicProvider):
             except Exception:
                 self.logger.warning("Failed to resolve user ID during init")
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        self._unsub_queue_updated = self.mass.subscribe(
-            self._on_queue_updated,
-            EventType.QUEUE_UPDATED,
-        )
-        self.logger.debug("Subscribed to QUEUE_UPDATED events")
-
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        # Unsubscribe from event bus
-        if self._unsub_queue_updated is not None:
-            with contextlib.suppress(Exception):
-                self._unsub_queue_updated()
-            self._unsub_queue_updated = None
-
-        # Cancel timers
-        self._cancel_timers()
+        # Cancel pending unsubscribe timers
+        for timer in self._unsubscribe_timers.values():
+            timer.cancel()
+        self._unsubscribe_timers.clear()
+        self._active_streams.clear()
 
         # Stop EventSub
         if self._eventsub is not None:
@@ -364,94 +351,15 @@ class TwitchProvider(MusicProvider):
         # Clear cache
         self._clear_cache()
 
-    # --- Raid State Machine ---
+    # --- Raid Following ---
 
-    def _extract_twitch_login(self, queue_item: Any) -> str | None:
-        """Extract Twitch channel login from a QueueItem, handling both URI schemes.
-
-        When played from Browse, URI is 'twitch://radio/channel_login'.
-        When played from Library, URI is 'library://radio/N' and the channel
-        login must be extracted from the media_item's provider mapping.
-        """
-        uri = getattr(queue_item, "uri", "") or ""
-
-        # Direct Twitch URI (from browse or play_media)
-        if uri.startswith("twitch://"):
-            parts = uri.split("/")
-            return parts[-1] if len(parts) >= 3 and parts[-1] else None
-
-        # Library URI — check media_item for Twitch provider mapping
-        media_item = getattr(queue_item, "media_item", None)
-        if media_item is not None:
-            for pm in getattr(media_item, "provider_mappings", []):
-                if getattr(pm, "provider_domain", "") == self.domain:
-                    item_id = getattr(pm, "item_id", "")
-                    if item_id:
-                        return item_id
-
-        return None
-
-    async def _on_queue_updated(self, event: Any = None) -> None:
-        """Handle queue update events for raid following."""
-        if event is None or not hasattr(event, "data"):
-            return
-
-        queue = event.data
-        state = getattr(queue, "state", None)
-        current_item = getattr(queue, "current_item", None)
-        queue_id = getattr(queue, "queue_id", "")
-
-        self.logger.debug(
-            "Queue update: state=%s, queue_id=%s, current_item=%s",
-            state,
-            queue_id,
-            getattr(current_item, "uri", None) if current_item else None,
-        )
-
-        if state == PlaybackState.PLAYING and current_item:
-            channel_login = self._extract_twitch_login(current_item)
-            if channel_login:
-                self._current_queue_id = queue_id
-                await self._handle_queue_playing(f"twitch://radio/{channel_login}", channel_login)
-                return
-            # Non-Twitch content playing — stop tracking
-            self.logger.debug(
-                "Non-Twitch content playing: %s — stopping raid tracking",
-                getattr(current_item, "uri", "?"),
-            )
-            await self._handle_queue_stopped()
-        elif state == PlaybackState.PAUSED:
-            await self._handle_queue_paused()
-        elif state == PlaybackState.IDLE:
-            await self._handle_queue_idle()
-
-    async def _handle_queue_playing(self, uri: str, channel_login: str) -> None:
-        """Handle playback of a Twitch channel — subscribe to raids."""
-        self.logger.debug(
-            "Handle queue playing: channel=%s, current=%s, auto_raid=%s, authenticated=%s",
-            channel_login,
-            self._current_channel_login,
-            self._auto_raid,
-            self.is_authenticated,
-        )
-
-        if channel_login == self._current_channel_login:
-            self.logger.debug("Already tracking %s — skipping", channel_login)
-            return
-
-        self._cancel_timers()
-        self._current_channel_login = channel_login
-
-        if not self._auto_raid:
-            self.logger.debug("Auto-raid disabled — not subscribing to EventSub")
-            return
-        if not self.is_authenticated:
-            self.logger.debug("Not authenticated — not subscribing to EventSub")
+    async def _subscribe_raids_for_channel(self, channel_login: str) -> None:
+        """Ensure EventSub is running and subscribed to raids for a channel."""
+        if not self._auto_raid or not self.is_authenticated:
             return
 
         # Ensure EventSub client exists
         if self._eventsub is None:
-            self.logger.debug("Creating EventSub client and starting WebSocket")
             self._eventsub = EventSubClient(
                 http_session=self.mass.http_session,
                 api_headers_fn=self._api_headers,
@@ -472,80 +380,90 @@ class TwitchProvider(MusicProvider):
                 "Could not resolve user ID for %s — no raid subscription", channel_login
             )
 
-    async def _handle_queue_paused(self) -> None:
-        """Handle pause — unsubscribe EventSub, keep WebSocket warm."""
-        self.logger.debug("Handle queue paused — unsubscribing EventSub, keeping WS warm")
-        self._cancel_timers()
-        if self._eventsub is not None:
-            await self._eventsub.unsubscribe_all()
+    def _track_stream_start(self, channel_login: str) -> None:
+        """Increment active stream count for a channel. Subscribe to raids on first stream."""
+        # Cancel any pending delayed unsubscribe for this channel
+        timer = self._unsubscribe_timers.pop(channel_login, None)
+        if timer is not None:
+            timer.cancel()
 
-    async def _handle_queue_idle(self) -> None:
-        """Handle stop/idle — start grace period before disconnecting."""
-        self.logger.debug("Handle queue idle — starting grace period")
-        self._cancel_timers()
-        self._grace_timer = asyncio.create_task(self._grace_period())
+        prev_count = self._active_streams.get(channel_login, 0)
+        self._active_streams[channel_login] = prev_count + 1
+        self.logger.debug("Stream started for %s (active: %d)", channel_login, prev_count + 1)
 
-    async def _handle_queue_stopped(self) -> None:
-        """Handle non-Twitch content — immediate cleanup."""
-        self.logger.debug("Handle queue stopped — cleaning up raid tracking")
-        self._cancel_timers()
-        self._current_channel_login = None
-        if self._eventsub is not None:
-            await self._eventsub.unsubscribe_all()
+        if prev_count == 0:
+            asyncio.create_task(self._subscribe_raids_for_channel(channel_login))
 
-    async def _grace_period(self) -> None:
-        """Wait 15s grace period, then unsubscribe and start idle timer."""
-        await asyncio.sleep(15)
-        if self._eventsub is not None:
-            await self._eventsub.unsubscribe_all()
-        self._idle_timer = asyncio.create_task(self._idle_disconnect())
+    def _track_stream_end(self, channel_login: str) -> None:
+        """Decrement active stream count. Start delayed unsubscribe when last stream ends."""
+        count = self._active_streams.get(channel_login, 0)
+        if count <= 1:
+            # Last stream for this channel — start grace period before unsubscribing
+            self._active_streams.pop(channel_login, None)
+            self.logger.debug(
+                "Last stream ended for %s — starting %ds unsubscribe grace period",
+                channel_login,
+                int(RAID_UNSUBSCRIBE_GRACE),
+            )
+            self._unsubscribe_timers[channel_login] = asyncio.create_task(
+                self._delayed_unsubscribe(channel_login)
+            )
+        else:
+            self._active_streams[channel_login] = count - 1
+            self.logger.debug("Stream ended for %s (active: %d)", channel_login, count - 1)
 
-    async def _idle_disconnect(self) -> None:
-        """Wait 5 minutes, then disconnect EventSub WebSocket."""
-        await asyncio.sleep(300)
+    async def _delayed_unsubscribe(self, channel_login: str) -> None:
+        """Wait grace period, then unsubscribe from raids for a channel."""
+        await asyncio.sleep(RAID_UNSUBSCRIBE_GRACE)
+        self._unsubscribe_timers.pop(channel_login, None)
+
         if self._eventsub is not None:
-            self.logger.debug("Idle timeout reached — disconnecting EventSub WebSocket")
-            await self._eventsub.stop()
-            self._eventsub = None
+            users = await self._get_users(logins=[channel_login])
+            if users:
+                await self._eventsub.unsubscribe_raids(users[0]["id"])
+
+        self.logger.debug("Unsubscribed from raids for %s after grace period", channel_login)
 
     async def _on_raid(self, from_login: str, to_login: str) -> None:
-        """Handle a raid event — switch playback to raid target."""
-        self.logger.debug(
-            "Raid event received: %s → %s (auto_raid=%s, current=%s)",
-            from_login,
-            to_login,
-            self._auto_raid,
-            self._current_channel_login,
-        )
+        """Handle a raid event — switch all playing queues to raid target."""
         if not self._auto_raid:
-            self.logger.debug("Auto-raid disabled — ignoring raid")
             return
 
-        if from_login != self._current_channel_login:
-            self.logger.debug(
-                "Ignoring stale raid from %s (current=%s)",
-                from_login,
-                self._current_channel_login,
-            )
+        if from_login not in self._active_streams:
+            self.logger.debug("Ignoring raid from %s (not in active streams)", from_login)
             return
 
         self.logger.info("Raid received: %s → %s", from_login, to_login)
-        try:
-            await self.mass.player_queues.play_media(
-                queue_id=self._current_queue_id or "",
-                media=f"twitch://radio/{to_login}",
-            )
-        except Exception:
-            self.logger.warning("Failed to follow raid to %s", to_login, exc_info=True)
 
-    def _cancel_timers(self) -> None:
-        """Cancel any pending grace/idle timers."""
-        if self._grace_timer is not None:
-            self._grace_timer.cancel()
-            self._grace_timer = None
-        if self._idle_timer is not None:
-            self._idle_timer.cancel()
-            self._idle_timer = None
+        # Cancel any pending unsubscribe for the raiding channel
+        timer = self._unsubscribe_timers.pop(from_login, None)
+        if timer is not None:
+            timer.cancel()
+
+        # Clean up the raiding channel's tracking — new streams will register themselves
+        self._active_streams.pop(from_login, None)
+
+        # Find all queues currently playing the raiding channel and switch them
+        for queue in self.mass.player_queues.all():
+            if queue.state != PlaybackState.PLAYING:
+                continue
+            if not queue.current_item or not queue.current_item.streamdetails:
+                continue
+            if queue.current_item.streamdetails.item_id != from_login:
+                continue
+
+            try:
+                await self.mass.player_queues.play_media(
+                    queue_id=queue.queue_id,
+                    media=f"twitch://radio/{to_login}",
+                )
+            except Exception:
+                self.logger.warning(
+                    "Failed to follow raid to %s on queue %s",
+                    to_login,
+                    queue.queue_id,
+                    exc_info=True,
+                )
 
     @property
     def is_authenticated(self) -> bool:
@@ -780,41 +698,45 @@ class TwitchProvider(MusicProvider):
         item_id = streamdetails.item_id
         reconnects = 0
 
-        while True:
-            streams = await asyncio.to_thread(self._resolve_streams, item_id)
-            if not streams:
-                return
+        self._track_stream_start(item_id)
+        try:
+            while True:
+                streams = await asyncio.to_thread(self._resolve_streams, item_id)
+                if not streams:
+                    return
 
-            stream = self._select_quality(streams)
-            if not stream:
-                return
+                stream = self._select_quality(streams)
+                if not stream:
+                    return
 
-            import music_assistant.providers.twitch.ad_handling as _ah  # noqa: PLC0415
+                import music_assistant.providers.twitch.ad_handling as _ah  # noqa: PLC0415
 
-            fd = await asyncio.to_thread(stream.open)
-            prev_ad_state = False
-            try:
-                while True:
-                    chunk = await asyncio.to_thread(fd.read, STREAM_CHUNK_SIZE)
-                    if chunk:
-                        reconnects = 0
-                        if _ah.ad_break_active != prev_ad_state:
-                            prev_ad_state = _ah.ad_break_active
-                            if _ah.ad_break_active:
-                                streamdetails.stream_title = f"{item_id} - Ad Break"
-                            else:
-                                streamdetails.stream_metadata = None
-                        yield chunk
-                        continue
-                    break
-            finally:
-                await asyncio.to_thread(fd.close)
+                fd = await asyncio.to_thread(stream.open)
+                prev_ad_state = False
+                try:
+                    while True:
+                        chunk = await asyncio.to_thread(fd.read, STREAM_CHUNK_SIZE)
+                        if chunk:
+                            reconnects = 0
+                            if _ah.ad_break_active != prev_ad_state:
+                                prev_ad_state = _ah.ad_break_active
+                                if _ah.ad_break_active:
+                                    streamdetails.stream_title = f"{item_id} - Ad Break"
+                                else:
+                                    streamdetails.stream_metadata = None
+                            yield chunk
+                            continue
+                        break
+                finally:
+                    await asyncio.to_thread(fd.close)
 
-            reconnects += 1
-            if reconnects > MAX_CONSECUTIVE_RECONNECTS:
-                return
+                reconnects += 1
+                if reconnects > MAX_CONSECUTIVE_RECONNECTS:
+                    return
 
-            await asyncio.sleep(RECONNECT_DELAY)
+                await asyncio.sleep(RECONNECT_DELAY)
+        finally:
+            self._track_stream_end(item_id)
 
     def _resolve_streams(self, channel: str) -> dict[str, Any] | None:
         """Resolve Streamlink streams for a channel. Blocking — call via to_thread."""

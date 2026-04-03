@@ -39,8 +39,7 @@ class EventSubClient:
 
         self._ws: Any | None = None
         self._session_id: str | None = None
-        self._current_subscription_id: str | None = None
-        self._current_broadcaster_user_id: str | None = None
+        self._subscriptions: dict[str, str] = {}  # broadcaster_user_id -> subscription_id
         self._reconnect_url: str | None = None
 
         self._ready = asyncio.Event()
@@ -48,7 +47,7 @@ class EventSubClient:
         self._backoff = 1.0
         self._listen_task: asyncio.Task[None] | None = None
         self._on_raid: Callable[[str, str], Any] | None = None
-        self._subscribe_pending = False  # True when subscribe_raids is waiting for ready
+        self._subscribe_pending: set[str] = set()
 
     @property
     def is_connected(self) -> bool:
@@ -71,7 +70,7 @@ class EventSubClient:
         logger.debug("EventSub: stopping WebSocket and cleaning up")
         self._stopped = True
         self._session_id = None
-        self._current_subscription_id = None
+        self._subscriptions.clear()
         self._ready.clear()
 
         if self._ws is not None:
@@ -85,37 +84,34 @@ class EventSubClient:
             self._listen_task = None
 
     async def subscribe_raids(self, broadcaster_user_id: str) -> None:
-        """Subscribe to channel.raid events for a broadcaster."""
-        # Unsubscribe from previous if any
-        if self._current_subscription_id:
-            await self.unsubscribe_all()
-
-        self._current_broadcaster_user_id = broadcaster_user_id
+        """Subscribe to channel.raid events for a broadcaster. No-op if already subscribed."""
+        if broadcaster_user_id in self._subscriptions:
+            return
 
         # Wait for WebSocket to be ready
-        self._subscribe_pending = True
+        self._subscribe_pending.add(broadcaster_user_id)
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=10.0)
         except TimeoutError:
-            logger.warning("EventSub not ready — cannot subscribe to raids")
+            logger.warning(
+                "EventSub not ready — cannot subscribe to raids for %s",
+                broadcaster_user_id,
+            )
             return
         finally:
-            self._subscribe_pending = False
+            self._subscribe_pending.discard(broadcaster_user_id)
 
         # Check if welcome handler already re-subscribed (reconnect case)
-        if self._current_subscription_id:
+        if broadcaster_user_id in self._subscriptions:
             return
 
         await self._create_subscription(broadcaster_user_id)
 
-    async def unsubscribe_all(self) -> None:
-        """Unsubscribe from all active EventSub subscriptions."""
-        if not self._current_subscription_id:
+    async def unsubscribe_raids(self, broadcaster_user_id: str) -> None:
+        """Unsubscribe from raid events for a specific broadcaster."""
+        sub_id = self._subscriptions.pop(broadcaster_user_id, None)
+        if not sub_id:
             return
-
-        sub_id = self._current_subscription_id
-        self._current_subscription_id = None
-        self._current_broadcaster_user_id = None
 
         try:
             async with self._http_session.delete(
@@ -124,9 +120,19 @@ class EventSubClient:
                 params={"id": sub_id},
             ):
                 pass
-            logger.debug("EventSub: unsubscribed %s", sub_id)
+            logger.debug(
+                "EventSub: unsubscribed %s for broadcaster %s",
+                sub_id,
+                broadcaster_user_id,
+            )
         except Exception:
             logger.warning("EventSub: failed to unsubscribe %s", sub_id, exc_info=True)
+
+    async def unsubscribe_all(self) -> None:
+        """Unsubscribe from all active EventSub subscriptions."""
+        broadcaster_ids = list(self._subscriptions.keys())
+        for broadcaster_id in broadcaster_ids:
+            await self.unsubscribe_raids(broadcaster_id)
 
     async def _create_subscription(self, broadcaster_user_id: str) -> None:
         """Create an EventSub subscription for channel.raid."""
@@ -144,11 +150,11 @@ class EventSubClient:
             ) as response:
                 if response.status in (200, 202):
                     data = await response.json()
-                    self._current_subscription_id = data["data"][0]["id"]
+                    self._subscriptions[broadcaster_user_id] = data["data"][0]["id"]
                     logger.debug(
                         "EventSub: subscribed to channel.raid for %s (sub=%s)",
                         broadcaster_user_id,
-                        self._current_subscription_id,
+                        self._subscriptions[broadcaster_user_id],
                     )
                 else:
                     text = await response.text()
@@ -207,15 +213,19 @@ class EventSubClient:
     def _handle_welcome(self, msg: dict[str, Any]) -> None:
         """Handle session_welcome — store session ID, re-subscribe if needed."""
         self._session_id = msg["payload"]["session"]["id"]
-        self._current_subscription_id = None  # old sub is invalid
         self._backoff = 1.0  # reset backoff
 
-        # Re-subscribe if we had an active subscription before disconnect,
-        # but only if subscribe_raids isn't already waiting to do it.
-        # Without this check, both the welcome handler and subscribe_raids
-        # create subscriptions, resulting in duplicates.
-        if self._current_broadcaster_user_id is not None and not self._subscribe_pending:
-            asyncio.create_task(self._create_subscription(self._current_broadcaster_user_id))
+        # Old subscriptions are invalid on the new session. Keep the broadcaster
+        # IDs (we need to re-subscribe) but clear the subscription IDs.
+        stale_broadcasters = [
+            bid for bid in self._subscriptions if bid not in self._subscribe_pending
+        ]
+        self._subscriptions.clear()
+
+        # Re-subscribe for all broadcasters that aren't already being handled
+        # by a concurrent subscribe_raids call.
+        for broadcaster_id in stale_broadcasters:
+            asyncio.create_task(self._create_subscription(broadcaster_id))
 
         self._ready.set()
 
@@ -246,4 +256,9 @@ class EventSubClient:
             sub.get("type"),
             sub.get("status"),
         )
-        self._current_subscription_id = None
+        # Remove the revoked subscription by its ID
+        revoked_id = sub.get("id")
+        if revoked_id:
+            self._subscriptions = {
+                bid: sid for bid, sid in self._subscriptions.items() if sid != revoked_id
+            }

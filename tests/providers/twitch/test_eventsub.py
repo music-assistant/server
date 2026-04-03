@@ -73,40 +73,33 @@ async def test_stop_prevents_reconnect(client: EventSubClient) -> None:
 
 
 async def test_stop_clears_session_state(client: EventSubClient) -> None:
-    """stop() clears session_id, subscription_id, ready event."""
+    """stop() clears session_id, subscriptions, ready event."""
     client._session_id = "test"
-    client._current_subscription_id = "sub_1"
+    client._subscriptions = {"123": "sub_1"}
     client._ready.set()
 
     await client.stop()
 
     assert client._session_id is None
-    assert client._current_subscription_id is None
+    assert len(client._subscriptions) == 0
     assert not client._ready.is_set()
 
 
 async def test_disconnect_triggers_reconnect(client: EventSubClient) -> None:
     """WebSocket disconnect increases backoff, indicating reconnect will happen."""
-    # Verify the reconnect mechanism: after a disconnect, the connect loop
-    # increases backoff before reconnecting. We test the state changes that
-    # _connect_loop makes rather than running the full async loop.
     initial_backoff = client._backoff
     assert initial_backoff == 1.0
 
-    # Simulate what _connect_loop does after a disconnect:
-    # backoff doubles, capped at MAX_BACKOFF
     client._backoff = min(client._backoff * 2, MAX_BACKOFF)
-    assert client._backoff == 2.0  # doubled from 1.0
+    assert client._backoff == 2.0
 
-    # After a successful welcome, backoff resets
     welcome = load_fixture("eventsub_welcome.json")
     client._handle_message(welcome)
-    assert client._backoff == 1.0  # reset
+    assert client._backoff == 1.0
 
-    # Verify _stopped flag controls reconnect behavior
-    assert client._stopped is False  # would reconnect
+    assert client._stopped is False
     await client.stop()
-    assert client._stopped is True  # would NOT reconnect
+    assert client._stopped is True
 
 
 # --- Twitch-Requested Reconnect ---
@@ -124,7 +117,6 @@ def test_reconnect_url_consumed(client: EventSubClient) -> None:
     msg = load_fixture("eventsub_reconnect.json")
     client._handle_message(msg)
     assert client._reconnect_url is not None
-    # The connect loop would consume it — verify it's set
     url = client._reconnect_url
     assert url == "wss://eventsub.wss.twitch.tv/ws?reconnect=true"
 
@@ -132,22 +124,21 @@ def test_reconnect_url_consumed(client: EventSubClient) -> None:
 # --- Re-subscription on Reconnect ---
 
 
-def test_welcome_clears_old_subscription_id(client: EventSubClient) -> None:
-    """Welcome clears old subscription ID before re-subscribing."""
-    client._current_subscription_id = "old_sub"
+async def test_welcome_clears_old_subscriptions(client: EventSubClient) -> None:
+    """Welcome clears old subscription IDs (they're invalid on new session)."""
+    client._subscriptions = {"123": "old_sub"}
     msg = load_fixture("eventsub_welcome.json")
     client._handle_message(msg)
-    # Old sub cleared (new one would be set by async _create_subscription)
-    assert client._current_subscription_id is None
+    # Old subs cleared synchronously — re-subscription tasks created but not yet run
+    assert len(client._subscriptions) == 0
 
 
 def test_welcome_does_not_resubscribe_if_no_active(
     client: EventSubClient,
 ) -> None:
-    """If no active broadcaster, welcome does not create subscription task."""
-    client._current_broadcaster_user_id = None
+    """If no active broadcasters, welcome does not create subscription tasks."""
+    client._subscriptions = {}
     msg = load_fixture("eventsub_welcome.json")
-    # Should not raise or create tasks
     client._handle_message(msg)
     assert client._ready.is_set()
 
@@ -174,7 +165,6 @@ async def test_subscribe_creates_raid_subscription(
     client: EventSubClient, http_session: Mock
 ) -> None:
     """subscribe_raids() calls EventSub create API with correct params."""
-    # Set ready
     client._session_id = "test_session"
     client._ready.set()
 
@@ -188,27 +178,33 @@ async def test_subscribe_creates_raid_subscription(
     assert body["condition"]["from_broadcaster_user_id"] == "123"
 
 
-async def test_subscribe_unsubscribes_previous_first(
-    client: EventSubClient, http_session: Mock
-) -> None:
-    """If existing subscription, it's deleted before creating new one."""
+async def test_subscribe_stores_subscription(client: EventSubClient) -> None:
+    """subscribe_raids() stores the subscription ID in _subscriptions."""
     client._session_id = "test_session"
     client._ready.set()
-    client._current_subscription_id = "old_sub"
-    client._current_broadcaster_user_id = "old_user"
 
-    await client.subscribe_raids("456")
+    await client.subscribe_raids("123")
 
-    # Delete should have been called for old sub
-    http_session.delete.assert_called_once()
+    assert client._subscriptions["123"] == "sub_999"
+
+
+async def test_subscribe_noop_if_already_subscribed(
+    client: EventSubClient, http_session: Mock
+) -> None:
+    """subscribe_raids() is a no-op for an already-subscribed broadcaster."""
+    client._session_id = "test_session"
+    client._ready.set()
+    client._subscriptions = {"123": "existing_sub"}
+
+    await client.subscribe_raids("123")
+
+    http_session.post.assert_not_called()
 
 
 async def test_subscribe_waits_for_ready(client: EventSubClient, http_session: Mock) -> None:
     """Subscribe blocks until ready event is set."""
     client._session_id = "test_session"
-    # ready NOT set — should timeout
 
-    # Set ready after a tiny delay to simulate welcome
     async def set_ready() -> None:
         await asyncio.sleep(0.01)
         client._ready.set()
@@ -219,32 +215,42 @@ async def test_subscribe_waits_for_ready(client: EventSubClient, http_session: M
     http_session.post.assert_called_once()
 
 
-async def test_unsubscribe_calls_delete_api(client: EventSubClient, http_session: Mock) -> None:
-    """unsubscribe_all() calls EventSub delete API."""
-    client._current_subscription_id = "sub_123"
-    client._current_broadcaster_user_id = "user_123"
-
-    await client.unsubscribe_all()
-
-    http_session.delete.assert_called_once()
-
-
-async def test_unsubscribe_clears_state(client: EventSubClient) -> None:
-    """After unsubscribe, broadcaster_user_id and subscription_id are None."""
-    client._current_subscription_id = "sub_123"
-    client._current_broadcaster_user_id = "user_123"
-
-    await client.unsubscribe_all()
-
-    assert client._current_subscription_id is None
-    assert client._current_broadcaster_user_id is None
-
-
-async def test_unsubscribe_noop_when_no_subscription(
+async def test_unsubscribe_raids_calls_delete_api(
     client: EventSubClient, http_session: Mock
 ) -> None:
-    """Unsubscribe with no active subscription doesn't call API."""
-    client._current_subscription_id = None
+    """unsubscribe_raids() calls EventSub delete API for specific broadcaster."""
+    client._subscriptions = {"123": "sub_123"}
+
+    await client.unsubscribe_raids("123")
+
+    http_session.delete.assert_called_once()
+    assert "123" not in client._subscriptions
+
+
+async def test_unsubscribe_raids_noop_if_not_subscribed(
+    client: EventSubClient, http_session: Mock
+) -> None:
+    """unsubscribe_raids() is a no-op for a non-subscribed broadcaster."""
+    client._subscriptions = {}
+
+    await client.unsubscribe_raids("123")
+
+    http_session.delete.assert_not_called()
+
+
+async def test_unsubscribe_all_clears_all(client: EventSubClient, http_session: Mock) -> None:
+    """unsubscribe_all() unsubscribes all broadcasters."""
+    client._subscriptions = {"123": "sub_1", "456": "sub_2"}
+
+    await client.unsubscribe_all()
+
+    assert http_session.delete.call_count == 2
+    assert len(client._subscriptions) == 0
+
+
+async def test_unsubscribe_all_noop_when_empty(client: EventSubClient, http_session: Mock) -> None:
+    """Unsubscribe with no active subscriptions doesn't call API."""
+    client._subscriptions = {}
 
     await client.unsubscribe_all()
 
@@ -253,8 +259,7 @@ async def test_unsubscribe_noop_when_no_subscription(
 
 async def test_unsubscribe_tolerates_api_error(client: EventSubClient, http_session: Mock) -> None:
     """API error during unsubscribe is logged, not raised."""
-    client._current_subscription_id = "sub_123"
-    client._current_broadcaster_user_id = "user_123"
+    client._subscriptions = {"123": "sub_123"}
 
     def raise_err(*_args: Any, **_kwargs: Any) -> None:
         msg = "API error"
@@ -263,24 +268,26 @@ async def test_unsubscribe_tolerates_api_error(client: EventSubClient, http_sess
     http_session.delete = Mock(side_effect=raise_err)
 
     # Should not raise
-    await client.unsubscribe_all()
-    assert client._current_subscription_id is None
+    await client.unsubscribe_raids("123")
+    assert "123" not in client._subscriptions
 
 
 # --- Subscription Revocation ---
 
 
-def test_revocation_clears_subscription_id(client: EventSubClient) -> None:
-    """Revocation message clears _current_subscription_id."""
-    client._current_subscription_id = "sub_123"
+def test_revocation_clears_subscription(client: EventSubClient) -> None:
+    """Revocation message removes the revoked subscription."""
+    client._subscriptions = {"123": "sub_123"}
     msg = load_fixture("eventsub_revocation.json")
+    # The fixture has subscription id — check what it is
+    msg["payload"]["subscription"]["id"] = "sub_123"
     client._handle_message(msg)
-    assert client._current_subscription_id is None
+    assert "123" not in client._subscriptions
 
 
 def test_revocation_logged(client: EventSubClient, caplog: pytest.LogCaptureFixture) -> None:
     """Revocation is logged as warning."""
-    client._current_subscription_id = "sub_123"
+    client._subscriptions = {"123": "sub_123"}
     msg = load_fixture("eventsub_revocation.json")
     with caplog.at_level(logging.WARNING):
         client._handle_message(msg)
@@ -291,7 +298,7 @@ def test_revocation_logged(client: EventSubClient, caplog: pytest.LogCaptureFixt
 
 
 def test_backoff_doubles_on_reconnect(client: EventSubClient) -> None:
-    """Consecutive reconnects double backoff: 1→2→4→8→16→32→60→60."""
+    """Consecutive reconnects double backoff: 1->2->4->8->16->32->60->60."""
     client._backoff = 1.0
     expected = [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
     for exp in expected:
@@ -317,9 +324,7 @@ async def test_reconnect_message_closes_current_ws(client: EventSubClient) -> No
     msg = load_fixture("eventsub_reconnect.json")
     client._handle_message(msg)
 
-    # close should be scheduled via asyncio.create_task
     assert client._reconnect_url is not None
-    # Give the task a chance to run
     await asyncio.sleep(0.01)
     mock_ws.close.assert_called_once()
 
@@ -336,29 +341,28 @@ def test_reconnect_uses_new_url(client: EventSubClient) -> None:
 # --- Re-subscription on Reconnect (extended) ---
 
 
-async def test_welcome_resubscribes_if_active_broadcaster(
+async def test_welcome_resubscribes_active_broadcasters(
     client: EventSubClient, http_session: Mock
 ) -> None:
-    """If _current_broadcaster_user_id is set, welcome creates new subscription."""
-    client._current_broadcaster_user_id = "123"
+    """If subscriptions exist, welcome re-creates them on new session."""
+    client._subscriptions = {"123": "old_sub", "456": "old_sub2"}
     msg = load_fixture("eventsub_welcome.json")
 
-    # _handle_welcome creates a task for _create_subscription
     client._handle_message(msg)
 
     assert client._ready.is_set()
     assert client._session_id == "test_session_123"
 
-    # Give the create_task a chance to run
+    # Give the create_tasks a chance to run
     await asyncio.sleep(0.05)
 
-    # POST should have been called for subscription creation
-    http_session.post.assert_called_once()
+    # POST should have been called for each broadcaster
+    assert http_session.post.call_count == 2
 
 
 async def test_ready_set_after_resubscribe(client: EventSubClient) -> None:
-    """Ready event fires after subscription (welcome sets ready)."""
-    client._current_broadcaster_user_id = "123"
+    """Ready event fires after welcome (even with resubscriptions)."""
+    client._subscriptions = {"123": "old_sub"}
     msg = load_fixture("eventsub_welcome.json")
     client._handle_message(msg)
     assert client._ready.is_set()
@@ -370,7 +374,6 @@ async def test_ready_set_after_resubscribe(client: EventSubClient) -> None:
 async def test_subscribe_timeout_when_not_ready(client: EventSubClient) -> None:
     """If ready event not set within timeout, subscribe is a no-op."""
     client._session_id = "test_session"
-    # ready NOT set — patch wait_for to timeout immediately
 
     async def fast_timeout(coro: Any, timeout: float) -> None:  # noqa: ARG001
         raise TimeoutError
@@ -379,30 +382,21 @@ async def test_subscribe_timeout_when_not_ready(client: EventSubClient) -> None:
         "music_assistant.providers.twitch.eventsub.asyncio.wait_for", side_effect=fast_timeout
     ):
         await client.subscribe_raids("123")
-    # For now, verify the broadcaster_user_id was still set
-    assert client._current_broadcaster_user_id == "123"
+
+    assert "123" not in client._subscriptions
 
 
 async def test_subscribe_skips_if_welcome_already_subscribed(
     client: EventSubClient, http_session: Mock
 ) -> None:
-    """If welcome handler already created sub while waiting, don't duplicate.
-
-    Simulates the race condition: subscribe_raids waits for ready, and during
-    the wait the welcome handler creates a subscription. When subscribe_raids
-    resumes, it checks _current_subscription_id and skips _create_subscription.
-    """
+    """If welcome handler already created sub while waiting, don't duplicate."""
     client._session_id = "test_session"
-    client._current_broadcaster_user_id = None
-    client._current_subscription_id = None
 
-    # Simulate: ready not set yet, will be set by the welcome handler
-    # which also sets _current_subscription_id
     original_wait_for = asyncio.wait_for
 
     async def wait_that_simulates_welcome(coro: Any, timeout: float) -> Any:
         # Simulate the welcome handler creating a sub during the wait
-        client._current_subscription_id = "sub_from_welcome"
+        client._subscriptions["123"] = "sub_from_welcome"
         client._ready.set()
         return await original_wait_for(coro, timeout=timeout)
 
@@ -414,8 +408,7 @@ async def test_subscribe_skips_if_welcome_already_subscribed(
 
     # No POST should have been made — the welcome handler's sub was detected
     http_session.post.assert_not_called()
-    # The welcome handler's subscription ID should be preserved
-    assert client._current_subscription_id == "sub_from_welcome"
+    assert client._subscriptions["123"] == "sub_from_welcome"
 
 
 # --- Raid Notification ---
@@ -439,7 +432,6 @@ def test_non_raid_notification_ignored(client: EventSubClient) -> None:
     client._on_raid = lambda from_l, to_l: raids_received.append((from_l, to_l))
 
     msg = load_fixture("eventsub_raid.json")
-    # Change subscription_type to something else
     msg["metadata"]["subscription_type"] = "stream.online"
     client._handle_message(msg)
 
