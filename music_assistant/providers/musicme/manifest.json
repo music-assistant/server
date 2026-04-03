@@ -6,6 +6,6 @@
   "description": "Stream music from MusicMe's catalogue — a French streaming service with 13M+ tracks.",
   "codeowners": ["@JulienDeveaux"],
   "requirements": [],
-  "documentation": "https://www.musicme.com/",
+  "documentation": "",
   "multi_instance": true
 }
