@@ -189,7 +189,7 @@ class SpotifyConnectGoProvider(PluginProvider):
 
         # Stop the go-librespot process
         if self._go_librespot_proc:
-            await self._go_librespot_proc.close(True)
+            await self._go_librespot_proc.close()
 
         # Cancel tasks
         if self._runner_task and not self._runner_task.done():
