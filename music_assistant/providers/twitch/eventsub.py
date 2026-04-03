@@ -1,6 +1,5 @@
 """EventSub WebSocket client for Twitch raid following."""
 
-# mypy: disable-error-code="unreachable"
 from __future__ import annotations
 
 import asyncio
@@ -172,7 +171,7 @@ class EventSubClient:
                 self._ws = await self._http_session.ws_connect(url)
                 async for msg in self._ws:
                     if self._stopped:
-                        break
+                        break  # type: ignore[unreachable]
                     data = getattr(msg, "data", None)
                     if not isinstance(data, str):
                         continue
@@ -189,7 +188,7 @@ class EventSubClient:
                 self._ready.clear()
 
             if self._stopped:
-                return
+                return  # type: ignore[unreachable]
 
             # Backoff before reconnect
             logger.debug("EventSub: reconnecting in %.1fs", self._backoff)

@@ -1,6 +1,5 @@
 """Test EventSub WebSocket client."""
 
-# mypy: disable-error-code="unreachable"
 from __future__ import annotations
 
 import asyncio
@@ -81,7 +80,7 @@ async def test_stop_clears_session_state(client: EventSubClient) -> None:
     await client.stop()
 
     assert client._session_id is None
-    assert len(client._subscriptions) == 0
+    assert len(client._subscriptions) == 0  # type: ignore[unreachable]
     assert not client._ready.is_set()
 
 
