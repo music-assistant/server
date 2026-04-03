@@ -172,8 +172,8 @@ class SpotifyConnectGoProvider(PluginProvider):
         
         # Create config directory if it doesn't exist
         os.makedirs(self.config_dir, exist_ok=True)
-        
-        self.player = self.mass.players.get(self.mass_player_id)
+
+		self.player = self.mass.players.get_player(self.mass_player_id)
         if self.player:
             self._setup_player_daemon()
 
