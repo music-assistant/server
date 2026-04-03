@@ -197,20 +197,16 @@ class LocalFileSystemProvider(MusicProvider):
         """Return the features supported by this Provider."""
         base_features = {*SUPPORTED_FEATURES}
         if self.media_content_type == "audiobooks":
-            if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
-                base_features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
-            return base_features
+            return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
         if self.media_content_type == "podcasts":
-            if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
-                base_features.add(ProviderFeature.LIBRARY_PODCASTS)
-            return base_features
-        # Albums and artists are derived from track imports; not advertised as
-        # independent features to prevent phantom sync checkboxes in the UI.
-        music_features = {*base_features}
-        if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_TRACKS.key):
-            music_features.add(ProviderFeature.LIBRARY_TRACKS)
-        if self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key):
-            music_features.add(ProviderFeature.LIBRARY_PLAYLISTS)
+            return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
+        music_features = {
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            *base_features,
+        }
         if self.write_access:
             music_features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
             music_features.add(ProviderFeature.PLAYLIST_CREATE)

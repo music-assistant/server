@@ -1,19 +1,22 @@
 """Tests for filesystem provider sync configuration behavior."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.media_items import Podcast
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
+    AUDIOBOOK_EXTENSIONS,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    PODCAST_EPISODE_EXTENSIONS,
+    TRACK_EXTENSIONS,
 )
-
-BASE_FEATURES = {ProviderFeature.BROWSE, ProviderFeature.SEARCH}
 
 
 def _create_provider(
@@ -22,7 +25,6 @@ def _create_provider(
     sync_playlists: bool = True,
     sync_audiobooks: bool = True,
     sync_podcasts: bool = True,
-    write_access: bool = False,
 ) -> LocalFileSystemProvider:
     """Create a LocalFileSystemProvider with mocked dependencies.
 
@@ -31,7 +33,6 @@ def _create_provider(
     :param sync_playlists: Whether the playlists sync checkbox is enabled.
     :param sync_audiobooks: Whether the audiobooks sync checkbox is enabled.
     :param sync_podcasts: Whether the podcasts sync checkbox is enabled.
-    :param write_access: Whether the provider has write access.
     """
     config_values = {
         CONF_ENTRY_CONTENT_TYPE.key: content_type,
@@ -49,88 +50,175 @@ def _create_provider(
 
     provider.config = mock_config
     provider.media_content_type = content_type
-    provider.write_access = write_access
+    provider.write_access = False
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
 
     return provider
 
 
-class TestSupportedFeaturesMusic:
-    """Test supported_features for music content type."""
+class TestSupportedFeatures:
+    """Test that supported_features reflects content type, not sync preferences."""
 
-    def test_all_sync_enabled(self) -> None:
-        """All music sync features are present when both checkboxes are enabled."""
-        provider = _create_provider(sync_tracks=True, sync_playlists=True)
-        features = provider.supported_features
-        assert features == {
-            *BASE_FEATURES,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-        }
-        assert ProviderFeature.PLAYLIST_TRACKS_EDIT not in features
-        assert ProviderFeature.PLAYLIST_CREATE not in features
-
-    def test_tracks_disabled_removes_track_feature(self) -> None:
-        """Disabling tracks removes LIBRARY_TRACKS from features."""
-        provider = _create_provider(sync_tracks=False, sync_playlists=True)
-        features = provider.supported_features
-        assert ProviderFeature.LIBRARY_TRACKS not in features
-        assert ProviderFeature.LIBRARY_PLAYLISTS in features
-
-    def test_playlists_disabled_removes_playlist_feature(self) -> None:
-        """Disabling playlists removes LIBRARY_PLAYLISTS from features."""
-        provider = _create_provider(sync_tracks=True, sync_playlists=False)
+    def test_music_content_type(self) -> None:
+        """Music content type advertises all music library features."""
+        provider = _create_provider(content_type="music")
         features = provider.supported_features
         assert ProviderFeature.LIBRARY_TRACKS in features
-        assert ProviderFeature.LIBRARY_PLAYLISTS not in features
+        assert ProviderFeature.LIBRARY_PLAYLISTS in features
+        assert ProviderFeature.LIBRARY_ALBUMS in features
+        assert ProviderFeature.LIBRARY_ARTISTS in features
 
-    def test_all_sync_disabled_leaves_only_base_features(self) -> None:
-        """Disabling all sync options leaves only browse and search."""
-        provider = _create_provider(sync_tracks=False, sync_playlists=False)
-        assert provider.supported_features == BASE_FEATURES
-
-    def test_albums_and_artists_never_in_features(self) -> None:
-        """LIBRARY_ALBUMS and LIBRARY_ARTISTS are never advertised.
-
-        Albums and artists are always derived from track imports, not synced
-        independently. Advertising these features would cause the config
-        controller to inject meaningless sync checkboxes.
-        """
-        provider = _create_provider(sync_tracks=True, sync_playlists=True)
-        features = provider.supported_features
-        assert ProviderFeature.LIBRARY_ALBUMS not in features
-        assert ProviderFeature.LIBRARY_ARTISTS not in features
-
-    def test_write_access_adds_playlist_edit_features(self) -> None:
-        """Write access adds playlist editing features regardless of sync config."""
-        provider = _create_provider(sync_tracks=False, sync_playlists=False, write_access=True)
-        features = provider.supported_features
-        assert ProviderFeature.PLAYLIST_TRACKS_EDIT in features
-        assert ProviderFeature.PLAYLIST_CREATE in features
-
-
-class TestSupportedFeaturesAudiobooks:
-    """Test supported_features for audiobooks content type."""
-
-    def test_sync_enabled(self) -> None:
-        """Audiobook feature present when sync is enabled."""
-        provider = _create_provider(content_type="audiobooks", sync_audiobooks=True)
+    def test_audiobooks_content_type(self) -> None:
+        """Audiobooks content type advertises audiobook library feature."""
+        provider = _create_provider(content_type="audiobooks")
         assert ProviderFeature.LIBRARY_AUDIOBOOKS in provider.supported_features
 
-    def test_sync_disabled(self) -> None:
-        """Audiobook feature absent when sync is disabled."""
-        provider = _create_provider(content_type="audiobooks", sync_audiobooks=False)
-        assert provider.supported_features == BASE_FEATURES
-
-
-class TestSupportedFeaturesPodcasts:
-    """Test supported_features for podcasts content type."""
-
-    def test_sync_enabled(self) -> None:
-        """Podcast feature present when sync is enabled."""
-        provider = _create_provider(content_type="podcasts", sync_podcasts=True)
+    def test_podcasts_content_type(self) -> None:
+        """Podcasts content type advertises podcast library feature."""
+        provider = _create_provider(content_type="podcasts")
         assert ProviderFeature.LIBRARY_PODCASTS in provider.supported_features
 
-    def test_sync_disabled(self) -> None:
-        """Podcast feature absent when sync is disabled."""
+
+class TestProcessItemRespectsConfig:
+    """Test that _process_item_async skips items when sync is disabled."""
+
+    @pytest.mark.asyncio
+    async def test_tracks_skipped_when_sync_disabled(self) -> None:
+        """Track files are not imported when track sync is disabled."""
+        provider = _create_provider(sync_tracks=False)
+        item = MagicMock()
+        item.ext = next(iter(TRACK_EXTENSIONS))
+        item.relative_path = "Artist/Album/track.mp3"
+
+        result = await provider._process_item_async(item, None)
+
+        assert result is False
+        provider.mass.music.tracks.add_item_to_library.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tracks_imported_when_sync_enabled(self) -> None:
+        """Track files are imported when track sync is enabled."""
+        provider = _create_provider(sync_tracks=True)
+        item = MagicMock()
+        item.ext = next(iter(TRACK_EXTENSIONS))
+        item.absolute_path = "/media/Artist/Album/track.mp3"
+        item.relative_path = "Artist/Album/track.mp3"
+        item.file_size = 1000
+
+        mock_track = MagicMock()
+        provider._parse_track = AsyncMock(return_value=mock_track)
+        provider.mass.music.tracks.add_item_to_library = AsyncMock()
+
+        with patch(
+            "music_assistant.providers.filesystem_local.async_parse_tags",
+            new_callable=AsyncMock,
+        ):
+            result = await provider._process_item_async(item, None)
+
+        assert result is True
+        provider.mass.music.tracks.add_item_to_library.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_playlists_skipped_when_sync_disabled(self) -> None:
+        """Playlist files are not imported when playlist sync is disabled."""
+        provider = _create_provider(sync_playlists=False)
+        item = MagicMock()
+        item.ext = "m3u"
+        item.relative_path = "playlists/favorites.m3u"
+
+        result = await provider._process_item_async(item, None)
+
+        assert result is False
+        provider.mass.music.playlists.add_item_to_library.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_playlists_imported_when_sync_enabled(self) -> None:
+        """Playlist files are imported when playlist sync is enabled."""
+        provider = _create_provider(sync_playlists=True)
+        item = MagicMock()
+        item.ext = "m3u"
+        item.absolute_path = "/media/playlists/favorites.m3u"
+        item.relative_path = "playlists/favorites.m3u"
+
+        mock_playlist = MagicMock()
+        provider.get_playlist = AsyncMock(return_value=mock_playlist)
+        provider.mass.music.playlists.add_item_to_library = AsyncMock()
+
+        result = await provider._process_item_async(item, None)
+
+        assert result is True
+        provider.mass.music.playlists.add_item_to_library.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_audiobooks_skipped_when_sync_disabled(self) -> None:
+        """Audiobook files are not imported when audiobook sync is disabled."""
+        provider = _create_provider(content_type="audiobooks", sync_audiobooks=False)
+        item = MagicMock()
+        item.ext = next(iter(AUDIOBOOK_EXTENSIONS))
+        item.relative_path = "Author/Book/chapter01.m4b"
+
+        result = await provider._process_item_async(item, None)
+
+        assert result is False
+        provider.mass.music.audiobooks.add_item_to_library.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_audiobooks_imported_when_sync_enabled(self) -> None:
+        """Audiobook files are imported when audiobook sync is enabled."""
+        provider = _create_provider(content_type="audiobooks", sync_audiobooks=True)
+        item = MagicMock()
+        item.ext = next(iter(AUDIOBOOK_EXTENSIONS))
+        item.absolute_path = "/media/Author/Book/chapter01.m4b"
+        item.relative_path = "Author/Book/chapter01.m4b"
+        item.file_size = 5000
+
+        mock_audiobook = MagicMock()
+        provider._parse_audiobook = AsyncMock(return_value=mock_audiobook)
+        provider.mass.music.audiobooks.add_item_to_library = AsyncMock()
+
+        with patch(
+            "music_assistant.providers.filesystem_local.async_parse_tags",
+            new_callable=AsyncMock,
+        ):
+            result = await provider._process_item_async(item, None)
+
+        assert result is True
+        provider.mass.music.audiobooks.add_item_to_library.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_podcasts_skipped_when_sync_disabled(self) -> None:
+        """Podcast files are not imported when podcast sync is disabled."""
         provider = _create_provider(content_type="podcasts", sync_podcasts=False)
-        assert provider.supported_features == BASE_FEATURES
+        item = MagicMock()
+        item.ext = next(iter(PODCAST_EPISODE_EXTENSIONS))
+        item.relative_path = "Podcast/episode01.mp3"
+
+        result = await provider._process_item_async(item, None)
+
+        assert result is False
+        provider.mass.music.podcasts.add_item_to_library.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_podcasts_imported_when_sync_enabled(self) -> None:
+        """Podcast files are imported when podcast sync is enabled."""
+        provider = _create_provider(content_type="podcasts", sync_podcasts=True)
+        item = MagicMock()
+        item.ext = next(iter(PODCAST_EPISODE_EXTENSIONS))
+        item.absolute_path = "/media/Podcast/episode01.mp3"
+        item.relative_path = "Podcast/episode01.mp3"
+        item.file_size = 3000
+
+        mock_episode = MagicMock()
+        mock_episode.podcast = MagicMock(spec=Podcast)
+        provider._parse_podcast_episode = AsyncMock(return_value=mock_episode)
+        provider.mass.music.podcasts.add_item_to_library = AsyncMock()
+
+        with patch(
+            "music_assistant.providers.filesystem_local.async_parse_tags",
+            new_callable=AsyncMock,
+        ):
+            result = await provider._process_item_async(item, None)
+
+        assert result is True
+        provider.mass.music.podcasts.add_item_to_library.assert_called_once()
