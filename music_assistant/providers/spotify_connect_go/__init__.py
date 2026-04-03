@@ -10,6 +10,7 @@ so multiple players can be linked to multiple Spotify Connect daemons.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import time
@@ -339,7 +340,6 @@ class SpotifyConnectGoProvider(PluginProvider):
             self.logger.debug("Starting go-librespot with args: %s", " ".join(args))
 
             # Open pipe in non-blocking mode so go-librespot can open its write end
-            import fcntl
 
             pipe_fd = os.open(self.named_pipe, os.O_RDONLY | os.O_NONBLOCK)
 
