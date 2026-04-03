@@ -42,9 +42,9 @@ async def get_config_entries(
             label="MPD Hosts",
             description=(
                 "Comma-separated list of MPD servers to connect to. "
-                "Format: host, host:port, host#password, or host:port#password. "
+                "Format: host or host:port. "
                 "Port defaults to 6600 if not specified. "
-                "Example: 192.168.1.10, 192.168.1.11:6600, 192.168.1.12#mypassword, 192.168.1.13:6601#mypassword"
+                "Example: 192.168.1.10, 192.168.1.11:6600"
             ),
             required=True,
         ),
