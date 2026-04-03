@@ -498,6 +498,43 @@ class StreamsAudio:
                 streamdetails.uri,
             )
 
+    async def _cache_and_return_radio_result(
+        self, url: str, stream_type: StreamType
+    ) -> tuple[str, StreamType]:
+        """Cache and return a radio stream resolution result."""
+        result = (url, stream_type)
+        await self.mass.cache.set(
+            url,
+            result,
+            expiration=3600 * 3,
+            provider=CACHE_PROVIDER,
+            category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+        )
+        return result
+
+    async def _handle_client_error_for_radio_stream(
+        self, url: str, err: aiohttp.ClientError, fallback_stream_type: StreamType
+    ) -> tuple[str, StreamType]:
+        """Handle aiohttp client errors during radio stream resolution."""
+        # Check if this is a Shoutcast/ICY response that aiohttp can't parse
+        if isinstance(err, aiohttp.ClientResponseError) and "ICY" in str(err).upper():
+            self.logger.debug("ICY response detected for %s, validating Shoutcast stream", url)
+            if await self._validate_shoutcast_stream(url):
+                return await self._cache_and_return_radio_result(url, StreamType.SHOUTCAST)
+            self.logger.warning("ICY response detected but Shoutcast validation failed for %s", url)
+            return await self._cache_and_return_radio_result(url, fallback_stream_type)
+
+        # Other aiohttp errors - might still be Shoutcast, check it
+        self.logger.debug("aiohttp error for %s, checking if legacy Shoutcast stream", url)
+        if await self._validate_shoutcast_stream(url):
+            return await self._cache_and_return_radio_result(url, StreamType.SHOUTCAST)
+
+        # Unknown error - still try to stream
+        self.logger.warning(
+            "Failed to parse radio URL %s: %s - attempting direct stream", url, str(err)
+        )
+        return await self._cache_and_return_radio_result(url, fallback_stream_type)
+
     async def resolve_radio_stream(self, url: str) -> tuple[str, StreamType]:
         """
         Resolve a streaming radio URL.
@@ -517,7 +554,6 @@ class StreamsAudio:
                 cache = cast("tuple[str, str]", cache)
             return (cache[0], StreamType(cache[1]))
         stream_type = StreamType.HTTP
-        resolved_url = url
         timeout = ClientTimeout(total=None, connect=10, sock_read=5)
         try:
             async with self._connect_radio_stream(
@@ -559,76 +595,9 @@ class StreamsAudio:
             raise InvalidDataError(f"Timeout connecting to {url}") from err
 
         except aiohttp.ClientError as err:
-            # Check if this is a Shoutcast/ICY response that aiohttp can't parse
-            if isinstance(err, aiohttp.ClientResponseError):
-                err_msg = str(err)
+            return await self._handle_client_error_for_radio_stream(url, err, stream_type)
 
-                # Check for ICY response first - this indicates Shoutcast
-                if "ICY" in err_msg.upper():
-                    self.logger.debug(
-                        "ICY response detected for %s, validating Shoutcast stream", url
-                    )
-                    if await self._validate_shoutcast_stream(url):
-                        result = (url, StreamType.SHOUTCAST)
-                        await mass.cache.set(
-                            url,
-                            result,
-                            expiration=3600 * 3,
-                            provider=CACHE_PROVIDER,
-                            category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-                        )
-                        return result
-                    # Validation failed but ICY detected - still try as HTTP
-                    self.logger.warning(
-                        "ICY response detected but Shoutcast validation failed for %s", url
-                    )
-                    result = (url, stream_type)
-                    await mass.cache.set(
-                        url,
-                        result,
-                        expiration=3600 * 3,
-                        provider=CACHE_PROVIDER,
-                        category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-                    )
-                    return result
-
-            # Other aiohttp errors - might still be Shoutcast, check it
-            self.logger.debug("aiohttp error for %s, checking if legacy Shoutcast stream", url)
-            if await self._validate_shoutcast_stream(url):
-                result = (url, StreamType.SHOUTCAST)
-                await mass.cache.set(
-                    url,
-                    result,
-                    expiration=3600 * 3,
-                    provider=CACHE_PROVIDER,
-                    category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-                )
-                return result
-
-            # Unknown error - still try to stream
-            self.logger.warning(
-                "Failed to parse radio URL %s: %s - attempting direct stream", url, str(err)
-            )
-            result = (url, stream_type)
-            await mass.cache.set(
-                url,
-                result,
-                expiration=3600 * 3,
-                provider=CACHE_PROVIDER,
-                category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-            )
-            return result
-
-        result = (resolved_url, stream_type)
-        cache_expiration = 3600 * 3
-        await mass.cache.set(
-            url,
-            result,
-            expiration=cache_expiration,
-            provider=CACHE_PROVIDER,
-            category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-        )
-        return result
+        return await self._cache_and_return_radio_result(url, stream_type)
 
     async def get_icy_radio_stream(
         self, url: str, streamdetails: StreamDetails
