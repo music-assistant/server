@@ -158,7 +158,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             provider=self.instance_id,
             category=0,
         ):
-            return cast("list[FileSystemItem]", cached)
+            return [FileSystemItem(**item) for item in cached]
 
         path = self._normalize_path(path)
         webdav_url = build_webdav_url(self.base_url, path)
