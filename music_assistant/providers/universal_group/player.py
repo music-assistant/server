@@ -399,6 +399,7 @@ class UniversalGroupPlayer(Player):
                 player=child_player,
                 content_sample_rate=UGP_FORMAT.sample_rate,
                 content_bit_depth=UGP_FORMAT.bit_depth,
+                media_type=MediaType.FLOW_STREAM,
             )
             http_profile = await self.mass.config.get_player_config_value(
                 child_player_id, CONF_HTTP_PROFILE, return_type=str
