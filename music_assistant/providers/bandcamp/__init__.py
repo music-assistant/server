@@ -286,7 +286,7 @@ class BandcampProvider(MusicProvider):
                     band_ids.add(item.band_id)
 
             for band_id in band_ids:
-                yield await self.get_artist(band_id)
+                yield await self.get_artist(str(band_id))
                 await asyncio.sleep(0)  # Yield control to avoid blocking
 
         except BandcampMustBeLoggedInError as error:
@@ -337,7 +337,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
-    async def get_artist(self, prov_artist_id: str | int) -> Artist:
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         try:
             api_artist = await self._client.get_artist(prov_artist_id)
