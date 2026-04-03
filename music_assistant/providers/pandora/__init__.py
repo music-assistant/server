@@ -8,7 +8,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
 
 from .provider import PandoraProvider
 
@@ -69,5 +69,16 @@ async def get_config_entries(
             label="Password",
             description="Your Pandora password",
             required=True,
+        ),
+        ConfigEntry(
+            key=CONF_SOCKS_URL,
+            type=ConfigEntryType.STRING,
+            label="Socks proxy server",
+            description="This socks proxy is only used to route Pandora network traffic through."
+            "\n\nThe server address should be written as:\n"
+            "<code>ip_address:port</code> (or <code>socks5://ip_address:port</code>)",
+            required=False,
+            default_value="",
+            advanced=True,
         ),
     )

@@ -125,6 +125,7 @@ CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provi
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
+CONF_SOCKS_URL: Final[str] = "socks_url"
 CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
 CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
@@ -219,7 +220,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
-PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
+PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music")
 
 
 ####### REUSABLE CONFIG ENTRIES #######
@@ -897,6 +898,7 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
+ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
