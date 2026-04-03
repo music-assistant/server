@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from math import ceil
-from typing import Any, Protocol
+from typing import Any
 
 from aiohttp import ClientTimeout
 from Crypto.Cipher import Blowfish
@@ -26,6 +26,18 @@ from deezer_python_gql.generated.fragments import (
     PodcastFields,
     TrackFields,
 )
+from deezer_python_gql.generated.get_audiobook import (
+    GetAudiobookAudiobookChaptersEdges,
+)
+from deezer_python_gql.generated.get_flow_config_tracks import (
+    GetFlowConfigTracksFlowConfig,
+)
+from deezer_python_gql.generated.get_flow_configs import (
+    GetFlowConfigsMeFlowConfigsGenresEdges,
+    GetFlowConfigsMeFlowConfigsGenresEdgesNode,
+    GetFlowConfigsMeFlowConfigsMoodsEdges,
+    GetFlowConfigsMeFlowConfigsMoodsEdgesNode,
+)
 from deezer_python_gql.generated.get_made_for_me import (
     GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist,
 )
@@ -38,6 +50,10 @@ from deezer_python_gql.generated.get_recently_played import (
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist,
 )
 from deezer_python_gql.generated.get_recommendations import GetRecommendationsMe
+from deezer_python_gql.generated.search_flows import (
+    SearchFlowsSearchResultsFlowConfigsEdges,
+    SearchFlowsSearchResultsFlowConfigsEdgesNode,
+)
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     AlbumType,
@@ -137,18 +153,6 @@ FAVORITES_PAGE_SIZE = 50
 # Deezer CDN image URL pattern
 DEEZER_CDN_IMAGE = "https://e-cdns-images.dzcdn.net/images"
 AUDIOBOOKS_CHANNEL = "channels/audiobooks"
-
-
-class _FlowConfigIcon(Protocol):
-    urls: list[str]
-
-
-class _FlowConfigVisuals(Protocol):
-    hardware_square_icon: _FlowConfigIcon | None
-
-
-class _HasVisuals(Protocol):
-    visuals: _FlowConfigVisuals
 
 
 async def setup(
@@ -351,23 +355,21 @@ class DeezerProvider(MusicProvider):
                 if edge.node is not None
             ]
         if need_albums or need_audiobooks:
-            album_edges = [e for e in result.results.albums.edges if e.node is not None]
-            if album_edges and need_audiobooks:
-                album_ids = [e.node.id for e in album_edges]
+            album_nodes = [e.node for e in result.results.albums.edges if e.node is not None]
+            if album_nodes and need_audiobooks:
+                album_ids = [n.id for n in album_nodes]
                 audiobook_ids = await self.gql_client.check_audiobook_ids(album_ids)
                 if need_albums:
                     search_results.albums = [
-                        self._parse_album(e.node)
-                        for e in album_edges
-                        if e.node.id not in audiobook_ids
+                        self._parse_album(n) for n in album_nodes if n.id not in audiobook_ids
                     ]
                 search_results.audiobooks = [
-                    self._parse_audiobook_from_album(e.node)
-                    for e in album_edges
-                    if e.node.id in audiobook_ids
+                    self._parse_audiobook_from_album(n)
+                    for n in album_nodes
+                    if n.id in audiobook_ids
                 ]
             elif need_albums:
-                search_results.albums = [self._parse_album(e.node) for e in album_edges]
+                search_results.albums = [self._parse_album(n) for n in album_nodes]
         if MediaType.ARTIST in media_types:
             search_results.artists = [
                 self._parse_artist(edge.node)
@@ -565,9 +567,9 @@ class DeezerProvider(MusicProvider):
         for eid in episode_ids:
             if eid in cached_episodes:
                 position += 1
-                ep = cached_episodes[eid]
-                ep.position = position
-                episodes.append(ep)
+                cached_ep = cached_episodes[eid]
+                cached_ep.position = position
+                episodes.append(cached_ep)
         return episodes
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
@@ -843,7 +845,14 @@ class DeezerProvider(MusicProvider):
         items.extend(await self._get_smart_tracklist_playlists())
         return items
 
-    def _flow_configs_to_playlists(self, edges: Sequence[Any]) -> list[Playlist]:
+    def _flow_configs_to_playlists(
+        self,
+        edges: Sequence[
+            GetFlowConfigsMeFlowConfigsMoodsEdges
+            | GetFlowConfigsMeFlowConfigsGenresEdges
+            | SearchFlowsSearchResultsFlowConfigsEdges
+        ],
+    ) -> list[Playlist]:
         """Convert FlowConfig edges to virtual playlists."""
         return [
             self._create_virtual_playlist(
@@ -933,17 +942,17 @@ class DeezerProvider(MusicProvider):
                 return []
             country = charts.country
             if category == "Top Albums" and country.albums:
-                for edge in country.albums.edges:
-                    if edge.node is not None:
-                        items.append(self._parse_album(edge.node))
+                for album_edge in country.albums.edges:
+                    if album_edge.node is not None:
+                        items.append(self._parse_album(album_edge.node))
             elif category == "Top Artists" and country.artists:
-                for edge in country.artists.edges:
-                    if edge.node is not None:
-                        items.append(self._parse_artist(edge.node))
+                for artist_edge in country.artists.edges:
+                    if artist_edge.node is not None:
+                        items.append(self._parse_artist(artist_edge.node))
             elif category == "Top Playlists" and country.playlists:
-                for edge in country.playlists.edges:
-                    if edge.node is not None:
-                        items.append(self._parse_playlist(edge.node))
+                for playlist_edge in country.playlists.edges:
+                    if playlist_edge.node is not None:
+                        items.append(self._parse_playlist(playlist_edge.node))
         return items
 
     async def _browse_user_charts_category(self, category: str) -> list[MediaItemType]:
@@ -954,13 +963,13 @@ class DeezerProvider(MusicProvider):
         charts = result.charts
         items: list[MediaItemType] = []
         if category == "your_top_artists" and charts.artists:
-            for edge in charts.artists.edges:
-                if edge.node is not None:
-                    items.append(self._parse_artist(edge.node))
+            for artist_edge in charts.artists.edges:
+                if artist_edge.node is not None:
+                    items.append(self._parse_artist(artist_edge.node))
         elif category == "your_top_albums" and charts.albums:
-            for edge in charts.albums.edges:
-                if edge.node is not None:
-                    items.append(self._parse_album(edge.node))
+            for album_edge in charts.albums.edges:
+                if album_edge.node is not None:
+                    items.append(self._parse_album(album_edge.node))
         return items
 
     async def _browse_shaker_root(self, path: str) -> list[BrowseFolder]:
@@ -1365,11 +1374,12 @@ class DeezerProvider(MusicProvider):
         flow_configs = await self.gql_client.get_flow_configs(moods_first=20, genres_first=20)
         if not flow_configs or not flow_configs.flow_configs:
             return
-        for folder_id, folder_name, edges in [
-            ("mood_flows", "Deezer Mood Flows", flow_configs.flow_configs.moods.edges),
-            ("genre_flows", "Deezer Genre Flows", flow_configs.flow_configs.genres.edges),
-        ]:
-            playlists = self._flow_configs_to_playlists(edges)
+        configs = flow_configs.flow_configs
+        for folder_id, folder_name, edges in (
+            ("mood_flows", "Deezer Mood Flows", configs.moods.edges),
+            ("genre_flows", "Deezer Genre Flows", configs.genres.edges),
+        ):
+            playlists = self._flow_configs_to_playlists(list(edges))
             if playlists:
                 result.append(
                     RecommendationFolder(
@@ -1717,17 +1727,21 @@ class DeezerProvider(MusicProvider):
             return self._create_virtual_playlist(USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks")
         if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
             config_id = prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
-            result = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
-            name = f"Flow: {result.title}" if result else f"Flow: {config_id}"
-            cover = self._get_flow_config_image(result) if result else None
+            flow_config = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
+            name = f"Flow: {flow_config.title}" if flow_config else f"Flow: {config_id}"
+            cover = self._get_flow_config_image(flow_config) if flow_config else None
             return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
-            result = await self.gql_client.get_smart_tracklist(
+            tracklist = await self.gql_client.get_smart_tracklist(
                 smart_tracklist_id=tracklist_id, first=1
             )
-            name = result.title if result else f"Mix {tracklist_id}"
-            cover = result.cover.urls[0] if result and result.cover and result.cover.urls else None
+            name = tracklist.title if tracklist else f"Mix {tracklist_id}"
+            cover = (
+                tracklist.cover.urls[0]
+                if tracklist and tracklist.cover and tracklist.cover.urls
+                else None
+            )
             return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(SHAKER_CURATED_PREFIX):
             group_id = prov_playlist_id.removeprefix(SHAKER_CURATED_PREFIX)
@@ -2196,8 +2210,6 @@ class DeezerProvider(MusicProvider):
         authors: UniqueList[str] = UniqueList()
         narrators: UniqueList[str] = UniqueList()
         for edge in audiobook.contributors.edges:
-            if edge.node is None:
-                continue
             if AudiobookContributorRoles.NARRATOR in edge.roles:
                 narrators.append(edge.node.name)
             else:
@@ -2270,7 +2282,7 @@ class DeezerProvider(MusicProvider):
 
     @staticmethod
     def _parse_audiobook_chapters(
-        chapter_edges: Sequence[Any],
+        chapter_edges: Sequence[GetAudiobookAudiobookChaptersEdges],
     ) -> list[MediaItemChapter]:
         """Build MediaItemChapter list from audiobook chapter edges.
 
@@ -2335,7 +2347,13 @@ class DeezerProvider(MusicProvider):
                 pm.url = gql_result.url.web_url
 
     @staticmethod
-    def _get_flow_config_image(node: _HasVisuals) -> str | None:
+    def _get_flow_config_image(
+        node: GetFlowConfigTracksFlowConfig
+        | GetFlowConfigsMeFlowConfigsMoodsEdgesNode
+        | GetFlowConfigsMeFlowConfigsGenresEdgesNode
+        | SearchFlowsSearchResultsFlowConfigsEdgesNode
+        | GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig,
+    ) -> str | None:
         """Extract the square icon URL from a FlowConfig node's visuals."""
         icon = node.visuals.hardware_square_icon
         if icon and icon.urls:
@@ -2350,19 +2368,17 @@ class DeezerProvider(MusicProvider):
             return inferred
         if deezer_type is None:
             return AlbumType.UNKNOWN
-        if isinstance(deezer_type, DeezerAlbumType):
-            match deezer_type:
-                case DeezerAlbumType.ALBUM:
-                    return AlbumType.ALBUM
-                case DeezerAlbumType.SINGLES:
-                    return AlbumType.SINGLE
-                case DeezerAlbumType.EP:
-                    return AlbumType.EP
-                case DeezerAlbumType.COMPILATIONS:
-                    return AlbumType.COMPILATION
-                case _:
-                    return AlbumType.UNKNOWN
-        return AlbumType.UNKNOWN
+        match deezer_type:
+            case DeezerAlbumType.ALBUM:
+                return AlbumType.ALBUM
+            case DeezerAlbumType.SINGLES:
+                return AlbumType.SINGLE
+            case DeezerAlbumType.EP:
+                return AlbumType.EP
+            case DeezerAlbumType.COMPILATIONS:
+                return AlbumType.COMPILATION
+            case _:
+                return AlbumType.UNKNOWN
 
     @staticmethod
     def _parse_date(date_value: str | None) -> datetime:
