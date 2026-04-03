@@ -6,7 +6,5 @@
   "description": "Audio-only streaming from Twitch channels with raid following.",
   "codeowners": ["@Drizzt321"],
   "requirements": ["streamlink>=8.0,<9"],
-  "documentation": "",
-  "multi_instance": false,
   "icon": "twitch"
 }
