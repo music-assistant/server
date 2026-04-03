@@ -88,7 +88,6 @@ from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_js
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
-from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAnalysisFragment
@@ -1184,114 +1183,6 @@ class MusicController(CoreController):
                 duration=float(db_row["duration"]),
             )
         return None
-
-    async def set_audio_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        aa_provider_domain: str,
-        analysis: AudioAnalysisData,
-        analysis_version: int = 1,
-        media_type: MediaType = MediaType.TRACK,
-    ) -> None:
-        """Store audio analysis results from an Audio Analysis provider.
-
-        :param item_id: The track's item ID.
-        :param provider_instance_id_or_domain: Music provider instance ID or domain.
-        :param aa_provider_domain: Domain of the AA provider that produced the data.
-        :param analysis: The analysis data to store.
-        :param analysis_version: Version of the AA provider's algorithm.
-        :param media_type: The media type of the item being analyzed.
-        """
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        data_json = json_dumps(analysis.to_dict())
-        await self.database.insert_or_replace(
-            DB_TABLE_AUDIO_ANALYSIS,
-            {
-                "media_type": media_type.value,
-                "item_id": item_id,
-                "provider": prov_key,
-                "aa_provider_domain": aa_provider_domain,
-                "analysis_data": data_json,
-                "analysis_version": analysis_version,
-            },
-        )
-
-    async def get_audio_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        media_type: MediaType = MediaType.TRACK,
-    ) -> AudioAnalysisData | None:
-        """Get merged audio analysis data from all enabled AA providers for a track.
-
-        Only rows from currently available AA providers are included.
-        Multiple providers' results are merged using latest-write-wins.
-
-        :param item_id: The track's item ID.
-        :param provider_instance_id_or_domain: Music provider instance ID or domain.
-        :param media_type: The media type of the item.
-        """
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return None
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        rows = await self.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS,
-            {
-                "item_id": item_id,
-                "provider": prov_key,
-                "media_type": media_type.value,
-            },
-            order_by="timestamp_created ASC",
-        )
-        if not rows:
-            return None
-
-        available_aa_domains = {
-            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
-        }
-
-        merged = AudioAnalysisData()
-        found = False
-        for row in rows:
-            if row["aa_provider_domain"] not in available_aa_domains:
-                continue
-            row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-            merged.update(row_data)
-            found = True
-        return merged if found else None
-
-    async def get_audio_analysis_version(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        aa_provider_domain: str,
-        media_type: MediaType = MediaType.TRACK,
-    ) -> int | None:
-        """Get the stored analysis version for a specific AA provider and track.
-
-        :param item_id: The track's item ID.
-        :param provider_instance_id_or_domain: Music provider instance ID or domain.
-        :param aa_provider_domain: Domain of the AA provider.
-        :param media_type: The media type of the item.
-        """
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return None
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        row = await self.database.get_row(
-            DB_TABLE_AUDIO_ANALYSIS,
-            {
-                "item_id": item_id,
-                "provider": prov_key,
-                "aa_provider_domain": aa_provider_domain,
-                "media_type": media_type.value,
-            },
-        )
-        if not row:
-            return None
-        return int(row["analysis_version"])
 
     async def get_loudness(
         self,

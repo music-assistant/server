@@ -70,7 +70,7 @@ class AudioAnalysisProvider(Provider):
         :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
-        stored_version = await self.mass.music.get_audio_analysis_version(
+        stored_version = await self.mass.streams.audio_analysis.get_audio_analysis_version(
             streamdetails.item_id,
             streamdetails.provider,
             self.domain,
@@ -123,7 +123,7 @@ class AudioAnalysisProvider(Provider):
         """Finalize analysis and store results.
 
         Called when the track has finished streaming. Providers are responsible
-        for storing their results via mass.music.set_audio_analysis().
+        for storing their results via mass.streams.audio_analysis.set_audio_analysis().
 
         :param session_id: The analysis session ID.
         """
