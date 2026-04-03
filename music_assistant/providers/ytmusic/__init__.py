@@ -323,6 +323,8 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for podcast in podcasts_obj:
+            if podcast.get("podcastId") in YT_PERSONAL_PLAYLISTS:
+                continue
             yield self._parse_podcast(podcast)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
