@@ -36,6 +36,10 @@ def airplay_player() -> AirPlayPlayer:
         (None, {b"flags": b"0x4"}, False),
         (None, {b"sf": b"0x8"}, True),
         (None, {b"flags": b"0x9"}, True),
+        # Combined flags across discovery records should be OR-ed.
+        ({b"sf": b"0x8"}, {b"sf": b"0x200"}, True),
+        ({b"sf": b"0x200"}, {b"sf": b"0x8"}, True),
+        ({b"flags": b"0x4"}, {b"flags": b"0x0"}, False),
         ({}, {}, False),
     ],
 )

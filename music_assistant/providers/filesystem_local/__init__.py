@@ -710,11 +710,10 @@ class LocalFileSystemProvider(MusicProvider):
             provider=self.instance_id,
             checksum=cache_checksum,
             category=0,
+            base_class=Track,
         )
         if cached_data is not None:
-            if cached_data and isinstance(cached_data[0], dict):
-                return [Track.from_dict(track_dict) for track_dict in cached_data]
-            return cast("list[Track]", cached_data)
+            return cached_data  # type: ignore[no-any-return]
 
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
@@ -747,7 +746,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.mass.cache.set(
             key=cache_key,
-            data=result,
+            data=[track.to_dict() for track in result],
             expiration=3600 * 24 * 365,  # File timestamp checksum handles invalidation
             provider=self.instance_id,
             checksum=cache_checksum,
@@ -1080,10 +1079,13 @@ class LocalFileSystemProvider(MusicProvider):
         # prefer (short lived) cache for a bit more speed
         if artist_path and (
             cache := await self.cache.get(
-                key=artist_path, provider=self.instance_id, category=CACHE_CATEGORY_ARTIST_INFO
+                key=artist_path,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_ARTIST_INFO,
+                base_class=Artist,
             )
         ):
-            return cast("Artist", cache)
+            return cache  # type: ignore[no-any-return]
 
         prov_artist_id = artist_path or name
         artist = Artist(
@@ -1136,7 +1138,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.cache.set(
             key=artist_path,
-            data=artist,
+            data=artist.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ARTIST_INFO,
             expiration=120,
@@ -1427,9 +1429,10 @@ class LocalFileSystemProvider(MusicProvider):
                 key=album_dir,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_ALBUM_INFO,
+                base_class=Album,
             )
         ):
-            return cast("Album", cache)
+            return cache  # type: ignore[no-any-return]
 
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -1573,7 +1576,7 @@ class LocalFileSystemProvider(MusicProvider):
                     album.metadata.images += images
         await self.cache.set(
             key=album_dir,
-            data=album,
+            data=album.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ALBUM_INFO,
             expiration=120,
@@ -1586,10 +1589,13 @@ class LocalFileSystemProvider(MusicProvider):
         """Return local images found in a given folderpath."""
         if (
             cache := await self.cache.get(
-                key=folder, provider=self.instance_id, category=CACHE_CATEGORY_FOLDER_IMAGES
+                key=folder,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_FOLDER_IMAGES,
+                base_class=MediaItemImage,
             )
         ) is not None:
-            return cast("UniqueList[MediaItemImage]", cache)
+            return UniqueList(cache)
         if extra_thumb_names is None:
             extra_thumb_names = ()
         images: UniqueList[MediaItemImage] = UniqueList()
@@ -1630,7 +1636,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.cache.set(
             key=folder,
-            data=images,
+            data=[img.to_dict() for img in images],
             provider=self.instance_id,
             category=CACHE_CATEGORY_FOLDER_IMAGES,
             expiration=120,
@@ -1657,14 +1663,14 @@ class LocalFileSystemProvider(MusicProvider):
         def _create_item() -> FileSystemItem:
             if os.path.isdir(absolute_path):
                 return FileSystemItem(
-                    filename=os.path.basename(file_path),
+                    filename=Path(file_path).name,
                     relative_path=get_relative_path(self.base_path, file_path),
                     absolute_path=absolute_path,
                     is_dir=True,
                 )
-            stat_info = os.stat(absolute_path, follow_symlinks=False)
+            stat = Path(absolute_path).stat(follow_symlinks=False)
             return FileSystemItem(
-                filename=os.path.basename(file_path),
+                filename=Path(file_path).name,
                 relative_path=get_relative_path(self.base_path, file_path),
                 absolute_path=absolute_path,
                 is_dir=False,
