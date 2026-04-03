@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -42,9 +42,12 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
-# Callback signature for chunk observers: (chunk_position_seconds, pcm_data)
-# Empty bytes signals EOF (no more chunks will follow).
-ChunkCallback = Callable[[int, bytes], None]
+# Callback signature for chunk observers: (chunk_position_seconds, pcm_data, is_last_chunk)
+# When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
+ChunkCallback = Callable[[int, bytes, bool], Awaitable[None]]
+
+# Callback signature for cancel observers: invoked when the buffer is cancelled/cleared.
+CancelCallback = Callable[[], None]
 
 
 class AudioBufferEOF(Exception):
@@ -95,6 +98,7 @@ class AudioBuffer:
         self._producer_error: Exception | None = None
         self.ready = asyncio.Event()
         self._chunk_callbacks: list[ChunkCallback] = []
+        self._cancel_callbacks: list[CancelCallback] = []
 
     # -- Properties --
 
@@ -131,12 +135,21 @@ class AudioBuffer:
         """
         Register a callback to receive raw PCM chunks as they are buffered.
 
-        The callback receives (chunk_position_seconds, pcm_data).
-        An empty pcm_data signals EOF. Callbacks must be non-blocking.
+        The callback receives (chunk_position_seconds, pcm_data, is_last_chunk).
+        When is_last_chunk is True, pcm_data is empty and no more chunks will follow.
+        Callbacks must be non-blocking.
 
-        :param callback: Callable receiving (position_seconds, pcm_data).
+        :param callback: Callable receiving (position_seconds, pcm_data, is_last_chunk).
         """
         self._chunk_callbacks.append(callback)
+
+    def register_cancel_callback(self, callback: CancelCallback) -> None:
+        """
+        Register a callback to be invoked when the buffer is cancelled or cleared.
+
+        :param callback: Callable with no arguments, invoked on cancel.
+        """
+        self._cancel_callbacks.append(callback)
 
     def is_valid(self, seek_position_ms: int = 0) -> bool:
         """
@@ -247,6 +260,10 @@ class AudioBuffer:
                 status = "aborted with error"
                 raise
             finally:
+                # signal EOF even on error if we produced valid chunks,
+                # so the consumer can read all buffered data before seeing the error
+                if status == "aborted with error" and chunk_count > 0:
+                    await self._set_eof()
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
                     "fill: %s (%s chunks) for %s",
@@ -278,12 +295,12 @@ class AudioBuffer:
             with suppress(asyncio.CancelledError):
                 await self._inactivity_task
 
-        # signal EOF to callbacks before clearing them so observers don't hang
-        for callback in list(self._chunk_callbacks):
+        # signal cancel to cancel callbacks before clearing them
+        for callback in list(self._cancel_callbacks):
             try:
-                callback(self._discarded_chunks + len(self._chunks), b"")
+                callback()
             except Exception:
-                LOGGER.exception("Chunk callback failed during clear")
+                LOGGER.exception("Cancel callback failed during clear")
 
         async with self._lock:
             self._chunks = deque()
@@ -293,6 +310,7 @@ class AudioBuffer:
             self._producer_error = None
             self.ready.clear()
             self._chunk_callbacks.clear()
+            self._cancel_callbacks.clear()
             self._data_available.notify_all()
             self._space_available.notify_all()
 
@@ -333,17 +351,19 @@ class AudioBuffer:
         existing_buffer: AudioBuffer | None = streamdetails.buffer
         if existing_buffer is not None:
             if existing_buffer.has_error or not existing_buffer.is_valid(seek_position_ms):
-                LOGGER.log(
-                    VERBOSE_LOG_LEVEL,
+                LOGGER.debug(
                     "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
                     log_prefix,
                     streamdetails.uri,
                     seek_position_ms,
                     existing_buffer._discarded_chunks,
                 )
-                buffer_to_clear = existing_buffer
                 streamdetails.buffer = None
-                await asyncio.shield(buffer_to_clear.clear())
+                if time.time() - existing_buffer._last_access_time > 30:
+                    # no recent consumer activity - safe to fully clear
+                    await asyncio.shield(existing_buffer.clear())
+                # else: an active consumer is still reading via its local reference;
+                # the inactivity monitor will clean up after it finishes
             else:
                 LOGGER.debug(
                     "%s: Reusing buffer for %s - available: %ss, seek_ms: %s, discarded: %s",
@@ -376,7 +396,7 @@ class AudioBuffer:
                     streamdetails.queue_id, CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED
                 )
             )
-            if streamdetails.queue_id
+            if streamdetails.queue_id and streamdetails.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
         )
         if smart_fades_mode != SmartFadesMode.DISABLED:
@@ -410,11 +430,15 @@ class AudioBuffer:
 
         # attach analyze jobs for ahead-of-time processing
         if seek_position_ms == 0:
+            # TODO: Remove loudness / smart fades after they have been implemented as
+            # audio analysis providers
             # loudness analysis for all streams (tracks and radio)
             mass.streams.audio.attach_loudness_analyzer(audio_buffer, streamdetails)
             # smart fades analysis only for music tracks (not podcasts/audiobooks)
             if streamdetails.media_type == MediaType.TRACK:
                 mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
+            # audio analysis providers (beat tracking, key detection, etc.)
+            await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
@@ -480,7 +504,7 @@ class AudioBuffer:
             failed: list[ChunkCallback] = []
             for callback in self._chunk_callbacks:
                 try:
-                    callback(chunk_position, chunk)
+                    await callback(chunk_position, chunk, False)
                 except Exception:
                     LOGGER.exception("Chunk callback failed, removing it")
                     failed.append(callback)
@@ -501,11 +525,11 @@ class AudioBuffer:
             self._data_available.notify_all()
             self._space_available.notify_all()
 
-        # notify chunk callbacks of EOF (empty bytes = no more data)
+        # notify chunk callbacks of EOF (empty bytes with is_last_chunk=True)
         total_chunks = self._discarded_chunks + len(self._chunks)
         for callback in list(self._chunk_callbacks):
             try:
-                callback(total_chunks, b"")
+                await callback(total_chunks, b"", True)
             except Exception:
                 LOGGER.exception("Chunk callback failed at EOF")
 
@@ -519,8 +543,11 @@ class AudioBuffer:
         :raises AudioError: If the chunk has been discarded or the producer failed.
         """
         async with self._data_available:
-            if self._producer_error and len(self._chunks) == 0:
-                raise self._producer_error
+            if len(self._chunks) == 0:
+                if self._eof_received or self.cancelled:
+                    raise AudioBufferEOF
+                if self._producer_error:
+                    raise self._producer_error
             if self.cancelled:
                 raise AudioBufferEOF
 
@@ -562,10 +589,10 @@ class AudioBuffer:
 
         buffer_index = chunk_number - self._discarded_chunks
         while buffer_index >= len(self._chunks):
-            if self._producer_error:
-                raise self._producer_error
             if self.cancelled or self._eof_received:
                 raise AudioBufferEOF
+            if self._producer_error:
+                raise self._producer_error
             # if the buffer is full and we need a chunk that hasn't arrived yet,
             # the producer is blocked waiting for space — evict to unblock it
             if len(self._chunks) >= self.max_size_seconds:

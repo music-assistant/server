@@ -84,6 +84,9 @@ from .constants import (
     CONF_KEY_TRACKS,
     DEFAULT_FANART,
     DEFAULT_THUMB,
+    DYNAMIC_BUILTIN_PLAYLISTS,
+    INFINITE_MIX,
+    INFINITE_MIX_FAVORITES,
     RANDOM_ALBUM,
     RANDOM_ARTIST,
     RANDOM_TRACKS,
@@ -255,6 +258,7 @@ class BuiltinProvider(MusicProvider):
                 },
                 owner="Music Assistant",
                 is_editable=False,
+                is_dynamic=prov_playlist_id in DYNAMIC_BUILTIN_PLAYLISTS,
                 metadata=MediaItemMetadata(
                     images=UniqueList([DEFAULT_THUMB])
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
@@ -1010,6 +1014,27 @@ class BuiltinProvider(MusicProvider):
             result.append(track)
         return result
 
+    async def _get_builtin_playlist_infinite_mix(self) -> list[Track]:
+        """Return 25 random library tracks for the Infinite Mix dynamic playlist."""
+        result: list[Track] = []
+        for idx, track in enumerate(
+            await self.mass.music.tracks.library_items(limit=25, order_by="random"), 1
+        ):
+            track.position = idx
+            result.append(track)
+        return result
+
+    async def _get_builtin_playlist_infinite_mix_favorites(self) -> list[Track]:
+        """Return 25 random favorited tracks for the Infinite Mix (favorites) dynamic playlist."""
+        result: list[Track] = []
+        for idx, track in enumerate(
+            await self.mass.music.tracks.library_items(favorite=True, limit=25, order_by="random"),
+            1,
+        ):
+            track.position = idx
+            result.append(track)
+        return result
+
     async def _get_builtin_playlist_tracks(
         self, builtin_playlist_id: str
     ) -> list[Track] | UniqueList[Track]:
@@ -1022,6 +1047,8 @@ class BuiltinProvider(MusicProvider):
                 RANDOM_ARTIST: self._get_builtin_playlist_random_artist,
                 RECENTLY_PLAYED: self._get_builtin_playlist_recently_played,
                 RECENTLY_ADDED_TRACKS: self._get_builtin_playlist_recently_added_tracks,
+                INFINITE_MIX: self._get_builtin_playlist_infinite_mix,
+                INFINITE_MIX_FAVORITES: self._get_builtin_playlist_infinite_mix_favorites,
             }[builtin_playlist_id]()
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")
