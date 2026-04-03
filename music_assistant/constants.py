@@ -860,6 +860,7 @@ DEFAULT_STREAM_HEADERS = {
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Accept-Ranges": "none",
+    "Connection": "close",
     "icy-name": APPLICATION_NAME,
 }
 
