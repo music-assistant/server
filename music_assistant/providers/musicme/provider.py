@@ -863,5 +863,9 @@ class MusicMeProvider(MusicProvider):
             raise MediaNotFoundError(msg)
 
         # Double-encrypted: API response already decrypted, ticket needs a second pass
-        ticket = decrypt(data["ticket"])
+        try:
+            ticket = decrypt(data["ticket"])
+        except (ValueError, TypeError, IndexError, UnicodeDecodeError) as err:
+            msg = f"Unable to decode streaming ticket for {track_barcode}"
+            raise MediaNotFoundError(msg) from err
         return f"{STREAM_BASE}/{PARTNER_ID}/{ticket}.mp4"
