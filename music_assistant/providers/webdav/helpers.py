@@ -156,32 +156,30 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
 
 
 async def webdav_test_connection(
+    session: aiohttp.ClientSession,
     base_url: str,
     username: str | None,
     password: str | None,
-    verify_ssl: bool,
     timeout: int = 10,
 ) -> None:
     """
     Test WebDAV connection and authentication.
 
+    :param session: Active HTTP session.
     :param base_url: WebDAV server URL.
     :param username: Optional username.
     :param password: Optional password.
-    :param verify_ssl: Whether to verify SSL certificates.
     :param timeout: Connection timeout in seconds.
     :raises LoginFailed: Authentication failed.
     :raises SetupFailedError: Connection or configuration error.
     """
     auth = aiohttp.BasicAuth(username, password) if username and password else None
-    connector = aiohttp.TCPConnector(ssl=verify_ssl)
 
-    async with aiohttp.ClientSession(connector=connector) as session:
-        try:
-            await webdav_propfind(session, base_url, depth=0, timeout=timeout, auth=auth)
-        except ProviderUnavailableError as err:
-            # During setup, connection errors should be SetupFailedError
-            raise SetupFailedError(str(err)) from err
+    try:
+        await webdav_propfind(session, base_url, depth=0, timeout=timeout, auth=auth)
+    except ProviderUnavailableError as err:
+        # During setup, connection errors should be SetupFailedError
+        raise SetupFailedError(str(err)) from err
 
 
 def build_webdav_url(base_url: str, path: str) -> str:

@@ -71,11 +71,12 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
         await webdav_test_connection(
+            session,
             self.base_url,
             self.username,
             self.password,
-            self.verify_ssl,
             timeout=10,
         )
         self.write_access = False
