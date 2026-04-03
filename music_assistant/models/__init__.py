@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
+from .audio_analysis_provider import AudioAnalysisProvider
 from .metadata_provider import MetadataProvider
 from .music_provider import MusicProvider
 from .player_provider import PlayerProvider
@@ -17,7 +18,9 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-ProviderInstanceType = MetadataProvider | MusicProvider | PlayerProvider | PluginProvider
+ProviderInstanceType = (
+    AudioAnalysisProvider | MetadataProvider | MusicProvider | PlayerProvider | PluginProvider
+)
 
 
 class ProviderModuleType(Protocol):

@@ -882,22 +882,22 @@ class StreamsAudio:
         media_type = streamdetails.media_type
         pcm_format = audio_buffer.pcm_format
 
-        chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=10)
         chunks_received = 0
 
-        def _on_chunk(position_seconds: int, pcm_data: bytes) -> None:  # noqa: ARG001
+        async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
             nonlocal chunks_received
             if chunks_received >= max_duration_seconds:
                 return
-            if not pcm_data:
+            if is_last_chunk:
                 # EOF
-                chunk_queue.put_nowait(None)
+                await chunk_queue.put(None)
                 return
             chunks_received += 1
-            chunk_queue.put_nowait(pcm_data)
+            await chunk_queue.put(pcm_data)
             if chunks_received >= max_duration_seconds:
                 # signal we have enough data
-                chunk_queue.put_nowait(None)
+                await chunk_queue.put(None)
 
         async def _chunk_generator() -> AsyncGenerator[bytes, None]:
             """Yield chunks from the queue until None (EOF/done)."""
@@ -955,6 +955,13 @@ class StreamsAudio:
                 return
             self.logger.debug("Attached loudness analyzer to buffer for %s", streamdetails.uri)
             audio_buffer.register_chunk_callback(_on_chunk)
+
+            def _on_cancel() -> None:
+                if chunk_queue.full():
+                    chunk_queue.get_nowait()
+                chunk_queue.put_nowait(None)
+
+            audio_buffer.register_cancel_callback(_on_cancel)
             # start the FFmpeg analysis process
             await _run_analysis()
 
