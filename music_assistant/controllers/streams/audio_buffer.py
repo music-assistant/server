@@ -247,6 +247,10 @@ class AudioBuffer:
                 status = "aborted with error"
                 raise
             finally:
+                # signal EOF even on error if we produced valid chunks,
+                # so the consumer can read all buffered data before seeing the error
+                if status == "aborted with error" and chunk_count > 0:
+                    await self._set_eof()
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
                     "fill: %s (%s chunks) for %s",
@@ -333,17 +337,18 @@ class AudioBuffer:
         existing_buffer: AudioBuffer | None = streamdetails.buffer
         if existing_buffer is not None:
             if existing_buffer.has_error or not existing_buffer.is_valid(seek_position_ms):
-                LOGGER.log(
-                    VERBOSE_LOG_LEVEL,
-                    "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
+                LOGGER.debug(
+                    "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)"
+                    " - detaching (active consumer may still be reading)",
                     log_prefix,
                     streamdetails.uri,
                     seek_position_ms,
                     existing_buffer._discarded_chunks,
                 )
-                buffer_to_clear = existing_buffer
+                # don't clear the old buffer - an active consumer may still be
+                # reading from it via its local reference. The inactivity monitor
+                # will clean it up after the consumer finishes.
                 streamdetails.buffer = None
-                await asyncio.shield(buffer_to_clear.clear())
             else:
                 LOGGER.debug(
                     "%s: Reusing buffer for %s - available: %ss, seek_ms: %s, discarded: %s",
@@ -519,8 +524,11 @@ class AudioBuffer:
         :raises AudioError: If the chunk has been discarded or the producer failed.
         """
         async with self._data_available:
-            if self._producer_error and len(self._chunks) == 0:
-                raise self._producer_error
+            if len(self._chunks) == 0:
+                if self._eof_received or self.cancelled:
+                    raise AudioBufferEOF
+                if self._producer_error:
+                    raise self._producer_error
             if self.cancelled:
                 raise AudioBufferEOF
 
@@ -562,10 +570,10 @@ class AudioBuffer:
 
         buffer_index = chunk_number - self._discarded_chunks
         while buffer_index >= len(self._chunks):
-            if self._producer_error:
-                raise self._producer_error
             if self.cancelled or self._eof_received:
                 raise AudioBufferEOF
+            if self._producer_error:
+                raise self._producer_error
             # if the buffer is full and we need a chunk that hasn't arrived yet,
             # the producer is blocked waiting for space — evict to unblock it
             if len(self._chunks) >= self.max_size_seconds:
