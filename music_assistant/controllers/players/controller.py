@@ -1808,7 +1808,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # notify active plugin source once at the group level to prevent
         # feedback loops from per-child callbacks with different volume values
         if plugin_source := self._get_active_plugin_source(group_player):
-            if plugin_source.on_volume:
+            if plugin_source.on_volume and plugin_source.in_use_by == group_player.player_id:
                 await plugin_source.on_volume(volume_level)
 
     def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
