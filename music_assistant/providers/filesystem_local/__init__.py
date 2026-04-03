@@ -1668,7 +1668,7 @@ class LocalFileSystemProvider(MusicProvider):
                     absolute_path=absolute_path,
                     is_dir=True,
                 )
-            stat = Path(absolute_path).stat(follow_symlinks=False)
+            stat_info = Path(absolute_path).stat(follow_symlinks=False)
             return FileSystemItem(
                 filename=Path(file_path).name,
                 relative_path=get_relative_path(self.base_path, file_path),
