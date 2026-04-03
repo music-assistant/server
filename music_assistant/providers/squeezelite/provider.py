@@ -9,6 +9,7 @@ from aiohttp import web
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
@@ -203,6 +204,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             player=child_player,
             content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
             content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
+            media_type=MediaType.FLOW_STREAM,
         )
 
         async for chunk in stream.get_stream(
