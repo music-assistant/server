@@ -1345,6 +1345,7 @@ class StreamsAudio:
                     and streamdetails.duration
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
+                    and queue.next_item.queue_item_id != queue_item.queue_item_id
                     and (bytes_received / pcm_format.pcm_sample_size + seek_position)
                     >= streamdetails.duration - 60
                 ):

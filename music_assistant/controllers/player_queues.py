@@ -2273,6 +2273,10 @@ class PlayerQueuesController(CoreController):
         if not queue or not queue.next_item:
             return
         next_item = queue.next_item
+        # guard against race condition where queue.next_item still points to the
+        # currently playing track because the player state hasn't been updated yet
+        if queue.current_item and next_item.queue_item_id == queue.current_item.queue_item_id:
+            return
         # check if buffer already exists and is valid
         if (
             next_item.streamdetails
