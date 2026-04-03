@@ -1390,7 +1390,7 @@ class LocalFileSystemProvider(MusicProvider):
             episode.metadata.add_image(episode.podcast.image)
         # ensure podcast has a default genre if none set
         if not episode.podcast.metadata.genres:
-            episode.podcast.metadata.genres = {"Spoken Word"}
+            episode.podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
