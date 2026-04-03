@@ -212,7 +212,8 @@ jobs:
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
               ;;
             beta)
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
+              # Include both beta (bN) and RC (rcN) tags since both go to the beta channel
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(b|rc)[0-9]+$' | head -n 1)
               ;;
             rc)
               # RC1 diffs against latest beta, RC2+ diffs against previous RC
@@ -356,7 +357,7 @@ jobs:
           path: dist/
 
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v4.0.0
+        uses: docker/login-action@v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}

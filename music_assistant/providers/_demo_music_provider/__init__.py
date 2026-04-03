@@ -478,6 +478,10 @@ class MyDemoMusicprovider(MusicProvider):
         # podcasts or audiobooks, this may as well be an episode or chapter id.
         # You should return a StreamDetails object here with the info as accurate as possible
         # to allow Music Assistant to process the audio using ffmpeg.
+        # IMPORTANT: Streaming providers (ie. is_streaming_provider = True) are NOT allowed
+        # to cache any audio data from the provider locally. Streaming providers must always
+        # return a valid stream url in the StreamDetails with an optional encryption key in
+        # case  of encrypted streams.
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,

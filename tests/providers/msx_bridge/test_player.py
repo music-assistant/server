@@ -1,0 +1,698 @@
+"""Tests for MSXPlayer."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+from unittest.mock import AsyncMock, Mock, patch
+
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.player import PlayerMedia
+
+from music_assistant.providers.msx_bridge.player import MSXPlayer
+
+# --- Initialization and properties ---
+
+
+def test_init_defaults(player: MSXPlayer) -> None:
+    """MSXPlayer should have correct default attributes."""
+    assert player._attr_name == "Test TV"
+    assert player._attr_type == PlayerType.PLAYER
+    assert PlayerFeature.PAUSE in player._attr_supported_features
+    assert PlayerFeature.SET_MEMBERS in player._attr_supported_features
+    assert PlayerFeature.VOLUME_SET in player._attr_supported_features
+    assert player._attr_available is True
+    assert player._attr_powered is True
+    assert player._attr_volume_level == 100
+    assert player.output_format == "mp3"
+    assert player.requires_flow_mode is False
+
+
+def test_init_custom_params(provider: Any) -> None:
+    """MSXPlayer should accept custom name and output_format."""
+    p = MSXPlayer(provider, "msx_custom", name="Living Room TV", output_format="flac")
+    p.update_state = Mock()  # type: ignore[misc,method-assign]
+    assert p._attr_name == "Living Room TV"
+    assert p.output_format == "flac"
+
+
+def test_needs_poll_always_true(player: MSXPlayer) -> None:
+    """needs_poll should always return True."""
+    assert player.needs_poll is True
+
+
+def test_poll_interval_playing(player: MSXPlayer) -> None:
+    """poll_interval should return 5 when playing."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    assert player.poll_interval == 5
+
+
+def test_poll_interval_not_playing(player: MSXPlayer) -> None:
+    """poll_interval should return 30 when idle or paused."""
+    player._attr_playback_state = PlaybackState.IDLE
+    assert player.poll_interval == 30
+    player._attr_playback_state = PlaybackState.PAUSED
+    assert player.poll_interval == 30
+
+
+# --- Playback ---
+
+
+async def test_play_media(player: MSXPlayer) -> None:
+    """play_media should store stream URL, set state to PLAYING, and reset elapsed."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+
+    await player.play_media(media)
+
+    assert player.current_stream_url == "http://ma-server/stream/12345"
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_elapsed_time == 0
+    assert player._attr_elapsed_time_last_updated is not None
+    assert player._attr_current_media is media
+    player.update_state.assert_called()  # type: ignore[attr-defined]
+
+
+async def test_play_media_sets_media_ready_event(player: MSXPlayer) -> None:
+    """play_media should set _media_ready event so wait_for_media returns immediately."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+
+    assert not player._media_ready.is_set()
+    await player.play_media(media)
+    assert player._media_ready.is_set()
+
+
+async def test_wait_for_media_returns_on_play(player: MSXPlayer) -> None:
+    """wait_for_media should return the media once play_media sets the event."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+
+    async def delayed_play() -> None:
+        await asyncio.sleep(0.05)
+        await player.play_media(media)
+
+    asyncio.create_task(delayed_play())
+    result = await player.wait_for_media(timeout=2.0)
+    assert result is media
+
+
+async def test_wait_for_media_fast_path(player: MSXPlayer) -> None:
+    """wait_for_media should return immediately if play_media already ran."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+
+    # Simulate: queue.play_media already called player.play_media
+    await player.play_media(media)
+    assert player._media_ready.is_set()
+
+    # Fast path — should return instantly without clearing the event
+    result = await player.wait_for_media(timeout=0.1)
+    assert result is media
+
+
+async def test_wait_for_media_timeout(player: MSXPlayer) -> None:
+    """wait_for_media should return None on timeout."""
+    result = await player.wait_for_media(timeout=0.1)
+    assert result is None
+
+
+async def test_stop_does_not_clear_media_ready_event(player: MSXPlayer) -> None:
+    """stop() must NOT clear _media_ready (C1 fix).
+
+    Clearing it in stop() would race with a concurrent wait_for_media() call.
+    The wait_for_media() fast-path already guards on _attr_current_media, so
+    leaving the event set is safe.
+    """
+    player._media_ready.set()
+    await player.stop()
+    # _attr_current_media is None after stop — wait_for_media returns None even
+    # though the event may still be set.
+    assert player._attr_current_media is None
+    result = await player.wait_for_media(timeout=0.05)
+    assert result is None
+
+
+async def test_play_resume(player: MSXPlayer) -> None:
+    """play() when PAUSED should notify MSX to resume and set state to PLAYING."""
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_elapsed_time = 42.0
+
+    with patch.object(player.provider, "notify_play_resumed") as mock_notify:
+        await player.play()
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    mock_notify.assert_called_once_with(player.player_id)
+
+
+async def test_pause_accumulates_time(player: MSXPlayer) -> None:
+    """pause() should accumulate elapsed time from last update."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 10.0
+    player._attr_elapsed_time_last_updated = 100.0
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 115.0
+        await player.pause()
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    assert player._attr_elapsed_time == 25.0  # 10 + (115 - 100)
+    player.update_state.assert_called()  # type: ignore[attr-defined]
+
+
+async def test_pause_none_elapsed(player: MSXPlayer) -> None:
+    """pause() should not crash when elapsed_time is None."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = None
+    player._attr_elapsed_time_last_updated = None
+
+    await player.pause()
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    # elapsed stays None since there was nothing to accumulate
+    assert player._attr_elapsed_time is None
+
+
+async def test_pause_notifies_pause_on_msx(player: MSXPlayer) -> None:
+    """pause() should call provider.notify_play_paused so MSX pauses the player."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 10.0
+    player._attr_elapsed_time_last_updated = 100.0
+
+    with patch.object(player.provider, "notify_play_paused") as mock_notify:
+        await player.pause()
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    mock_notify.assert_called_once_with(player.player_id)
+
+
+async def test_stop_clears_all(player: MSXPlayer) -> None:
+    """stop() should reset state, media, elapsed, and stream URL."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_current_media = Mock()
+    player._attr_elapsed_time = 42.0
+    player.current_stream_url = "http://something"
+
+    await player.stop()
+
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_current_media is None
+    assert player._attr_elapsed_time is None  # type: ignore[unreachable]
+    assert player._attr_elapsed_time_last_updated is None
+    assert player.current_stream_url is None
+    player.update_state.assert_called()
+
+
+async def test_stop_idempotent(player: MSXPlayer) -> None:
+    """Calling stop() on an idle player should not raise."""
+    player._attr_playback_state = PlaybackState.IDLE
+    await player.stop()
+    assert player._attr_playback_state == PlaybackState.IDLE
+
+
+# --- Volume and polling ---
+
+
+async def test_volume_set(player: MSXPlayer) -> None:
+    """volume_set should update volume level and call update_state."""
+    await player.volume_set(75)
+    assert player._attr_volume_level == 75
+    player.update_state.assert_called()  # type: ignore[attr-defined]
+
+
+async def test_poll_updates_elapsed(player: MSXPlayer) -> None:
+    """poll() should accumulate elapsed time during PLAYING."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 10.0
+    player._attr_elapsed_time_last_updated = 200.0
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 205.0
+        await player.poll()
+
+    assert player._attr_elapsed_time == 15.0  # 10 + (205 - 200)
+    assert player._attr_elapsed_time_last_updated == 205.0
+    player.update_state.assert_called()  # type: ignore[attr-defined]
+
+
+async def test_poll_noop_when_paused(player: MSXPlayer) -> None:
+    """poll() should not update anything when paused."""
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_elapsed_time = 42.0
+    player.update_state.reset_mock()  # type: ignore[attr-defined]
+
+    await player.poll()
+
+    assert player._attr_elapsed_time == 42.0
+    player.update_state.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_poll_noop_when_idle(player: MSXPlayer) -> None:
+    """poll() should not update anything when idle."""
+    player._attr_playback_state = PlaybackState.IDLE
+    player.update_state.reset_mock()  # type: ignore[attr-defined]
+
+    await player.poll()
+
+    player.update_state.assert_not_called()  # type: ignore[attr-defined]
+
+
+# --- Grouping ---
+
+
+async def test_set_members_add_and_remove(provider: Any, mass_mock: Mock) -> None:
+    """set_members should add and remove group members."""
+    leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
+    leader.update_state = Mock()  # type: ignore[misc,method-assign]
+    member = MSXPlayer(provider, "msx_member", name="Member TV", output_format="mp3")
+    member.update_state = Mock()  # type: ignore[misc,method-assign]
+    mass_mock.players.get = mass_mock.players.get_player = Mock(
+        side_effect=lambda pid: member if pid == "msx_member" else None
+    )
+
+    await leader.set_members(player_ids_to_add=["msx_member"])
+
+    # Leader must be first, member second
+    assert leader._attr_group_members == ["msx_leader", "msx_member"]
+    leader.update_state.assert_called()
+
+    await leader.set_members(player_ids_to_remove=["msx_member"])
+
+    # No other members: list must be empty (solo player)
+    assert leader._attr_group_members == []
+
+
+async def test_set_members_ignores_self_and_non_msx(provider: Any, mass_mock: Mock) -> None:
+    """set_members should not add self or non-MSX players."""
+    leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
+    leader.update_state = Mock()  # type: ignore[misc,method-assign]
+    mass_mock.players.get = mass_mock.players.get_player = Mock(return_value=None)
+
+    await leader.set_members(player_ids_to_add=["msx_leader", "msx_other", "sendspin_123"])
+
+    assert leader._attr_group_members == []
+
+
+async def test_play_media_propagates_to_group_members(provider: Any, mass_mock: Mock) -> None:
+    """play_media should propagate to group members when leader (direct member.play_media)."""
+    leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
+    leader.update_state = Mock()  # type: ignore[misc,method-assign]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
+    member = MSXPlayer(provider, "msx_member", name="Member TV", output_format="mp3")
+    member.update_state = Mock()  # type: ignore[misc,method-assign]
+    member.play_media = AsyncMock()  # type: ignore[method-assign]
+    mass_mock.players.get = mass_mock.players.get_player = Mock(return_value=member)
+
+    media = Mock(spec=PlayerMedia)
+    media.uri = "library://track/123"
+    media.title = None
+    media.artist = None
+    media.image_url = None
+    media.duration = None
+    media.source_id = None
+    media.queue_item_id = None
+
+    with patch.object(leader.provider, "notify_play_started", Mock()):
+        await leader.play_media(media)
+
+    # We call member.play_media directly (not mass.players.play_media) to avoid redirect
+    member.play_media.assert_called_once_with(media)
+
+
+async def test_play_media_no_propagation_when_empty_group(provider: Any, mass_mock: Mock) -> None:
+    """play_media with empty group_members should not call mass.players.play_media."""
+    leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
+    leader.update_state = Mock()  # type: ignore[misc,method-assign]
+    leader._attr_group_members = []
+    mass_mock.players.play_media = AsyncMock()
+
+    media = Mock(spec=PlayerMedia)
+    media.uri = "library://track/123"
+    media.title = None
+    media.artist = None
+    media.image_url = None
+    media.duration = None
+    media.source_id = None
+    media.queue_item_id = None
+
+    with patch.object(leader.provider, "notify_play_started", Mock()):
+        await leader.play_media(media)
+
+    mass_mock.players.play_media.assert_not_called()
+
+
+async def test_stop_propagates_to_group_members(provider: Any, mass_mock: Mock) -> None:
+    """stop() should propagate to group members when leader."""
+    leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
+    leader.update_state = Mock()  # type: ignore[misc,method-assign]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
+    member = MSXPlayer(provider, "msx_member", name="Member TV", output_format="mp3")
+    member.stop = AsyncMock()  # type: ignore[method-assign]
+    mass_mock.players.get = mass_mock.players.get_player = Mock(return_value=member)
+
+    with patch.object(leader.provider, "notify_play_stopped", Mock()):
+        await leader.stop()
+
+    # group_members may include leader; we skip self and propagate only to members
+    member.stop.assert_called_once()
+
+
+# --- Grouping: disable and recursion guard ---
+
+
+async def test_propagation_skipped_when_grouping_disabled(provider: Any, mass_mock: Mock) -> None:
+    """play_media should NOT propagate to members when grouping is disabled."""
+    provider.grouping_enabled = False
+    leader = MSXPlayer(
+        provider,
+        "msx_leader",
+        name="Leader TV",
+        output_format="mp3",
+        grouping_enabled=False,
+    )
+    leader.update_state = Mock()  # type: ignore[misc,method-assign]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
+    member = MSXPlayer(
+        provider,
+        "msx_member",
+        name="Member TV",
+        output_format="mp3",
+        grouping_enabled=False,
+    )
+    member.play_media = AsyncMock()  # type: ignore[method-assign]
+    mass_mock.players.get = mass_mock.players.get_player = Mock(return_value=member)
+
+    media = Mock(spec=PlayerMedia)
+    media.uri = "library://track/123"
+    media.title = None
+    media.artist = None
+    media.image_url = None
+    media.duration = None
+    media.source_id = None
+    media.queue_item_id = None
+
+    with patch.object(leader.provider, "notify_play_started", Mock()):
+        await leader.play_media(media)
+
+    member.play_media.assert_not_called()
+
+
+def test_no_set_members_feature_when_grouping_disabled(provider: Any) -> None:
+    """MSXPlayer should not declare SET_MEMBERS when grouping is disabled."""
+    p = MSXPlayer(
+        provider,
+        "msx_nogrouping",
+        name="Solo TV",
+        output_format="mp3",
+        grouping_enabled=False,
+    )
+    p.update_state = Mock()  # type: ignore[misc,method-assign]
+    assert PlayerFeature.SET_MEMBERS not in p._attr_supported_features
+    assert p._attr_can_group_with == set()
+
+
+async def test_propagation_recursion_guard(provider: Any, mass_mock: Mock) -> None:
+    """Propagation should not recurse when member.play_media triggers propagation."""
+    leader = MSXPlayer(provider, "msx_leader", name="Leader TV", output_format="mp3")
+    leader.update_state = Mock()  # type: ignore[misc,method-assign]
+    leader._attr_group_members = ["msx_leader", "msx_member"]
+
+    # Create a member whose play_media calls back into leader's propagation
+    member = MSXPlayer(provider, "msx_member", name="Member TV", output_format="mp3")
+    member.update_state = Mock()  # type: ignore[misc,method-assign]
+    member._attr_group_members = [
+        "msx_member",
+        "msx_leader",
+    ]  # would cause recursion without guard
+
+    mass_mock.players.get = mass_mock.players.get_player = Mock(
+        side_effect=lambda pid: (
+            member if pid == "msx_member" else leader if pid == "msx_leader" else None
+        )
+    )
+
+    media = Mock(spec=PlayerMedia)
+    media.uri = "library://track/123"
+    media.title = None
+    media.artist = None
+    media.image_url = None
+    media.duration = None
+    media.source_id = None
+    media.queue_item_id = None
+
+    with patch.object(leader.provider, "notify_play_started", Mock()):
+        # This should NOT infinitely recurse
+        await leader.play_media(media)
+
+    # Leader played successfully (no exception from recursion)
+    assert leader._attr_playback_state == PlaybackState.PLAYING
+
+
+# --- Queue-backed playlist playback ---
+
+
+async def test_play_media_queue_sends_playlist(player: MSXPlayer, mass_mock: Mock) -> None:
+    """play_media with queue context should send playlist via WS instead of stream."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+    media.title = "Track 1"
+    media.artist = "Artist 1"
+    media.image_url = None
+    media.duration = 180
+    media.source_id = "msx_test"
+    media.queue_item_id = "qi1"
+
+    queue = Mock()
+    queue.current_index = 2
+
+    mass_mock.player_queues.get.return_value = queue
+    mass_mock.player_queues.get_item.return_value = None
+    mass_mock.player_queues.items.return_value = [
+        Mock(),
+        Mock(),
+        Mock(),
+        Mock(),
+        Mock(),
+    ]
+
+    with (
+        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
+        patch.object(player.provider, "notify_play_started") as mock_play,
+    ):
+        await player.play_media(media)
+
+    mock_playlist.assert_called_once_with("msx_test", 2, queue_id="msx_test")
+    mock_play.assert_not_called()
+    assert player._playing_from_queue is True
+    assert player._playlist_offset == 2
+    assert player._playlist_size == 5
+
+
+async def test_play_media_sends_goto_index_when_playing_from_queue(
+    player: MSXPlayer, mass_mock: Mock
+) -> None:
+    """play_media should send translated goto_index when _playing_from_queue is True."""
+    player._playing_from_queue = True
+    player._queue_source_id = "msx_test"
+    player._playlist_offset = 2  # playlist was rotated by 2
+    player._playlist_size = 5  # 5 items in playlist
+
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+    media.title = None
+    media.artist = None
+    media.image_url = None
+    media.duration = None
+    media.source_id = "msx_test"
+    media.queue_item_id = "qi2"
+
+    queue = Mock()
+    queue.current_index = 3  # MA index 3 → MSX index (3-2)%5 = 1
+
+    mass_mock.player_queues.get.return_value = queue
+    mass_mock.player_queues.get_item.return_value = None
+    # Return same size as _playlist_size to avoid "queue changed" re-send
+    mass_mock.player_queues.items.return_value = [Mock()] * 5
+
+    with (
+        patch.object(player.provider, "notify_goto_index") as mock_goto,
+        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
+        patch.object(player.provider, "notify_play_started") as mock_play,
+    ):
+        await player.play_media(media)
+
+    # Index translated: (3 - 2) % 5 = 1
+    mock_goto.assert_called_once_with("msx_test", 1)
+    mock_playlist.assert_not_called()
+    mock_play.assert_not_called()
+
+
+async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_mock: Mock) -> None:
+    """play_media should skip all WS notifications when _skip_ws_notify is True."""
+    player._playing_from_queue = True
+    player._skip_ws_notify = True
+
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+    media.title = None
+    media.artist = None
+    media.image_url = None
+    media.duration = None
+    media.source_id = "msx_test"
+    media.queue_item_id = "qi2"
+
+    mass_mock.player_queues.get_item.return_value = None
+
+    with (
+        patch.object(player.provider, "notify_goto_index") as mock_goto,
+        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
+        patch.object(player.provider, "notify_play_started") as mock_play,
+    ):
+        await player.play_media(media)
+
+    mock_goto.assert_not_called()
+    mock_playlist.assert_not_called()
+    mock_play.assert_not_called()
+
+    # Clean up
+    player._skip_ws_notify = False
+
+
+async def test_play_media_non_queue_sends_broadcast_play(
+    player: MSXPlayer,
+) -> None:
+    """play_media without queue context should use broadcast_play as before."""
+    media = Mock(spec=PlayerMedia)
+    media.uri = "http://ma-server/stream/12345"
+    media.title = "Track 1"
+    media.artist = "Artist 1"
+    media.image_url = None
+    media.duration = 180
+    media.source_id = None
+    media.queue_item_id = None
+
+    with (
+        patch.object(player.provider, "notify_play_playlist") as mock_playlist,
+        patch.object(player.provider, "notify_play_started") as mock_play,
+    ):
+        await player.play_media(media)
+
+    mock_playlist.assert_not_called()
+    mock_play.assert_called_once()
+
+
+async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:
+    """stop() should reset _playing_from_queue flag."""
+    player._playing_from_queue = True
+    await player.stop()
+    assert player._playing_from_queue is False
+
+
+# --- WebSocket position reporting ---
+
+
+def test_update_position(player: MSXPlayer) -> None:
+    """update_position should set elapsed_time and mark WS timestamp when PLAYING."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player.update_position(42.5)
+    assert player._attr_elapsed_time == 42.5
+    assert player._attr_elapsed_time_last_updated is not None
+    assert player._last_ws_position is not None
+    player.update_state.assert_called()  # type: ignore[attr-defined]
+
+
+def test_update_position_ignored_when_paused(player: MSXPlayer) -> None:
+    """update_position should be ignored when PAUSED to protect accumulated time."""
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_elapsed_time = 45.0
+    player.update_state.reset_mock()  # type: ignore[attr-defined]
+
+    player.update_position(99.0)
+
+    # elapsed_time should remain at 45.0, not be overwritten to 99.0
+    assert player._attr_elapsed_time == 45.0
+    player.update_state.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_poll_skips_when_ws_position_recent(player: MSXPlayer) -> None:
+    """poll() should skip wall-clock increment when WS position was reported recently."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 30.0
+    player._attr_elapsed_time_last_updated = 200.0
+    player._last_ws_position = 200.0  # very recent
+
+    player.update_state.reset_mock()  # type: ignore[attr-defined]
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 205.0  # only 5s since last WS (< 10s threshold)
+        await player.poll()
+
+    # Should NOT have updated elapsed_time
+    assert player._attr_elapsed_time == 30.0
+    player.update_state.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_poll_uses_wall_clock_when_ws_stale(player: MSXPlayer) -> None:
+    """poll() should use wall-clock when WS position is stale (>10s ago)."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 30.0
+    player._attr_elapsed_time_last_updated = 200.0
+    player._last_ws_position = 180.0  # 25s ago
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 205.0
+        await player.poll()
+
+    assert player._attr_elapsed_time == 35.0  # 30 + (205 - 200)
+
+
+async def test_stop_clears_ws_position(player: MSXPlayer) -> None:
+    """stop() should clear _last_ws_position."""
+    player._last_ws_position = 100.0
+    await player.stop()
+    assert player._last_ws_position is None
+
+
+# --- Resume from pause ---
+
+
+async def test_resume_sends_ws_resume(player: MSXPlayer) -> None:
+    """play() when PAUSED should notify MSX to resume native player."""
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_elapsed_time = 42.0
+
+    with patch.object(player.provider, "notify_play_resumed") as mock_notify:
+        await player.play()
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_elapsed_time_last_updated is not None
+    mock_notify.assert_called_once_with(player.player_id)
+
+
+async def test_resume_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
+    """play() when PAUSED with _skip_ws_notify should not broadcast to MSX."""
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_elapsed_time = 10.0
+    player._skip_ws_notify = True
+
+    with patch.object(player.provider, "notify_play_resumed") as mock_notify:
+        await player.play()
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    mock_notify.assert_not_called()
+    player._skip_ws_notify = False
+
+
+async def test_pause_skips_ws_when_skip_notify(player: MSXPlayer) -> None:
+    """pause() with _skip_ws_notify should not broadcast to MSX."""
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 10.0
+    player._attr_elapsed_time_last_updated = 100.0
+    player._skip_ws_notify = True
+
+    with patch.object(player.provider, "notify_play_paused") as mock_notify:
+        await player.pause()
+
+    assert player._attr_playback_state == PlaybackState.PAUSED
+    mock_notify.assert_not_called()
+    player._skip_ws_notify = False

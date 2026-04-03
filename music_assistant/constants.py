@@ -125,6 +125,7 @@ CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provi
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
+CONF_SOCKS_URL: Final[str] = "socks_url"
 CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
 CONF_SSL_FINGERPRINT: Final[str] = "ssl_fingerprint"
@@ -220,7 +221,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
-PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
+PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music")
 
 
 ####### REUSABLE CONFIG ENTRIES #######
@@ -858,11 +859,29 @@ def create_sample_rates_config_entry(
 DEFAULT_STREAM_HEADERS = {
     "Server": APPLICATION_NAME,
     "transferMode.dlna.org": "Streaming",
-    "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+    "Accept-Ranges": "none",
+    "Connection": "close",
     "icy-name": APPLICATION_NAME,
 }
+
+# DLNA contentFeatures header values for different stream types.
+# ORG_OP=00: no time-seek, no byte-seek (we encode on-the-fly, unknown size).
+# ORG_FLAGS bit layout (hex, first 8 chars of 32-char field):
+#   bit 31 (0x80000000): Sender Paced - server controls data rate
+#   bit 24 (0x01000000): Streaming Transfer Mode
+#   bit 22 (0x00400000): Background Transfer Mode
+#   bit 21 (0x00200000): HTTP Connection Stalling permitted
+#   bit 20 (0x00100000): DLNA V1.5
+#
+# Bufferable streams (tracks, flow mode): player may buffer aggressively.
+# Flags: 0x01700000 = Streaming + Background + Connection Stalling + V1.5
+DLNA_CONTENT_FEATURES = "DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+# Realtime streams (radio, plugin sources): server controls data rate,
+# player should not try to buffer ahead faster than the server delivers.
+# Flags: 0x81700000 = Sender Paced + Streaming + Background + Connection Stalling + V1.5
+DLNA_CONTENT_FEATURES_REALTIME = "DLNA.ORG_OP=00;DLNA.ORG_FLAGS=81700000000000000000000000000000"
 ICY_HEADERS = {
     "icy-name": APPLICATION_NAME,
     "icy-description": f"{APPLICATION_NAME} - Your personal music assistant",
@@ -898,6 +917,7 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
+ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
