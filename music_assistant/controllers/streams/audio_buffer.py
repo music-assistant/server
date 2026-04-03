@@ -338,17 +338,18 @@ class AudioBuffer:
         if existing_buffer is not None:
             if existing_buffer.has_error or not existing_buffer.is_valid(seek_position_ms):
                 LOGGER.debug(
-                    "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)"
-                    " - detaching (active consumer may still be reading)",
+                    "%s: Existing buffer invalid for %s (seek_ms: %s, discarded: %s)",
                     log_prefix,
                     streamdetails.uri,
                     seek_position_ms,
                     existing_buffer._discarded_chunks,
                 )
-                # don't clear the old buffer - an active consumer may still be
-                # reading from it via its local reference. The inactivity monitor
-                # will clean it up after the consumer finishes.
                 streamdetails.buffer = None
+                if time.time() - existing_buffer._last_access_time > 30:
+                    # no recent consumer activity - safe to fully clear
+                    await asyncio.shield(existing_buffer.clear())
+                # else: an active consumer is still reading via its local reference;
+                # the inactivity monitor will clean up after it finishes
             else:
                 LOGGER.debug(
                     "%s: Reusing buffer for %s - available: %ss, seek_ms: %s, discarded: %s",
