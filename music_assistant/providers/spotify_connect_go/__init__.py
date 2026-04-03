@@ -127,6 +127,7 @@ class SpotifyConnectGoProvider(PluginProvider):
         self._ws_url = f"ws://localhost:{self.server_port}/events"
         self._ws_session: aiohttp.ClientSession | None = None
         self._ws_connection = None
+
         # Create the source details
         self._source_details = PluginSource(
             id=self.instance_id,
@@ -142,11 +143,15 @@ class SpotifyConnectGoProvider(PluginProvider):
                 bit_depth=16,
                 channels=2,
             ),
-            # metadata=PlayerMedia(
-            #     "Spotify Connect Go",
-            # ),
             stream_type=StreamType.NAMED_PIPE,
             path=self.named_pipe,
+            on_play=self._on_play_callback,
+            on_pause=self._on_pause_callback,
+            on_next=self._on_next_callback,
+            on_previous=self._on_previous_callback,
+            on_seek=self._on_seek_callback,
+            on_volume=self._on_volume_callback,
+            on_select=self._on_select_callback,
         )
         self._on_unload_callbacks: list[Callable[..., None]] = [
             self.mass.subscribe(
@@ -210,31 +215,36 @@ class SpotifyConnectGoProvider(PluginProvider):
         """Get (audio)source details for this plugin."""
         return self._source_details
 
-    async def on_source_play_request(self, player_id: str) -> None:
-        """Handle play request for this source."""
-        await self._send_api_command("player/resume")
+    async def _on_play_callback(self) -> None:
+        """Called by MA when play is requested."""
+        await self._send_api_command("player/resume", method="POST")
 
-    async def on_source_pause_request(self, player_id: str) -> None:
-        """Handle pause request for this source."""
-        await self._send_api_command("player/pause")
+    async def _on_pause_callback(self) -> None:
+        """Called by MA when pause is requested."""
+        await self._send_api_command("player/pause", method="POST")
 
-    async def on_source_stop_request(self, player_id: str) -> None:
-        """Handle stop request for this source."""
-        await self._send_api_command("player/pause")
-
-    async def on_source_next_request(self, player_id: str) -> None:
-        """Handle next track request for this source."""
+    async def _on_next_callback(self) -> None:
+        """Called by MA when next track is requested."""
         await self._send_api_command("player/next", method="POST")
 
-    async def on_source_previous_request(self, player_id: str) -> None:
-        """Handle previous track request for this source."""
+    async def _on_previous_callback(self) -> None:
+        """Called by MA when previous track is requested."""
         await self._send_api_command("player/prev", method="POST")
 
-    async def on_source_seek_request(self, player_id: str, position: int) -> None:
-        """Handle seek request for this source (position in seconds)."""
-        # Convert seconds to milliseconds
-        position = position * 1000
-        await self._send_api_command(f"player/seek?position={position}", method="PUT")
+    async def _on_seek_callback(self, position: int) -> None:
+        """Called by MA when seek is requested (position in seconds)."""
+        position_ms = position * 1000
+        await self._send_api_command(f"player/seek?position={position_ms}", method="PUT")
+
+    async def _on_volume_callback(self, volume: int) -> None:
+        """Called by MA when volume change is requested."""
+        await self._send_api_command(f"player/volume?value={volume}", method="POST")
+
+    async def _on_select_callback(self) -> None:
+        """Called by MA when this source is selected/activated."""
+        self.logger.info("Source selected by MA")
+
+        self._source_details.in_use_by = self.mass_player_id
 
     async def _send_api_command(self, endpoint: str, method: str = "POST") -> None:
         """Send a command to the go-librespot API."""
@@ -515,7 +525,6 @@ class SpotifyConnectGoProvider(PluginProvider):
 
             if not self._source_details.in_use_by:
                 self.logger.info("Selecting source on player %s", self.mass_player_id)
-                await self.mass.players.select_source(self.mass_player_id, self.instance_id)
                 self._source_details.in_use_by = self.mass_player_id
 
                 # Verify active_source was set correctly
