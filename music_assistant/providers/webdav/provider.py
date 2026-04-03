@@ -69,9 +69,14 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             return aiohttp.BasicAuth(self.username, self.password or "")
         return None
 
+    @property
+    def _session(self) -> aiohttp.ClientSession:
+        """Get the appropriate HTTP session based on SSL verification setting."""
+        return self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        session = self._session
         await webdav_test_connection(
             session,
             self.base_url,
@@ -109,7 +114,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             return False
         file_path = self._normalize_path(file_path)
         webdav_url = build_webdav_url(self.base_url, file_path)
-        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        session = self._session
         try:
             items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
             return len(items) > 0 or webdav_url.rstrip("/") == self.base_url.rstrip("/")
@@ -121,7 +126,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve WebDAV path to FileSystemItem."""
         webdav_url = build_webdav_url(self.base_url, file_path)
-        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        session = self._session
 
         items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
         if not items:
@@ -157,7 +162,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         path = self._normalize_path(path)
         webdav_url = build_webdav_url(self.base_url, path)
-        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        session = self._session
 
         webdav_items = await webdav_propfind(session, webdav_url, depth=1, auth=self._auth)
         filesystem_items = self._convert_webdav_items(webdav_items, webdav_url, path)
@@ -174,7 +179,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def _read_file(self, path: str) -> bytes:
         """Read file contents over HTTP."""
         webdav_url = build_webdav_url(self.base_url, path)
-        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        session = self._session
         async with session.get(webdav_url, auth=self._auth) as resp:
             if resp.status != 200:
                 raise MediaNotFoundError(f"File not found: {path}")
@@ -239,7 +244,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         # For actual image files, fetch the raw bytes
         webdav_url = build_webdav_url(self.base_url, path)
-        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        session = self._session
         async with session.get(webdav_url, auth=self._auth) as resp:
             if resp.status != 200:
                 raise MediaNotFoundError(f"Image not found: {path}")
