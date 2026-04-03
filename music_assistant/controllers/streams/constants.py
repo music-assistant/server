@@ -44,7 +44,7 @@ CONF_BUFFER_SIZE: Final[str] = "buffer_size"
 def _get_default_buffer_size() -> str:
     if TOTAL_SYSTEM_MEMORY_GB >= 8.0:
         return BufferSize.MAXIMUM
-    if TOTAL_SYSTEM_MEMORY_GB >= 4.0:
+    if TOTAL_SYSTEM_MEMORY_GB > 4.0:
         return BufferSize.BALANCED
     return BufferSize.MINIMAL
 
