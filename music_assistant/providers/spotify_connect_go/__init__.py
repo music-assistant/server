@@ -338,10 +338,18 @@ class SpotifyConnectGoProvider(PluginProvider):
 
             self.logger.debug("Starting go-librespot with args: %s", " ".join(args))
 
+            # Open pipe in non-blocking mode so go-librespot can open its write end
+            import fcntl
+
+            pipe_fd = os.open(self.named_pipe, os.O_RDONLY | os.O_NONBLOCK)
+
             self._go_librespot_proc = go_librespot = AsyncProcess(
                 args, stdout=False, stderr=True, name=f"go-librespot[{self.name}]"
             )
             await go_librespot.start()
+
+            # Close our non-blocking read handle now that go-librespot has started
+            os.close(pipe_fd)
 
             # Give the server time to start
             await asyncio.sleep(3)
