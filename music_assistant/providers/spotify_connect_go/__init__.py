@@ -330,19 +330,14 @@ class SpotifyConnectGoProvider(PluginProvider):
         config_file = self._create_config_file()
         self.logger.debug("Created config file at: %s", config_file)
 
-        # Keep pipe open for reading continuously so go-librespot can always write
-        async def _keep_pipe_open() -> None:
-            """Hold the pipe open for reading to prevent broken pipe errors."""
-            while not self._stop_called:
-                try:
-                    pipe_fd = os.open(self.named_pipe, os.O_RDONLY | os.O_NONBLOCK)
-                    await asyncio.sleep(0.1)
-                    os.close(pipe_fd)
-                except OSError:
-                    pass
-                await asyncio.sleep(0.5)
-
-        pipe_task = self.mass.create_task(_keep_pipe_open())
+        # Open pipe for reading permanently so go-librespot can always open
+        # its write end. MA will take over reading when select_source is called.
+        self._pipe_fd: int | None = None
+        try:
+            self._pipe_fd = os.open(self.named_pipe, os.O_RDONLY | os.O_NONBLOCK)
+            self.logger.debug("Pipe held open for reading at fd %s", self._pipe_fd)
+        except OSError as e:
+            self.logger.error("Failed to open pipe for reading: %s", e)
 
         try:
             args: list[str] = [
@@ -401,10 +396,11 @@ class SpotifyConnectGoProvider(PluginProvider):
         except Exception as e:
             self.logger.error("Error running go-librespot: %s", e)
         finally:
-            # Cancel the pipe keeper task
-            pipe_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await pipe_task
+            # Close the persistent pipe fd if still open
+            if self._pipe_fd is not None:
+                with suppress(OSError):
+                    os.close(self._pipe_fd)
+                self._pipe_fd = None
             if self._go_librespot_proc:
                 await self._go_librespot_proc.close()
             self.logger.info("Spotify Connect Go background daemon stopped for %s", self.name)
