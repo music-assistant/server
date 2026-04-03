@@ -291,7 +291,6 @@ class TwitchProvider(MusicProvider):
     _client_id: str | None = None
     _client_secret: str | None = None
     _user_id: str | None = None
-    _streamlink_session: Any | None = None
 
     # Live status cache
     _cached_channels: list[dict[str, Any]] | None = None
@@ -711,12 +710,30 @@ class TwitchProvider(MusicProvider):
         item_id = streamdetails.item_id
         reconnects = 0
 
+        # Create a per-stream Streamlink session. Streamlink sessions are not
+        # thread-safe (shared HTTP state, options, plugin vars), so each
+        # concurrent get_audio_stream call needs its own instance.
+        sl_session = await asyncio.to_thread(self._create_streamlink_session)
+        ad_patch_applied = False
+
         self._track_stream_start(item_id)
         try:
             while True:
-                streams = await asyncio.to_thread(self._resolve_streams, item_id)
+                streams = await asyncio.to_thread(self._resolve_streams, item_id, sl_session)
                 if not streams:
                     return
+
+                # Apply ad handling monkey-patch once after first resolution.
+                # Must be done after streams() because Streamlink loads plugins
+                # into a fresh module namespace — the reader class doesn't exist
+                # until then.
+                if not ad_patch_applied:
+                    any_stream = next(iter(streams.values()), None)
+                    if any_stream is not None:
+                        reader_cls = getattr(type(any_stream), "__reader__", None)
+                        if reader_cls is not None:
+                            patch_ad_handling(reader_cls=reader_cls)
+                    ad_patch_applied = True
 
                 stream = self._select_quality(streams)
                 if not stream:
@@ -749,41 +766,26 @@ class TwitchProvider(MusicProvider):
         finally:
             self._track_stream_end(item_id)
 
-    def _resolve_streams(self, channel: str) -> dict[str, Any] | None:
+    def _create_streamlink_session(self) -> Streamlink:
+        """Create and configure a new Streamlink session. Blocking — call via to_thread."""
+        session = Streamlink()
+        # Increase the segment queue deadline so the stream survives Twitch
+        # ad breaks without triggering "No new segments" timeout.  Default
+        # factor is 3 (≈15 s for 5 s target duration); 6 gives ≈30 s,
+        # enough for mid-stream ad transition gaps.
+        session.set_option("stream-segmented-queue-deadline", 6)
+        streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
+        if streamlink_token:
+            session.set_option("http-headers", {"Authorization": f"OAuth {streamlink_token}"})
+        return session
+
+    def _resolve_streams(self, channel: str, session: Streamlink) -> dict[str, Any] | None:
         """Resolve Streamlink streams for a channel. Blocking — call via to_thread."""
         try:
-            if self._streamlink_session is None:
-                self._streamlink_session = Streamlink()
-                # Increase the segment queue deadline so the stream survives Twitch
-                # ad breaks without triggering "No new segments" timeout.  Default
-                # factor is 3 (≈15 s for 5 s target duration); 6 gives ≈30 s,
-                # enough for mid-stream ad transition gaps.
-                self._streamlink_session.set_option(
-                    "stream-segmented-queue-deadline",
-                    6,
-                )
-                streamlink_token = str(self.config.get_value(CONF_STREAMLINK_TOKEN) or "")
-                if streamlink_token:
-                    self._streamlink_session.set_option(
-                        "http-headers", {"Authorization": f"OAuth {streamlink_token}"}
-                    )
-            session = self._streamlink_session
             streams = session.streams(f"https://twitch.tv/{channel}")
             if not streams:
                 return None
-
-            # Apply ad handling monkey-patch to the ACTUAL reader class from
-            # Streamlink's plugin system. Must be done after streams() because
-            # Streamlink loads plugins into a fresh module namespace — patching
-            # the imported class at startup patches a different class object.
-            result = dict(streams)
-            any_stream = next(iter(result.values()), None)
-            if any_stream is not None:
-                reader_cls = getattr(type(any_stream), "__reader__", None)
-                if reader_cls is not None:
-                    patch_ad_handling(reader_cls=reader_cls)
-
-            return result
+            return dict(streams)
         except Exception:
             self.logger.exception("Failed to resolve streams for %s", channel)
             return None

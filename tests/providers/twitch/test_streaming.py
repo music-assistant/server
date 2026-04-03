@@ -18,6 +18,13 @@ from music_assistant.providers.twitch import (
     TwitchProvider,
 )
 
+
+@pytest.fixture(autouse=True)
+def _mock_streamlink_session(provider: TwitchProvider) -> None:
+    """Auto-mock _create_streamlink_session so get_audio_stream doesn't need real Streamlink."""
+    provider._create_streamlink_session = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+
+
 # --- Stream Details ---
 
 
@@ -148,18 +155,14 @@ async def test_chunk_size_is_64kb() -> None:
 async def test_streamlink_token_passed_as_header(provider: TwitchProvider) -> None:
     """When streamlink_token configured, Streamlink session gets OAuth header."""
     mock_session = MagicMock()
-    mock_session.streams.return_value = {"audio_only": MagicMock()}
 
     provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
         "streamlink_token": "test_oauth_token",
         "log_level": "GLOBAL",
     }.get(key, default)
 
-    with (
-        patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session),
-        patch("music_assistant.providers.twitch.patch_ad_handling"),
-    ):
-        provider._resolve_streams("testchannel")
+    with patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session):
+        TwitchProvider._create_streamlink_session(provider)
 
     # set_option called for queue deadline + OAuth header
     assert mock_session.set_option.call_count == 2
@@ -172,42 +175,33 @@ async def test_streamlink_token_passed_as_header(provider: TwitchProvider) -> No
 async def test_streamlink_token_omitted_when_empty(provider: TwitchProvider) -> None:
     """When streamlink_token not set, no extra auth header on Streamlink."""
     mock_session = MagicMock()
-    mock_session.streams.return_value = {"audio_only": MagicMock()}
 
     provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
         "streamlink_token": "",
         "log_level": "GLOBAL",
     }.get(key, default)
 
-    with (
-        patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session),
-        patch("music_assistant.providers.twitch.patch_ad_handling"),
-    ):
-        provider._resolve_streams("testchannel")
+    with patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session):
+        TwitchProvider._create_streamlink_session(provider)
 
     # Only the queue deadline option — no OAuth header
     mock_session.set_option.assert_called_once_with("stream-segmented-queue-deadline", 6)
 
 
 async def test_invalid_streamlink_token_stream_still_plays(provider: TwitchProvider) -> None:
-    """Bad/expired streamlink_token doesn't prevent playback."""
+    """Bad/expired streamlink_token doesn't prevent playback — session still created."""
     mock_session = MagicMock()
-    mock_session.streams.return_value = {"audio_only": MagicMock()}
 
     provider.config.get_value.side_effect = lambda key, default=None: {  # type: ignore[attr-defined]
         "streamlink_token": "invalid_expired_token",
         "log_level": "GLOBAL",
     }.get(key, default)
 
-    with (
-        patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session),
-        patch("music_assistant.providers.twitch.patch_ad_handling"),
-    ):
-        result = provider._resolve_streams("testchannel")
+    with patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session):
+        result = TwitchProvider._create_streamlink_session(provider)
 
-    # Stream should still resolve despite invalid token
-    assert result is not None
-    assert "audio_only" in result
+    # Session should still be created despite potentially invalid token
+    assert result is mock_session
 
 
 async def test_reconnect_delay_is_half_second() -> None:
@@ -338,7 +332,7 @@ async def test_fd_closed_before_reconnect(
 
     resolve_results = iter([{"audio_only": mock_stream}, None])
 
-    def tracking_resolve(_channel: str) -> dict[str, Any] | None:
+    def tracking_resolve(_channel: str, _session: Any = None) -> dict[str, Any] | None:
         call_order.append("resolve")
         return next(resolve_results)
 
@@ -380,7 +374,9 @@ async def test_streamlink_plugin_error_returns_empty(
     """
     mock_session = MagicMock()
     mock_session.streams.side_effect = Exception("No plugin can handle URL")
-    provider._streamlink_session = mock_session
+    provider._create_streamlink_session = MagicMock(  # type: ignore[method-assign]
+        return_value=mock_session
+    )
 
     chunks = []
     async for chunk in provider.get_audio_stream(stream_details):
