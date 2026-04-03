@@ -236,8 +236,7 @@ class SpotifyConnectGoProvider(PluginProvider):
         await self._send_api_command(f"player/seek?position={position_ms}", method="PUT")
 
     async def _on_volume_callback(self, volume: int) -> None:
-        """Called by MA when volume change is requested."""
-        await self._send_api_command(f"player/volume?value={volume}", method="POST")
+        """Volume is handled by MA at the player level, not go-librespot."""
 
     async def _on_select_callback(self) -> None:
         """Called by MA when this source is selected/activated."""
@@ -309,7 +308,7 @@ class SpotifyConnectGoProvider(PluginProvider):
             "bitrate": 320,
             "volume_steps": 100,
             "initial_volume": 100,
-            "external_volume": False,
+            "external_volume": True,
             "disable_autoplay": False,
         }
 
@@ -612,16 +611,8 @@ class SpotifyConnectGoProvider(PluginProvider):
                 )
 
         elif event_type == "volume_changed":
-            volume = event_data.get("data", {}).get("volume", 0)
-            self.logger.debug("Volume changed to %d", volume)
-
-            if self._source_details.in_use_by:
-                try:
-                    await self.mass.players.cmd_volume_set(self._source_details.in_use_by, volume)
-                except UnsupportedFeaturedException:
-                    self.logger.debug(
-                        "Player %s does not support volume control", self._source_details.in_use_by
-                    )
+            volume = event_data.get("data", {}).get("value", 0)
+            self.logger.debug("go-librespot volume event ignored (MA handles volume): %d", volume)
 
         elif event_type in ("seek", "seeked", "position_correction"):
             if data := event_data.get("data", {}):
