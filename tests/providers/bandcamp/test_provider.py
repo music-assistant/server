@@ -1880,9 +1880,9 @@ async def test_get_library_artists_paginates(provider: BandcampProvider) -> None
 
         assert len(artists) == 2
         assert mock_get.call_count == 2
-        # Band IDs 100 and 200 from pages 1 and 2
+        # Band IDs 100 and 200 from pages 1 and 2, converted to str per base class contract
         called_ids = {call.args[0] for call in mock_get_artist.call_args_list}
-        assert called_ids == {100, 200}
+        assert called_ids == {"100", "200"}
 
 
 async def test_get_all_collection_items_error_mid_pagination(
