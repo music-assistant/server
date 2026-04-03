@@ -9,31 +9,17 @@ from typing import TYPE_CHECKING, Any
 from mpd import MPDError
 from mpd.asyncio import MPDClient
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import (
-    IdentifierType,
-    PlaybackState,
-    PlayerFeature,
-)
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import CONF_ENTRY_FLOW_MODE, CONF_ENTRY_OUTPUT_CODEC
+from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC
 from music_assistant.models.player import Player
 
 from .constants import ELAPSED_POLL_INTERVAL, RECONNECT_DELAY
 
 if TYPE_CHECKING:
     from .provider import MPDPlayerProvider
-
-# MPD receives a single continuous HTTP stream from MA, so flow mode must always be on.
-_CONF_ENTRY_FLOW_MODE_ENFORCED = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_FLOW_MODE.to_dict(),
-        "default_value": True,
-        "value": True,
-        "hidden": True,
-    }
-)
 
 # FLAC does not work for infinite HTTP streams - MPD cannot probe the header.
 # Offer MP3, AAC, WAV only, with MP3 as default.
@@ -59,13 +45,9 @@ MPD_STATE_MAP: dict[str, PlaybackState] = {
 
 
 class MPDPlayer(Player):
-    """
-    Represents a single MPD server as a Music Assistant player.
+    """Represents a single MPD server as a Music Assistant player."""
 
-    Audio is delivered by telling MPD to fetch MA's HTTP stream URL.
-    State changes are received via MPD's idle mechanism (push-based),
-    with a periodic poll for elapsed time while playing.
-    """
+    _attr_poll_interval = ELAPSED_POLL_INTERVAL
 
     def __init__(
         self,
@@ -75,7 +57,14 @@ class MPDPlayer(Player):
         port: int = 6600,
         password: str | None = None,
     ) -> None:
-        """Initialize MPDPlayer."""
+        """Initialize MPDPlayer.
+
+        :param provider: The MPDPlayerProvider instance.
+        :param player_id: Unique player identifier.
+        :param host: Hostname or IP address of the MPD server.
+        :param port: TCP port MPD is listening on.
+        :param password: Optional MPD server password.
+        """
         super().__init__(provider, player_id)
         self.host = host
         self.port = port
@@ -88,6 +77,7 @@ class MPDPlayer(Player):
         # until a subsystem changes, preventing any other commands from being sent.
         self._client: MPDClient | None = None
         self._idle_client: MPDClient | None = None
+        self._idle_task: asyncio.Task[None] | None = None
 
         self._attr_name = f"MPD ({host})"
         self._attr_supported_features = {
@@ -96,7 +86,6 @@ class MPDPlayer(Player):
             PlayerFeature.SEEK,
             PlayerFeature.VOLUME_SET,
         }
-        self._idle_task: asyncio.Task[None] | None = None
 
         def _schedule_disconnect() -> None:
             self.mass.call_later(0, self._disconnect, task_id=f"mpd_disconnect_{self.player_id}")
@@ -105,34 +94,35 @@ class MPDPlayer(Player):
 
     @property
     def needs_poll(self) -> bool:
-        """Return True if the player needs polling for elapsed time updates."""
-        # MPD's idle loop handles state changes, but elapsed time only
-        # updates on playback events, so we poll while playing.
-        return self._attr_playback_state == PlaybackState.PLAYING
+        """Return True when elapsed time polling is required.
 
-    @property
-    def poll_interval(self) -> int:
-        """Return poll interval in seconds."""
-        return ELAPSED_POLL_INTERVAL
+        MPD's idle mechanism does not push elapsed time continuously;
+        polling fills this gap during active playback.
+
+        :return: True when playback is active.
+        """
+        return self._attr_playback_state == PlaybackState.PLAYING
 
     async def get_config_entries(
         self,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
-        """Return player config entries."""
-        return [
-            _CONF_ENTRY_FLOW_MODE_ENFORCED,
-            _CONF_ENTRY_OUTPUT_CODEC_MP3_DEFAULT,
-        ]
+        """Return player-level config entries.
+
+        :param action: Optional action key from the config UI.
+        :param values: Optional intermediate config values from the UI.
+        :return: List of ConfigEntry objects for this player.
+        """
+        return [_CONF_ENTRY_OUTPUT_CODEC_MP3_DEFAULT]
 
     async def on_config_updated(self) -> None:
-        """Handle initial connection and reconnection on config change."""
+        """Reconnect to MPD when player configuration changes."""
         await self._disconnect()
         await self._connect()
 
     async def poll(self) -> None:
-        """Poll MPD for current state (elapsed time while playing)."""
+        """Fetch current MPD state to update elapsed time."""
         await self._fetch_and_sync_state()
 
     # ------------------------------------------------------------------
@@ -140,7 +130,7 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def _connect(self) -> None:
-        """Connect to MPD and start the idle loop."""
+        """Establish both MPD connections and start the idle loop."""
         try:
             self._client = MPDClient()
             await self._client.connect(self.host, self.port)
@@ -171,18 +161,18 @@ class MPDPlayer(Player):
             self.reconnect()
 
     async def _disconnect(self) -> None:
-        """Disconnect both MPD clients."""
+        """Disconnect both MPD clients and cancel the idle loop task."""
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
         for client in (self._client, self._idle_client):
             if client:
                 client.disconnect()
         self._client = None
         self._idle_client = None
-        if self._idle_task:
-            self._idle_task.cancel()
-            self._idle_task = None
 
     def reconnect(self) -> None:
-        """Schedule a reconnect, deduplicating any pending reconnect tasks."""
+        """Schedule a reconnect attempt, deduplicating any pending reconnect tasks."""
         task_id = f"mpd_reconnect_{self.player_id}"
         self.mass.call_later(RECONNECT_DELAY, self._connect, task_id=task_id)
 
@@ -191,15 +181,12 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def _idle_loop(self) -> None:
-        """
-        Listen for MPD state changes and sync to MA.
-
-        MPD's idle command blocks until a subsystem changes, then yields
-        the subsystem name. We act on player/mixer/playlist changes.
-        """
+        """Receive push state changes from MPD and sync to MA."""
         if self._idle_client is None:
             return
         try:
+            # MPD's idle command blocks until a subsystem changes, then yields
+            # the subsystem name. We act on player/mixer/playlist changes.
             async for subsystem in self._idle_client.idle():
                 if subsystem in ("player", "mixer", "playlist"):
                     await self._fetch_and_sync_state()
@@ -214,7 +201,7 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def _fetch_and_sync_state(self) -> None:
-        """Fetch current MPD status and update player state."""
+        """Fetch current MPD status and update MA player state."""
         if self._client is None:
             return
         try:
@@ -225,7 +212,10 @@ class MPDPlayer(Player):
             self.logger.warning("Failed to fetch MPD status: %s", err)
 
     async def _sync_state(self, status: dict[str, Any]) -> None:
-        """Map MPD status dict onto player attributes."""
+        """Map an MPD status dict onto MA player attributes.
+
+        :param status: Status dict as returned by the MPD ``status`` command.
+        """
         mpd_state = status.get("state", "stop")
         self._attr_playback_state = MPD_STATE_MAP.get(mpd_state, PlaybackState.IDLE)
 
@@ -247,10 +237,13 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Handle play media command on MPD Player."""
+        """Send a play command to MPD using the MA stream URL.
+
+        :param media: Details of the media item to play.
+        """
         if self._client is None:
             return
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         self.logger.debug("Sending stream URL to MPD: %s", url)
         try:
             await self._client.clear()
@@ -274,7 +267,7 @@ class MPDPlayer(Player):
             raise PlayerCommandFailed(f"play failed: {err}") from err
 
     async def stop(self) -> None:
-        """Stop playback."""
+        """Stop playback and clear current media."""
         if self._client is None:
             return
         try:
@@ -297,7 +290,10 @@ class MPDPlayer(Player):
             raise PlayerCommandFailed(f"pause failed: {err}") from err
 
     async def volume_set(self, volume_level: int) -> None:
-        """Set volume level (0-100)."""
+        """Set the player volume.
+
+        :param volume_level: Volume level (0-100).
+        """
         if self._client is None:
             return
         try:
@@ -308,7 +304,10 @@ class MPDPlayer(Player):
             raise PlayerCommandFailed(f"volume_set failed: {err}") from err
 
     async def seek(self, position: int) -> None:
-        """Seek to position in seconds."""
+        """Seek to a position in the current track.
+
+        :param position: Position in seconds.
+        """
         if self._client is None:
             return
         try:
