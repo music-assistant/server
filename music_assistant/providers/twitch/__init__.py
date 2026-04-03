@@ -38,9 +38,12 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from streamlink import Streamlink  # type: ignore[attr-defined]
 
+import music_assistant.providers.twitch.ad_handling as _ah
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.twitch.ad_handling import patch_ad_handling
 from music_assistant.providers.twitch.eventsub import EventSubClient
 
 logger = logging.getLogger(__name__)
@@ -719,8 +722,6 @@ class TwitchProvider(MusicProvider):
                 if not stream:
                     return
 
-                import music_assistant.providers.twitch.ad_handling as _ah  # noqa: PLC0415
-
                 fd = await asyncio.to_thread(stream.open)
                 prev_ad_state = False
                 try:
@@ -750,8 +751,6 @@ class TwitchProvider(MusicProvider):
 
     def _resolve_streams(self, channel: str) -> dict[str, Any] | None:
         """Resolve Streamlink streams for a channel. Blocking — call via to_thread."""
-        from streamlink import Streamlink  # type: ignore[attr-defined]  # noqa: PLC0415
-
         try:
             if self._streamlink_session is None:
                 self._streamlink_session = Streamlink()
@@ -782,10 +781,6 @@ class TwitchProvider(MusicProvider):
             if any_stream is not None:
                 reader_cls = getattr(type(any_stream), "__reader__", None)
                 if reader_cls is not None:
-                    from music_assistant.providers.twitch.ad_handling import (  # noqa: PLC0415
-                        patch_ad_handling,
-                    )
-
                     patch_ad_handling(reader_cls=reader_cls)
 
             return result

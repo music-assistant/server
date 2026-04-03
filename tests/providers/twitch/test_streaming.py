@@ -156,8 +156,8 @@ async def test_streamlink_token_passed_as_header(provider: TwitchProvider) -> No
     }.get(key, default)
 
     with (
-        patch("streamlink.Streamlink", return_value=mock_session),
-        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+        patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session),
+        patch("music_assistant.providers.twitch.patch_ad_handling"),
     ):
         provider._resolve_streams("testchannel")
 
@@ -180,8 +180,8 @@ async def test_streamlink_token_omitted_when_empty(provider: TwitchProvider) -> 
     }.get(key, default)
 
     with (
-        patch("streamlink.Streamlink", return_value=mock_session),
-        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+        patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session),
+        patch("music_assistant.providers.twitch.patch_ad_handling"),
     ):
         provider._resolve_streams("testchannel")
 
@@ -200,8 +200,8 @@ async def test_invalid_streamlink_token_stream_still_plays(provider: TwitchProvi
     }.get(key, default)
 
     with (
-        patch("streamlink.Streamlink", return_value=mock_session),
-        patch("music_assistant.providers.twitch.ad_handling.patch_ad_handling"),
+        patch("music_assistant.providers.twitch.Streamlink", return_value=mock_session),
+        patch("music_assistant.providers.twitch.patch_ad_handling"),
     ):
         result = provider._resolve_streams("testchannel")
 
