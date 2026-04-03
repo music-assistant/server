@@ -608,7 +608,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
-            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES,
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
         if enable_icy:
