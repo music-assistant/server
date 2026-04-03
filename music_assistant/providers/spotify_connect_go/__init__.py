@@ -115,8 +115,8 @@ class SpotifyConnectGoProvider(PluginProvider):
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self.config_dir = os.path.join(self.cache_dir, "config")
         #self._go_librespot_bin = "/usr/local/bin/go-librespot"
-        self._go_librespot_bin = "/share/go-librespot"
-        self._stop_called: bool = False
+        self._go_librespot_bin = "/media/bin/go-librespot"
+        self._stop_called: bool = False 
         self._runner_task: asyncio.Task | None = None
         self._websocket_task: asyncio.Task | None = None
         self._go_librespot_proc: AsyncProcess | None = None
