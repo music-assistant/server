@@ -1380,15 +1380,15 @@ class DeezerProvider(MusicProvider):
                     )
                 )
 
-    # -- Similar tracks (via GW API) --
+    # -- Similar tracks (via GraphQL) --
 
     @use_cache(3600 * 24)  # Cache for 24 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         result = await self.gql_client.get_similar_tracks(track_id=prov_track_id, nb=limit)
-        if result is None or result.track is None:
+        if result is None:
             return []
-        return [self._parse_track(t) for t in result.track.recommended_tracks if t is not None]
+        return [self._parse_track(t) for t in result.recommended_tracks if t is not None]
 
     # -- Streaming (tracks via GW API, radio/podcasts via GQL stream URLs) --
 

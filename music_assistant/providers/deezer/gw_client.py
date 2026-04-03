@@ -156,16 +156,6 @@ class GWClient:
         )
         return cast("dict[str, Any]", result["results"])
 
-    async def get_similar_track_ids(self, track_id: str, limit: int = 25) -> list[str]:
-        """Get a list of similar track IDs for a given track.
-
-        :param track_id: The Deezer track ID (SNG_ID).
-        :param limit: Maximum number of similar tracks to return.
-        """
-        result = await self._gw_api_call("song.getSearchTrackMix", args={"SNG_ID": track_id})
-        tracks = result["results"].get("data", [])[:limit]
-        return [str(t["SNG_ID"]) for t in tracks]
-
     async def get_deezer_track_urls(self, track_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         """Get the URL for a given track id."""
         dz_license = await self._get_license()
