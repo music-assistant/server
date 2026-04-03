@@ -1454,6 +1454,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player is None:
             return
         del self._players[player_id]
+        self._player_throttlers.pop(player_id, None)
+        self._player_command_locks.pop(f"set_members_{player_id}", None)
+        if handle := self._pending_protocol_evaluations.pop(player_id, None):
+            handle.cancel()
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
@@ -1800,6 +1804,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             new_child_volume = max(0, min(100, new_child_volume))
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
+
+        # notify active plugin source once at the group level to prevent
+        # feedback loops from per-child callbacks with different volume values
+        if plugin_source := self._get_active_plugin_source(group_player):
+            if plugin_source.on_volume and plugin_source.in_use_by == group_player.player_id:
+                await plugin_source.on_volume(volume_level)
 
     def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
         """Clear the cached group volume snapshot for all groups this player belongs to."""
@@ -3024,9 +3034,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # always reset fake mute when controlling volume
         player.extra_data.pop(ATTR_FAKE_MUTE, None)
 
-        # Check if a plugin source is active with a volume callback
+        # Check if a plugin source is active with a volume callback.
+        # Only fire if this player is the direct owner of the plugin source,
+        # not when it merely inherits active_source from a parent group —
+        # group volume changes handle the callback once at the group level.
         if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.on_volume:
+            if plugin_source.on_volume and plugin_source.in_use_by == player.player_id:
                 await plugin_source.on_volume(volume_level)
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:

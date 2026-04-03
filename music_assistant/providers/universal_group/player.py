@@ -26,6 +26,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_HTTP_PROFILE,
     DEFAULT_STREAM_HEADERS,
+    DLNA_CONTENT_FEATURES,
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
@@ -416,10 +417,8 @@ class UniversalGroupPlayer(Player):
 
         headers = {
             **DEFAULT_STREAM_HEADERS,
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES,
             "Content-Type": get_mime_type(output_format_str),
-            "Accept-Ranges": "none",
-            "Cache-Control": "no-cache",
-            "Connection": "close",
         }
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
