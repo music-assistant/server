@@ -8,6 +8,10 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+)
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
 from .provider import WebDAVFileSystemProvider
@@ -86,23 +90,6 @@ async def get_config_entries(
             default_value=False,
             description="Verify SSL certificates when connecting to HTTPS WebDAV servers",
         ),
-        ConfigEntry(
-            key="missing_album_artist_action",
-            type=ConfigEntryType.STRING,
-            label="Action when album artist tag is missing",
-            options=[
-                ConfigValueOption("Use track artist(s)", "track_artist"),
-                ConfigValueOption("Use folder name", "folder_name"),
-                ConfigValueOption("Use 'Various Artists'", "various_artists"),
-            ],
-            default_value="various_artists",
-            description="What to do when a track is missing the album artist tag",
-        ),
-        ConfigEntry(
-            key="ignore_album_playlists",
-            type=ConfigEntryType.BOOLEAN,
-            label="Ignore playlists in album folders",
-            default_value=True,
-            description="Ignore playlist files found in album subdirectories",
-        ),
+        CONF_ENTRY_MISSING_ALBUM_ARTIST,
+        CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     )
