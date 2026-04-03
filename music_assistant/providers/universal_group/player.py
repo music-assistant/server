@@ -419,8 +419,6 @@ class UniversalGroupPlayer(Player):
             **DEFAULT_STREAM_HEADERS,
             "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES,
             "Content-Type": get_mime_type(output_format_str),
-            "Cache-Control": "no-cache",
-            "Connection": "close",
         }
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
