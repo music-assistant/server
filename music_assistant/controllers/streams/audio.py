@@ -556,7 +556,6 @@ class StreamsAudio:
             return (cache[0], StreamType(cache[1]))
 
         stream_type = StreamType.HTTP
-        resolved_url = url
         timeout = ClientTimeout(total=None, connect=10, sock_read=5)
 
         try:
@@ -609,15 +608,7 @@ class StreamsAudio:
         except aiohttp.ClientError as err:
             return await self._handle_client_error_for_radio_stream(url, err, stream_type)
 
-        result = (resolved_url, stream_type)
-        await mass.cache.set(
-            url,
-            result,
-            expiration=3600 * 3,
-            provider=CACHE_PROVIDER,
-            category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-        )
-        return result
+        return await self._cache_and_return_radio_result(url, stream_type)
 
     async def get_icy_radio_stream(
         self, url: str, streamdetails: StreamDetails
