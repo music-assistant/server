@@ -218,6 +218,7 @@ class SonosPlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
+        self.mark_stop_called()
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
