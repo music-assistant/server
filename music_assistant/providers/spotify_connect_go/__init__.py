@@ -309,7 +309,7 @@ class SpotifyConnectGoProvider(PluginProvider):
 
         return config_path
 
-    async def _go_librespot_runner(self) -> None:
+async def _go_librespot_runner(self) -> None:
         """Run the spotify connect daemon in a background task."""
         self.logger.info("Starting Spotify Connect Go background daemon")
 
@@ -330,6 +330,20 @@ class SpotifyConnectGoProvider(PluginProvider):
         config_file = self._create_config_file()
         self.logger.debug("Created config file at: %s", config_file)
 
+        # Keep pipe open for reading continuously so go-librespot can always write
+        async def _keep_pipe_open() -> None:
+            """Hold the pipe open for reading to prevent broken pipe errors."""
+            while not self._stop_called:
+                try:
+                    pipe_fd = os.open(self.named_pipe, os.O_RDONLY | os.O_NONBLOCK)
+                    await asyncio.sleep(0.1)
+                    os.close(pipe_fd)
+                except OSError:
+                    pass
+                await asyncio.sleep(0.5)
+
+        pipe_task = self.mass.create_task(_keep_pipe_open())
+
         try:
             args: list[str] = [
                 self._go_librespot_bin,
@@ -339,17 +353,10 @@ class SpotifyConnectGoProvider(PluginProvider):
 
             self.logger.debug("Starting go-librespot with args: %s", " ".join(args))
 
-            # Open pipe in non-blocking mode so go-librespot can open its write end
-
-            pipe_fd = os.open(self.named_pipe, os.O_RDONLY | os.O_NONBLOCK)
-
             self._go_librespot_proc = go_librespot = AsyncProcess(
                 args, stdout=False, stderr=True, name=f"go-librespot[{self.name}]"
             )
             await go_librespot.start()
-            await asyncio.sleep(1)  # Give go-librespot time to open the pipe for writing
-            # Close our non-blocking read handle now that go-librespot has started
-            os.close(pipe_fd)
 
             # Give the server time to start
             await asyncio.sleep(3)
@@ -366,48 +373,6 @@ class SpotifyConnectGoProvider(PluginProvider):
                                 break
                 except Exception as e:
                     if i < max_retries - 1:
-                        self.logger.debug(
-                            "Waiting for go-librespot to start (attempt %d/%d)", i + 1, max_retries
-                        )
-                        await asyncio.sleep(1)
-                    else:
-                        self.logger.error("Failed to connect to go-librespot web interface: %s", e)
-
-            # Only start WebSocket listener if the server started successfully
-            if self._go_librespot_started.is_set():
-                self._websocket_task = self.mass.create_task(self._websocket_listener())
-
-            # Create a task to read stderr
-            stderr_task = self.mass.create_task(self._read_stderr_output(go_librespot))
-
-            # Wait for the process to complete
-            return_code = await go_librespot.wait()
-            self.logger.info("go-librespot process exited with return code: %s", return_code)
-
-            # Cancel stderr task
-            stderr_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await stderr_task
-
-        except asyncio.CancelledError:
-            self.logger.info("go-librespot runner cancelled")
-        except Exception as e:
-            self.logger.error("Error running go-librespot: %s", e)
-        finally:
-            if self._go_librespot_proc:
-                await self._go_librespot_proc.close()
-            self.logger.info("Spotify Connect Go background daemon stopped for %s", self.name)
-            await check_output("rm", "-f", self.named_pipe)
-
-            if not self._go_librespot_started.is_set():
-                self.unload_with_error("Unable to initialize go-librespot daemon.")
-                return
-
-            # Auto restart if not stopped manually
-            if not self._stop_called and self._go_librespot_started.is_set():
-                self.logger.warning("go-librespot exited unexpectedly, restarting in 5 seconds...")
-                await asyncio.sleep(5)
-                self._setup_player_daemon()
 
     async def _read_stderr_output(self, process: AsyncProcess) -> None:
         """Read stderr output from go-librespot process."""
