@@ -376,7 +376,7 @@ class AudioBuffer:
                     streamdetails.queue_id, CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED
                 )
             )
-            if streamdetails.queue_id
+            if streamdetails.queue_id and streamdetails.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
         )
         if smart_fades_mode != SmartFadesMode.DISABLED:
