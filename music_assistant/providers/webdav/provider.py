@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import posixpath
 import urllib.parse
+from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
@@ -169,7 +170,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         await self.cache.set(
             key=cache_key,
-            data=filesystem_items,
+            data=[asdict(item) for item in filesystem_items],
             provider=self.instance_id,
             category=0,
             expiration=300,
