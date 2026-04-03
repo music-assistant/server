@@ -387,7 +387,7 @@ class SpotifyConnectGoProvider(PluginProvider):
             self.logger.error("Error running go-librespot: %s", e)
         finally:
             if self._go_librespot_proc:
-                await self._go_librespot_proc.close(True)
+                await self._go_librespot_proc.close()
             self.logger.info("Spotify Connect Go background daemon stopped for %s", self.name)
             await check_output("rm", "-f", self.named_pipe)
 
