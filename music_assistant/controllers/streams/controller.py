@@ -320,7 +320,7 @@ class StreamsController(CoreController):
         :param media: The PlayerMedia object for which to resolve the stream URL.
         :return: The resolved stream URL as a string.
         """
-        if media.media_type == MediaType.ANNOUNCEMENT:
+        if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
         if media.media_type == MediaType.PLUGIN_SOURCE:
             if media.custom_data and (source_id := media.custom_data.get("source_id")):
