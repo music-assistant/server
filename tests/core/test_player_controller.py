@@ -229,5 +229,111 @@ class TestPlayerAvailability:
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
 
 
+class TestUnregisterCleanup:
+    """Test that unregister cleans up leaked internal state."""
+
+    def test_throttler_removed(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player removes its throttler entry."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+
+        asyncio.run(controller.unregister("player_1"))
+
+        assert "player_1" not in controller._player_throttlers
+
+    def test_command_locks_removed(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player removes its command lock entries."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+        controller._player_command_locks = {
+            "set_members_player_1": asyncio.Lock(),
+        }
+
+        asyncio.run(controller.unregister("player_1"))
+
+        assert "set_members_player_1" not in controller._player_command_locks
+
+    def test_other_players_state_untouched(self, mock_mass: MagicMock) -> None:
+        """Unregistering one player does not affect another player's state."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player_a = MockPlayer(provider, "player_a", "Player A")
+        player_b = MockPlayer(provider, "player_b", "Player B")
+
+        controller._players = {"player_a": player_a, "player_b": player_b}
+        controller._player_throttlers = {
+            "player_a": Throttler(1, 0.05),
+            "player_b": Throttler(1, 0.05),
+        }
+        controller._player_command_locks = {
+            "set_members_player_a": asyncio.Lock(),
+            "set_members_player_b": asyncio.Lock(),
+        }
+
+        asyncio.run(controller.unregister("player_a"))
+
+        assert "player_b" in controller._player_throttlers
+        assert "set_members_player_b" in controller._player_command_locks
+        assert "player_a" not in controller._player_throttlers
+        assert "set_members_player_a" not in controller._player_command_locks
+
+    def test_suffix_player_id_not_over_matched(self, mock_mass: MagicMock) -> None:
+        """Removing player 'b' must not remove locks for player 'a_b' (no suffix matching)."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player_b = MockPlayer(provider, "b", "Player B")
+        player_a_b = MockPlayer(provider, "a_b", "Player A_B")
+
+        controller._players = {"b": player_b, "a_b": player_a_b}
+        controller._player_throttlers = {
+            "b": Throttler(1, 0.05),
+            "a_b": Throttler(1, 0.05),
+        }
+        controller._player_command_locks = {
+            "set_members_b": asyncio.Lock(),
+            "set_members_a_b": asyncio.Lock(),
+        }
+
+        asyncio.run(controller.unregister("b"))
+
+        assert "set_members_a_b" in controller._player_command_locks
+        assert "set_members_b" not in controller._player_command_locks
+
+    def test_pending_protocol_evaluation_cancelled(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player cancels and removes its pending protocol evaluation."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        mock_handle = MagicMock()
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+        controller._pending_protocol_evaluations = {"player_1": mock_handle}
+
+        asyncio.run(controller.unregister("player_1"))
+
+        mock_handle.cancel.assert_called_once()
+        assert "player_1" not in controller._pending_protocol_evaluations
+
+    def test_unregister_nonexistent_player_is_noop(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player that doesn't exist is silently ignored."""
+        controller = PlayerController(mock_mass)
+        controller._player_throttlers = {"other": Throttler(1, 0.05)}
+        controller._player_command_locks = {"set_members_other": asyncio.Lock()}
+
+        asyncio.run(controller.unregister("nonexistent"))
+
+        assert "other" in controller._player_throttlers
+        assert "set_members_other" in controller._player_command_locks
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
