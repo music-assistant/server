@@ -141,9 +141,9 @@ class SpotifyConnectGoProvider(PluginProvider):
                 bit_depth=16,
                 channels=2,
             ),
-            metadata=PlayerMedia(
-                "Spotify Connect Go",
-            ),
+           # metadata=PlayerMedia(
+           #     "Spotify Connect Go",
+           # ),
             stream_type=StreamType.NAMED_PIPE,
             path=self.named_pipe,
         )
