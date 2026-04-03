@@ -1443,6 +1443,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player is None:
             return
         del self._players[player_id]
+        self._player_throttlers.pop(player_id, None)
+        self._player_command_locks.pop(f"set_members_{player_id}", None)
+        if handle := self._pending_protocol_evaluations.pop(player_id, None):
+            handle.cancel()
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
