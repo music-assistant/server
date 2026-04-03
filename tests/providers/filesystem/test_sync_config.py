@@ -94,7 +94,7 @@ class TestProcessItemRespectsConfig:
         result = await provider._process_item_async(item, None)
 
         assert result is False
-        provider.mass.music.tracks.add_item_to_library.assert_not_called()
+        provider.mass.music.tracks.add_item_to_library.assert_not_called()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_tracks_imported_when_sync_enabled(self) -> None:
@@ -107,8 +107,8 @@ class TestProcessItemRespectsConfig:
         item.file_size = 1000
 
         mock_track = MagicMock()
-        provider._parse_track = AsyncMock(return_value=mock_track)
-        provider.mass.music.tracks.add_item_to_library = AsyncMock()
+        provider._parse_track = AsyncMock(return_value=mock_track)  # type: ignore[method-assign]
+        provider.mass.music.tracks.add_item_to_library = AsyncMock()  # type: ignore[method-assign,misc]
 
         with patch(
             "music_assistant.providers.filesystem_local.async_parse_tags",
@@ -130,7 +130,7 @@ class TestProcessItemRespectsConfig:
         result = await provider._process_item_async(item, None)
 
         assert result is False
-        provider.mass.music.playlists.add_item_to_library.assert_not_called()
+        provider.mass.music.playlists.add_item_to_library.assert_not_called()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_playlists_imported_when_sync_enabled(self) -> None:
@@ -142,8 +142,8 @@ class TestProcessItemRespectsConfig:
         item.relative_path = "playlists/favorites.m3u"
 
         mock_playlist = MagicMock()
-        provider.get_playlist = AsyncMock(return_value=mock_playlist)
-        provider.mass.music.playlists.add_item_to_library = AsyncMock()
+        provider.get_playlist = AsyncMock(return_value=mock_playlist)  # type: ignore[method-assign]
+        provider.mass.music.playlists.add_item_to_library = AsyncMock()  # type: ignore[method-assign,misc]
 
         result = await provider._process_item_async(item, None)
 
@@ -161,7 +161,7 @@ class TestProcessItemRespectsConfig:
         result = await provider._process_item_async(item, None)
 
         assert result is False
-        provider.mass.music.audiobooks.add_item_to_library.assert_not_called()
+        provider.mass.music.audiobooks.add_item_to_library.assert_not_called()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_audiobooks_imported_when_sync_enabled(self) -> None:
@@ -174,8 +174,8 @@ class TestProcessItemRespectsConfig:
         item.file_size = 5000
 
         mock_audiobook = MagicMock()
-        provider._parse_audiobook = AsyncMock(return_value=mock_audiobook)
-        provider.mass.music.audiobooks.add_item_to_library = AsyncMock()
+        provider._parse_audiobook = AsyncMock(return_value=mock_audiobook)  # type: ignore[method-assign]
+        provider.mass.music.audiobooks.add_item_to_library = AsyncMock()  # type: ignore[method-assign,misc]
 
         with patch(
             "music_assistant.providers.filesystem_local.async_parse_tags",
@@ -197,7 +197,7 @@ class TestProcessItemRespectsConfig:
         result = await provider._process_item_async(item, None)
 
         assert result is False
-        provider.mass.music.podcasts.add_item_to_library.assert_not_called()
+        provider.mass.music.podcasts.add_item_to_library.assert_not_called()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_podcasts_imported_when_sync_enabled(self) -> None:
@@ -211,8 +211,8 @@ class TestProcessItemRespectsConfig:
 
         mock_episode = MagicMock()
         mock_episode.podcast = MagicMock(spec=Podcast)
-        provider._parse_podcast_episode = AsyncMock(return_value=mock_episode)
-        provider.mass.music.podcasts.add_item_to_library = AsyncMock()
+        provider._parse_podcast_episode = AsyncMock(return_value=mock_episode)  # type: ignore[method-assign]
+        provider.mass.music.podcasts.add_item_to_library = AsyncMock()  # type: ignore[method-assign,misc]
 
         with patch(
             "music_assistant.providers.filesystem_local.async_parse_tags",
