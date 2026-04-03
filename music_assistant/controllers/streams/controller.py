@@ -52,6 +52,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     CONF_BUFFER_SIZE,
@@ -109,6 +110,12 @@ class StreamsController(CoreController):
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
         self._smart_fades_analyzer = SmartFadesAnalyzer(self)
+        self._audio_analysis = AudioAnalysisController(self)
+
+    @property
+    def audio_analysis(self) -> AudioAnalysisController:
+        """Return the AudioAnalysisController instance."""
+        return self._audio_analysis
 
     @property
     def base_url(self) -> str:
