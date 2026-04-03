@@ -76,11 +76,11 @@ async def get_config_entries(
             multi_value=False,
             options=[
                 ConfigValueOption(x.display_name, x.player_id)
-                for x in mass.players.all(False, False)
+                for x in mass.players
             ],
             required=True,
         ),
-        ConfigEntry(
+        ConfigEntry(	
             key=CONF_SERVER_PORT,
             type=ConfigEntryType.INTEGER,
             label="Web Interface Port",
