@@ -10,7 +10,6 @@ so multiple players can be linked to multiple Spotify Connect daemons.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import os
 import time
@@ -132,7 +131,7 @@ class SpotifyConnectGoProvider(PluginProvider):
         self._source_details = PluginSource(
             id=self.instance_id,
             name=self.manifest.name,
-            passive=True,
+            passive=False,
             can_play_pause=True,
             can_seek=True,
             can_next_previous=True,
@@ -525,17 +524,7 @@ class SpotifyConnectGoProvider(PluginProvider):
 
             if not self._source_details.in_use_by:
                 self.logger.info("Selecting source on player %s", self.mass_player_id)
-                self._source_details.in_use_by = self.mass_player_id
-
-                # Verify active_source was set correctly
-                await asyncio.sleep(0.1)  # Give MA a moment to process
-                player = self.mass.players.get_player(self.mass_player_id)
-                if player:
-                    self.logger.info(
-                        "After select_source - active_source: %s (expected: %s)",
-                        player.active_source,
-                        self.instance_id,
-                    )
+                await self.mass.players.select_source(self.mass_player_id, self.instance_id)
 
             player = self.mass.players.get_player(self.mass_player_id)
             await self._on_play(player)
@@ -860,6 +849,9 @@ class SpotifyConnectGoProvider(PluginProvider):
                 if hasattr(player, "_attr_current_media"):
                     player._attr_current_media = media
                     self.logger.debug("Set player _attr_current_media")
+
+                if hasattr(player, "update_state"):
+                    player.update_state()
 
                 if hasattr(player, "update_state"):
                     player.update_state()
