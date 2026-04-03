@@ -309,7 +309,7 @@ class SpotifyConnectGoProvider(PluginProvider):
 
         return config_path
 
-async def _go_librespot_runner(self) -> None:
+    async def _go_librespot_runner(self) -> None:
         """Run the spotify connect daemon in a background task."""
         self.logger.info("Starting Spotify Connect Go background daemon")
 
