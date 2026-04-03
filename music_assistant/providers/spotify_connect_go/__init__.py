@@ -472,7 +472,7 @@ class SpotifyConnectGoProvider(PluginProvider):
         if event_type in ("metadata", "track_changed", "new_track"):
             self.logger.info("Metadata event received, updating...")
             await self._update_metadata(event_data.get("data", {}))
-            player = self.mass.players.get(self.mass_player_id)
+            player = self.mass.players.get_player(self.mass_player_id)
             await self._on_resume(player)
 
         elif event_type in ("will_play", "playback_started", "playing", "active"):
@@ -496,7 +496,7 @@ class SpotifyConnectGoProvider(PluginProvider):
                         if self._source_details.metadata:
                             self._source_details.metadata.elapsed_time = 0
                         if self._source_details.in_use_by:
-                            player = self.mass.players.get(self._source_details.in_use_by)
+                            player = self.mass.players.get_player(self._source_details.in_use_by)
                             if player:
                                 import time
 
@@ -513,7 +513,7 @@ class SpotifyConnectGoProvider(PluginProvider):
 
                 # Verify active_source was set correctly
                 await asyncio.sleep(0.1)  # Give MA a moment to process
-                player = self.mass.players.get(self.mass_player_id)
+                player = self.mass.players.get_player(self.mass_player_id)
                 if player:
                     self.logger.info(
                         "After select_source - active_source: %s (expected: %s)",
@@ -521,7 +521,7 @@ class SpotifyConnectGoProvider(PluginProvider):
                         self.instance_id,
                     )
 
-            player = self.mass.players.get(self.mass_player_id)
+            player = self.mass.players.get_player(self.mass_player_id)
             await self._on_play(player)
             if player:
                 if is_resume:
@@ -560,7 +560,7 @@ class SpotifyConnectGoProvider(PluginProvider):
             self.logger.debug("Playback paused")
 
             if self._source_details.in_use_by:
-                player = self.mass.players.get(self._source_details.in_use_by)
+                player = self.mass.players.get_player(self._source_details.in_use_by)
                 if player:
                     import time
 
@@ -588,7 +588,7 @@ class SpotifyConnectGoProvider(PluginProvider):
 
             previous_player_id = self._source_details.in_use_by
             previous_player = (
-                self.mass.players.get(previous_player_id) if previous_player_id else None
+                self.mass.players.get_player(previous_player_id) if previous_player_id else None
             )
 
             if previous_player:
@@ -650,7 +650,7 @@ class SpotifyConnectGoProvider(PluginProvider):
                         self._source_details.metadata.elapsed_time = position_sec
 
                     if self._source_details.in_use_by:
-                        player = self.mass.players.get(self._source_details.in_use_by)
+                        player = self.mass.players.get_player(self._source_details.in_use_by)
                         if player:
                             # Cap position to duration
                             if (
@@ -818,7 +818,7 @@ class SpotifyConnectGoProvider(PluginProvider):
 
         # Update player elapsed time when metadata changes
         if self._source_details.in_use_by:
-            player = self.mass.players.get(self._source_details.in_use_by)
+            player = self.mass.players.get_player(self._source_details.in_use_by)
             if player:
                 import time
 
