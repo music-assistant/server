@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -557,9 +556,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
         media_type=MediaType.ARTIST,
         provider="library",
         uri="artist://library/123",
-    )
-    mass_minimal.music = cast(
-        "Any", SimpleNamespace(get_item_by_uri=AsyncMock(return_value=resolved_item))
+        metadata=SimpleNamespace(last_refresh=0),
     )
 
     async def fake_update_metadata(item: object, force_refresh: bool = False) -> object:
@@ -570,7 +567,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
         return item
 
     monkeypatch.setattr(metadata, "update_metadata", fake_update_metadata)
-    metadata.schedule_update_metadata(resolved_item.uri)
+    metadata.schedule_update_metadata(cast("Any", resolved_item))
 
     task_id = metadata._get_metadata_lookup_task_id(resolved_item.uri)
     await lookup_started.wait()
@@ -585,10 +582,8 @@ async def test_schedule_update_metadata_uses_managed_background_task(
     release_lookup.set()
     deadline = asyncio.get_running_loop().time() + 2.0
     while asyncio.get_running_loop().time() < deadline:
-        with suppress(InvalidDataError):
-            tasks_controller.get_task(task_id)
-            await asyncio.sleep(0.01)
-            continue
-        break
+        if tasks_controller.get_task(task_id).status == TaskStatus.SUCCESS:
+            break
+        await asyncio.sleep(0.01)
     else:
-        raise AssertionError("Metadata lookup task was not removed after finishing")
+        raise AssertionError("Metadata lookup task did not finish successfully")

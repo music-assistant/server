@@ -30,8 +30,9 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.music_provider import MusicProvider
 
@@ -81,6 +82,7 @@ class PandoraProvider(MusicProvider):
     _user_id: str | None = None
     _csrf_token: str | None = None
     _sessions: dict[str, PandoraStationSession]
+    _socks_proxy: bool = False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -90,7 +92,15 @@ class PandoraProvider(MusicProvider):
         # Authenticate with Pandora
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
+        socks_url = get_socks5_url(str(self.config.get_value(CONF_SOCKS_URL)))
 
+        if socks_url:
+            self.http_session = create_clientsession(
+                self.mass, verify_ssl=True, socks_url=socks_url
+            )
+            self._socks_proxy = True
+        else:
+            self.http_session = self.mass.http_session
         await self._authenticate(username, password)
 
         # Register dynamic stream route
@@ -104,12 +114,13 @@ class PandoraProvider(MusicProvider):
         """Handle unload/close of the provider."""
         for callback in getattr(self, "_on_unload_callbacks", []):
             callback()
+        await self.close()
         await super().unload(is_removed)
 
     async def _authenticate(self, username: str, password: str) -> None:
         """Authenticate with Pandora and get auth token."""
         try:
-            self._csrf_token = await get_csrf_token(self.mass.http_session)
+            self._csrf_token = await get_csrf_token(self.http_session)
 
             login_data = {
                 "username": username,
@@ -120,13 +131,14 @@ class PandoraProvider(MusicProvider):
 
             headers = create_auth_headers(self._csrf_token)
 
-            async with self.mass.http_session.post(
+            async with self.http_session.post(
                 LOGIN_ENDPOINT,
                 headers=headers,
                 json=login_data,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
                 if response.status != 200:
+                    await self.close()
                     raise LoginFailed(f"Login request failed with status {response.status}")
 
                 response_data = await response.json()
@@ -134,12 +146,14 @@ class PandoraProvider(MusicProvider):
 
                 self._auth_token = response_data.get("authToken")
                 if not self._auth_token:
+                    await self.close()
                     raise LoginFailed("No auth token received from Pandora")
 
                 self._user_id = response_data.get("listenerId")
                 self.logger.info("Successfully authenticated with Pandora")
 
         except aiohttp.ClientError as err:
+            await self.close()
             self.logger.exception("Network error during authentication")
             raise ProviderUnavailableError(
                 "Unable to connect to Pandora for authentication"
@@ -156,12 +170,13 @@ class PandoraProvider(MusicProvider):
         :param retry: Whether to retry once on 401 authentication errors
         """
         if not self._csrf_token or not self._auth_token:
+            await self.close()
             raise LoginFailed("Not authenticated with Pandora")
 
         headers = create_auth_headers(self._csrf_token, self._auth_token)
 
         try:
-            async with self.mass.http_session.request(
+            async with self.http_session.request(
                 method, url, json=data, headers=headers
             ) as response:
                 # Check status BEFORE parsing JSON
@@ -172,13 +187,17 @@ class PandoraProvider(MusicProvider):
                         password = str(self.config.get_value(CONF_PASSWORD))
                         await self._authenticate(username, password)
                         return await self._api_request(method, url, data, retry=False)
+                    await self.close()
                     raise LoginFailed("Pandora authentication failed after retry")
 
                 if response.status == 404:
+                    await self.close()
                     raise MediaNotFoundError("Resource not found")
                 if response.status >= 500:
+                    await self.close()
                     raise ProviderUnavailableError("Pandora server error")
                 if response.status >= 400:
+                    await self.close()
                     raise InvalidDataError(f"Pandora API error: HTTP {response.status}")
 
                 result: dict[str, Any] = await response.json()
@@ -186,8 +205,10 @@ class PandoraProvider(MusicProvider):
                 return result
 
         except aiohttp.ClientError as err:
+            await self.close()
             raise ProviderUnavailableError("Unable to connect to Pandora") from err
         except (ValueError, KeyError) as err:
+            await self.close()
             raise InvalidDataError("Invalid response from Pandora") from err
 
     @use_cache(3600)
@@ -252,7 +273,11 @@ class PandoraProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type != MediaType.RADIO:
+            await self.close()
             raise MediaNotFoundError(f"Unsupported media type: {media_type}")
+
+        # Clear any existing session so we get fresh tracks from the API
+        self._sessions.pop(item_id, None)
 
         # Create playlist with 1000 track placeholders for continuous streaming
         parts = [
@@ -337,8 +362,10 @@ class PandoraProvider(MusicProvider):
             return result
 
         except MediaNotFoundError:
+            await self.close()
             raise
         except InvalidDataError as err:
+            await self.close()
             self.logger.error("Invalid fragment data for station %s: %s", session.station_id, err)
             raise
 
@@ -507,3 +534,8 @@ class PandoraProvider(MusicProvider):
         streamdetails.stream_metadata.image_url = album_art_url
         streamdetails.stream_metadata.duration = track.get("trackLength")
         streamdetails.stream_metadata.uri = track.get("songDetailURL")
+
+    async def close(self) -> None:
+        """Handle closing of http session if using socks."""
+        if self._socks_proxy and self.http_session:
+            await self.http_session.close()

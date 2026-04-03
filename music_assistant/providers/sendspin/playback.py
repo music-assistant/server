@@ -8,21 +8,29 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
+from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream
+from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
-from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.sendspin.bridge_role import (
+    BRIDGE_BIT_DEPTH,
+    BRIDGE_CHANNELS,
+    BRIDGE_SAMPLE_RATE,
+    BridgePlayerRole,
+)
 
 if TYPE_CHECKING:
     from .player import SendspinPlayer
+    from .provider import SendspinProvider
 
 
 # Same sample format expressed in both MA and Sendspin type systems.
@@ -641,42 +649,55 @@ class SendspinPlaybackSession:
             audio_source = self.player.mass.streams.get_stream(
                 media, _PCM_FORMAT, self.player.player_id
             )
-            async for chunk in audio_source:
-                if not chunk:
-                    continue
-                for slice_chunk in self._iter_pcm_slices(chunk, _PCM_FORMAT, _PRODUCER_SLICE_US):
-                    if not slice_chunk:
+            completed = False
+            try:
+                async for chunk in audio_source:
+                    if not chunk:
                         continue
-                    duration_us = self._duration_us(slice_chunk, _PCM_FORMAT)
-                    if duration_us <= 0:
-                        continue
-                    await self._refresh_member_mappings()
-                    pending = _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
-                    await pending_chunks.put(pending)
-                    pending_backlog.append(pending)
-                    pending_duration_us += duration_us
-                    join_pending_ids, pipelines = await self._snapshot_active_pipelines()
-                    transform_pipelines: list[_MemberPipeline] = []
-                    for member_id, pipeline in pipelines:
-                        if not pipeline.config.requires_transform:
+                    for slice_chunk in self._iter_pcm_slices(
+                        chunk, _PCM_FORMAT, _PRODUCER_SLICE_US
+                    ):
+                        if not slice_chunk:
                             continue
-                        if member_id in join_pending_ids:
+                        duration_us = self._duration_us(slice_chunk, _PCM_FORMAT)
+                        if duration_us <= 0:
                             continue
-                        transform_pipelines.append(pipeline)
-                    results = await asyncio.gather(
-                        *(
-                            self._transform_member_chunk(pipeline, slice_chunk)
-                            for pipeline in transform_pipelines
-                        ),
-                        return_exceptions=True,
-                    )
-                    for pipeline, result in zip(transform_pipelines, results, strict=True):
-                        if isinstance(result, BaseException):
-                            self.player.logger.warning(
-                                "Transform push failed for channel %s: %s",
-                                pipeline.channel_id,
-                                result,
-                            )
+                        await self._refresh_member_mappings()
+                        pending = _PendingChunk(pcm=slice_chunk, duration_us=duration_us)
+                        await pending_chunks.put(pending)
+                        pending_backlog.append(pending)
+                        pending_duration_us += duration_us
+                        join_pending_ids, pipelines = await self._snapshot_active_pipelines()
+                        transform_pipelines: list[_MemberPipeline] = []
+                        for member_id, pipeline in pipelines:
+                            if not pipeline.config.requires_transform:
+                                continue
+                            if member_id in join_pending_ids:
+                                continue
+                            transform_pipelines.append(pipeline)
+                        results = await asyncio.gather(
+                            *(
+                                self._transform_member_chunk(pipeline, slice_chunk)
+                                for pipeline in transform_pipelines
+                            ),
+                            return_exceptions=True,
+                        )
+                        for pipeline, result in zip(transform_pipelines, results, strict=True):
+                            if isinstance(result, BaseException):
+                                self.player.logger.warning(
+                                    "Transform push failed for channel %s: %s",
+                                    pipeline.channel_id,
+                                    result,
+                                )
+                completed = True
+            finally:
+                if not completed:
+                    close_task = asyncio.create_task(audio_source.aclose())
+                    try:
+                        await asyncio.shield(close_task)
+                    except asyncio.CancelledError:
+                        await close_task
+                        raise
 
         async def _commit_pending_chunks() -> None:
             nonlocal pending_duration_us, last_elapsed_update_s
@@ -1067,12 +1088,12 @@ class SendspinPlaybackSession:
         if output_channels not in {"stereo", "left", "right", "mono"}:
             output_channels = "stereo"
         try:
+            output_format = self._get_member_output_format(player_id)
             filter_params = tuple(
-                get_player_filter_params(
-                    self.player.mass,
+                self.player.mass.streams.audio.get_player_filter_params(
                     player_id,
                     _PCM_FORMAT,
-                    _PCM_FORMAT,
+                    output_format,
                 )
             )
         except Exception:
@@ -1086,6 +1107,42 @@ class SendspinPlaybackSession:
             output_channels=output_channels,
             filter_params=filter_params,
         )
+
+    def _get_member_output_format(self, player_id: str) -> AudioFormat:
+        """
+        Return the actual output AudioFormat for a group member.
+
+        Derives the format from the member's sendspin player role (preferred codec
+        and format), falling back to the internal PCM format if unavailable.
+        """
+        provider = cast("SendspinProvider", self.player.provider)
+        client = provider.server_api.get_client(player_id)
+        if client is not None:
+            for role in client.roles_by_family("player"):
+                if isinstance(role, PlayerV1Role):
+                    preferred_fmt = role.preferred_format
+                    preferred_codec = role.preferred_codec
+                    if preferred_fmt is not None and preferred_codec is not None:
+                        if preferred_codec == SendspinAudioCodec.FLAC:
+                            content_type = ContentType.FLAC
+                        elif preferred_codec == SendspinAudioCodec.OPUS:
+                            content_type = ContentType.OPUS
+                        else:
+                            content_type = ContentType.from_bit_depth(preferred_fmt.bit_depth)
+                        return AudioFormat(
+                            content_type=content_type,
+                            sample_rate=preferred_fmt.sample_rate,
+                            bit_depth=preferred_fmt.bit_depth,
+                            channels=preferred_fmt.channels,
+                        )
+                elif isinstance(role, BridgePlayerRole):
+                    return AudioFormat(
+                        content_type=ContentType.from_bit_depth(BRIDGE_BIT_DEPTH),
+                        sample_rate=BRIDGE_SAMPLE_RATE,
+                        bit_depth=BRIDGE_BIT_DEPTH,
+                        channels=BRIDGE_CHANNELS,
+                    )
+        return _PCM_FORMAT
 
     def _get_or_create_preassigned_channel(self, player_id: str) -> UUID:
         """Return stable dedicated channel id for transform-required player."""
