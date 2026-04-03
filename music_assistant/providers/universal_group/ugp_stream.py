@@ -106,7 +106,7 @@ class UGPStream:
                 input_format=self.input_format,
                 output_format=self.base_pcm_format,
                 # we don't allow the player to buffer too much ahead so we use readrate limiting
-                extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "10"],
+                extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
             ):
                 await asyncio.gather(
                     *[sub(chunk) for sub in self.subscribers],
