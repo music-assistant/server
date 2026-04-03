@@ -36,6 +36,8 @@ RANDOM_ALBUM = "random_album"
 RANDOM_TRACKS = "random_tracks"
 RECENTLY_PLAYED = "recently_played"
 RECENTLY_ADDED_TRACKS = "recently_added_tracks"
+INFINITE_MIX = "infinite_mix"
+INFINITE_MIX_FAVORITES = "infinite_mix_favorites"
 
 BUILTIN_PLAYLISTS = {
     ALL_FAVORITE_TRACKS: "All favorited tracks",
@@ -44,7 +46,13 @@ BUILTIN_PLAYLISTS = {
     RANDOM_TRACKS: "500 Random tracks (from library)",
     RECENTLY_PLAYED: "Recently played tracks",
     RECENTLY_ADDED_TRACKS: "Recently added tracks",
+    INFINITE_MIX: "Infinite Mix (library)",
+    INFINITE_MIX_FAVORITES: "Infinite Mix (favorites)",
 }
+
+# Playlists that are dynamic: tracks are fetched on demand, never pre-loaded.
+DYNAMIC_BUILTIN_PLAYLISTS = frozenset({INFINITE_MIX, INFINITE_MIX_FAVORITES})
+
 BUILTIN_PLAYLISTS_ENTRIES = [
     ConfigEntry(
         key=key,
