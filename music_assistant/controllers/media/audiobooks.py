@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from json import loads as json_loads
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -63,6 +64,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
+        self.mass.register_api_command(f"music/{api_base}/authors", self.authors)
+        self.mass.register_api_command(f"music/{api_base}/narrators", self.narrators)
 
     async def library_items(
         self,
@@ -117,6 +120,25 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 in_library_only=True,
             )
         return result
+
+    async def _authors_narrators(self, column: str) -> UniqueList[str]:
+        """Return all available authors."""
+        assert self.mass.music.database is not None  # for type checking
+        rows = await self.mass.music.database.get_rows_from_query(
+            query=f"SELECT DISTINCT {column} FROM {DB_TABLE_AUDIOBOOKS}"
+        )
+        result: set[str] = set()
+        for row in rows:
+            result.update(json_loads(row[column]))
+        return UniqueList(sorted(result))
+
+    async def authors(self) -> UniqueList[str]:
+        """Return all available authors."""
+        return await self._authors_narrators("authors")
+
+    async def narrators(self) -> UniqueList[str]:
+        """Return all available narrators."""
+        return await self._authors_narrators("narrators")
 
     async def versions(
         self,
