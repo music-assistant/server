@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from typing import cast
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.models.player_provider import PlayerProvider
 
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
-
-from .constants import CONF_HOSTS, DEFAULT_MPD_PORT
 from .player import MPDPlayer
 
 CONF_MANUAL_IPS = CONF_ENTRY_MANUAL_DISCOVERY_IPS.key
@@ -45,7 +43,7 @@ class MPDPlayerProvider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Sync registered players against the current hosts config."""
-        entries = cast(list[str], self.config.get_value(CONF_MANUAL_IPS) or [])
+        entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
         new_ids = {f"mpd_{h}_{p}" for h, p in (_parse_host_entry(e) for e in entries)}
 
         for player in self.players:
@@ -62,7 +60,7 @@ class MPDPlayerProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Register one MPDPlayer per entry in the hosts config."""
-        entries = cast(list[str], self.config.get_value(CONF_MANUAL_IPS) or [])
+        entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
         for entry in entries:
             host, port = _parse_host_entry(entry)
             player_id = f"mpd_{host}_{port}"
