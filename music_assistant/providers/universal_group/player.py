@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -27,8 +26,9 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_HTTP_PROFILE,
     DEFAULT_STREAM_HEADERS,
+    DLNA_CONTENT_FEATURES_REALTIME,
 )
-from music_assistant.helpers.audio import get_mime_type, get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
@@ -218,13 +218,21 @@ class UniversalGroupPlayer(Player):
                             other_group.supports_feature(PlayerFeature.SET_MEMBERS)
                             and member.player_id not in other_group.static_group_members
                         ):
-                            await other_group.set_members(player_ids_to_remove=[member.player_id])
+                            await self.mass.players.wait_for_player_update(
+                                member.player_id,
+                                timeout=5,
+                                action=other_group.set_members(
+                                    player_ids_to_remove=[member.player_id]
+                                ),
+                            )
                         else:
                             # if the other group does not support SET_MEMBERS or it is a static
                             # member, we need to power it off to leave the group
-                            await other_group.power(False)
-                            await asyncio.sleep(1)
-                    await asyncio.sleep(1)
+                            await self.mass.players.wait_for_player_update(
+                                member.player_id,
+                                timeout=5,
+                                action=other_group.power(False),
+                            )
                 if member.synced_to:
                     # edge case: the member is part of a syncgroup - ungroup it first
                     await member.ungroup()
@@ -274,9 +282,7 @@ class UniversalGroupPlayer(Player):
 
         # forward to downstream play_media commands
         async with TaskManager(self.mass) as tg:
-            for member in self.mass.players.iter_group_members(
-                self, only_powered=True, active_only=True
-            ):
+            for member in self.mass.players.iter_group_members(self, only_powered=True):
                 # Use internal handler to get protocol selection and avoid redirect
                 tg.create_task(
                     self.mass.players._handle_play_media(
@@ -368,11 +374,12 @@ class UniversalGroupPlayer(Player):
             # static group players should not support SET_MEMBERS feature
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         # grab current media and state from one of the active players
+        # use state properties (not raw attributes) to account for protocol player propagation
         for child_player in self.mass.players.iter_group_members(self, active_only=True):
-            self._attr_playback_state = child_player.playback_state
-            if child_player.elapsed_time:
-                self._attr_elapsed_time = child_player.elapsed_time
-                self._attr_elapsed_time_last_updated = child_player.elapsed_time_last_updated
+            self._attr_playback_state = child_player.state.playback_state
+            if child_player.state.elapsed_time:
+                self._attr_elapsed_time = child_player.state.elapsed_time
+                self._attr_elapsed_time_last_updated = child_player.state.elapsed_time_last_updated
             break
         else:
             self._attr_playback_state = PlaybackState.IDLE
@@ -386,11 +393,12 @@ class UniversalGroupPlayer(Player):
 
         if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
             # Use the preferred output format of the child player
-            output_format = await self.mass.streams.get_output_format(
+            output_format = await self.mass.streams.audio.get_output_format(
                 output_format_str=output_format_str,
                 player=child_player,
                 content_sample_rate=UGP_FORMAT.sample_rate,
                 content_bit_depth=UGP_FORMAT.bit_depth,
+                media_type=MediaType.FLOW_STREAM,
             )
             http_profile = await self.mass.config.get_player_config_value(
                 child_player_id, CONF_HTTP_PROFILE, return_type=str
@@ -409,10 +417,8 @@ class UniversalGroupPlayer(Player):
 
         headers = {
             **DEFAULT_STREAM_HEADERS,
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "Content-Type": get_mime_type(output_format_str),
-            "Accept-Ranges": "none",
-            "Cache-Control": "no-cache",
-            "Connection": "close",
         }
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
@@ -437,8 +443,8 @@ class UniversalGroupPlayer(Player):
         # Generate filter params for the player specific DSP settings
         filter_params = None
         if child_player_id:
-            filter_params = get_player_filter_params(
-                self.mass, child_player_id, self.stream.input_format, output_format
+            filter_params = self.mass.streams.audio.get_player_filter_params(
+                child_player_id, self.stream.input_format, output_format
             )
 
         async for chunk in self.stream.get_stream(

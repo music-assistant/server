@@ -9,10 +9,11 @@ from aiohttp import web
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import get_mime_type, get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -198,17 +199,18 @@ class SqueezelitePlayerProvider(PlayerProvider):
             child_player.display_name,
         )
 
-        output_format = await self.mass.streams.get_output_format(
+        output_format = await self.mass.streams.audio.get_output_format(
             output_format_str=fmt,
             player=child_player,
             content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
             content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
+            media_type=MediaType.FLOW_STREAM,
         )
 
         async for chunk in stream.get_stream(
             output_format=output_format,
-            filter_params=get_player_filter_params(
-                self.mass, child_player_id, stream.audio_format, output_format
+            filter_params=self.mass.streams.audio.get_player_filter_params(
+                child_player_id, stream.audio_format, output_format
             )
             if child_player_id
             else None,

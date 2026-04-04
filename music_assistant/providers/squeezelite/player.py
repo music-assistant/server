@@ -30,7 +30,6 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-    CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
@@ -173,7 +172,6 @@ class SqueezelitePlayer(Player):
             create_sample_rates_config_entry(
                 max_sample_rate=max_sample_rate, max_bit_depth=24, safe_max_bit_depth=24
             ),
-            CONF_ENTRY_SUPPORT_GAPLESS_DIFFERENT_SAMPLE_RATES,
         ]
 
     async def power(self, powered: bool) -> None:
@@ -182,7 +180,7 @@ class SqueezelitePlayer(Player):
         # store last state in cache
         await self.mass.cache.set(
             key=self.player_id,
-            data=(powered, self.client.volume_level),
+            data=[powered, self.client.volume_level],
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_STATE,
         )
@@ -193,7 +191,7 @@ class SqueezelitePlayer(Player):
         # store last state in cache
         await self.mass.cache.set(
             key=self.player_id,
-            data=(self.client.powered, volume_level),
+            data=[self.client.powered, volume_level],
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_STATE,
         )
@@ -460,7 +458,7 @@ class SqueezelitePlayer(Player):
         )
         await slimplayer.play_url(
             url=url,
-            mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
+            mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
             metadata=metadata,
             enqueue=enqueue,
             send_flush=send_flush,
@@ -484,7 +482,9 @@ class SqueezelitePlayer(Player):
                 0.2,
                 slimplayer.play_url(
                     url=url,
-                    mime_type=get_mime_type(url.split(".")[-1].split("?")[0]),
+                    mime_type=get_mime_type(
+                        url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]
+                    ),
                     metadata=metadata,
                     enqueue=True,
                     send_flush=False,

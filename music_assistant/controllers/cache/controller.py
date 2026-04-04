@@ -1,29 +1,34 @@
-"""Provides a simple stateless caching system."""
+"""Cache controller implementation."""
 
 from __future__ import annotations
 
 import asyncio
-import functools
-import logging
 import os
 import time
-from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator, MutableMapping
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, get_type_hints
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
+from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS
+from music_assistant.controllers.cache.constants import (
+    BYPASS_CACHE,
+    CACHE_DATABASE_CLEANUP_TASK_ID,
+    CONF_CLEAR_CACHE,
+    DB_SCHEMA_VERSION,
+    DEFAULT_CACHE_EXPIRATION,
+    LOGGER,
+    MAX_CACHE_DB_SIZE_MB,
+    SerializableType,
+)
 from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import async_json_loads, json_dumps
@@ -33,20 +38,10 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.provider import Provider
-
-LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
-CONF_CLEAR_CACHE = "clear_cache"
-DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
-DB_SCHEMA_VERSION = 7
-MAX_CACHE_DB_SIZE_MB = 2048
-CACHE_DATABASE_CLEANUP_TASK_ID = "cache_database_cleanup"
-
-BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
 
 
 class CacheController(CoreController):
-    """Basic cache controller using both memory and database."""
+    """Controller handling caching of data throughout the application."""
 
     domain: str = "cache"
 
@@ -54,7 +49,6 @@ class CacheController(CoreController):
         """Initialize core controller."""
         super().__init__(mass)
         self.database: DatabaseConnection | None = None
-        self._mem_cache = MemoryCache(500)
         self.manifest.name = "Cache controller"
         self.manifest.description = (
             "Music Assistant's core controller for caching data throughout the application."
@@ -107,15 +101,24 @@ class CacheController(CoreController):
         checksum: str | int | None = None,
         default: Any = None,
         allow_bypass: bool = True,
+        base_class: Any = None,
     ) -> Any:
-        """Get object from cache and return the results.
+        """
+        Get data from cache.
 
-        - key: the (unique) lookup key of the cache object as reference
-        - provider: optional provider id to group cache objects
-        - category: optional category to group cache objects
-        - checksum: optional argument to check if the checksum in the
-                    cache object matches the checksum provided
-        - default: value to return if no cache object is found
+        Returns JSON-deserialized data (dicts, lists, strings, numbers, booleans, None).
+
+        If base_class is provided, the raw data is automatically reconstructed using
+        its from_dict() method. If the cached data is a list of dicts, each item is
+        reconstructed individually.
+
+        :param key: The (unique) lookup key of the cache object.
+        :param provider: Provider id to group cache objects.
+        :param category: Category to group cache objects.
+        :param checksum: If provided, only return data if the stored checksum matches.
+        :param default: Value to return if no cache object is found.
+        :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
+        :param base_class: If provided, reconstruct data using base_class.from_dict().
         """
         assert self.database is not None
         assert key, "No key provided"
@@ -124,12 +127,6 @@ class CacheController(CoreController):
         cur_time = int(time.time())
         if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
-        # try memory cache first
-        memory_key = f"{provider}/{category}/{key}"
-        cache_data = self._mem_cache.get(memory_key)
-        if cache_data and (not checksum or cache_data[1] == checksum) and cache_data[2] >= cur_time:
-            return cache_data[0]
-        # fall back to db cache
         if (
             (
                 db_row := await self.database.get_row(
@@ -143,25 +140,25 @@ class CacheController(CoreController):
                 data = await async_json_loads(db_row["data"])
             except Exception as exc:
                 LOGGER.error(
-                    "Error parsing cache data for %s: %s",
-                    memory_key,
+                    "Error parsing cache data for %s/%s/%s: %s",
+                    provider,
+                    category,
+                    key,
                     str(exc),
                     exc_info=exc if self.logger.isEnabledFor(10) else None,
                 )
             else:
-                # also store in memory cache for faster access
-                self._mem_cache[memory_key] = (
-                    data,
-                    db_row["checksum"],
-                    db_row["expires"],
-                )
+                if base_class is not None and data is not None:
+                    if isinstance(data, list):
+                        return [base_class.from_dict(item) for item in data]
+                    return base_class.from_dict(data)
                 return data
         return default
 
     async def set(
         self,
         key: str,
-        data: Any,
+        data: SerializableType,
         expiration: int = DEFAULT_CACHE_EXPIRATION,
         provider: str = "default",
         category: int = 0,
@@ -169,15 +166,19 @@ class CacheController(CoreController):
         persistent: bool = False,
     ) -> None:
         """
-        Set data in cache.
+        Store data in cache.
 
-        - key: the (unique) lookup key of the cache object as reference
-        - data: the actual data to store in the cache
-        - expiration: time in seconds the cache object should be valid
-        - provider: optional provider id to group cache objects
-        - category: optional category to group cache objects
-        - checksum: optional argument to store with the cache object
-        - persistent: if True the cache object will not be deleted when clearing the cache
+        Data must be JSON-serializable (str, int, float, bool, None, list, dict).
+        Do not pass model objects directly — use .to_dict() first.
+        Non-serializable data will raise TypeError.
+
+        :param key: The (unique) lookup key of the cache object.
+        :param data: JSON-serializable data to store.
+        :param expiration: Time in seconds the cache object should be valid.
+        :param provider: Provider id to group cache objects.
+        :param category: Category to group cache objects.
+        :param checksum: Optional checksum to store with the cache object.
+        :param persistent: If True, the entry survives cache clears.
         """
         assert self.database is not None
         if not key:
@@ -185,11 +186,8 @@ class CacheController(CoreController):
         if checksum is not None:
             checksum = str(checksum)
         expires = int(time.time() + expiration)
-        memory_key = f"{provider}/{category}/{key}"
-        self._mem_cache[memory_key] = (data, checksum, expires)
-        if (expires - time.time()) < 1800:
-            # do not cache items in db with short expiration
-            return
+        # always serialize to JSON to ensure data is serializable
+        # this raises if the data contains non-serializable objects
         data = await asyncio.to_thread(json_dumps, data)
         await self.database.insert_or_replace(
             DB_TABLE_CACHE,
@@ -216,10 +214,6 @@ class CacheController(CoreController):
             match["category"] = category
         if provider is not None:
             match["provider"] = provider
-        if key is not None and category is not None and provider is not None:
-            self._mem_cache.pop(f"{provider}/{category}/{key}", None)
-        else:
-            self._mem_cache.clear()
         await self.database.delete(DB_TABLE_CACHE, match)
 
     async def clear(
@@ -231,7 +225,6 @@ class CacheController(CoreController):
     ) -> None:
         """Clear all/partial items from cache."""
         assert self.database is not None
-        self._mem_cache.clear()
         self.logger.info("Clearing database...")
         query_parts: list[str] = []
         if category_filter is not None:
@@ -251,8 +244,6 @@ class CacheController(CoreController):
         assert self.database is not None
         self.logger.debug("Running automatic cleanup...")
         update_current_task_progress_text("Loading cache records")
-        # simply reset the memory cache
-        self._mem_cache.clear()
         cur_timestamp = int(time.time())
         cleaned_records = 0
         db_rows = await self.database.get_rows(DB_TABLE_CACHE)
@@ -436,120 +427,3 @@ class CacheController(CoreController):
             metadata={"task_domain": "cache_database_cleanup"},
             allow_retry=True,
         )
-
-
-Param = ParamSpec("Param")
-RetType = TypeVar("RetType")
-
-
-ProviderT = TypeVar("ProviderT", bound="Provider | CoreController")
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
-def use_cache(
-    expiration: int = DEFAULT_CACHE_EXPIRATION,
-    category: int = 0,
-    persistent: bool = False,
-    cache_checksum: str | None = None,
-    allow_bypass: bool = True,
-) -> Callable[
-    [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
-    Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
-]:
-    """Return decorator that can be used to cache a method's result."""
-
-    def _decorator(
-        func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
-    ) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
-        @functools.wraps(func)
-        async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
-            cache = self.mass.cache
-            provider_id = getattr(self, "instance_id", self.domain)
-
-            # create a cache key dynamically based on the (remaining) args/kwargs
-            cache_key_parts = [func.__name__, *args]
-            for key in sorted(kwargs.keys()):
-                cache_key_parts.append(f"{key}{kwargs[key]}")
-            cache_key = ".".join(map(str, cache_key_parts))
-            # try to retrieve data from the cache
-            cachedata = await cache.get(
-                cache_key,
-                provider=provider_id,
-                checksum=cache_checksum,
-                category=category,
-                allow_bypass=allow_bypass,
-            )
-            if cachedata is not None:
-                type_hints = get_type_hints(func)
-                return cast("R", parse_value(func.__name__, cachedata, type_hints["return"]))
-            # get data from method/provider
-            result = await func(self, *args, **kwargs)
-            # store result in cache (but don't await)
-            self.mass.create_task(
-                cache.set(
-                    key=cache_key,
-                    data=result,
-                    expiration=expiration,
-                    provider=provider_id,
-                    category=category,
-                    checksum=cache_checksum,
-                    persistent=persistent,
-                )
-            )
-            return result
-
-        return wrapper
-
-    return _decorator
-
-
-class MemoryCache(MutableMapping[str, Any]):
-    """Simple limited in-memory cache implementation."""
-
-    def __init__(self, maxlen: int) -> None:
-        """Initialize."""
-        self._maxlen = maxlen
-        self.d: OrderedDict[str, Any] = OrderedDict()
-
-    @property
-    def maxlen(self) -> int:
-        """Return max length."""
-        return self._maxlen
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return item or default."""
-        return self.d.get(key, default)
-
-    def pop(self, key: str, default: Any = None) -> Any:
-        """Pop item from collection."""
-        return self.d.pop(key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        """Get item."""
-        self.d.move_to_end(key)
-        return self.d[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        """Set item."""
-        if key in self.d:
-            self.d.move_to_end(key)
-        elif len(self.d) == self.maxlen:
-            self.d.popitem(last=False)
-        self.d[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        """Delete item."""
-        del self.d[key]
-
-    def __iter__(self) -> Iterator[str]:
-        """Iterate items."""
-        return self.d.__iter__()
-
-    def __len__(self) -> int:
-        """Return length."""
-        return len(self.d)
-
-    def clear(self) -> None:
-        """Clear cache."""
-        self.d.clear()

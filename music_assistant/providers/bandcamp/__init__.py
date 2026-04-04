@@ -15,7 +15,15 @@ from bandcamp_async_api import (
     SearchResultArtist,
     SearchResultTrack,
 )
-from bandcamp_async_api.models import BCAlbum, BCTrack, CollectionType, FanItem
+from bandcamp_async_api.models import (
+    BCAlbum,
+    BCTrack,
+    CollectionItem,
+    CollectionSummary,
+    CollectionType,
+    FanItem,
+    FollowingItem,
+)
 from mashumaro.exceptions import UnserializableDataError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
@@ -202,23 +210,83 @@ class BandcampProvider(MusicProvider):
 
         return results
 
+    @throttle_with_retries
+    async def _fetch_collection_page(
+        self,
+        collection_type: CollectionType,
+        older_than_token: str | None,
+        fan_id: int | None,
+    ) -> CollectionSummary:
+        """Fetch a single page of collection items with throttling and retry.
+
+        :param collection_type: The type of collection to fetch.
+        :param older_than_token: Pagination cursor from the previous page.
+        :param fan_id: Fan ID to query. None = authenticated user.
+        """
+        try:
+            return await self._client.get_collection_items(
+                collection_type,
+                older_than_token=older_than_token,
+                fan_id=fan_id,
+            )
+        except BandcampRateLimitError as error:
+            raise ResourceTemporarilyUnavailable(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+
+    async def _get_all_collection_items(
+        self,
+        collection_type: CollectionType,
+        fan_id: int | None = None,
+    ) -> list[CollectionItem | FollowingItem | FanItem]:
+        """Fetch all pages of a collection endpoint.
+
+        :param collection_type: The type of collection to fetch.
+        :param fan_id: Fan ID to query. None = authenticated user.
+        """
+        all_items: list[CollectionItem | FollowingItem | FanItem] = []
+        older_than_token: str | None = None
+        seen_tokens: set[str] = set()
+        while True:
+            page = await self._fetch_collection_page(collection_type, older_than_token, fan_id)
+            all_items.extend(page.items)
+            self.logger.debug(
+                "Fetched %d items for %s (has_more=%s, last_token=%s, total=%d)",
+                len(page.items),
+                collection_type.value,
+                page.has_more,
+                page.last_token,
+                len(all_items),
+            )
+            if not page.has_more or not page.last_token:
+                break
+            if page.last_token in seen_tokens:
+                self.logger.warning(
+                    "Pagination loop detected for %s: token %s already seen, stopping",
+                    collection_type.value,
+                    page.last_token,
+                )
+                break
+            seen_tokens.add(page.last_token)
+            older_than_token = page.last_token
+        return all_items
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
 
         try:
-            async with self.throttler.acquire():  # AsyncGenerator method cannot be decorated
-                collection = await self._client.get_collection_items(CollectionType.COLLECTION)
+            items = await self._get_all_collection_items(CollectionType.COLLECTION)
             band_ids = set()
-            for item in collection.items:
+            for item in items:
                 if item.item_type == "band":
                     band_ids.add(item.item_id)
                 elif item.item_type == "album":
                     band_ids.add(item.band_id)
 
             for band_id in band_ids:
-                yield await self.get_artist(band_id)
+                yield await self.get_artist(str(band_id))
                 await asyncio.sleep(0)  # Yield control to avoid blocking
 
         except BandcampMustBeLoggedInError as error:
@@ -239,9 +307,8 @@ class BandcampProvider(MusicProvider):
             return
 
         try:
-            async with self.throttler.acquire():  # AsyncGenerator method cannot be decorated
-                api_collection = await self._client.get_collection_items(CollectionType.COLLECTION)
-            for item in api_collection.items:
+            items = await self._get_all_collection_items(CollectionType.COLLECTION)
+            for item in items:
                 if item.item_type == "album":
                     yield await self.get_album(f"{item.band_id}-{item.item_id}")
                     await asyncio.sleep(0)  # Yield control to avoid blocking
@@ -270,7 +337,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
-    async def get_artist(self, prov_artist_id: str | int) -> Artist:
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         try:
             api_artist = await self._client.get_artist(prov_artist_id)
@@ -611,10 +678,8 @@ class BandcampProvider(MusicProvider):
             raise MediaNotFoundError(context) from error
 
     @staticmethod
-    def _deserialize_content_item(item: dict[str, object] | Album | Track) -> Album | Track:
+    def _deserialize_content_item(item: dict[str, object]) -> Album | Track:
         """Deserialize a cached content item back to its model type."""
-        if not isinstance(item, dict):
-            return item
         media_type = item.get("media_type")
         if media_type == MediaType.ALBUM:
             return Album.from_dict(item)
@@ -638,23 +703,23 @@ class BandcampProvider(MusicProvider):
                 return [self._deserialize_content_item(item) for item in cached]
             except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
                 self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
-        items: list[Album | Track] = []
+        results: list[Album | Track] = []
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):
-            collection = await self._client.get_collection_items(collection_type, fan_id=person_id)
-            for item in collection.items:
+            items = await self._get_all_collection_items(collection_type, fan_id=person_id)
+            for item in items:
                 with suppress(MediaNotFoundError):
                     if item.item_type == "album":
-                        items.append(await self.get_album(f"{item.band_id}-{item.item_id}"))
+                        results.append(await self.get_album(f"{item.band_id}-{item.item_id}"))
                     elif item.item_type == "track":
-                        items.append(await self.get_track(f"{item.band_id}-0-{item.item_id}"))
+                        results.append(await self.get_track(f"{item.band_id}-0-{item.item_id}"))
         await self.mass.cache.set(
             cache_key,
-            items,
-            expiration=CACHE_USER_LISTS if items else CACHE_EMPTY_RESULTS,
+            [item.to_dict() for item in results],
+            expiration=CACHE_USER_LISTS if results else CACHE_EMPTY_RESULTS,
             provider=self.instance_id,
         )
-        return items
+        return results
 
     @throttle_with_retries
     async def _browse_person_following(self, person_id: int | None) -> list[Artist]:
@@ -663,18 +728,15 @@ class BandcampProvider(MusicProvider):
         :param person_id: Person to query. None = authenticated user.
         """
         cache_key = f"_browse_person_following_{person_id}"
-        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id, base_class=Artist)
         if cached is not None:
-            try:
-                return [Artist.from_dict(a) if isinstance(a, dict) else a for a in cached]
-            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
-                self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
+            return cached  # type: ignore[no-any-return]
         artists: list[Artist] = []
         async with self._map_api_errors(f"Failed to get following for person {person_id}"):
-            collection = await self._client.get_collection_items(
+            collection = await self._get_all_collection_items(
                 CollectionType.FOLLOWING, fan_id=person_id
             )
-            for item in collection.items:
+            for item in collection:
                 try:
                     artists.append(await self.get_artist(item.band_id))
                 except MediaNotFoundError:
@@ -683,7 +745,7 @@ class BandcampProvider(MusicProvider):
                     )
         await self.mass.cache.set(
             cache_key,
-            artists,
+            [a.to_dict() for a in artists],
             expiration=CACHE_USER_LISTS if artists else CACHE_EMPTY_RESULTS,
             provider=self.instance_id,
         )
@@ -704,27 +766,23 @@ class BandcampProvider(MusicProvider):
         """
         # base_path included intentionally: folder links differ per navigation path.
         cache_key = f"_browse_person_people_{person_id}_{collection_type.value}_{base_path}"
-        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
+        cached = await self.mass.cache.get(
+            cache_key, provider=self.instance_id, base_class=BrowseFolder
+        )
         if cached is not None:
-            try:
-                folders = [BrowseFolder.from_dict(f) if isinstance(f, dict) else f for f in cached]
-            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
-                self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
-            else:
-                for folder in folders:
-                    segment = folder.path.rstrip("/").rsplit("/", 1)[-1]
-                    fan_id_str = folder.item_id.removeprefix("person_")
-                    with suppress(ValueError):
-                        self._slug_to_fan_id[segment] = int(fan_id_str)
-                return folders
+            for folder in cached:
+                segment = folder.path.rstrip("/").rsplit("/", 1)[-1]
+                fan_id_str = folder.item_id.removeprefix("person_")
+                with suppress(ValueError):
+                    self._slug_to_fan_id[segment] = int(fan_id_str)
+            return cached  # type: ignore[no-any-return]
         context = f"Failed to get {collection_type.value} for person {person_id}"
         async with self._map_api_errors(context):
-            collection = await self._client.get_collection_items(collection_type, fan_id=person_id)
-            items = cast("list[FanItem]", collection.items)
-            folders = self._people_to_folders(items, base_path)
+            collection = await self._get_all_collection_items(collection_type, fan_id=person_id)
+            folders = self._people_to_folders(collection, base_path)
         await self.mass.cache.set(
             cache_key,
-            folders,
+            [f.to_dict() for f in folders],
             expiration=CACHE_USER_LISTS if folders else CACHE_EMPTY_RESULTS,
             provider=self.instance_id,
         )

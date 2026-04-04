@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import warnings
+from collections import deque
 from typing import TYPE_CHECKING
 
 import librosa
@@ -13,6 +14,7 @@ import numpy.typing as npt
 from music_assistant_models.enums import ContentType
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import (
     align_audio_to_frame_boundary,
 )
@@ -23,8 +25,10 @@ from music_assistant.models.smart_fades import (
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.streamdetails import StreamDetails
 
-    from music_assistant.controllers.streams.streams_controller import StreamsController
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+    from music_assistant.controllers.streams.controller import StreamsController
 
 ANALYSIS_FPS = 100
 
@@ -36,6 +40,98 @@ class SmartFadesAnalyzer:
         """Initialize smart fades analyzer."""
         self.streams = streams
         self.logger = streams.logger.getChild("smart_fades_analyzer")
+
+    def attach_to_buffer(
+        self,
+        audio_buffer: AudioBuffer,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Attach to an AudioBuffer to run smart fades analysis ahead of time.
+
+        Registers a chunk callback that collects intro and outro audio data
+        and triggers analysis as soon as enough data is available.
+        Results are stored via mass.music.set_smart_fades_analysis.
+
+        :param audio_buffer: The AudioBuffer to observe.
+        :param streamdetails: Stream details for the track being buffered.
+        """
+        item_id = streamdetails.item_id
+        provider = streamdetails.provider
+        pcm_format = audio_buffer.pcm_format
+        analysis_seconds = SMART_CROSSFADE_DURATION
+
+        # collect chunks for intro (first N seconds) and outro (last N seconds)
+        intro_chunks: list[bytes] = []
+        outro_chunks: deque[bytes] = deque(maxlen=analysis_seconds)
+        intro_analyzed = False
+
+        async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
+            nonlocal intro_analyzed
+
+            if is_last_chunk:
+                # EOF — trigger outro analysis
+                if outro_chunks:
+                    outro_data = b"".join(outro_chunks)
+                    self.streams.mass.create_task(
+                        self.analyze(
+                            item_id,
+                            provider,
+                            SmartFadesAnalysisFragment.OUTRO,
+                            outro_data,
+                            pcm_format,
+                        )
+                    )
+                return
+
+            # collect for outro (rolling window of last N seconds)
+            outro_chunks.append(pcm_data)
+
+            # collect for intro (first N seconds)
+            if not intro_analyzed:
+                intro_chunks.append(pcm_data)
+                if len(intro_chunks) >= analysis_seconds:
+                    intro_analyzed = True
+                    intro_data = b"".join(intro_chunks)
+                    intro_chunks.clear()
+                    self.streams.mass.create_task(
+                        self.analyze(
+                            item_id,
+                            provider,
+                            SmartFadesAnalysisFragment.INTRO,
+                            intro_data,
+                            pcm_format,
+                        )
+                    )
+
+        # check if we already have stored analysis before registering
+        async def _attach() -> None:
+            has_intro = await self.streams.mass.music.get_smart_fades_analysis(
+                item_id, provider, SmartFadesAnalysisFragment.INTRO
+            )
+            has_outro = await self.streams.mass.music.get_smart_fades_analysis(
+                item_id, provider, SmartFadesAnalysisFragment.OUTRO
+            )
+            if has_intro and has_outro:
+                self.logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Smart fades analysis already exists for %s, skipping",
+                    streamdetails.uri,
+                )
+                return
+
+            self.logger.debug(
+                "Attached smart fades analyzer to buffer for %s",
+                streamdetails.uri,
+            )
+            audio_buffer.register_chunk_callback(_on_chunk)
+
+            def _on_cancel() -> None:
+                outro_chunks.clear()
+                intro_chunks.clear()
+
+            audio_buffer.register_cancel_callback(_on_cancel)
+
+        self.streams.mass.create_task(_attach)
 
     async def analyze(
         self,
@@ -66,31 +162,8 @@ class SmartFadesAnalyzer:
                 fragment_duration,
                 len(audio_data),
             )
-            # Convert PCM bytes to numpy array and then to mono for analysis
-            audio_array = self._pcm_bytes_to_float32(audio_data, pcm_format)
-            if pcm_format.channels > 1:
-                # Ensure array size is divisible by channel count
-                samples_per_channel = len(audio_array) // pcm_format.channels
-                valid_samples = samples_per_channel * pcm_format.channels
-                if valid_samples != len(audio_array):
-                    self.logger.warning(
-                        "Audio buffer size (%d) not divisible by channels (%d), "
-                        "truncating %d samples",
-                        len(audio_array),
-                        pcm_format.channels,
-                        len(audio_array) - valid_samples,
-                    )
-                    audio_array = audio_array[:valid_samples]
-
-                # Reshape to separate channels and take average for mono conversion
-                audio_array = audio_array.reshape(-1, pcm_format.channels)
-                mono_audio = np.asarray(np.mean(audio_array, axis=1, dtype=np.float32))
-            else:
-                # Single channel - ensure consistent array type
-                mono_audio = np.asarray(audio_array, dtype=np.float32)
-
-            # Validate that the audio is finite (no NaN or Inf values)
-            if not np.all(np.isfinite(mono_audio)):
+            mono_audio = await self._pcm_to_mono_float32(audio_data, pcm_format)
+            if mono_audio is None:
                 self.logger.error(
                     "Audio buffer contains non-finite values (NaN/Inf) for %s, cannot analyze",
                     stream_details_name,
@@ -256,6 +329,42 @@ class SmartFadesAnalyzer:
         except Exception as e:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
+
+    async def _pcm_to_mono_float32(
+        self,
+        audio_data: bytes,
+        pcm_format: AudioFormat,
+    ) -> npt.NDArray[np.float32] | None:
+        """
+        Convert raw PCM bytes to a mono float32 numpy array.
+
+        :param audio_data: Raw PCM audio data.
+        :param pcm_format: Audio format of the PCM data.
+        """
+
+        def _convert() -> npt.NDArray[np.float32] | None:
+            # CPU-intensive numpy operations, must run in executor
+            audio_array = self._pcm_bytes_to_float32(audio_data, pcm_format)
+            if pcm_format.channels > 1:
+                # Ensure array size is divisible by channel count
+                samples_per_channel = len(audio_array) // pcm_format.channels
+                valid_samples = samples_per_channel * pcm_format.channels
+                if valid_samples != len(audio_array):
+                    audio_array = audio_array[:valid_samples]
+
+                # Reshape to separate channels and take average for mono conversion
+                audio_array_reshaped = audio_array.reshape(-1, pcm_format.channels)
+                mono_audio = np.asarray(np.mean(audio_array_reshaped, axis=1, dtype=np.float32))
+            else:
+                # Single channel - ensure consistent array type
+                mono_audio = np.asarray(audio_array, dtype=np.float32)
+
+            # Validate that the audio is finite (no NaN or Inf values)
+            if not np.all(np.isfinite(mono_audio)):
+                return None
+            return mono_audio
+
+        return await asyncio.to_thread(_convert)
 
     def _pcm_bytes_to_float32(
         self,

@@ -38,14 +38,14 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             provider_instance_id_or_domain = uri.split(".")[1]
             media_type_str = uri.split("/")[3]
             media_type = MediaType(media_type_str)
-            item_id = uri.split("/")[4].split("?")[0]
+            item_id = uri.split("/")[4].split("?", maxsplit=1)[0]
         elif uri.startswith("https://tidal.com/browse/"):
             # Tidal public share URL
             # https://tidal.com/browse/track/123456
             provider_instance_id_or_domain = "tidal"
             media_type_str = uri.split("/")[4]
             media_type = MediaType(media_type_str)
-            item_id = uri.split("/")[5].split("?")[0]
+            item_id = uri.split("/")[5].split("?", maxsplit=1)[0]
         elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             # Translate a plain URL to the builtin provider
             provider_instance_id_or_domain = "builtin"

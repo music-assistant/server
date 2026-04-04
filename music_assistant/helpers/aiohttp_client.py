@@ -15,6 +15,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.hdrs import USER_AGENT
 from aiohttp_asyncmdnsresolver.api import AsyncDualMDNSResolver
+from aiohttp_socks import ProxyConnector
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import APPLICATION_NAME
@@ -36,11 +37,12 @@ MAXIMUM_CONNECTIONS_PER_HOST = 100
 def create_clientsession(
     mass: MusicAssistant,
     verify_ssl: bool = True,
+    socks_url: str = "",
     **kwargs: Any,
 ) -> aiohttp.ClientSession:
     """Create a new ClientSession with kwargs, i.e. for cookies."""
     clientsession = aiohttp.ClientSession(
-        connector=_get_connector(mass, verify_ssl),
+        connector=_get_connector(mass, verify_ssl, socks_url),
         json_serialize=json_dumps,
         response_class=MassClientResponse,
         **kwargs,
@@ -158,9 +160,10 @@ class MusicAssistantTCPConnector(aiohttp.TCPConnector):
 def _get_connector(
     mass: MusicAssistant,
     verify_ssl: bool = True,
+    socks_url: str | None = None,
     family: socket.AddressFamily = socket.AF_UNSPEC,
     ssl_cipher: ssl_util.SSLCipherList = ssl_util.SSLCipherList.PYTHON_DEFAULT,
-) -> aiohttp.BaseConnector:
+) -> aiohttp.BaseConnector | ProxyConnector:
     """
     Return the connector pool for aiohttp.
 
@@ -170,6 +173,15 @@ def _get_connector(
         ssl_context: SSLContext = ssl_util.client_context(ssl_cipher)
     else:
         ssl_context = ssl_util.client_context_no_verify(ssl_cipher)
+
+    if socks_url:
+        return ProxyConnector.from_url(
+            socks_url,
+            ssl=ssl_context,
+            limit=MAXIMUM_CONNECTIONS,
+            limit_per_host=MAXIMUM_CONNECTIONS_PER_HOST,
+            resolver=_get_resolver(mass),
+        )
 
     return MusicAssistantTCPConnector(
         family=family,
@@ -193,3 +205,11 @@ def _get_resolver(mass: MusicAssistant) -> MassAsyncDNSResolver:
 
     mass.subscribe(_close_resolver, EventType.SHUTDOWN)
     return resolver
+
+
+def get_socks5_url(url_string: str) -> str:
+    """Return full socks5 url string from config."""
+    if url_string:
+        if "://" not in url_string:
+            url_string = f"socks5://{url_string}"
+    return str(url_string)

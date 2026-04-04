@@ -168,7 +168,7 @@ TRACK_EXTENSIONS = {
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
-PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg"}
+PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 SUPPORTED_EXTENSIONS = {
     *TRACK_EXTENSIONS,
@@ -197,3 +197,5 @@ CACHE_CATEGORY_ALBUM_INFO: Final[int] = 2
 CACHE_CATEGORY_FOLDER_IMAGES: Final[int] = 3
 CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
 CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
+
+DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
