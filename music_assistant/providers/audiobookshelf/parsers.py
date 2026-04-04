@@ -3,6 +3,7 @@
 from contextlib import suppress
 from datetime import datetime
 
+from aioaudiobookshelf.schema.calls_series import SeriesWithProgress as AbsSeriesWithProgress
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
 )
@@ -24,6 +25,7 @@ from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
 )
+from aioaudiobookshelf.schema.series_books import SeriesBooksMinified as AbsSeriesBooksMinified
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Audiobook as MassAudiobook
 from music_assistant_models.media_items import (
@@ -37,6 +39,71 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items import Playlist as MassPlaylist
 from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
+from music_assistant_models.media_items import Series as MassSeries
+
+
+def parse_series(
+    *,
+    abs_series: AbsSeriesWithProgress | AbsSeriesBooksMinified,
+    instance_id: str,
+    domain: str,
+    progresses: list[AbsMediaProgress],
+) -> MassSeries:
+    """Translate AbsSeries to MassSeries."""
+    in_progress = False
+    progress_percent = 0
+    if isinstance(abs_series, AbsSeriesWithProgress):
+        progress_percent = int(
+            len(abs_series.progress.library_items_ids_finished)
+            / len(abs_series.progress.library_item_ids)
+            * 100
+        )
+        if len(abs_series.progress.library_items_ids_finished) < len(
+            abs_series.progress.library_item_ids
+        ):
+            for item_id in set(abs_series.progress.library_item_ids).difference(
+                abs_series.progress.library_items_ids_finished
+            ):
+                progress = next(
+                    (x for x in progresses if x.library_item_id == item_id),
+                    None,
+                )
+                if (
+                    progress is not None
+                    and progress.current_time is not None
+                    and progress.current_time > 0
+                ):
+                    in_progress = True
+    else:
+        assert isinstance(abs_series, AbsSeriesBooksMinified)  # for type checking
+        total_num_books = len(abs_series.books)
+        finished_books = 0
+        for item_id in [x.id_ for x in abs_series.books]:
+            progress = next(
+                (x for x in progresses if x.library_item_id == item_id),
+                None,
+            )
+            if progress is None:
+                continue
+            if progress.is_finished:
+                finished_books += 1
+            elif progress.current_time is not None and progress.current_time > 0:
+                in_progress = True
+        if total_num_books != 0:
+            progress_percent = int(finished_books / total_num_books * 100)
+
+    return MassSeries(
+        item_id=abs_series.id_,
+        provider=instance_id,
+        name=abs_series.name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=abs_series.id_, provider_domain=domain, provider_instance=instance_id
+            )
+        },
+        in_progress=in_progress,
+        progress_percent=progress_percent,
+    )
 
 
 def parse_playlist(

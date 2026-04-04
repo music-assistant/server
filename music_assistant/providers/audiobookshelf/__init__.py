@@ -90,6 +90,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     PodcastEpisode,
+    Series,
     UniqueList,
 )
 from music_assistant_models.media_items.media_item import RecommendationFolder
@@ -103,6 +104,7 @@ from music_assistant.providers.audiobookshelf.parsers import (
     parse_playlist,
     parse_podcast,
     parse_podcast_episode,
+    parse_series,
 )
 
 from .constants import (
@@ -140,6 +142,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_SERIES,
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
 }
@@ -456,6 +459,42 @@ for more details.
         # update playlog
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
+
+    async def get_library_series(self) -> AsyncGenerator[Series, None]:
+        """Retrieve series."""
+        libraries = await self._client.get_all_libraries()
+        progresses = (await self._client.get_my_user()).media_progress
+        for library in libraries:
+            async for response in self._client.get_library_series(library_id=library.id_):
+                if not response.results:
+                    break
+                for abs_series in response.results:
+                    yield parse_series(
+                        abs_series=abs_series,
+                        instance_id=self.instance_id,
+                        domain=self.domain,
+                        progresses=progresses,
+                    )
+
+    async def get_series(self, prov_series_id: str) -> Series:
+        """Get a single series."""
+        abs_series = await self._client.get_series(series_id=prov_series_id, include_progress=True)
+        progresses = (await self._client.get_my_user()).media_progress
+        assert isinstance(abs_series, AbsSeriesWithProgress)  # for type checking
+        return parse_series(
+            abs_series=abs_series,
+            instance_id=self.instance_id,
+            domain=self.domain,
+            progresses=progresses,
+        )
+
+    async def get_series_audiobooks(
+        self, prov_series_id: str, page: int = 0
+    ) -> Sequence[Audiobook]:
+        """Get audiobooks of a series."""
+        if page > 0:
+            return []
+        return await self._browse_series_books(series_id=prov_series_id)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from abs."""
@@ -1651,8 +1690,8 @@ for more details.
 
         return sorted(items, key=lambda x: x.name)
 
-    async def _browse_series_books(self, series_id: str) -> Sequence[MediaItemType]:
-        items = []
+    async def _browse_series_books(self, series_id: str) -> Sequence[Audiobook]:
+        items: list[Audiobook] = []
 
         abs_series = await self._client.get_series(series_id=series_id, include_progress=True)
         if not isinstance(abs_series, AbsSeriesWithProgress):
@@ -1666,6 +1705,7 @@ for more details.
                 provider_instance_id_or_domain=self.instance_id,
             )
             if mass_item is not None:
+                assert isinstance(mass_item, Audiobook)  # for type checking
                 items.append(mass_item)
 
         return items
