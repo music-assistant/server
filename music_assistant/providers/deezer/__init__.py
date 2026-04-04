@@ -291,9 +291,10 @@ class DeezerProvider(MusicProvider):
         """Retrieve library radio stations from Deezer.
 
         Deezer livestreams have no favorites list, so this is intentionally empty.
-        Radio stations are discoverable via search.
+        Radio stations are discoverable via search and can be favorited in MA.
         """
-        yield  # type: ignore[misc]
+        return
+        yield  # type: ignore[unreachable]  # make this an async generator
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from Deezer."""
@@ -488,20 +489,34 @@ class DeezerProvider(MusicProvider):
         episodes = await self._fetch_podcast_episodes(prov_podcast_id)
         if not episodes:
             return
-        # Apply fresh bookmark/resume state on top of cached episodes
+        # Fetch all bookmarks (paginated)
+        bookmarks = await self._fetch_all_bookmarks()
+        for ep in episodes:
+            # Reset state to prevent stale values from cached objects
+            ep.fully_played = False
+            ep.resume_position_ms = 0
+            if ep.item_id in bookmarks:
+                ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
+            yield ep
+
+    async def _fetch_all_bookmarks(self) -> dict[str, tuple[bool, int]]:
+        """Fetch all podcast episode bookmarks, paginating until exhausted."""
         bookmarks: dict[str, tuple[bool, int]] = {}
-        bookmark_result = await self.gql_client.get_podcast_episode_bookmarks(first=100)
-        if bookmark_result:
-            for edge in bookmark_result.podcast_episode_bookmarks.edges:
+        cursor: str | None = None
+        while True:
+            result = await self.gql_client.get_podcast_episode_bookmarks(first=50, after=cursor)
+            if not result:
+                break
+            for edge in result.podcast_episode_bookmarks.edges:
                 if edge.node is not None:
                     bookmarks[edge.node.episode.id] = (
                         edge.node.is_played,
                         edge.node.position * 1000,
                     )
-        for ep in episodes:
-            if ep.item_id in bookmarks:
-                ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
-            yield ep
+            if not result.podcast_episode_bookmarks.page_info.has_next_page:
+                break
+            cursor = result.podcast_episode_bookmarks.page_info.end_cursor
+        return bookmarks
 
     @use_cache(3600 * 24)  # Cache full episode list for 24 hours
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
@@ -581,7 +596,19 @@ class DeezerProvider(MusicProvider):
         if result is None:
             raise MediaNotFoundError(f"Audiobook {prov_audiobook_id} not found on Deezer")
         item = self._parse_audiobook(result)
-        item.metadata.chapters = self._parse_audiobook_chapters(result.chapters.edges)
+        all_edges = list(result.chapters.edges)
+        page_info = result.chapters.page_info
+        while page_info.has_next_page:
+            next_page = await self.gql_client.get_audiobook(
+                audiobook_id=prov_audiobook_id,
+                chapters_first=200,
+                chapters_after=page_info.end_cursor,
+            )
+            if next_page is None:
+                break
+            all_edges.extend(next_page.chapters.edges)
+            page_info = next_page.chapters.page_info
+        item.metadata.chapters = self._parse_audiobook_chapters(all_edges)
         return item
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
@@ -590,9 +617,18 @@ class DeezerProvider(MusicProvider):
         result = await self.gql_client.get_album(album_id=prov_album_id)
         if result is None:
             return []
+        all_edges = list(result.tracks.edges)
+        while result.tracks.page_info.has_next_page:
+            result = await self.gql_client.get_album(
+                album_id=prov_album_id,
+                tracks_after=result.tracks.page_info.end_cursor,
+            )
+            if result is None:
+                break
+            all_edges.extend(result.tracks.edges)
         return [
             self._parse_track(edge.node, position=idx)
-            for idx, edge in enumerate(result.tracks.edges, 1)
+            for idx, edge in enumerate(all_edges, 1)
             if edge.node is not None
         ]
 
@@ -629,21 +665,33 @@ class DeezerProvider(MusicProvider):
         result = await self.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None:
             return []
-        return [
-            self._parse_album(edge.node) for edge in result.albums.edges if edge.node is not None
-        ]
+        all_edges = list(result.albums.edges)
+        while result.albums.page_info.has_next_page:
+            result = await self.gql_client.get_artist(
+                artist_id=prov_artist_id,
+                albums_after=result.albums.page_info.end_cursor,
+            )
+            if result is None:
+                break
+            all_edges.extend(result.albums.edges)
+        return [self._parse_album(edge.node) for edge in all_edges if edge.node is not None]
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get top 50 tracks of an artist."""
+        """Get top tracks of an artist."""
         result = await self.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None or result.top_tracks is None:
             return []
-        return [
-            self._parse_track(edge.node)
-            for edge in result.top_tracks.edges
-            if edge.node is not None
-        ]
+        all_edges = list(result.top_tracks.edges)
+        while result.top_tracks is not None and result.top_tracks.page_info.has_next_page:
+            result = await self.gql_client.get_artist(
+                artist_id=prov_artist_id,
+                top_tracks_after=result.top_tracks.page_info.end_cursor,
+            )
+            if result is None or result.top_tracks is None:
+                break
+            all_edges.extend(result.top_tracks.edges)
+        return [self._parse_track(edge.node) for edge in all_edges if edge.node is not None]
 
     # -- Library add/remove (favorites) --
 
@@ -690,6 +738,7 @@ class DeezerProvider(MusicProvider):
         await self.gql_client.add_tracks_to_playlist(
             playlist_id=prov_playlist_id, track_ids=prov_track_ids
         )
+        await self._invalidate_playlist_cache(prov_playlist_id)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -703,6 +752,7 @@ class DeezerProvider(MusicProvider):
             await self.gql_client.remove_tracks_from_playlist(
                 playlist_id=prov_playlist_id, track_ids=track_ids
             )
+            await self._invalidate_playlist_cache(prov_playlist_id)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -1411,15 +1461,45 @@ class DeezerProvider(MusicProvider):
         """
         if media_type != MediaType.PODCAST_EPISODE:
             return (False, 0)
-        result = await self.gql_client.get_podcast_episode_bookmarks(first=100)
-        if not result:
-            return (False, 0)
-        for edge in result.podcast_episode_bookmarks.edges:
-            if edge.node is None:
-                continue
-            if edge.node.episode.id == item_id:
-                return (edge.node.is_played, edge.node.position * 1000)
+        # Paginate bookmarks, stop early when the target episode is found
+        cursor: str | None = None
+        while True:
+            result = await self.gql_client.get_podcast_episode_bookmarks(first=50, after=cursor)
+            if not result:
+                break
+            for edge in result.podcast_episode_bookmarks.edges:
+                if edge.node is None:
+                    continue
+                if edge.node.episode.id == item_id:
+                    return (edge.node.is_played, edge.node.position * 1000)
+            if not result.podcast_episode_bookmarks.page_info.has_next_page:
+                break
+            cursor = result.podcast_episode_bookmarks.page_info.end_cursor
         return (False, 0)
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Handle callback when a podcast episode has been played or is playing.
+
+        Syncs playback progress back to Deezer's bookmark/play-state system.
+        Only handles podcast episodes — Deezer's Pipe API has no track listen logging.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+        if fully_played:
+            await self.gql_client.mark_as_played_podcast_episode(episode_id=prov_item_id)
+        elif position == 0 and not is_playing:
+            # User explicitly marked as unplayed
+            await self.gql_client.mark_as_not_played_podcast_episode(episode_id=prov_item_id)
+        elif is_playing or position > 0:
+            await self.gql_client.bookmark_podcast_episode(episode_id=prov_item_id, offset=position)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -1698,15 +1778,29 @@ class DeezerProvider(MusicProvider):
             if edge.node is not None
         ]
 
+    async def _invalidate_playlist_cache(self, prov_playlist_id: str) -> None:
+        """Invalidate the cached playlist tracks after a mutation."""
+        cache_key = f"_get_regular_playlist_tracks.{prov_playlist_id}"
+        await self.mass.cache.delete(key=cache_key, provider=self.instance_id)
+
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def _get_regular_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
         """Get tracks for regular Deezer playlists (cached)."""
         result = await self.gql_client.get_playlist(playlist_id=prov_playlist_id)
         if result is None:
             return []
+        all_edges = list(result.tracks.edges)
+        while result.tracks.page_info.has_next_page:
+            result = await self.gql_client.get_playlist(
+                playlist_id=prov_playlist_id,
+                tracks_after=result.tracks.page_info.end_cursor,
+            )
+            if result is None:
+                break
+            all_edges.extend(result.tracks.edges)
         return [
             self._parse_track(edge.node, position=idx)
-            for idx, edge in enumerate(result.tracks.edges, 1)
+            for idx, edge in enumerate(all_edges, 1)
             if edge.node is not None
         ]
 

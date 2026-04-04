@@ -1,20 +1,44 @@
 ## Summary
 
-Extends the Deezer provider with mood and genre Flow playlists (Happy, Chill, Focus, Party, Rock, Metal, etc.) building on top of #3077.
+Full rewrite of the Deezer provider, replacing the REST-based `deezer-python` dependency with `deezer-python-gql` — a typed async GraphQL client for Deezer's Pipe API.
 
-These Flow variants are only available through Deezer's unofficial GW API (`radio.getUserRadio`), so the changes go into `gw_client.py` and `__init__.py`.
+### What changed
 
-Available Flows are discovered dynamically via the `page.get` GW endpoint instead of being hardcoded, so regional and user-specific variations are picked up automatically. Each Flow gets proper cover art from Deezer's CDN.
+**Core architecture**
+- All metadata (tracks, albums, artists, playlists) now fetched via typed GraphQL queries instead of REST
+- Shared GraphQL fragments provide consistent field coverage across all item types
+- Cursor-based pagination for nested collections (album tracks, playlist tracks, artist albums, audiobook chapters)
 
-The recommendations view now includes two new folders:
-- **Deezer Mood Flows** — Happy, Chill, Focus, Melancholy, Party, Love, Motivation
-- **Deezer Genre Flows** — Rock, Metal, Electronic, Classical, etc. (varies by region)
+**New capabilities**
+- Podcasts: full library sync, episode browsing, bookmark/resume state sync (read + write via `on_played`)
+- Audiobooks: library sync, chapter navigation with cumulative position calculation
+- Livestreams (radio): search, playback via external stream URLs
+- Lyrics: synchronized (LRC) and plain text from GraphQL
+- Music Together (Shaker): group discovery, suggested and curated playlists in browse/recommendations
+- Flow variants: mood and genre Flows discovered dynamically via GraphQL flow config queries
+- Smart Tracklists and "Made for Me" mixes surfaced in recommendations
 
-Also wraps `get_user_recommended_albums` and `get_user_recommended_artists` in try/except since the Deezer API occasionally returns errors on those endpoints, which would otherwise prevent all recommendations from loading.
+**Dependency change**
+- Removed: `deezer-python` (REST)
+- Added: `deezer-python-gql` (async GraphQL, Pydantic response models)
+
+**GW client changes**
+- Retained for track streaming (URL + Blowfish decryption), listen logging, audiobook channel browsing, and country code
+- Non-streaming REST calls removed
+
+### Breaking changes
+
+None. This is a drop-in replacement. Existing ARL token configuration is unchanged.
 
 ## Test Plan
 
-- Tested locally, mood and genre Flows show up in recommendations and play back correctly
-- Verified that recommendations still load when `get_user_recommended_artists` returns an error
+- Verified library sync for all media types (artists, albums, tracks, playlists, podcasts, audiobooks)
+- Tested search across all entity types including livestreams
+- Tested playback: tracks (FLAC/MP3), podcasts, livestreams, audiobooks
+- Tested playlist CRUD: create, add/remove tracks, delete
+- Tested podcast resume: play → pause → resume picks up position from Deezer bookmarks
+- Tested browse navigation: recommendations, Shaker groups, Flow configs, recently played
+- Tested lyrics display (synced + plain text)
+- Verified radio stations are searchable and can be favorited in MA
 
-Suggested label: `enhancement`
+Suggested label: `new feature`
