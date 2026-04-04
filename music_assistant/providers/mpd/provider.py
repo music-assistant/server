@@ -11,7 +11,8 @@ from .player import MPDPlayer
 
 
 def _parse_hosts(hosts_str: str) -> list[tuple[str, int]]:
-    """Parse the hosts config string into a list of (host, port) tuples.
+    """
+    Parse the hosts config string into a list of (host, port) tuples.
 
     Accepted formats per entry (comma-separated):
       - host
@@ -42,10 +43,11 @@ def _parse_hosts(hosts_str: str) -> list[tuple[str, int]]:
 
 
 class MPDPlayerProvider(PlayerProvider):
-    """MPD Player provider.
+    """
+    MPD Player provider.
 
     One provider instance manages one or more MPD servers. Servers are
-    configured as a comma-separated list of host:port#password entries.
+    configured as a comma-separated list of host:port entries.
     Each server is registered as a separate MA player.
     """
 
