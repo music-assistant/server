@@ -409,10 +409,11 @@ class SendspinBridgeManager:
                 self.logger.debug("Bridge already exists for %s", cast_player.display_name)
                 return
 
-            # Skip bridging for audio groups and multichannel children
-            if cast_player.cast_info.is_audio_group:
-                return
-            if cast_player.cast_info.is_multichannel_child:
+            # Skip audio groups (non-stereo-pair) — they have their own playback mechanism
+            if (
+                cast_player.cast_info.is_audio_group
+                and not cast_player.cast_info.is_multichannel_group
+            ):
                 return
 
             # skip if the cast player's parent also has airplay linked
