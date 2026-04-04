@@ -1588,6 +1588,7 @@ class StreamsAudio:
                 yield buffer[: pcm_format.pcm_sample_size]
                 bytes_written += pcm_format.pcm_sample_size
                 buffer = buffer[pcm_format.pcm_sample_size :]
+                await asyncio.sleep(0)
 
         #### HANDLE END OF TRACK
 
@@ -1911,6 +1912,7 @@ class StreamsAudio:
                     yield crossfade_buffer[:pcm_sample_size]
                     bytes_written += pcm_sample_size
                     crossfade_buffer = crossfade_buffer[pcm_sample_size:]
+                    await asyncio.sleep(0)
 
             #### HANDLE END OF TRACK
             if not first_chunk_received:
