@@ -691,22 +691,27 @@ async def remove_file(file_path: str) -> None:
     LOGGER.log(VERBOSE_LOG_LEVEL, "Removed file: %s", file_path)
 
 
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
+def get_primary_ip_address_from_zeroconf(
+    discovery_info: AsyncServiceInfo, prefer_ipv6: bool = False
+) -> str | None:
     """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    # fall back to IPv6 addresses if no usable IPv4 address found
-    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
-        if address.startswith(("::1", "fe80")):
-            # filter out loopback and link-local addresses
-            continue
-        return address
+    ip_versions = (
+        (IPVersion.V6Only, IPVersion.V4Only)
+        if prefer_ipv6
+        else (IPVersion.V4Only, IPVersion.V6Only)
+    )
+    for ip_version in ip_versions:
+        for address in discovery_info.parsed_addresses(ip_version):
+            if address.startswith("127"):
+                # filter out loopback address
+                continue
+            if address.startswith("169.254"):
+                # filter out APIPA address
+                continue
+            if address.startswith(("::1", "fe80")):
+                # filter out loopback and link-local IPv6 addresses
+                continue
+            return address
     return None
 
 

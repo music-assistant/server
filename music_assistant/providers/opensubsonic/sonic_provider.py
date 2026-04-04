@@ -66,8 +66,7 @@ if TYPE_CHECKING:
     from libopensonic.media import ArtistID3 as SonicArtist
     from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicItem
-    from libopensonic.media import Lyrics as SonicLyrics
-    from libopensonic.media import OpenSubsonicExtension, StructuredLyrics
+    from libopensonic.media import OpenSubsonicExtension
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 

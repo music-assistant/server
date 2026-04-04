@@ -1030,7 +1030,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
         # If player is currently grouped, handle it so the source switch can proceed.
-        # This allows external sources (e.g. Spotify Connect, AirPlay) to take over a grouped player.
+        # This allows external sources (e.g. Spotify Connect, AirPlay)
+        # to take over a grouped player.
         if player.state.active_group and (
             group_player := self.get_player(player.state.active_group)
         ):
