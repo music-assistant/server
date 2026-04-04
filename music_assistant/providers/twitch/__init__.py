@@ -751,6 +751,9 @@ class TwitchProvider(MusicProvider):
                                 if _ah.ad_break_active:
                                     streamdetails.stream_title = f"{item_id} - Ad Break"
                                 else:
+                                    # stream_title is a property backed by stream_metadata,
+                                    # so clearing metadata also clears the title — MA falls
+                                    # back to current_item.name
                                     streamdetails.stream_metadata = None
                             yield chunk
                             continue
