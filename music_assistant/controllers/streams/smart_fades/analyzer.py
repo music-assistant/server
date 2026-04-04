@@ -31,6 +31,10 @@ if TYPE_CHECKING:
     from music_assistant.controllers.streams.controller import StreamsController
 
 ANALYSIS_FPS = 100
+# Sample rate used for librosa beat analysis.
+# librosa defaults to 22050 Hz; using a higher rate than necessary
+# wastes CPU (e.g. 192 kHz is ~8.7x more work for no benefit).
+ANALYSIS_SAMPLE_RATE = 22050
 
 
 class SmartFadesAnalyzer:
@@ -170,7 +174,22 @@ class SmartFadesAnalyzer:
                 )
                 return None
 
-            analysis = await self._analyze_track_beats(mono_audio, fragment, pcm_format.sample_rate)
+            # downsample to ANALYSIS_SAMPLE_RATE before beat analysis to avoid
+            # wasting CPU on high sample rates (e.g. 192 kHz)
+            analysis_sr = pcm_format.sample_rate
+            if analysis_sr > ANALYSIS_SAMPLE_RATE:
+                mono_audio = np.asarray(
+                    await asyncio.to_thread(
+                        librosa.resample,
+                        mono_audio,
+                        orig_sr=analysis_sr,
+                        target_sr=ANALYSIS_SAMPLE_RATE,
+                    ),
+                    dtype=np.float32,
+                )
+                analysis_sr = ANALYSIS_SAMPLE_RATE
+
+            analysis = await self._analyze_track_beats(mono_audio, fragment, analysis_sr)
 
             total_time = time.perf_counter() - start_time
             if not analysis:

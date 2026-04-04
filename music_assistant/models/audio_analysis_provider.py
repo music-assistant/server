@@ -74,6 +74,7 @@ class AudioAnalysisProvider(Provider):
             streamdetails.item_id,
             streamdetails.provider,
             self.domain,
+            media_type=streamdetails.media_type,
         )
         if stored_version is not None and stored_version >= self.analysis_version:
             return False
