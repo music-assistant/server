@@ -65,7 +65,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
         self.mass.register_api_command(f"music/{api_base}/authors", self.authors)
+        self.mass.register_api_command(f"music/{api_base}/author_books", self.author_books)
         self.mass.register_api_command(f"music/{api_base}/narrators", self.narrators)
+        self.mass.register_api_command(f"music/{api_base}/narrator_books", self.narrator_books)
 
     async def library_items(
         self,
@@ -136,9 +138,27 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """Return all available authors."""
         return await self._authors_narrators("authors")
 
+    async def author_books(self, author_name: str) -> UniqueList[Audiobook]:
+        """Return audiobooks of an author."""
+        return UniqueList(
+            await self.get_library_items_by_query(
+                # Is that safe?
+                extra_query_parts=[f"WHERE audiobooks.authors LIKE '%{author_name}%'"],
+            )
+        )
+
     async def narrators(self) -> UniqueList[str]:
         """Return all available narrators."""
         return await self._authors_narrators("narrators")
+
+    async def narrator_books(self, narrator_name: str) -> UniqueList[Audiobook]:
+        """Return audiobooks of a narrator."""
+        return UniqueList(
+            await self.get_library_items_by_query(
+                # Is that safe?
+                extra_query_parts=[f"WHERE audiobooks.narrators LIKE '%{narrator_name}%'"],
+            )
+        )
 
     async def versions(
         self,
