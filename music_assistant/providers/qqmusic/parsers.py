@@ -286,7 +286,7 @@ def parse_artist(
     )
     artist = Artist(
         item_id=artist_id,
-        provider=provider_domain,
+        provider=provider_instance_id,
         name=artist_name,
         provider_mappings={
             ProviderMapping(
@@ -362,7 +362,7 @@ def parse_album(
     album_name = clean_text(album_name, "Unknown Album")
     album = Album(
         item_id=album_id,
-        provider=provider_domain,
+        provider=provider_instance_id,
         name=album_name,
         version=album_version,
         provider_mappings={
@@ -460,7 +460,7 @@ def parse_track(  # noqa: PLR0915
     max_audio_format, max_quality_label = get_max_supported_audio_format(track_obj)
     track = Track(
         item_id=track_id,
-        provider=provider_domain,
+        provider=provider_instance_id,
         name=track_name,
         version=track_version,
         duration=int(duration) if duration else 0,
@@ -520,7 +520,7 @@ def parse_track(  # noqa: PLR0915
     if album_id and album_name:
         track.album = Album(
             item_id=album_id,
-            provider=provider_domain,
+            provider=provider_instance_id,
             name=album_name,
             provider_mappings={
                 ProviderMapping(
@@ -643,7 +643,7 @@ def parse_playlist(
     )
     playlist = Playlist(
         item_id=playlist_id,
-        provider=provider_domain,
+        provider=provider_instance_id,
         name=playlist_name,
         provider_mappings={
             ProviderMapping(
