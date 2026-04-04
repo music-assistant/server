@@ -121,7 +121,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LYRICS,
-    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
@@ -286,15 +285,6 @@ class DeezerProvider(MusicProvider):
             if edge.favorited_at:
                 item.date_added = self._parse_date(edge.favorited_at)
             yield item
-
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve library radio stations from Deezer.
-
-        Deezer livestreams have no favorites list, so this is intentionally empty.
-        Radio stations are discoverable via search and can be favorited in MA.
-        """
-        return
-        yield  # type: ignore[unreachable]  # make this an async generator
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from Deezer."""
