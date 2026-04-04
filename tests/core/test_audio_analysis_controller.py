@@ -7,7 +7,7 @@ import unittest.mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio_analysis import (
@@ -432,6 +432,38 @@ async def test_finalize_cleans_up_provider_sessions() -> None:
 
     provider._finalize.assert_called_once_with("test_session")
     assert "test_session" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_provider_start_analysis_uses_media_type_for_version_gating() -> None:
+    """Version gating must include media_type so analyses do not collide across item types."""
+    provider = MagicMock(spec=AudioAnalysisProvider)
+    provider.mass = MagicMock()
+    provider.mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    provider._sessions = {}
+    provider._start_analysis = AsyncMock(return_value=True)
+    provider.domain = "test_domain"
+    provider.analysis_version = 1
+
+    streamdetails = MagicMock()
+    streamdetails.item_id = "shared_id"
+    streamdetails.provider = "test_prov"
+    streamdetails.media_type = MediaType.RADIO
+
+    accepted = await AudioAnalysisProvider.start_analysis(
+        provider,
+        session_id="session_1",
+        streamdetails=streamdetails,
+        audio_format=TEST_PCM_FORMAT,
+    )
+
+    assert accepted is True
+    provider.mass.streams.audio_analysis.get_audio_analysis_version.assert_awaited_once_with(
+        "shared_id",
+        "test_prov",
+        "test_domain",
+        media_type=MediaType.RADIO,
+    )
 
 
 @pytest.mark.asyncio
