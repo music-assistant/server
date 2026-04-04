@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, cast
 from mpd import CommandError, FailureResponseCode, MPDError
 from mpd.asyncio import MPDClient
 from music_assistant_models.enums import (
-    ConfigEntryType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
