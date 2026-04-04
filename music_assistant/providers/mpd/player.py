@@ -112,9 +112,6 @@ class MPDPlayer(Player):
         :param values: Optional intermediate config values from the UI.
         :return: List of ConfigEntry objects for this player.
         """
-        from music_assistant_models.config_entries import ConfigEntry
-        from music_assistant_models.enums import ConfigEntryType
-
         return [
             ConfigEntry(
                 key=CONF_PASSWORD,
