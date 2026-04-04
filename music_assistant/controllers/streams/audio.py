@@ -600,26 +600,13 @@ class StreamsAudio:
                 raise InvalidDataError(f"Access denied to radio stream: {url}") from err
             if err.status >= 500:
                 raise InvalidDataError(f"Radio stream server error (HTTP {err.status}): {url}") from err
+            if err.status == 400:
+                # 400 errors might be from legacy Shoutcast servers
+                return await self._handle_client_error_for_radio_stream(url, err, stream_type)
             raise InvalidDataError(f"HTTP error {err.status} from {url}") from err
 
         except aiohttp.ClientError as err:
-            err_msg = str(err)
-
-            if "ICY" in err_msg.upper() or "invalid" in err_msg.lower():
-                self.logger.debug("Checking for legacy Shoutcast stream: %s", url)
-                if await self._validate_shoutcast_stream(url):
-                    result = (url, StreamType.SHOUTCAST)
-                    await mass.cache.set(
-                        url,
-                        result,
-                        expiration=3600 * 3,
-                        provider=CACHE_PROVIDER,
-                        category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-                    )
-                    return result
-
-            self.logger.warning("Connection error for radio URL %s: %s", url, str(err))
-            raise InvalidDataError(f"Failed to connect to radio stream: {url}") from err
+            return await self._handle_client_error_for_radio_stream(url, err, stream_type)
 
         result = (resolved_url, stream_type)
         await mass.cache.set(
