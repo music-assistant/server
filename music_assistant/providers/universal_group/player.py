@@ -417,9 +417,6 @@ class UniversalGroupPlayer(Player):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": get_mime_type(output_format_str),
-            "Accept-Ranges": "none",
-            "Cache-Control": "no-cache",
-            "Connection": "close",
         }
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
