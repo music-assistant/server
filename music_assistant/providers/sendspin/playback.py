@@ -1248,7 +1248,7 @@ class SendspinPlaybackSession:
         force = player_id not in self._members and player_id != self.player.player_id
         config = self._get_pipeline_config_cached(player_id, force_refresh=force)
         if not config.requires_transform:
-            return MAIN_CHANNEL
+            return cast("UUID", MAIN_CHANNEL)
         return self._get_or_create_preassigned_channel(player_id)
 
     # -- History ---------------------------------------------------------------

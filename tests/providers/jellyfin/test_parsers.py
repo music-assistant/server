@@ -94,7 +94,7 @@ def test_audio_format_empty_mediastreams() -> None:
     track: dict[str, Any] = {
         ITEM_KEY_MEDIA_STREAMS: [],
     }
-    result = audio_format(track)  # type: ignore[arg-type]
+    result = audio_format(track)
 
     # Verify no exception is raised and result has expected attributes
     assert result is not None
@@ -114,7 +114,7 @@ def test_audio_format_missing_channels() -> None:
             }
         ],
     }
-    result = audio_format(track)  # type: ignore[arg-type]
+    result = audio_format(track)
 
     # Verify defaults are applied correctly
     assert result is not None

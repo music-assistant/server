@@ -123,7 +123,7 @@ class ChromecastProvider(PlayerProvider):
             disc_info: CastInfo = self.browser.devices[uuid]
 
             if disc_info.uuid is None:
-                self.logger.error("Discovered chromecast without uuid %s", disc_info)  # type: ignore[unreachable]
+                self.logger.error("Discovered chromecast without uuid %s", disc_info)
                 return
 
             player_id = str(disc_info.uuid)

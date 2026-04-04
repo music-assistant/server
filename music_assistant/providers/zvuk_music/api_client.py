@@ -180,7 +180,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         ids: list[str | int] = list(track_ids)
-        return await client.get_tracks(ids)
+        return cast("list[ZvukTrack]", await client.get_tracks(ids))
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_release(self, release_id: str) -> ZvukRelease | None:
@@ -201,7 +201,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         ids: list[str | int] = list(release_ids)
-        return await client.get_releases(ids)
+        return cast("list[ZvukRelease]", await client.get_releases(ids))
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_artist(self, artist_id: str) -> ZvukArtist | None:
@@ -222,7 +222,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         ids: list[str | int] = list(artist_ids)
-        return await client.get_artists(ids)
+        return cast("list[ZvukArtist]", await client.get_artists(ids))
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_artist_releases(
@@ -235,7 +235,10 @@ class ZvukMusicClient:
         :return: List of artist objects with populated releases.
         """
         client = self._ensure_connected()
-        return await client.get_artists([artist_id], with_releases=True, releases_limit=limit)
+        return cast(
+            "list[ZvukArtist]",
+            await client.get_artists([artist_id], with_releases=True, releases_limit=limit),
+        )
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_artist_top_tracks(
@@ -248,7 +251,10 @@ class ZvukMusicClient:
         :return: List of artist objects with populated popular_tracks.
         """
         client = self._ensure_connected()
-        return await client.get_artists([artist_id], with_popular_tracks=True, tracks_limit=limit)
+        return cast(
+            "list[ZvukArtist]",
+            await client.get_artists([artist_id], with_popular_tracks=True, tracks_limit=limit),
+        )
 
     # Playlists
 
@@ -271,7 +277,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         ids: list[str | int] = list(playlist_ids)
-        return await client.get_playlists(ids)
+        return cast("list[ZvukPlaylist]", await client.get_playlists(ids))
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_playlist_tracks(
@@ -285,7 +291,10 @@ class ZvukMusicClient:
         :return: List of SimpleTrack objects.
         """
         client = self._ensure_connected()
-        return await client.get_playlist_tracks(playlist_id, limit=limit, offset=offset)
+        return cast(
+            "list[ZvukSimpleTrack]",
+            await client.get_playlist_tracks(playlist_id, limit=limit, offset=offset),
+        )
 
     # Streaming
 
@@ -297,7 +306,7 @@ class ZvukMusicClient:
         :return: List of Stream objects.
         """
         client = self._ensure_connected()
-        return await client.get_stream_urls(track_id)
+        return cast("list[ZvukStream]", await client.get_stream_urls(track_id))
 
     # Collection (Library)
 
@@ -317,7 +326,7 @@ class ZvukMusicClient:
         :return: List of full Track objects.
         """
         client = self._ensure_connected()
-        return await client.get_liked_tracks()
+        return cast("list[ZvukTrack]", await client.get_liked_tracks())
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_user_playlists(self) -> list[ZvukCollectionItem]:
@@ -326,7 +335,7 @@ class ZvukMusicClient:
         :return: List of CollectionItem objects with playlist IDs.
         """
         client = self._ensure_connected()
-        return await client.get_user_playlists()
+        return cast("list[ZvukCollectionItem]", await client.get_user_playlists())
 
     # Library modifications
 
@@ -338,7 +347,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.like_track(track_id)
+            return bool(await client.like_track(track_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error liking track %s: %s", track_id, err)
             return False
@@ -351,7 +360,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.unlike_track(track_id)
+            return bool(await client.unlike_track(track_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error unliking track %s: %s", track_id, err)
             return False
@@ -364,7 +373,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.like_release(release_id)
+            return bool(await client.like_release(release_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error liking release %s: %s", release_id, err)
             return False
@@ -377,7 +386,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.unlike_release(release_id)
+            return bool(await client.unlike_release(release_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error unliking release %s: %s", release_id, err)
             return False
@@ -390,7 +399,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.like_artist(artist_id)
+            return bool(await client.like_artist(artist_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error liking artist %s: %s", artist_id, err)
             return False
@@ -403,7 +412,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.unlike_artist(artist_id)
+            return bool(await client.unlike_artist(artist_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error unliking artist %s: %s", artist_id, err)
             return False
@@ -416,7 +425,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.like_playlist(playlist_id)
+            return bool(await client.like_playlist(playlist_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error liking playlist %s: %s", playlist_id, err)
             return False
@@ -429,7 +438,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.unlike_playlist(playlist_id)
+            return bool(await client.unlike_playlist(playlist_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error unliking playlist %s: %s", playlist_id, err)
             return False
@@ -445,7 +454,7 @@ class ZvukMusicClient:
         :return: New playlist ID.
         """
         client = self._ensure_connected()
-        return await client.create_playlist(name, track_ids=track_ids)
+        return str(await client.create_playlist(name, track_ids=track_ids))
 
     async def delete_playlist(self, playlist_id: str) -> bool:
         """Delete a playlist.
@@ -455,7 +464,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.delete_playlist(playlist_id)
+            return bool(await client.delete_playlist(playlist_id))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error deleting playlist %s: %s", playlist_id, err)
             return False
@@ -469,7 +478,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.add_tracks_to_playlist(playlist_id, track_ids)
+            return bool(await client.add_tracks_to_playlist(playlist_id, track_ids))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error adding tracks to playlist %s: %s", playlist_id, err)
             return False
@@ -483,7 +492,7 @@ class ZvukMusicClient:
         """
         client = self._ensure_connected()
         try:
-            return await client.update_playlist(playlist_id, track_ids)
+            return bool(await client.update_playlist(playlist_id, track_ids))
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error updating playlist %s: %s", playlist_id, err)
             return False

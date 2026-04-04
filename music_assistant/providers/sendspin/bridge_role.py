@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiosendspin.server import VolumeChangedEvent
-from aiosendspin.server.roles import AudioRequirements, Role
+from aiosendspin.server.roles import AudioRequirements
 from aiosendspin.server.roles.registry import register_role
 
 from music_assistant.mass import LOGGER
@@ -20,6 +20,16 @@ from music_assistant.mass import LOGGER
 if TYPE_CHECKING:
     from aiosendspin.server import SendspinClient
     from aiosendspin.server.roles import AudioChunk
+
+    class _SendspinRole:
+        """Typed fallback base for mypy when aiosendspin stubs are unavailable."""
+
+        def _subscribe_to_group_role(self) -> None: ...
+
+        def _unsubscribe_from_group_role(self) -> None: ...
+
+else:
+    from aiosendspin.server.roles import Role as _SendspinRole
 
 # Audio format constants for bridge players.
 BRIDGE_SAMPLE_RATE = 44100
@@ -30,7 +40,7 @@ BRIDGE_BYTES_PER_SAMPLE = BRIDGE_BIT_DEPTH // 8
 BRIDGE_ROLE_ID = "player@_bridge"
 
 
-class BridgePlayerRole(Role):
+class BridgePlayerRole(_SendspinRole):
     """Custom Sendspin player role for external player bridges.
 
     This role receives audio from Sendspin's PushStream and forwards it

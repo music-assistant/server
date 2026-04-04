@@ -148,7 +148,7 @@ class SendspinChromecastBridge:
     @property
     def is_cast_app_active(self) -> bool:
         """Return whether the Sendspin Cast app is active on the device."""
-        return self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
+        return bool(self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID)
 
     async def start(self) -> None:
         """Register the Chromecast player as an external Sendspin client."""

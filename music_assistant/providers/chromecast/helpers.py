@@ -49,7 +49,7 @@ class ChromecastInfo:
     @property
     def is_audio_group(self) -> bool:
         """Return if the cast is an audio group."""
-        return self.cast_type == CAST_TYPE_GROUP
+        return bool(self.cast_type == CAST_TYPE_GROUP)
 
     @classmethod
     def from_cast_info(cls, cast_info: CastInfo) -> ChromecastInfo:
