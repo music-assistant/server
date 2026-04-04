@@ -434,8 +434,11 @@ class AudioBuffer:
             # audio analysis providers
             # loudness analysis for all streams (tracks and radio)
             mass.streams.audio.attach_loudness_analyzer(audio_buffer, streamdetails)
-            # smart fades analysis only for music tracks (not podcasts/audiobooks)
-            if streamdetails.media_type == MediaType.TRACK:
+            # smart fades analysis only when enabled and only for music tracks
+            if (
+                streamdetails.media_type == MediaType.TRACK
+                and smart_fades_mode != SmartFadesMode.DISABLED
+            ):
                 mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
             # audio analysis providers (beat tracking, key detection, etc.)
             await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
