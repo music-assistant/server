@@ -114,7 +114,7 @@ class MPDPlayer(Player):
 
     async def on_config_updated(self) -> None:
         """Reconnect to MPD when player configuration changes."""
-        self.password = cast(str | None, self.config.get_value(CONF_PASSWORD) or None)
+        self.password = cast("str | None", self.config.get_value(CONF_PASSWORD) or None)
         self._attr_needs_setup = False
         await self._disconnect()
         await self._connect()
