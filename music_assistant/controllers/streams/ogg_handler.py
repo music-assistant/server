@@ -32,6 +32,12 @@ OGG_FLAG_CONTINUATION: int = 0x01  # Continuation of previous page
 OGG_FLAG_BOS: int = 0x02  # Beginning of stream
 OGG_FLAG_EOS: int = 0x04  # End of stream
 
+# Ogg FLAC constants
+FLAC_METADATA_HEADER_SIZE: int = (
+    4  # Size of FLAC metadata block header (1 byte type + 3 bytes length)
+)
+FLAC_METADATA_BLOCK_VORBIS_COMMENT: int = 4  # FLAC metadata block type for Vorbis comments
+
 
 class OggPage:
     """Parsed OGG page with header fields and payload."""
@@ -89,9 +95,21 @@ class OggPage:
         return len(self.segment_data) > 7 and self.segment_data[0:7] == b"\x03vorbis"
 
     @property
-    def is_header_page(self) -> bool:
+    def is_ogg_flac_mapping_page(self) -> bool:
+        """Return True if page starts with the Ogg FLAC mapping header packet."""
+        return len(self.segment_data) > 5 and self.segment_data[0:5] == b"\x7fFLAC"
+
+    def is_header_page(self, is_ogg_flac_stream: bool = False) -> bool:
         """Return True if page is a header (not audio data)."""
-        return self.is_opus_head or self.is_opus_tags or self.is_vorbis_id or self.is_vorbis_comment
+        return (
+            self.is_opus_head
+            or self.is_opus_tags
+            or self.is_vorbis_id
+            or self.is_vorbis_comment
+            or self.is_ogg_flac_mapping_page
+            # In Ogg FLAC streams pages with granule position 0 contain header packets and not audio data
+            or (is_ogg_flac_stream and self.granule_position == 0)
+        )
 
 
 def parse_ogg_page(data: bytes | bytearray, offset: int = 0) -> tuple[OggPage, int] | None:
@@ -222,12 +240,41 @@ def parse_vorbis_comments(data: bytes) -> dict[str, str]:
     return comments
 
 
-def extract_metadata_from_page(page: OggPage) -> dict[str, str] | None:
-    """Extract metadata from page if it contains OpusTags or Vorbis comments."""
+def parse_flac_vorbis_comment_block(data: bytes) -> dict[str, str]:
+    """Parse Vorbis comments from a native FLAC metadata block."""
+    if len(data) < FLAC_METADATA_HEADER_SIZE:
+        return {}
+    block_length = int.from_bytes(data[1:4], byteorder="big")
+    if len(data) < FLAC_METADATA_HEADER_SIZE + block_length:
+        LOGGER.debug(
+            "Skipping FLAC Vorbis comment block spanning multiple OGG pages: "
+            "need %d bytes, have %d",
+            FLAC_METADATA_HEADER_SIZE + block_length,
+            len(data),
+        )
+        return {}
+    comment_data = data[FLAC_METADATA_HEADER_SIZE : FLAC_METADATA_HEADER_SIZE + block_length]
+    return parse_vorbis_comments(comment_data)
+
+
+def _is_flac_vorbis_comment_block(data: bytes) -> bool:
+    """Return True if Ogg FLAC packet data contains a FLAC Vorbis comment block."""
+    if len(data) < FLAC_METADATA_HEADER_SIZE:
+        return False
+    block_type = data[0] & 0x7F
+    return block_type == FLAC_METADATA_BLOCK_VORBIS_COMMENT
+
+
+def extract_metadata_from_page(
+    page: OggPage, is_ogg_flac_stream: bool = False
+) -> dict[str, str] | None:
+    """Extract metadata from page if it contains supported comment metadata."""
     if page.is_opus_tags:
         return parse_vorbis_comments(page.segment_data[8:])
     if page.is_vorbis_comment:
         return parse_vorbis_comments(page.segment_data[7:])
+    if is_ogg_flac_stream and _is_flac_vorbis_comment_block(page.segment_data):
+        return parse_flac_vorbis_comment_block(page.segment_data)
     return None
 
 
@@ -240,14 +287,15 @@ class _ChainedOggState:
         self.output_sequence: int = 0
         self.first_chain: bool = True
         self.seen_eos: bool = False
+        self.is_ogg_flac_chain: bool = False
         self.header_pages_sent: int = 0
         self.last_granule: int = 0
         self.granule_offset: int = 0
 
     def _handle_metadata(self, page: OggPage) -> None:
-        """Extract and invoke callback for OpusTags metadata."""
-        if self.metadata_callback and page.is_opus_tags:
-            metadata = extract_metadata_from_page(page)
+        """Extract and invoke callback for supported in-band metadata pages."""
+        if self.metadata_callback:
+            metadata = extract_metadata_from_page(page, is_ogg_flac_stream=self.is_ogg_flac_chain)
             if metadata:
                 LOGGER.debug("Extracted metadata: %s", metadata)
                 self.metadata_callback(metadata)
@@ -257,11 +305,17 @@ class _ChainedOggState:
         if page.is_bos:
             self.output_serial = page.serial_number
             LOGGER.debug("First chain BOS, serial=%d", self.output_serial)
+            if page.is_ogg_flac_mapping_page:
+                self.is_ogg_flac_chain = True
             self.output_sequence = page.page_sequence
             self.header_pages_sent = 1
             return page.raw_data
 
-        if page.is_header_page and self.header_pages_sent < 2:
+        # Ogg FLAC chains can carry additional header pages after the mapping header,
+        # so do not stop at the two-page limit used for Opus/Vorbis setup headers.
+        if page.is_header_page(self.is_ogg_flac_chain) and (
+            self.header_pages_sent < 2 or self.is_ogg_flac_chain
+        ):
             LOGGER.debug("First chain header page %d", self.header_pages_sent)
             self._handle_metadata(page)
             self.output_sequence = page.page_sequence
@@ -281,6 +335,7 @@ class _ChainedOggState:
             self.granule_offset = self.last_granule
             self.first_chain = False
             self.seen_eos = True
+            self.is_ogg_flac_chain = False
             return None
 
         self.output_sequence += 1
@@ -293,9 +348,12 @@ class _ChainedOggState:
         if self.seen_eos and page.is_bos:
             LOGGER.debug("New chain BOS, serial=%d (skipping)", page.serial_number)
             self.seen_eos = False
+            self.is_ogg_flac_chain = False
+            if page.is_ogg_flac_mapping_page:
+                self.is_ogg_flac_chain = True
             return None
 
-        if page.is_header_page:
+        if page.is_header_page(self.is_ogg_flac_chain):
             LOGGER.debug("Chain header page (skipping)")
             self._handle_metadata(page)
             return None
