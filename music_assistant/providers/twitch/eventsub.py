@@ -171,6 +171,8 @@ class EventSubClient:
                 self._ws = await self._http_session.ws_connect(url)
                 async for msg in self._ws:
                     if self._stopped:
+                        # mypy false positive (python/mypy#12784): async for + except
+                        # CancelledError makes mypy think the loop body is unreachable
                         break  # type: ignore[unreachable]
                     data = getattr(msg, "data", None)
                     if not isinstance(data, str):
@@ -188,6 +190,9 @@ class EventSubClient:
                 self._ready.clear()
 
             if self._stopped:
+                # mypy false positive (python/mypy#13104): the except Exception
+                # path falls through the finally to here, but mypy doesn't track
+                # it because except CancelledError returns
                 return  # type: ignore[unreachable]
 
             # Backoff before reconnect
