@@ -6,9 +6,12 @@ from typing import cast
 
 from music_assistant.models.player_provider import PlayerProvider
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
+
 from .constants import CONF_HOSTS, DEFAULT_MPD_PORT
 from .player import MPDPlayer
 
+CONF_MANUAL_IPS = CONF_ENTRY_MANUAL_DISCOVERY_IPS.key
 
 def _parse_host_entry(entry: str) -> tuple[str, int]:
     """Parse a single host entry into a (host, port) tuple.
