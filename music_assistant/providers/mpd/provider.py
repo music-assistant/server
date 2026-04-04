@@ -11,6 +11,7 @@ from .player import MPDPlayer
 
 CONF_MANUAL_IPS = CONF_ENTRY_MANUAL_DISCOVERY_IPS.key
 
+
 def _parse_host_entry(entry: str) -> tuple[str, int]:
     """Parse a single host entry into a (host, port) tuple.
 
