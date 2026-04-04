@@ -1889,16 +1889,27 @@ class StreamsAudio:
                             mix_err,
                         )
                         yield last_fadeout_part
-                        bytes_written += len(last_fadeout_part)
-                        crossfade_bytes_written = 0
-                        remaining_bytes = crossfade_buffer
-                    if crossfade_bytes_written:
-                        bytes_written += int(crossfade_bytes_written / 2)
                         if last_play_log_entry:
                             assert last_play_log_entry.seconds_streamed is not None
                             last_play_log_entry.seconds_streamed += (
-                                crossfade_bytes_written / 2 / pcm_sample_size
+                                len(last_fadeout_part) / pcm_sample_size
                             )
+                        crossfade_bytes_written = 0
+                        remaining_bytes = crossfade_buffer
+                    if crossfade_bytes_written:
+                        # distribute the crossfade output proportionally based on
+                        # each input's size rather than a blind 50/50 split
+                        total_input = len(last_fadeout_part) + len(fadein_part)
+                        if total_input > 0:
+                            fadeout_ratio = len(last_fadeout_part) / total_input
+                        else:
+                            fadeout_ratio = 0.5
+                        fadeout_share = int(crossfade_bytes_written * fadeout_ratio)
+                        fadein_share = crossfade_bytes_written - fadeout_share
+                        bytes_written += fadein_share
+                        if last_play_log_entry:
+                            assert last_play_log_entry.seconds_streamed is not None
+                            last_play_log_entry.seconds_streamed += fadeout_share / pcm_sample_size
                     if remaining_bytes:
                         yield remaining_bytes
                         bytes_written += len(remaining_bytes)
@@ -1927,8 +1938,11 @@ class StreamsAudio:
                 continue
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
+                # attribute these bytes to the previous track (they are its tail)
                 yield last_fadeout_part
-                bytes_written += len(last_fadeout_part)
+                if last_play_log_entry:
+                    assert last_play_log_entry.seconds_streamed is not None
+                    last_play_log_entry.seconds_streamed += len(last_fadeout_part) / pcm_sample_size
                 last_fadeout_part = b""
             if self.crossfade_allowed(
                 queue_track,
@@ -1977,6 +1991,11 @@ class StreamsAudio:
                 streamdetails.seconds_streamed or 0
             ) + last_part_seconds
             streamdetails.duration = int((streamdetails.duration or 0) + last_part_seconds)
+            # also update the play log entry so elapsed time tracking stays in sync
+            if last_play_log_entry:
+                assert last_play_log_entry.seconds_streamed is not None
+                last_play_log_entry.seconds_streamed += last_part_seconds
+                last_play_log_entry.duration = streamdetails.duration
             last_fadeout_part = b""
         total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
