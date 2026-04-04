@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from mpd import MPDError
+from mpd import CommandError, FailureResponseCode, MPDError
 from mpd.asyncio import MPDClient
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC
+from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_PASSWORD
 from music_assistant.models.player import Player
 
 from .constants import ELAPSED_POLL_INTERVAL, RECONNECT_DELAY
@@ -78,6 +83,7 @@ class MPDPlayer(Player):
         self._client: MPDClient | None = None
         self._idle_client: MPDClient | None = None
         self._idle_task: asyncio.Task[None] | None = None
+        self._attr_needs_setup: bool = False
 
         self._attr_name = f"MPD ({host})"
         self._attr_supported_features = {
@@ -91,6 +97,14 @@ class MPDPlayer(Player):
             self.mass.call_later(0, self._disconnect, task_id=f"mpd_disconnect_{self.player_id}")
 
         self._on_unload_callbacks.append(_schedule_disconnect)
+
+    @property
+    def needs_setup(self) -> bool:
+        """Return True if the player requires a password to be configured.
+
+        :return: True when a password is required but has not yet been provided.
+        """
+        return self._attr_needs_setup
 
     @property
     def needs_poll(self) -> bool:
@@ -114,10 +128,21 @@ class MPDPlayer(Player):
         :param values: Optional intermediate config values from the UI.
         :return: List of ConfigEntry objects for this player.
         """
-        return [_CONF_ENTRY_OUTPUT_CODEC_MP3_DEFAULT]
+        return [
+            ConfigEntry(
+                key=CONF_PASSWORD,
+                type=ConfigEntryType.SECURE_STRING,
+                label="Password",
+                description="MPD password, if required by the server.",
+                required=False,
+            ),
+            _CONF_ENTRY_OUTPUT_CODEC_MP3_DEFAULT,
+        ]
 
     async def on_config_updated(self) -> None:
         """Reconnect to MPD when player configuration changes."""
+        self.password = cast(str | None, self.config.get_value(CONF_PASSWORD) or None)
+        self._attr_needs_setup = False
         await self._disconnect()
         await self._connect()
 
@@ -144,6 +169,7 @@ class MPDPlayer(Player):
 
             status = await self._client.status()
             self._attr_available = True
+            self._attr_needs_setup = False
             self._attr_device_info = DeviceInfo(
                 model=f"MPD {self._client.mpd_version}",
                 manufacturer="Music Player Daemon",
@@ -154,8 +180,27 @@ class MPDPlayer(Player):
             await self._sync_state(status)
             self.update_state()
 
+        except CommandError as err:
+            if err.errno in (FailureResponseCode.PASSWORD, FailureResponseCode.PERMISSION):
+                self.logger.warning(
+                    "Authentication failed for MPD at %s:%s — configure password in player settings",
+                    self.host,
+                    self.port,
+                )
+                self._attr_available = False
+                self._attr_needs_setup = True
+                self.update_state()
+            else:
+                self.logger.warning(
+                    "MPD command error at %s:%s: %s", self.host, self.port, err
+                )
+                self._attr_available = False
+                self.update_state()
+                self.reconnect()
         except MPDError as err:
-            self.logger.warning("Failed to connect to MPD at %s:%s: %s", self.host, self.port, err)
+            self.logger.warning(
+                "Failed to connect to MPD at %s:%s: %s", self.host, self.port, err
+            )
             self._attr_available = False
             self.update_state()
             self.reconnect()
