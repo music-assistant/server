@@ -66,6 +66,7 @@ from music_assistant.constants import (
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
+    DB_TABLE_SERIES,
     DB_TABLE_SETTINGS,
     DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_TRACK_ARTISTS,
@@ -73,6 +74,7 @@ from music_assistant.constants import (
     DEFAULT_GENRE_MAPPING,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
+from music_assistant.controllers.media.series import SeriesController
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -139,6 +141,7 @@ class MusicController(CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)
+        self.series = SeriesController(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
         self.manifest.name = "Music controller"
@@ -1569,6 +1572,7 @@ class MusicController(CoreController):
         | AudiobooksController
         | PodcastsController
         | GenreController
+        | SeriesController
     ):
         """Return controller for MediaType."""
         if media_type == MediaType.ARTIST:
@@ -1589,6 +1593,8 @@ class MusicController(CoreController):
             return self.podcasts
         if media_type == MediaType.GENRE:
             return self.genres
+        if media_type == MediaType.SERIES:
+            return self.series
         raise NotImplementedError
 
     def get_provider_instances(
@@ -3048,6 +3054,25 @@ class MusicController(CoreController):
                     [analysis_version] INTEGER DEFAULT 1,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_SERIES}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [version] TEXT,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
+            [search_name] TEXT NOT NULL,
+            [search_sort_name] TEXT NOT NULL,
+            [in_progress] BOOLEAN DEFAULT NULL,
+            [progress_percent] INTEGER DEFAULT NULL
+            );"""
         )
 
         await self.database.commit()

@@ -150,6 +150,7 @@ DB_TABLE_TRACKS: Final[str] = "tracks"
 DB_TABLE_PLAYLISTS: Final[str] = "playlists"
 DB_TABLE_RADIOS: Final[str] = "radios"
 DB_TABLE_AUDIOBOOKS: Final[str] = "audiobooks"
+DB_TABLE_SERIES: Final[str] = "series"
 DB_TABLE_PODCASTS: Final[str] = "podcasts"
 DB_TABLE_CACHE: Final[str] = "cache"
 DB_TABLE_SETTINGS: Final[str] = "settings"
@@ -725,6 +726,15 @@ CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Sync Library Audiobooks from this source to Music Assistant",
     description="Whether to import (favourited/in-library) Audiobooks from this "
+    "source to the Music Assistant Library.",
+    default_value=True,
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_SYNC_SERIES = ConfigEntry(
+    key="library_sync_seriess",
+    type=ConfigEntryType.BOOLEAN,
+    label="Sync Library Series from this source to Music Assistant",
+    description="Whether to import (favourited/in-library) series from this "
     "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",

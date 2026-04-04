@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     Radio,
+    Series,
     Track,
 )
 
@@ -371,6 +372,38 @@ def compare_podcast(
         and compare_item.publisher
         and not compare_strings(base_item.publisher, compare_item.publisher, strict=True)
     )
+
+
+def compare_series(
+    base_item: Series | ItemMapping,
+    compare_item: Series | ItemMapping,
+    strict: bool = True,
+) -> bool | None:
+    """Compare two Podcast items and return True if they match."""
+    # return early on exact item_id match
+    if compare_item_ids(base_item, compare_item):
+        return True
+
+    # return early on (un)matched external id
+    for ext_id in (
+        ExternalID.ASIN,
+        ExternalID.BARCODE,
+    ):
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, ext_id
+        )
+        if external_id_match is not None:
+            return external_id_match
+
+    # compare version
+    if not compare_version(base_item.version, compare_item.version):
+        return False
+    # compare name
+    if not compare_strings(base_item.name, compare_item.name, strict=True):
+        return False
+    if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
+        return True
+    return compare_strings(base_item.name, compare_item.name, strict=True)
 
 
 def compare_item_mapping(
