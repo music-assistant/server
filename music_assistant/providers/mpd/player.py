@@ -62,7 +62,8 @@ class MPDPlayer(Player):
         port: int = 6600,
         password: str | None = None,
     ) -> None:
-        """Initialize MPDPlayer.
+        """
+        Initialize MPDPlayer.
 
         :param provider: The MPDPlayerProvider instance.
         :param player_id: Unique player identifier.
