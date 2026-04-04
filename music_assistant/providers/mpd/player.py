@@ -21,32 +21,10 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_PASSWORD
 from music_assistant.models.player import Player
 
-from .constants import ELAPSED_POLL_INTERVAL, RECONNECT_DELAY
+from .constants import CONF_ENTRY_OUTPUT_CODEC_MPD, ELAPSED_POLL_INTERVAL, MPD_STATE_MAP, RECONNECT_DELAY
 
 if TYPE_CHECKING:
     from .provider import MPDPlayerProvider
-
-# FLAC does not work for infinite HTTP streams - MPD cannot probe the header.
-# Offer MP3, AAC, WAV only, with MP3 as default.
-# from_dict expects options as plain dicts, not ConfigValueOption objects.
-_CONF_ENTRY_OUTPUT_CODEC_MP3_DEFAULT = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_OUTPUT_CODEC.to_dict(),
-        "default_value": "mp3",
-        "options": [
-            {"title": "MP3 (lossy)", "value": "mp3"},
-            {"title": "AAC (lossy)", "value": "aac"},
-            {"title": "WAV (lossless, uncompressed)", "value": "wav"},
-        ],
-    }
-)
-
-# Map MPD state strings to MA PlaybackState
-MPD_STATE_MAP: dict[str, PlaybackState] = {
-    "play": PlaybackState.PLAYING,
-    "pause": PlaybackState.PAUSED,
-    "stop": PlaybackState.IDLE,
-}
 
 
 class MPDPlayer(Player):
@@ -132,16 +110,7 @@ class MPDPlayer(Player):
         :param values: Optional intermediate config values from the UI.
         :return: List of ConfigEntry objects for this player.
         """
-        return [
-            ConfigEntry(
-                key=CONF_PASSWORD,
-                type=ConfigEntryType.SECURE_STRING,
-                label="Password",
-                description="MPD password, if required by the server.",
-                required=False,
-            ),
-            _CONF_ENTRY_OUTPUT_CODEC_MP3_DEFAULT,
-        ]
+    return [CONF_ENTRY_OUTPUT_CODEC_MPD]
 
     async def on_config_updated(self) -> None:
         """Reconnect to MPD when player configuration changes."""
