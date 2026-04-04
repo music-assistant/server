@@ -169,16 +169,12 @@ class MPDPlayer(Player):
                 self._attr_needs_setup = True
                 self.update_state()
             else:
-                self.logger.warning(
-                    "MPD command error at %s:%s: %s", self.host, self.port, err
-                )
+                self.logger.warning("MPD command error at %s:%s: %s", self.host, self.port, err)
                 self._attr_available = False
                 self.update_state()
                 self.reconnect()
         except MPDError as err:
-            self.logger.warning(
-                "Failed to connect to MPD at %s:%s: %s", self.host, self.port, err
-            )
+            self.logger.warning("Failed to connect to MPD at %s:%s: %s", self.host, self.port, err)
             self._attr_available = False
             self.update_state()
             self.reconnect()
