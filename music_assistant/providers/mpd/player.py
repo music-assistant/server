@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from mpd import CommandError, FailureResponseCode, MPDError
 from mpd.asyncio import MPDClient
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -18,12 +17,14 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_PASSWORD
+from music_assistant.constants import CONF_PASSWORD
 from music_assistant.models.player import Player
 
 from .constants import CONF_ENTRY_OUTPUT_CODEC_MPD, ELAPSED_POLL_INTERVAL, MPD_STATE_MAP, RECONNECT_DELAY
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+
     from .provider import MPDPlayerProvider
 
 
@@ -110,7 +111,7 @@ class MPDPlayer(Player):
         :param values: Optional intermediate config values from the UI.
         :return: List of ConfigEntry objects for this player.
         """
-    return [CONF_ENTRY_OUTPUT_CODEC_MPD]
+        return [CONF_ENTRY_OUTPUT_CODEC_MPD]
 
     async def on_config_updated(self) -> None:
         """Reconnect to MPD when player configuration changes."""
