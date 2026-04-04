@@ -150,7 +150,7 @@ class SpotifyConnectGoProvider(PluginProvider):
             on_previous=self._on_previous_callback,
             on_seek=self._on_seek_callback,
             on_volume=self._on_volume_callback,
-            on_select=self._on_select_callback,
+            on_select=self._on_source_selected,
         )
         self._on_unload_callbacks: list[Callable[..., None]] = [
             self.mass.subscribe(
@@ -159,7 +159,8 @@ class SpotifyConnectGoProvider(PluginProvider):
                 id_filter=self.mass_player_id,
             ),
         ]
-        self._current_track_uri: str | None = None  # ADD THIS LINE
+        self._active_player_id: str | None = None
+        self._current_track_uri: str | None = None
         self._metadata_update_task: asyncio.Task | None = (
             None  # ADD THIS for cancelling delayed updates
         )
@@ -238,11 +239,36 @@ class SpotifyConnectGoProvider(PluginProvider):
     async def _on_volume_callback(self, volume: int) -> None:
         """Volume is handled by MA at the player level, not go-librespot."""
 
-    async def _on_select_callback(self) -> None:
-        """Called by MA when this source is selected/activated."""
-        self.logger.info("Source selected by MA")
+    async def _on_source_selected(self) -> None:
+        """Handle callback when this source is selected on a player."""
+        new_player_id = self._source_details.in_use_by
+        if not new_player_id:
+            return
+        # If there's already an active player and it's different, stop it
+        if self._active_player_id and self._active_player_id != new_player_id:
+            self.logger.info(
+                "Source selected on player %s, stopping playback on %s",
+                new_player_id,
+                self._active_player_id,
+            )
+            try:
+                await self.mass.players.cmd_stop(self._active_player_id)
+            except Exception as err:
+                self.logger.debug(
+                    "Failed to stop previous player %s: %s", self._active_player_id, err
+                )
+        self._active_player_id = new_player_id
+        self.logger.info("Active player set to: %s", self._active_player_id)
 
-        self._source_details.in_use_by = self.mass_player_id
+    def _clear_active_player(self) -> None:
+        """Clear the active player when playback ends."""
+        prev_player_id = self._active_player_id
+        self._active_player_id = None
+        self._source_details.in_use_by = None
+        self._current_track_uri = None
+        if prev_player_id:
+            self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
+            self.mass.players.trigger_player_update(prev_player_id)
 
     async def _send_api_command(self, endpoint: str, method: str = "POST") -> None:
         """Send a command to the go-librespot API."""
@@ -589,26 +615,10 @@ class SpotifyConnectGoProvider(PluginProvider):
 
         elif event_type in ("stopped", "session_disconnected"):
             self.logger.info("Playback stopped/disconnected event: %s", event_type)
-
-            previous_player_id = self._source_details.in_use_by
-            previous_player = (
-                self.mass.players.get_player(previous_player_id) if previous_player_id else None
-            )
-
-            if previous_player:
-                await self._on_stop(previous_player)
-
             if event_type == "session_disconnected":
                 self.logger.info("Session disconnected - clearing everything")
-                self._source_details.in_use_by = None
                 self._source_details.metadata = None
-
-                if previous_player:
-                    previous_player.current_media = None
-            else:
-                self.logger.info(
-                    "Playback stopped - keeping source and metadata for potential resume"
-                )
+            self._clear_active_player()
 
         elif event_type == "volume_changed":
             volume = event_data.get("data", {}).get("value", 0)
