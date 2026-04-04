@@ -313,13 +313,10 @@ class DeezerProvider(MusicProvider):
         if result is None or result.favorites.raw_audiobooks is None:
             return
         for raw in result.favorites.raw_audiobooks:
-            audiobook_data = await self.gql_client.get_audiobook(
-                audiobook_id=raw.id, chapters_first=200
-            )
-            if audiobook_data is None:
+            try:
+                item = await self.get_audiobook(raw.id)
+            except MediaNotFoundError:
                 continue
-            item = self._parse_audiobook(audiobook_data)
-            item.metadata.chapters = self._parse_audiobook_chapters(audiobook_data.chapters.edges)
             if raw.favorited_at:
                 item.date_added = self._parse_date(raw.favorited_at)
             yield item
