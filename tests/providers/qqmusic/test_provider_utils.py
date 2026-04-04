@@ -371,12 +371,7 @@ async def test_get_config_entries_start_qr_auth(monkeypatch: pytest.MonkeyPatch)
 
     login_mod = SimpleNamespace(QRLoginType=QRLoginType, get_qrcode=get_qrcode)
 
-    def fake_import(name: str):
-        if name == "qqmusic_api.login":
-            return login_mod
-        raise ImportError(name)
-
-    monkeypatch.setattr("music_assistant.providers.qqmusic.importlib.import_module", fake_import)
+    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
     mass = _DummyMass()
     values = {"session_id": "sess1"}
     entries = await get_config_entries(mass=mass, action=CONF_ACTION_START_QR_AUTH, values=values)
@@ -422,12 +417,7 @@ async def test_get_config_entries_check_qr_auth_done(monkeypatch: pytest.MonkeyP
         check_qrcode=check_qrcode,
     )
 
-    def fake_import(name: str):
-        if name == "qqmusic_api.login":
-            return login_mod
-        raise ImportError(name)
-
-    monkeypatch.setattr("music_assistant.providers.qqmusic.importlib.import_module", fake_import)
+    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
     mass = _DummyMass()
     values = {
         CONF_QR_IDENTIFIER: "sig123",

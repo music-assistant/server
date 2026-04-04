@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
 import re
 import time
@@ -11,7 +10,6 @@ from asyncio import Semaphore
 from base64 import b64encode
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
@@ -21,7 +19,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
-    ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -38,13 +35,10 @@ from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
     ItemMapping,
-    MediaItemImage,
     Playlist,
-    ProviderMapping,
     RecommendationFolder,
     SearchResults,
     Track,
-    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from qqmusic_api import (
@@ -87,7 +81,6 @@ from qqmusic_api.utils.session import (
 )
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -107,8 +100,9 @@ from .constants import (
     QUALITY_MP3_128,
     QUALITY_MP3_320,
 )
-from .helpers import clean_text, extract_artist_mid, extract_first_text, normalize_image_url
+from .helpers import extract_first_text, normalize_qq_lyric_text, qrc_to_lrc
 from .parsers import (
+    build_playlist_id,
     describe_payload,
     extract_guess_recommend_tracks,
     extract_items,
@@ -116,6 +110,12 @@ from .parsers import (
     extract_radar_recommend_tracks,
     extract_recommend_songlists,
     extract_song_id,
+    get_artist_mapping,
+    parse_album,
+    parse_artist,
+    parse_playlist,
+    parse_playlist_id,
+    parse_track,
 )
 
 if TYPE_CHECKING:
@@ -142,9 +142,6 @@ SUPPORTED_FEATURES = {
 
 _QR_ROUTE_UNREGISTER: dict[str, Any] = {}
 _LRC_TIMESTAMP_PATTERN = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]")
-_QRC_LINE_TIMESTAMP_PATTERN = re.compile(r"\[\d+,\d+\]")
-_QRC_LINE_PREFIX_PATTERN = re.compile(r"^\[(\d+),(\d+)\]")
-_QRC_WORD_TIMESTAMP_PATTERN = re.compile(r"\(\d+,\d+\)")
 _RECOMMEND_GUESS_TTL = 60 * 60
 _RECOMMEND_NEWSONG_TTL = 60 * 60 * 6
 _RECOMMEND_PLAYLIST_TTL = 60 * 60 * 6
@@ -199,49 +196,6 @@ def _register_qr_auth_page(
     return f"{route_path}?ts={int(time.time())}"
 
 
-def _normalize_qq_lyric_text(raw_text: str) -> str:
-    """Normalize QQ lyric/qrc payload to readable plain text."""
-    text = html.unescape(raw_text).replace("\r\n", "\n").replace("\r", "\n")
-    text = text.replace("\\n", "\n")
-    text = _QRC_LINE_TIMESTAMP_PATTERN.sub("", text)
-    text = _QRC_WORD_TIMESTAMP_PATTERN.sub("", text)
-    lines: list[str] = []
-    for raw_line in text.split("\n"):
-        cleaned_line = raw_line.strip()
-        if cleaned_line:
-            lines.append(cleaned_line)
-    return "\n".join(lines)
-
-
-def _ms_to_lrc_timestamp(ms_value: int) -> str:
-    """Convert milliseconds to LRC timestamp string (mm:ss.xx)."""
-    minute = ms_value // 60000
-    second = (ms_value % 60000) // 1000
-    centisecond = (ms_value % 1000) // 10
-    return f"{minute:02d}:{second:02d}.{centisecond:02d}"
-
-
-def _qrc_to_lrc(raw_text: str) -> str:
-    """Convert QQ QRC line-timed lyric text to basic LRC format."""
-    text = html.unescape(raw_text).replace("\r\n", "\n").replace("\r", "\n")
-    text = text.replace("\\n", "\n")
-    lrc_lines: list[str] = []
-    for raw_line in text.split("\n"):
-        line = raw_line.strip()
-        if not line:
-            continue
-        line_match = _QRC_LINE_PREFIX_PATTERN.match(line)
-        if not line_match:
-            continue
-        start_ms = int(line_match.group(1))
-        lyric_content = line[line_match.end() :]
-        lyric_content = _QRC_WORD_TIMESTAMP_PATTERN.sub("", lyric_content).strip()
-        if not lyric_content:
-            continue
-        lrc_lines.append(f"[{_ms_to_lrc_timestamp(start_ms)}]{lyric_content}")
-    return "\n".join(lrc_lines)
-
-
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -249,140 +203,132 @@ async def setup(
     return QQMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(  # noqa: PLR0915
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    if values is None:
-        values = {}
-    qr_identifier = str(values.get(CONF_QR_IDENTIFIER) or "")
-    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
-    has_qr_pending = bool(qr_identifier)
-    has_saved_auth = bool(values.get(CONF_MUSICID) and values.get(CONF_MUSICKEY))
-    is_verified = bool(values.get(CONF_UIN)) or has_saved_auth
+def _is_verified(values: dict[str, ConfigValueType]) -> bool:
+    return bool(values.get(CONF_UIN)) or bool(
+        values.get(CONF_MUSICID) and values.get(CONF_MUSICKEY)
+    )
 
-    if action == CONF_ACTION_CLEAR_AUTH:
-        values[CONF_UIN] = None
-        values[CONF_MUSICID] = None
-        values[CONF_MUSICKEY] = None
-        values[CONF_LOGIN_TYPE] = None
-        values[CONF_QR_IDENTIFIER] = None
-        values[CONF_QR_TYPE] = None
-        values[CONF_QR_PAGE_URL] = None
-        has_qr_pending = False
-        is_verified = False
-        _clear_qr_route(_get_qr_route_path(values))
-    elif action == CONF_ACTION_START_QR_AUTH:
-        _clear_qr_route(_get_qr_route_path(values))
-        qr = await qq_login_mod.get_qrcode(qq_login_mod.QRLoginType.QQ)
-        if not getattr(qr, "identifier", None) or not getattr(qr, "data", None):
-            raise LoginFailed("Failed to generate QQ Music login QR code")
-        values[CONF_QR_IDENTIFIER] = str(qr.identifier)
-        values[CONF_QR_TYPE] = str(getattr(qr.qr_type, "value", "qq"))
-        has_qr_pending = True
-        session_id = values.get("session_id")
-        if session_id:
-            qr_page_url = _register_qr_auth_page(
-                mass,
-                str(session_id),
-                bytes(qr.data),
-                str(getattr(qr, "mimetype", "image/png")),
-            )
-            values[CONF_QR_PAGE_URL] = qr_page_url
-            mass.signal_event(EventType.AUTH_SESSION, str(session_id), qr_page_url)
-        # Auto-poll like other providers: user clicks once, scans, and auth completes.
-        if hasattr(qq_login_mod, "QR") and hasattr(qq_login_mod, "check_qrcode"):
-            deadline = time.monotonic() + 120
-            qr_type_value = str(values.get(CONF_QR_TYPE))
-            qr_type = next(
-                (item for item in qq_login_mod.QRLoginType if item.value == qr_type_value),
-                qq_login_mod.QRLoginType.QQ,
-            )
-            while time.monotonic() < deadline:
-                qr_ref = qq_login_mod.QR(
-                    data=b"",
-                    qr_type=qr_type,
-                    mimetype="image/png",
-                    identifier=str(values.get(CONF_QR_IDENTIFIER) or ""),
-                )
-                try:
-                    event, credential = await qq_login_mod.check_qrcode(qr_ref)
-                except Exception:
-                    # Keep polling through transient network/API hiccups.
-                    await asyncio.sleep(1.5)
-                    continue
-                if event == qq_login_mod.QRCodeLoginEvents.DONE and credential:
-                    if not credential.musicid or not credential.musickey:
-                        raise LoginFailed("QR login succeeded but credential is incomplete")
-                    values[CONF_UIN] = str(credential.musicid)
-                    values[CONF_MUSICID] = str(credential.musicid)
-                    values[CONF_MUSICKEY] = str(credential.musickey)
-                    values[CONF_LOGIN_TYPE] = str(credential.login_type or 2)
-                    values[CONF_QR_IDENTIFIER] = None
-                    values[CONF_QR_TYPE] = None
-                    values[CONF_QR_PAGE_URL] = None
-                    is_verified = True
-                    has_qr_pending = False
-                    break
-                if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
-                    values[CONF_QR_IDENTIFIER] = None
-                    values[CONF_QR_TYPE] = None
-                    values[CONF_QR_PAGE_URL] = None
-                    has_qr_pending = False
-                    raise InvalidDataError("QR code expired, please generate a new one")
-                if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-                    raise InvalidDataError("Login was rejected in QQ app")
-                await asyncio.sleep(1)
-            if not is_verified and values.get(CONF_QR_IDENTIFIER):
-                raise InvalidDataError(
-                    "Waiting for scan confirmation timed out. "
-                    "You can click Start QR login again or use Check QR status."
-                )
-    elif action == CONF_ACTION_CHECK_QR_AUTH:
-        if not qr_identifier:
-            raise InvalidDataError("Please generate a QR code first")
-        qr_type_val = str(values.get(CONF_QR_TYPE) or "qq")
-        qr_type = next(
-            (item for item in qq_login_mod.QRLoginType if item.value == qr_type_val),
-            qq_login_mod.QRLoginType.QQ,
+
+def _has_qr_pending(values: dict[str, ConfigValueType]) -> bool:
+    return bool(values.get(CONF_QR_IDENTIFIER))
+
+
+def _clear_auth(values: dict[str, ConfigValueType]) -> None:
+    route_path = _get_qr_route_path(values)
+    values[CONF_UIN] = None
+    values[CONF_MUSICID] = None
+    values[CONF_MUSICKEY] = None
+    values[CONF_LOGIN_TYPE] = None
+    values[CONF_QR_IDENTIFIER] = None
+    values[CONF_QR_TYPE] = None
+    values[CONF_QR_PAGE_URL] = None
+    _clear_qr_route(route_path)
+
+
+def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> None:
+    if not credential.musicid or not credential.musickey:
+        raise LoginFailed("QR login succeeded but credential is incomplete")
+    values[CONF_UIN] = str(credential.musicid)
+    values[CONF_MUSICID] = str(credential.musicid)
+    values[CONF_MUSICKEY] = str(credential.musickey)
+    values[CONF_LOGIN_TYPE] = str(credential.login_type or 2)
+    values[CONF_QR_IDENTIFIER] = None
+    values[CONF_QR_TYPE] = None
+    values[CONF_QR_PAGE_URL] = None
+
+
+async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType]) -> None:
+    _clear_qr_route(_get_qr_route_path(values))
+    qr = await qq_login_mod.get_qrcode(qq_login_mod.QRLoginType.QQ)
+    if not getattr(qr, "identifier", None) or not getattr(qr, "data", None):
+        raise LoginFailed("Failed to generate QQ Music login QR code")
+    values[CONF_QR_IDENTIFIER] = str(qr.identifier)
+    values[CONF_QR_TYPE] = str(getattr(qr.qr_type, "value", "qq"))
+    if session_id := values.get("session_id"):
+        qr_page_url = _register_qr_auth_page(
+            mass,
+            str(session_id),
+            bytes(qr.data),
+            str(getattr(qr, "mimetype", "image/png")),
         )
-        qr = qq_login_mod.QR(
+        values[CONF_QR_PAGE_URL] = qr_page_url
+        mass.signal_event(EventType.AUTH_SESSION, str(session_id), qr_page_url)
+
+    if not (hasattr(qq_login_mod, "QR") and hasattr(qq_login_mod, "check_qrcode")):
+        return
+    deadline = time.monotonic() + 120
+    qr_type_value = str(values.get(CONF_QR_TYPE))
+    qr_type = next(
+        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_value),
+        qq_login_mod.QRLoginType.QQ,
+    )
+    while time.monotonic() < deadline:
+        qr_ref = qq_login_mod.QR(
             data=b"",
             qr_type=qr_type,
             mimetype="image/png",
-            identifier=qr_identifier,
+            identifier=str(values.get(CONF_QR_IDENTIFIER) or ""),
         )
-        event, credential = await qq_login_mod.check_qrcode(qr)
+        try:
+            event, credential = await qq_login_mod.check_qrcode(qr_ref)
+        except Exception:
+            await asyncio.sleep(1.5)
+            continue
         if event == qq_login_mod.QRCodeLoginEvents.DONE and credential:
-            if not credential.musicid or not credential.musickey:
-                raise LoginFailed("QR login succeeded but credential is incomplete")
-            values[CONF_UIN] = str(credential.musicid)
-            values[CONF_MUSICID] = str(credential.musicid)
-            values[CONF_MUSICKEY] = str(credential.musickey)
-            values[CONF_LOGIN_TYPE] = str(credential.login_type or 2)
+            _store_credential(values, credential)
+            return
+        if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
             values[CONF_QR_IDENTIFIER] = None
             values[CONF_QR_TYPE] = None
             values[CONF_QR_PAGE_URL] = None
-            is_verified = True
-            has_qr_pending = False
-        elif event == qq_login_mod.QRCodeLoginEvents.SCAN:
-            raise InvalidDataError("QR code not scanned yet")
-        elif event == qq_login_mod.QRCodeLoginEvents.CONF:
-            raise InvalidDataError("QR scanned, please confirm login in QQ app")
-        elif event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
-            values[CONF_QR_IDENTIFIER] = None
-            values[CONF_QR_TYPE] = None
-            values[CONF_QR_PAGE_URL] = None
-            has_qr_pending = False
             raise InvalidDataError("QR code expired, please generate a new one")
-        elif event == qq_login_mod.QRCodeLoginEvents.REFUSE:
+        if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
             raise InvalidDataError("Login was rejected in QQ app")
-        else:
-            raise LoginFailed("Unable to determine QR login status")
+        await asyncio.sleep(1)
+    if values.get(CONF_QR_IDENTIFIER):
+        raise InvalidDataError(
+            "Waiting for scan confirmation timed out. "
+            "You can click Start QR login again or use Check QR status."
+        )
 
+
+async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
+    qr_identifier = str(values.get(CONF_QR_IDENTIFIER) or "")
+    if not qr_identifier:
+        raise InvalidDataError("Please generate a QR code first")
+    qr_type_val = str(values.get(CONF_QR_TYPE) or "qq")
+    qr_type = next(
+        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_val),
+        qq_login_mod.QRLoginType.QQ,
+    )
+    qr = qq_login_mod.QR(
+        data=b"",
+        qr_type=qr_type,
+        mimetype="image/png",
+        identifier=qr_identifier,
+    )
+    event, credential = await qq_login_mod.check_qrcode(qr)
+    if event == qq_login_mod.QRCodeLoginEvents.DONE and credential:
+        _store_credential(values, credential)
+        return
+    if event == qq_login_mod.QRCodeLoginEvents.SCAN:
+        raise InvalidDataError("QR code not scanned yet")
+    if event == qq_login_mod.QRCodeLoginEvents.CONF:
+        raise InvalidDataError("QR scanned, please confirm login in QQ app")
+    if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
+        values[CONF_QR_IDENTIFIER] = None
+        values[CONF_QR_TYPE] = None
+        values[CONF_QR_PAGE_URL] = None
+        raise InvalidDataError("QR code expired, please generate a new one")
+    if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
+        raise InvalidDataError("Login was rejected in QQ app")
+    raise LoginFailed("Unable to determine QR login status")
+
+
+def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEntry, ...]:
+    has_qr_pending = _has_qr_pending(values)
+    is_verified = _is_verified(values)
+    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
     status_label = (
         "QQ Music login confirmed. Close the QR page and click Save to finish setup."
         if is_verified
@@ -394,18 +340,9 @@ async def get_config_entries(  # noqa: PLR0915
         "Login flow: 1) Click QR Login. 2) In the newly opened page, scan with QQ and confirm. "
         "3) Close the QR page. 4) Click Save."
     )
-
     return (
-        ConfigEntry(
-            key="auth_help",
-            type=ConfigEntryType.LABEL,
-            label=help_text,
-        ),
-        ConfigEntry(
-            key="auth_status",
-            type=ConfigEntryType.LABEL,
-            label=status_label,
-        ),
+        ConfigEntry(key="auth_help", type=ConfigEntryType.LABEL, label=help_text),
+        ConfigEntry(key="auth_status", type=ConfigEntryType.LABEL, label=status_label),
         ConfigEntry(
             key=CONF_QR_PAGE_URL,
             type=ConfigEntryType.STRING,
@@ -431,10 +368,7 @@ async def get_config_entries(  # noqa: PLR0915
                 ConfigValueOption("MP3 128kbps (most compatible)", QUALITY_MP3_128),
                 ConfigValueOption("MP3 320kbps", QUALITY_MP3_320),
                 ConfigValueOption("FLAC (fallback to MP3)", QUALITY_FLAC),
-                ConfigValueOption(
-                    "Hi-Res (Master, fallback to FLAC/MP3)",
-                    QUALITY_HI_RES,
-                ),
+                ConfigValueOption("Hi-Res (Master, fallback to FLAC/MP3)", QUALITY_HI_RES),
             ],
             hidden=not is_verified,
         ),
@@ -502,6 +436,24 @@ async def get_config_entries(  # noqa: PLR0915
             value=str(values.get(CONF_QR_TYPE) or ""),
         ),
     )
+
+
+async def get_config_entries(
+    mass: MusicAssistant,
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    if values is None:
+        values = {}
+    if action == CONF_ACTION_CLEAR_AUTH:
+        _clear_auth(values)
+    elif action == CONF_ACTION_START_QR_AUTH:
+        await _start_qr_auth(mass, values)
+    elif action == CONF_ACTION_CHECK_QR_AUTH:
+        await _check_qr_auth(values)
+    return _build_config_entries(values)
 
 
 class QQMusicProvider(MusicProvider):
@@ -824,375 +776,21 @@ class QQMusicProvider(MusicProvider):
         return AudioFormat(content_type=self._get_content_type(selected_file_type))
 
     def _get_artist_mapping(self, artist_obj: dict[str, Any] | str) -> ItemMapping | None:
-        if isinstance(artist_obj, str):
-            # Without singer mid we can not resolve artist detail endpoints reliably.
-            return None
-        artist_id = extract_artist_mid(artist_obj)
-        if not artist_id:
-            return None
-        artist_name = extract_first_text(
-            artist_obj,
-            (
-                "name",
-                "title",
-                "singerName",
-                "singername",
-                "singer_name",
-                "title_main",
-                "search_title",
-                "singerName_hilight",
-                "name_hilight",
-                "title_hilight",
-            ),
-            "Unknown Artist",
-        )
-        return ItemMapping(
-            media_type=MediaType.ARTIST,
-            item_id=artist_id,
-            provider=self.instance_id,
-            name=artist_name,
-        )
+        return get_artist_mapping(artist_obj, self.instance_id)
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
-        """Parse raw qqmusic artist object."""
-        artist_id = extract_artist_mid(artist_obj)
-        if not artist_id:
-            raise InvalidDataError("Artist object does not contain id/mid")
-        artist_name = extract_first_text(
-            artist_obj,
-            (
-                "name",
-                "Name",
-                "title",
-                "singerName",
-                "singername",
-                "singer_name",
-                "SingerName",
-                "title_main",
-                "search_title",
-                "singerName_hilight",
-                "name_hilight",
-                "title_hilight",
-                "singer_hilight",
-                "matchName",
-                "match_name",
-                "nickname",
-                "nick",
-            ),
-            "Unknown Artist",
-        )
-        artist = Artist(
-            item_id=artist_id,
-            provider=self.domain,
-            name=artist_name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=artist_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=f"https://y.qq.com/n/ryqq/singer/{artist_id}",
-                )
-            },
-        )
-        subtitle = clean_text(
-            artist_obj.get("subtitle")
-            or artist_obj.get("desc")
-            or artist_obj.get("description")
-            or "",
-            "",
-        )
-        if subtitle:
-            artist.metadata.description = subtitle
-        artist_image = (
-            normalize_image_url(
-                artist_obj.get("singerPic")
-                or artist_obj.get("pic")
-                or artist_obj.get("avatar")
-                or artist_obj.get("Avatar")
-                or artist_obj.get("AvatarUrl")
-                or artist_obj.get("singer_pic")
-            )
-            or f"https://y.qq.com/music/photo_new/T001R500x500M000{artist_id}.jpg"
-        )
-        artist.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=artist_image,
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                )
-            ]
-        )
-        return artist
+        return parse_artist(artist_obj, self.domain, self.instance_id)
 
     def _parse_album(self, album_obj: dict[str, Any]) -> Album:
-        """Parse raw qqmusic album object."""
-        album_id = str(
-            album_obj.get("mid")
-            or album_obj.get("albumMid")
-            or album_obj.get("albumMID")
-            or album_obj.get("album_mid")
-            or album_obj.get("albummid")
-            or album_obj.get("id")
-            or album_obj.get("albumID")
-            or ""
-        )
-        if not album_id:
-            raise InvalidDataError("Album object does not contain id/mid")
-        raw_album_name = str(
-            album_obj.get("title")
-            or album_obj.get("name")
-            or album_obj.get("albumName")
-            or "Unknown Album"
-        )
-        album_subtitle = clean_text(
-            album_obj.get("subtitle")
-            or album_obj.get("albumTranName")
-            or album_obj.get("title_extra")
-            or "",
-            "",
-        )
-        album_name, album_version = parse_title_and_version(raw_album_name, album_subtitle)
-        album_name = clean_text(album_name, "Unknown Album")
-        album = Album(
-            item_id=album_id,
-            provider=self.domain,
-            name=album_name,
-            version=album_version,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=album_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=f"https://y.qq.com/n/ryqq/albumDetail/{album_id}",
-                )
-            },
-        )
-        if release_str := album_obj.get("time_public") or album_obj.get("publishDate"):
-            with suppress(ValueError):
-                album.year = datetime.strptime(release_str, "%Y-%m-%d").year  # noqa: DTZ007
-        album_desc = clean_text(
-            album_obj.get("description")
-            or album_obj.get("description2")
-            or album_obj.get("desc")
-            or "",
-            "",
-        )
-        if album_desc:
-            album.metadata.description = album_desc
-        artist_candidates = album_obj.get("singer")
-        if isinstance(artist_candidates, dict):
-            artist_iterable: list[dict[str, Any] | str] = [artist_candidates]
-        elif isinstance(artist_candidates, list):
-            artist_iterable = artist_candidates
-        elif isinstance(artist_candidates, str):
-            artist_iterable = [artist_candidates]
-        else:
-            singer_list = album_obj.get("singer_list")
-            artist_iterable = singer_list if isinstance(singer_list, list) else []
-        for artist_obj in artist_iterable:
-            if artist_mapping := self._get_artist_mapping(artist_obj):
-                album.artists.append(artist_mapping)
-        cover_path = normalize_image_url(
-            album_obj.get("pic")
-            or album_obj.get("picUrl")
-            or album_obj.get("picurl")
-            or album_obj.get("logo")
-            or album_obj.get("cover")
-        )
-        if cover_path:
-            album.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=cover_path,
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        else:
-            album.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=f"https://y.qq.com/music/photo_new/T002R500x500M000{album_id}.jpg",
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        return album
+        return parse_album(album_obj, self.domain, self.instance_id)
 
-    def _parse_track(self, track_obj: dict[str, Any]) -> Track:  # noqa: PLR0915
-        """Parse raw qqmusic track object."""
-        track_id = str(
-            track_obj.get("mid")
-            or track_obj.get("songMid")
-            or track_obj.get("songmid")
-            or track_obj.get("id")
-            or ""
+    def _parse_track(self, track_obj: dict[str, Any]) -> Track:
+        return parse_track(
+            track_obj=track_obj,
+            provider_domain=self.domain,
+            provider_instance_id=self.instance_id,
+            get_max_supported_audio_format=self._get_max_supported_audio_format,
         )
-        if not track_id:
-            raise InvalidDataError("Track object does not contain id/mid")
-        raw_track_name = clean_text(
-            track_obj.get("title") or track_obj.get("name"),
-            "Unknown Track",
-        )
-        track_subtitle = clean_text(
-            track_obj.get("subtitle") or track_obj.get("title_extra") or "",
-            "",
-        )
-        track_name, track_version = parse_title_and_version(raw_track_name, track_subtitle)
-        duration = track_obj.get("interval")
-        max_audio_format, max_quality_label = self._get_max_supported_audio_format(track_obj)
-        track = Track(
-            item_id=track_id,
-            provider=self.domain,
-            name=track_name,
-            version=track_version,
-            duration=int(duration) if duration else 0,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=track_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=max_audio_format,
-                    url=f"https://y.qq.com/n/ryqq/songDetail/{track_id}",
-                    details=max_quality_label,
-                )
-            },
-        )
-        track_desc = clean_text(
-            track_obj.get("desc") or track_obj.get("content") or "",
-            "",
-        )
-        if track_desc:
-            track.metadata.description = track_desc
-        album_obj = track_obj.get("album")
-        album_id = ""
-        album_name = ""
-        if isinstance(album_obj, dict):
-            album_id = str(
-                album_obj.get("mid")
-                or album_obj.get("albumMid")
-                or album_obj.get("albumMID")
-                or album_obj.get("albummid")
-                or album_obj.get("albumID")
-                or album_obj.get("albumid")
-                or album_obj.get("id")
-                or ""
-            )
-            album_name = clean_text(
-                album_obj.get("name")
-                or album_obj.get("title")
-                or album_obj.get("albumName")
-                or album_obj.get("albumTitle")
-            )
-        if not album_id:
-            album_id = str(
-                track_obj.get("albummid")
-                or track_obj.get("albumMid")
-                or track_obj.get("albumMID")
-                or track_obj.get("albumid")
-                or track_obj.get("albumID")
-                or ""
-            )
-        if not album_name:
-            album_name = clean_text(
-                track_obj.get("albumname")
-                or track_obj.get("albumName")
-                or track_obj.get("albumTitle")
-                or track_obj.get("album_title")
-            )
-        if album_id and album_name:
-            track.album = Album(
-                item_id=album_id,
-                provider=self.domain,
-                name=album_name,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=album_id,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                        url=f"https://y.qq.com/n/ryqq/albumDetail/{album_id}",
-                    )
-                },
-            )
-
-        singer_list: list[dict[str, Any] | str]
-        raw_singer = (
-            track_obj.get("singer") or track_obj.get("singer_list") or track_obj.get("singers")
-        )
-        if isinstance(raw_singer, dict):
-            singer_list = [raw_singer]
-        elif isinstance(raw_singer, list):
-            singer_list = raw_singer
-        elif isinstance(raw_singer, str):
-            singer_list = [raw_singer]
-        else:
-            singer_list = []
-        for artist_obj in singer_list:
-            if artist_mapping := self._get_artist_mapping(artist_obj):
-                track.artists.append(artist_mapping)
-        if not track.artists:
-            fallback_artist_id = str(
-                track_obj.get("singerMid")
-                or track_obj.get("singerMID")
-                or track_obj.get("singer_mid")
-                or ""
-            )
-            fallback_artist_name = clean_text(
-                track_obj.get("singerName")
-                or track_obj.get("singername")
-                or track_obj.get("singer_name")
-                or ""
-            )
-            if fallback_artist_id and fallback_artist_name:
-                track.artists.append(
-                    ItemMapping(
-                        media_type=MediaType.ARTIST,
-                        item_id=fallback_artist_id,
-                        provider=self.instance_id,
-                        name=fallback_artist_name,
-                    )
-                )
-
-        cover_id = ""
-        if isinstance(album_obj, dict):
-            cover_id = str(
-                album_obj.get("mid")
-                or album_obj.get("albumMid")
-                or album_obj.get("albumMID")
-                or album_obj.get("albummid")
-                or ""
-            )
-        if not cover_id:
-            cover_id = album_id
-        if cover_id:
-            if isinstance(track.album, Album):
-                track.album.metadata.images = UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=f"https://y.qq.com/music/photo_new/T002R500x500M000{cover_id}.jpg",
-                            provider=self.instance_id,
-                            remotely_accessible=True,
-                        )
-                    ]
-                )
-            track.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=f"https://y.qq.com/music/photo_new/T002R500x500M000{cover_id}.jpg",
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        return track
 
     async def _resolve_song_id(self, prov_track_id: str) -> int:
         """Resolve provider track id (mid/id) to numeric song id."""
@@ -1226,97 +824,13 @@ class QQMusicProvider(MusicProvider):
         return self._euin
 
     def _build_playlist_id(self, dissid: int | str, dirid: int | str) -> str:
-        """Build provider playlist id from dissid and dirid."""
-        return f"{dissid}:{dirid}"
+        return build_playlist_id(dissid, dirid)
 
     def _parse_playlist_id(self, prov_playlist_id: str) -> tuple[int, int]:
-        """Parse provider playlist id into (dissid, dirid)."""
-        if ":" in prov_playlist_id:
-            dissid_raw, dirid_raw = prov_playlist_id.split(":", 1)
-            return (int(dissid_raw), int(dirid_raw))
-        return (int(prov_playlist_id), 0)
+        return parse_playlist_id(prov_playlist_id)
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
-        """Parse raw qqmusic playlist object."""
-        dissid = (
-            playlist_obj.get("tid") or playlist_obj.get("dissid") or playlist_obj.get("id") or 0
-        )
-        dirid = playlist_obj.get("dirid") or playlist_obj.get("dirId") or 0
-        if not dissid:
-            raise InvalidDataError("Playlist object missing dissid/tid")
-        playlist_id = self._build_playlist_id(dissid, dirid)
-        playlist_name = clean_text(
-            playlist_obj.get("dirName")
-            or playlist_obj.get("dirname")
-            or playlist_obj.get("name")
-            or playlist_obj.get("title")
-            or playlist_obj.get("search_title")
-            or playlist_obj.get("name_hilight")
-            or playlist_obj.get("title_hilight")
-            or playlist_obj.get("diss_name")
-            or playlist_obj.get("dissname")
-            or "QQ Music Playlist",
-            "QQ Music Playlist",
-        )
-        playlist = Playlist(
-            item_id=playlist_id,
-            provider=self.domain,
-            name=playlist_name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=playlist_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=f"https://y.qq.com/n/ryqq/playlist/{dissid}",
-                )
-            },
-        )
-        owner_name = str(
-            playlist_obj.get("creator", {}).get("name")
-            or playlist_obj.get("creator", {}).get("nick")
-            or playlist_obj.get("nickname")
-            or playlist_obj.get("nick")
-            or ""
-        )
-        if owner_name:
-            playlist.owner = owner_name
-        description = clean_text(
-            playlist_obj.get("desc") or playlist_obj.get("description"),
-            "",
-        )
-        if description:
-            playlist.metadata.description = description
-
-        cover_val = playlist_obj.get("cover")
-        cover = ""
-        if isinstance(cover_val, dict):
-            cover = normalize_image_url(
-                cover_val.get("default_url")
-                or cover_val.get("medium_url")
-                or cover_val.get("big_url")
-                or cover_val.get("small_url")
-            )
-        if not cover:
-            cover = normalize_image_url(
-                cover_val
-                or playlist_obj.get("logo")
-                or playlist_obj.get("picurl")
-                or playlist_obj.get("cover_url_big")
-                or playlist_obj.get("pic")
-                or playlist_obj.get("picUrl")
-            )
-        if cover:
-            playlist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=cover,
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        return playlist
+        return parse_playlist(playlist_obj, self.domain, self.instance_id)
 
     @use_cache(3600 * 3)
     async def search(
@@ -1535,15 +1049,15 @@ class QQMusicProvider(MusicProvider):
                 trans_text = str(lyric_response.get("trans") or trans_text).strip()
                 if lyric_text:
                     if _LRC_TIMESTAMP_PATTERN.search(lyric_text):
-                        track.metadata.lrc_lyrics = _normalize_qq_lyric_text(lyric_text)
+                        track.metadata.lrc_lyrics = normalize_qq_lyric_text(lyric_text)
                     else:
                         # QRC (e.g. [36438,1880]当(36438,161)...) -> LRC for synced display.
-                        qrc_lrc = _qrc_to_lrc(lyric_text)
+                        qrc_lrc = qrc_to_lrc(lyric_text)
                         if qrc_lrc:
                             track.metadata.lrc_lyrics = qrc_lrc
-                    track.metadata.lyrics = _normalize_qq_lyric_text(lyric_text)
+                    track.metadata.lyrics = normalize_qq_lyric_text(lyric_text)
                 if trans_text:
-                    trans_text = _normalize_qq_lyric_text(trans_text)
+                    trans_text = normalize_qq_lyric_text(trans_text)
                     if track.metadata.lyrics:
                         track.metadata.lyrics = f"{track.metadata.lyrics}\n\n{trans_text}".strip()
                     else:
