@@ -59,11 +59,8 @@ CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
 CONF_ACTION_RESET_PAIRING: Final[str] = "reset_pairing"
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
-CONF_ENABLE_LATE_JOIN: Final[str] = "enable_late_join"
-
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
-ENABLE_LATE_JOIN_DEFAULT: Final[bool] = True
 
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
