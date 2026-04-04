@@ -357,7 +357,7 @@ jobs:
           path: dist/
 
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v4.0.0
+        uses: docker/login-action@v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
