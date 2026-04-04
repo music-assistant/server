@@ -7,23 +7,12 @@ manually maintained and versioned.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 # Pydantic requires runtime type information, so these imports cannot be in TYPE_CHECKING block
 from niconico.objects.video.watch import WatchData, WatchMediaDomandAudio  # noqa: TC002
-
-if TYPE_CHECKING:
-
-    class _PydanticBaseModel:
-        """Typed fallback base for mypy when pydantic is not installed."""
-
-        def __init__(self, **data: object) -> None: ...
-
-else:
-    from pydantic import BaseModel as _PydanticBaseModel
+from pydantic import BaseModel
 
 
-class StreamFixtureData(_PydanticBaseModel):
+class StreamFixtureData(BaseModel):
     """Fixture data for stream conversion tests.
 
     This type is stored in fixtures and reconstructed into StreamConversionData

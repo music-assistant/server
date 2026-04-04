@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import UnplayableMediaError
@@ -12,16 +11,7 @@ from niconico.objects.video.watch import (  # noqa: TC002 - Using by StreamConve
     WatchData,
     WatchMediaDomandAudio,
 )
-
-if TYPE_CHECKING:
-
-    class _PydanticBaseModel:
-        """Typed fallback base for mypy when pydantic is not installed."""
-
-        def __init__(self, **data: object) -> None: ...
-
-else:
-    from pydantic import BaseModel as _PydanticBaseModel
+from pydantic import BaseModel
 
 from music_assistant.helpers.hls import HLSMediaPlaylist, HLSMediaPlaylistParser
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
@@ -44,7 +34,7 @@ class NicovideoStreamData:
     parsed_hls_playlist: HLSMediaPlaylist
 
 
-class StreamConversionData(_PydanticBaseModel):
+class StreamConversionData(BaseModel):
     """Data needed for StreamDetails conversion."""
 
     watch_data: WatchData
