@@ -768,13 +768,7 @@ class DeezerProvider(MusicProvider):
         sub_subpath = path_parts[1] if len(path_parts) > 1 else None
 
         if subpath == "Made For You":
-            if sub_subpath in ("Moods", "Genres"):
-                return await self._browse_flow_configs(sub_subpath.lower())
-            if sub_subpath == "Your Top Artists":
-                return await self._browse_user_charts_category("your_top_artists")
-            if sub_subpath == "Your Top Albums":
-                return await self._browse_user_charts_category("your_top_albums")
-            return await self._browse_made_for_me(path)
+            return await self._browse_made_for_you(path, sub_subpath)
 
         if subpath == "Explore":
             if sub_subpath:
@@ -848,8 +842,26 @@ class DeezerProvider(MusicProvider):
 
     # -- Browse helpers --
 
+    async def _browse_made_for_you(
+        self, path: str, sub_subpath: str | None
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Route Made For You sub-paths or return the root listing."""
+        if sub_subpath in ("Moods", "Genres"):
+            return await self._browse_flow_configs(sub_subpath.lower())
+        if sub_subpath == "Your Top Artists":
+            return await self._browse_user_charts_category("your_top_artists")
+        if sub_subpath == "Your Top Albums":
+            return await self._browse_user_charts_category("your_top_albums")
+        if sub_subpath == "Recommended Playlists":
+            return await self._browse_editorial_playlists()
+        if sub_subpath == "Recommended Artist Playlists":
+            return await self._browse_artist_playlists()
+        if sub_subpath == "Personalized Playlists":
+            return await self._get_smart_tracklist_playlists()
+        return await self._browse_made_for_me(path)
+
     async def _browse_made_for_me(self, path: str) -> list[MediaItemType | BrowseFolder]:
-        """Return Made For You sub-items: Moods, Genres, Top stats, SmartTracklists."""
+        """Return Made For You sub-items: Moods, Genres, Top stats, Mixes, Playlists."""
         base = path if path.endswith("/") else path + "/"
         items: list[MediaItemType | BrowseFolder] = [
             BrowseFolder(
@@ -878,9 +890,60 @@ class DeezerProvider(MusicProvider):
                 path=f"{base}Your Top Albums",
                 name="Your Top Albums",
             ),
+            BrowseFolder(
+                item_id="mixes",
+                provider=self.instance_id,
+                path=f"{base}Personalized Playlists",
+                name="Personalized Playlists",
+            ),
+            BrowseFolder(
+                item_id="recommended_playlists",
+                provider=self.instance_id,
+                path=f"{base}Recommended Playlists",
+                name="Recommended Playlists",
+            ),
+            BrowseFolder(
+                item_id="recommended_artist_playlists",
+                provider=self.instance_id,
+                path=f"{base}Recommended Artist Playlists",
+                name="Recommended Artist Playlists",
+            ),
         ]
-        items.extend(await self._get_smart_tracklist_playlists())
         return items
+
+    async def _browse_editorial_playlists(self) -> list[Playlist]:
+        """Fetch personalized editorial playlists from Deezer recommendations."""
+        recs = await self.gql_client.get_recommendations(
+            playlists_first=50,
+            artist_playlists_first=0,
+            new_releases_first=0,
+            artists_first=0,
+            hot_tracks_limit=0,
+        )
+        if not recs or not recs.recommendations:
+            return []
+        return [
+            self._parse_playlist(edge.node)
+            for edge in recs.recommendations.playlists.edges
+            if edge.node is not None
+        ]
+
+    async def _browse_artist_playlists(self) -> list[Playlist]:
+        """Fetch personalized artist playlists from Deezer recommendations."""
+        recs = await self.gql_client.get_recommendations(
+            playlists_first=0,
+            artist_playlists_first=50,
+            new_releases_first=0,
+            artists_first=0,
+            hot_tracks_limit=0,
+        )
+        if not recs or not recs.recommendations:
+            return []
+        return [
+            self._parse_playlist(edge.node)
+            for edge in recs.recommendations.artist_playlists.edges
+            if edge.node is not None
+        ]
 
     def _flow_configs_to_playlists(
         self,
@@ -1296,15 +1359,17 @@ class DeezerProvider(MusicProvider):
         """Get Deezer's recommendations including Flow and personalized content."""
         result: list[RecommendationFolder] = []
         recs = await self.gql_client.get_recommendations(
-            playlists_first=10,
-            artist_playlists_first=0,
+            playlists_first=50,
+            artist_playlists_first=50,
             new_releases_first=10,
-            artists_first=10,
+            artists_first=0,
             hot_tracks_limit=50,
         )
         await self._add_made_for_you(result, recs)
+        self._add_recommended_playlists(result, recs)
+        self._add_recommended_artist_playlists(result, recs)
         self._add_recommended_tracks(result, recs)
-        self._add_new_releases_and_artists(result, recs)
+        self._add_new_releases(result, recs)
         await self._add_flow_configs(result)
         recently_played = await self._get_recently_played_items()
         if recently_played:
@@ -1336,10 +1401,6 @@ class DeezerProvider(MusicProvider):
                 self._create_virtual_playlist(FLOW_PLAYLIST_ID, "Flow", image_url=cover)
             )
         made_for_me_items.extend(await self._get_smart_tracklist_playlists())
-        if recs and recs.recommendations:
-            for edge in recs.recommendations.playlists.edges:
-                if edge.node is not None:
-                    made_for_me_items.append(self._parse_playlist(edge.node))
         if made_for_me_items:
             result.append(
                 RecommendationFolder(
@@ -1369,12 +1430,58 @@ class DeezerProvider(MusicProvider):
                 )
             )
 
-    def _add_new_releases_and_artists(
+    def _add_recommended_playlists(
         self,
         result: list[RecommendationFolder],
         recs: GetRecommendationsMe | None,
     ) -> None:
-        """Add New Releases and Recommended Artists sections to recommendations."""
+        """Add Recommended Playlists section (editorial playlists)."""
+        if not recs or not recs.recommendations:
+            return
+        items = [
+            self._parse_playlist(edge.node)
+            for edge in recs.recommendations.playlists.edges
+            if edge.node is not None
+        ]
+        if items:
+            result.append(
+                RecommendationFolder(
+                    item_id="recommended_playlists",
+                    provider=self.instance_id,
+                    name="Recommended Playlists",
+                    items=UniqueList(items),
+                )
+            )
+
+    def _add_recommended_artist_playlists(
+        self,
+        result: list[RecommendationFolder],
+        recs: GetRecommendationsMe | None,
+    ) -> None:
+        """Add Recommended Artist Playlists section."""
+        if not recs or not recs.recommendations:
+            return
+        items = [
+            self._parse_playlist(edge.node)
+            for edge in recs.recommendations.artist_playlists.edges
+            if edge.node is not None
+        ]
+        if items:
+            result.append(
+                RecommendationFolder(
+                    item_id="recommended_artist_playlists",
+                    provider=self.instance_id,
+                    name="Recommended Artist Playlists",
+                    items=UniqueList(items),
+                )
+            )
+
+    def _add_new_releases(
+        self,
+        result: list[RecommendationFolder],
+        recs: GetRecommendationsMe | None,
+    ) -> None:
+        """Add New Releases section to recommendations."""
         if recs is None:
             return
         new_release_items = [
@@ -1389,20 +1496,6 @@ class DeezerProvider(MusicProvider):
                     provider=self.instance_id,
                     name="New Releases",
                     items=UniqueList(new_release_items),
-                )
-            )
-        rec_artist_items = [
-            self._parse_artist(edge.node)
-            for edge in recs.recommendations.artists.edges
-            if edge.node is not None
-        ]
-        if rec_artist_items:
-            result.append(
-                RecommendationFolder(
-                    item_id="recommended_artists",
-                    provider=self.instance_id,
-                    name="Recommended Artists",
-                    items=UniqueList(rec_artist_items),
                 )
             )
 
