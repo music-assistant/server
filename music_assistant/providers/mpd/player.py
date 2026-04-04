@@ -19,7 +19,12 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.models.player import Player
 
-from .constants import CONF_ENTRY_OUTPUT_CODEC_MPD, ELAPSED_POLL_INTERVAL, MPD_STATE_MAP, RECONNECT_DELAY
+from .constants import (
+    CONF_ENTRY_OUTPUT_CODEC_MPD,
+    ELAPSED_POLL_INTERVAL,
+    MPD_STATE_MAP,
+    RECONNECT_DELAY,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
