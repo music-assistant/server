@@ -180,6 +180,7 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
                 aa_provider_domain=self.domain,
                 analysis=analysis,
                 analysis_version=self.analysis_version,
+                media_type=session.streamdetails.media_type,
             )
 
         Note: The base class's finalize() method calls this, then cleans up
