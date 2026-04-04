@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from mpd import CommandError, FailureResponseCode, MPDError
 from mpd.asyncio import MPDClient
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -28,7 +29,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigValueType
 
     from .provider import MPDPlayerProvider
 
