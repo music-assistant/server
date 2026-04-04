@@ -566,7 +566,7 @@ class StreamsAudio:
                 resp.raise_for_status()
                 if not resp.headers:
                     raise InvalidDataError("no headers found")
-            
+
             if headers.get("icy-metaint") is not None:
                 stream_type = StreamType.ICY
 
