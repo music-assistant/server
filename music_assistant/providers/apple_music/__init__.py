@@ -1000,7 +1000,7 @@ class AppleMusicProvider(MusicProvider):
         for data in attempts:
             try:
                 async with self.mass.http_session.post(
-                    playback_url, headers=self._get_decryption_headers(), json=data, ssl=True
+                    playback_url, headers=self._get_decryption_headers(), json=data
                 ) as response:
                     response.raise_for_status()
                     content = await response.json(loads=json_loads)
