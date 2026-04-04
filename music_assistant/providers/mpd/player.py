@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from mpd import CommandError, FailureResponseCode, MPDError
 from mpd.asyncio import MPDClient
 from music_assistant_models.enums import (
+    ConfigEntryType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
@@ -43,7 +44,6 @@ class MPDPlayer(Player):
         player_id: str,
         host: str,
         port: int = 6600,
-        password: str | None = None,
     ) -> None:
         """
         Initialize MPDPlayer.
@@ -52,12 +52,10 @@ class MPDPlayer(Player):
         :param player_id: Unique player identifier.
         :param host: Hostname or IP address of the MPD server.
         :param port: TCP port MPD is listening on.
-        :param password: Optional MPD server password.
         """
         super().__init__(provider, player_id)
         self.host = host
         self.port = port
-        self.password = password
 
         # Two separate MPD connections are required:
         # - _client: for sending commands (play, stop, setvol, etc.)
@@ -108,14 +106,25 @@ class MPDPlayer(Player):
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
-        """
-        Return player-level config entries.
+        """Return player-level config entries.
 
         :param action: Optional action key from the config UI.
         :param values: Optional intermediate config values from the UI.
         :return: List of ConfigEntry objects for this player.
         """
-        return [CONF_ENTRY_OUTPUT_CODEC_MPD]
+        from music_assistant_models.config_entries import ConfigEntry
+        from music_assistant_models.enums import ConfigEntryType
+
+        return [
+            ConfigEntry(
+                key=CONF_PASSWORD,
+                type=ConfigEntryType.SECURE_STRING,
+                label="Password",
+                description="MPD password, if required by the server.",
+                required=False,
+            ),
+            CONF_ENTRY_OUTPUT_CODEC_MPD,
+        ]
 
     async def on_config_updated(self) -> None:
         """Reconnect to MPD when player configuration changes."""
