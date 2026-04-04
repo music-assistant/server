@@ -101,7 +101,8 @@ class MPDPlayer(Player):
 
     @property
     def needs_setup(self) -> bool:
-        """Return True if the player requires a password to be configured.
+        """
+        Return True if the player requires a password to be configured.
 
         :return: True when a password is required but has not yet been provided.
         """
@@ -109,7 +110,8 @@ class MPDPlayer(Player):
 
     @property
     def needs_poll(self) -> bool:
-        """Return True when elapsed time polling is required.
+        """
+        Return True when elapsed time polling is required.
 
         MPD's idle mechanism does not push elapsed time continuously;
         polling fills this gap during active playback.
@@ -123,7 +125,8 @@ class MPDPlayer(Player):
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
-        """Return player-level config entries.
+        """
+        Return player-level config entries.
 
         :param action: Optional action key from the config UI.
         :param values: Optional intermediate config values from the UI.
@@ -258,7 +261,8 @@ class MPDPlayer(Player):
             self.logger.warning("Failed to fetch MPD status: %s", err)
 
     async def _sync_state(self, status: dict[str, Any]) -> None:
-        """Map an MPD status dict onto MA player attributes.
+        """
+        Map an MPD status dict onto MA player attributes.
 
         :param status: Status dict as returned by the MPD ``status`` command.
         """
@@ -283,7 +287,8 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Send a play command to MPD using the MA stream URL.
+        """
+        Send a play command to MPD using the MA stream URL.
 
         :param media: Details of the media item to play.
         """
@@ -336,7 +341,8 @@ class MPDPlayer(Player):
             raise PlayerCommandFailed(f"pause failed: {err}") from err
 
     async def volume_set(self, volume_level: int) -> None:
-        """Set the player volume.
+        """
+        Set the player volume.
 
         :param volume_level: Volume level (0-100).
         """
@@ -350,7 +356,8 @@ class MPDPlayer(Player):
             raise PlayerCommandFailed(f"volume_set failed: {err}") from err
 
     async def seek(self, position: int) -> None:
-        """Seek to a position in the current track.
+        """
+        Seek to a position in the current track.
 
         :param position: Position in seconds.
         """
