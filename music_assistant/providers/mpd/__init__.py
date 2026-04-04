@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from .constants import CONF_HOSTS
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
+
 from .provider import MPDPlayerProvider
 
 if TYPE_CHECKING:
@@ -35,17 +36,4 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_HOSTS,
-            type=ConfigEntryType.STRING,
-            label="MPD Hosts",
-            description=(
-                "Comma-separated list of MPD servers to connect to. "
-                "Format: host or host:port. "
-                "Port defaults to 6600 if not specified. "
-                "Example: 192.168.1.10, 192.168.1.11:6600"
-            ),
-            required=True,
-        ),
-    )
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
