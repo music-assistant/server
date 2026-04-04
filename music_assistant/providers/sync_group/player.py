@@ -87,17 +87,25 @@ class SyncGroupPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
         # by default we don't have any features, except play_media
-        # but we can gain some features based on the capabilities of the sync leader
+        # but we can gain some features based on the capabilities of the members
         # set_members is only supported if it's a dynamic group
         base_features: set[PlayerFeature] = {PlayerFeature.PLAY_MEDIA}
         if self.is_dynamic:
             base_features.add(PlayerFeature.SET_MEMBERS)
-        if not self.sync_leader:
-            return base_features
-        # add features supported by the sync leader
-        for feature in EXTRA_FEATURES_FROM_MEMBERS:
-            if feature in self.sync_leader.state.supported_features:
-                base_features.add(feature)
+        if self.sync_leader:
+            # add features supported by the sync leader
+            for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                if feature in self.sync_leader.state.supported_features:
+                    base_features.add(feature)
+        else:
+            # derive features from all (configured) group members
+            # so that features like volume control are always advertised
+            for member_id in self._attr_group_members:
+                member_player = self.mass.players.get_player(member_id)
+                if member_player and member_player.state.available:
+                    for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                        if feature in member_player.state.supported_features:
+                            base_features.add(feature)
         return base_features
 
     @property
