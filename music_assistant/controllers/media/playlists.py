@@ -154,6 +154,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 yield track
             page += 1
 
+        # reset last_refresh on force_refresh so the metadata task
+        # will pick up this playlist and refresh genres + collage images
+        if force_refresh and library_item is not None:
+            library_item.metadata.last_refresh = None
+            await self.update_item_in_library(library_item.item_id, library_item)
+            self.mass.metadata.schedule_update_metadata(library_item)
+
     async def create_playlist(
         self,
         name: str,
