@@ -1047,6 +1047,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Delegate to internal handler for actual implementation
         await self._handle_select_source(player_id, source)
 
+    async def deselect_source(self, player_id: str) -> None:
+        """
+        Deselect the current source and stop the player.
+
+        Use this when an external source (plugin/receiver) disconnects and the player
+        should stop playback rather than switch to another source.
+
+        :param player_id: player_id of the player to stop and deselect.
+        """
+        player = self.get_player(player_id, raise_unavailable=False)
+        if not player:
+            return
+        with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
+            await self._handle_cmd_stop(player_id)
+
     @handle_player_command(lock=True)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
