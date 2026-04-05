@@ -69,13 +69,38 @@ def _setup_stream(player: MagicMock) -> Any:
     return _side_effect
 
 
-def _get_debug_log_args(session: AirPlayStreamSession) -> tuple[Any, ...]:
-    """Get the positional args from the first debug log call."""
-    mock_logger: MagicMock = session.prov.logger  # type: ignore[assignment]
-    debug_calls = mock_logger.debug.call_args_list
-    assert len(debug_calls) >= 1
-    result: tuple[Any, ...] = debug_calls[0].args
-    return result
+async def _run_add_client(
+    session: AirPlayStreamSession,
+    player: MagicMock,
+) -> tuple[float, list[tuple[bytes, float]]]:
+    """Run add_client and return (captured_start_at, fed_chunks).
+
+    Patches unix_time_to_ntp to capture the start_at value and
+    _start_client/_feed_buffered_chunks to avoid real I/O.
+    """
+    captured_start_at: list[float] = []
+
+    def capture_ntp(unix_ts: float) -> int:
+        captured_start_at.append(unix_ts)
+        return 1  # dummy NTP value
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_feed_buffered_chunks", new_callable=AsyncMock) as mock_feed,
+        patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            side_effect=capture_ntp,
+        ),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+        fed_chunks: list[tuple[bytes, float]] = []
+        if mock_feed.called:
+            fed_chunks = list(mock_feed.call_args.args[1])
+
+    assert captured_start_at, "unix_time_to_ntp was never called"
+    return captured_start_at[0], fed_chunks
 
 
 @pytest.mark.asyncio
@@ -83,27 +108,15 @@ async def test_late_join_start_at_is_in_the_future() -> None:
     """Test that a late joiner's start_at is always in the future."""
     now = time.time()
     wait_start_s = 2.0
-    # Stream started 50 seconds ago with 2s wait_start
     start_time = now - 50 + wait_start_s
     seconds_streamed = 50.0
-    # Ring buffer: last 10 chunks (positions 40-49)
     chunk_positions = [float(i) for i in range(40, 50)]
 
     session = _make_session(start_time, seconds_streamed, chunk_positions)
     player = _make_late_joiner(wait_start_ms=2000)
 
-    with (
-        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
-        patch.object(session, "_feed_buffered_chunks", new_callable=AsyncMock),
-    ):
-        mock_start.side_effect = _setup_stream(player)
-        await session.add_client(player)
-
-    log_args = _get_debug_log_args(session)
-    assert "start_at is" in log_args[0]
-    # The "%.2fs from now" argument (start_at - now)
-    start_at_from_now = log_args[6]
-    assert start_at_from_now > 0, f"start_at should be in the future, got {start_at_from_now}s"
+    start_at, _ = await _run_add_client(session, player)
+    assert start_at > now, f"start_at should be in the future, got {start_at - now:.2f}s from now"
 
 
 @pytest.mark.asyncio
@@ -118,24 +131,21 @@ async def test_late_join_start_at_aligns_to_chunk_position() -> None:
     session = _make_session(start_time, seconds_streamed, chunk_positions)
     player = _make_late_joiner(wait_start_ms=2000)
 
-    with (
-        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
-        patch.object(session, "_feed_buffered_chunks", new_callable=AsyncMock) as mock_feed,
-    ):
-        mock_start.side_effect = _setup_stream(player)
-        await session.add_client(player)
+    start_at, fed_chunks = await _run_add_client(session, player)
 
-        # Verify buffered chunks were fed
-        assert mock_feed.called
-        fed_chunks = mock_feed.call_args.args[1]
+    assert fed_chunks, "Expected buffered chunks to be fed"
 
-        # All fed chunks should have positions that map to future wall-clock times
-        for _chunk_data, pos in fed_chunks:
-            chunk_wall_time = start_time + pos
-            assert chunk_wall_time > now, (
-                f"Chunk at position {pos} maps to wall time "
-                f"{chunk_wall_time - now:.2f}s from now (should be positive)"
-            )
+    # All fed chunks should map to future wall-clock times
+    for _chunk_data, pos in fed_chunks:
+        chunk_wall_time = start_time + pos
+        assert chunk_wall_time > now, (
+            f"Chunk at position {pos} maps to wall time "
+            f"{chunk_wall_time - now:.2f}s from now (should be positive)"
+        )
+
+    # start_at should match the first chunk's wall-clock time
+    first_pos = fed_chunks[0][1]
+    assert abs(start_at - (start_time + first_pos)) < 0.01
 
 
 @pytest.mark.asyncio
@@ -145,28 +155,16 @@ async def test_late_join_postpones_when_insufficient_buffer() -> None:
     wait_start_s = 2.0
     start_time = now - 50 + wait_start_s
     seconds_streamed = 50.0
-    # Only 2 chunks, both very recent (positions map to future times)
     chunk_positions = [49.0, 50.0]
 
     session = _make_session(start_time, seconds_streamed, chunk_positions)
     player = _make_late_joiner(wait_start_ms=2000)
 
-    with (
-        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
-        patch.object(session, "_feed_buffered_chunks", new_callable=AsyncMock) as mock_feed,
-    ):
-        mock_start.side_effect = _setup_stream(player)
-        await session.add_client(player)
+    start_at, fed_chunks = await _run_add_client(session, player)
 
-        # Should still send chunks (postponed but usable)
-        assert mock_feed.called
-        fed_chunks = mock_feed.call_args.args[1]
-        assert len(fed_chunks) >= 1
-
-        # start_at should still be in the future
-        log_args = _get_debug_log_args(session)
-        start_at_from_now = log_args[6]
-        assert start_at_from_now > 0
+    assert fed_chunks, "Expected buffered chunks to be fed"
+    assert len(fed_chunks) >= 1
+    assert start_at > now, "start_at should be in the future after postpone"
 
 
 @pytest.mark.asyncio
@@ -180,19 +178,10 @@ async def test_late_join_no_buffer_uses_preferred_start() -> None:
     session = _make_session(start_time, seconds_streamed, chunk_positions=[])
     player = _make_late_joiner(wait_start_ms=2000)
 
-    with (
-        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
-        patch.object(session, "_feed_buffered_chunks", new_callable=AsyncMock) as mock_feed,
-    ):
-        mock_start.side_effect = _setup_stream(player)
-        await session.add_client(player)
+    start_at, fed_chunks = await _run_add_client(session, player)
 
-        # No buffer to feed
-        assert not mock_feed.called
-
-        # start_at should be approximately now + wait_start
-        log_args = _get_debug_log_args(session)
-        start_at_from_now = log_args[3]
-        assert 1.5 < start_at_from_now < 2.5, (
-            f"Expected start_at ~2s from now, got {start_at_from_now}s"
-        )
+    assert not fed_chunks, "No chunks should be fed when buffer is empty"
+    # start_at should be approximately now + wait_start
+    assert 1.5 < (start_at - now) < 2.5, (
+        f"Expected start_at ~2s from now, got {start_at - now:.2f}s"
+    )
