@@ -133,67 +133,56 @@ class AirPlayStreamSession:
             now = time.time()
             all_buffered = list(self._chunk_buffer)
 
-            # The preferred start time is now + wait_start (in the future),
-            # just like for the original players. We then find which stream
-            # position aligns with that timestamp and send ring buffer chunks
-            # to fill the pipeline with audio that other players already have
-            # in their device buffers.
+            # Two constraints:
+            # 1. start_at must be >= now + wait_start (device can't handle past NTP)
+            # 2. byte 0 of CLI stdin must match start_at (for sync with other players)
+            #
+            # We compute the minimum stream position whose wall-clock time satisfies
+            # constraint 1, then only send ring buffer data from that position onward.
             wait_start_seconds = airplay_player.wait_start / 1000
-            preferred_start_at = now + wait_start_seconds
-            # The stream position that corresponds to the preferred start time
-            target_position = preferred_start_at - self.start_time
+            min_start_at = now + wait_start_seconds
+            min_position = min_start_at - self.start_time
 
-            # Find the ring buffer chunk that contains target_position and
-            # trim it so byte 0 of the CLI stdin aligns exactly with
-            # preferred_start_at. This is the same approach as the sendspin
-            # bridge alignment logic.
-            pcm_sample_size = self.pcm_format.pcm_sample_size
-            bytes_per_frame = pcm_sample_size // self.pcm_format.sample_rate
-            buffered_chunks: list[tuple[bytes, float]] = []
-            start_at = preferred_start_at
+            # Filter ring buffer to chunks at or after min_position
+            buffered_chunks = [(chunk, pos) for chunk, pos in all_buffered if pos >= min_position]
 
-            for i, (chunk, pos) in enumerate(all_buffered):
-                chunk_duration = len(chunk) / pcm_sample_size
-                if pos <= target_position < pos + chunk_duration:
-                    # This chunk contains target_position - trim the beginning
-                    trim_seconds = target_position - pos
-                    trim_bytes = int(trim_seconds * pcm_sample_size)
-                    trim_bytes = (trim_bytes // bytes_per_frame) * bytes_per_frame
-                    trimmed = chunk[trim_bytes:]
-                    if trimmed:
-                        buffered_chunks.append((trimmed, target_position))
-                    # Include all subsequent chunks
-                    buffered_chunks.extend(all_buffered[i + 1 :])
-                    break
-
+            # Trim the first chunk so byte 0 aligns exactly with min_position.
+            # Without trimming, if a chunk starts before min_position but extends
+            # past it, we'd either skip it entirely (losing useful data) or send
+            # it from the start (violating constraint 1).
             if not buffered_chunks and all_buffered:
-                # target_position is at or beyond the latest ring buffer chunk.
-                # This is the normal case when wait_start values match: real-time
-                # data arriving during the wait_start window fills the device buffer.
-                # Use preferred_start_at and send any future-mapped chunks to
-                # give the device a head start.
-                usable = [
-                    (chunk, pos) for chunk, pos in all_buffered if self.start_time + pos > now
-                ]
-                if usable:
-                    buffered_chunks = usable
+                pcm_sample_size = self.pcm_format.pcm_sample_size
+                bytes_per_sample = pcm_sample_size // self.pcm_format.sample_rate
+                for i, (chunk, pos) in enumerate(all_buffered):
+                    chunk_duration = len(chunk) / pcm_sample_size
+                    if pos < min_position < pos + chunk_duration:
+                        trim_seconds = min_position - pos
+                        trim_bytes = int(trim_seconds * pcm_sample_size)
+                        trim_bytes = (trim_bytes // bytes_per_sample) * bytes_per_sample
+                        trimmed = chunk[trim_bytes:]
+                        if trimmed:
+                            buffered_chunks.append((trimmed, min_position))
+                        buffered_chunks.extend(all_buffered[i + 1 :])
+                        break
 
             if buffered_chunks:
+                first_chunk_position = buffered_chunks[0][1]
+                start_at = self.start_time + first_chunk_position
+                buffer_duration = self.seconds_streamed - first_chunk_position
                 buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
+
                 self.prov.logger.debug(
                     "Late joiner %s: sending %.2fs of buffered audio (%d bytes, %d chunks), "
-                    "stream position=%.2fs, start_at is %.2fs from now, "
-                    "wait_start=%.1fms, target_position=%.2f",
+                    "stream position=%.2fs, start_at is %.2fs from now",
                     airplay_player.player_id,
-                    self.seconds_streamed - target_position,
+                    buffer_duration,
                     buffered_bytes,
                     len(buffered_chunks),
                     self.seconds_streamed,
                     start_at - now,
-                    wait_start_seconds * 1000,
-                    target_position,
                 )
             else:
+                start_at = max(min_start_at, self.start_time + self.seconds_streamed)
                 self.prov.logger.debug(
                     "Late joiner %s: no buffered chunks available, "
                     "stream position=%.2fs, start_at is %.2fs from now",
