@@ -113,9 +113,12 @@ class LocalAudioPlayer(Player):
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
                 # Use -c to target the specific ALSA card by index
-                await check_output(
+                rc, _ = await check_output(
                     "amixer", "-c", str(self._device_index), "sset", "Master", f"{volume}%"
                 )
+                if rc != 0:
+                    self.logger.warning("amixer volume failed for card %d", self._device_index)
+                    self._hardware_volume_fallback = True
             else:
                 self.logger.warning(
                     "Hardware volume not supported on %s, falling back to software",
@@ -140,9 +143,12 @@ class LocalAudioPlayer(Player):
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
                 toggle = "mute" if muted else "unmute"
-                await check_output(
+                rc, _ = await check_output(
                     "amixer", "-c", str(self._device_index), "sset", "Master", toggle
                 )
+                if rc != 0:
+                    self.logger.warning("amixer mute failed for card %d", self._device_index)
+                    self._hardware_volume_fallback = True
         except FileNotFoundError:
             self.logger.warning("Mute control command not found, falling back to software")
             self._hardware_volume_fallback = True

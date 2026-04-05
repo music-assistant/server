@@ -240,6 +240,7 @@ class SendspinLocalAudioBridge:
                 "Failed to open audio output stream for %s: %s", self.device_name, err
             )
         finally:
+            self._is_streaming = False
             if self._output_stream is not None:
                 with suppress(Exception):
                     self._output_stream.stop()
@@ -328,11 +329,11 @@ class LocalAudioBridgeManager:
                     self.logger.debug("Bridge already exists for %s", device_name)
                     continue
 
-                # Register our own player with MA first
+                # Register (or update) our player with MA
                 player = LocalAudioPlayer(
                     self.provider, device_uuid, device_name, hostapi_index, device_index
                 )
-                await self.mass.players.register(player)
+                await self.mass.players.register_or_update(player)
 
                 # Then set up the Sendspin bridge with identifier for protocol linking
                 bridge = SendspinLocalAudioBridge(
@@ -344,9 +345,13 @@ class LocalAudioBridgeManager:
                     self.logger.warning("Failed to start bridge for %s", device_name)
                     with suppress(Exception):
                         await bridge.stop()
+                    player._attr_available = False
+                    player.update_state()
                     continue
 
                 if not bridge.is_registered:
+                    player._attr_available = False
+                    player.update_state()
                     continue
 
                 self._bridges[client_id] = bridge
