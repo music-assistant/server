@@ -430,16 +430,9 @@ class AudioBuffer:
 
         # attach analyze jobs for ahead-of-time processing
         if seek_position_ms == 0:
-            # TODO: Remove loudness / smart fades after they have been implemented as
-            # audio analysis providers
+            # TODO: Remove loudness after it has been implemented as an audio analysis provider
             # loudness analysis for all streams (tracks and radio)
             mass.streams.audio.attach_loudness_analyzer(audio_buffer, streamdetails)
-            # smart fades analysis only when enabled and only for music tracks
-            if (
-                streamdetails.media_type == MediaType.TRACK
-                and smart_fades_mode != SmartFadesMode.DISABLED
-            ):
-                mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
             # audio analysis providers (beat tracking, key detection, etc.)
             await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
 

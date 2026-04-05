@@ -1,0 +1,383 @@
+"""Smart Fades audio analysis provider."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import numpy as np
+import soxr
+import torch
+from beat_this.inference import Postprocessor, Spect2Frames
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
+
+from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+
+from .analysis_helpers import (
+    compute_rms_per_second,
+    compute_stft_features,
+    detect_key,
+)
+from .feature_extractor import AdvancedBeatFeatureExtractor
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
+    from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
+
+    from music_assistant.mass import MusicAssistant
+
+ANALYSIS_SAMPLE_RATE = 22050
+ANALYSIS_AUDIO_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE,
+    bit_depth=16,
+    sample_rate=ANALYSIS_SAMPLE_RATE,
+    channels=1,
+)
+
+
+def _calculate_overall_bpm(beats: np.ndarray, n_segments: int = 5) -> float:
+    """Calculate overall BPM using a robust segment-based approach.
+
+    Splits the beat array into N segments, computes a BPM per segment, then
+    discards outlier segments (those deviating more than 3 BPM from the median)
+    before averaging the consistent remainder. This prevents a single poorly-tracked
+    section from pulling the final BPM away from the true value.
+
+    :param beats: Array of beat timestamps in seconds.
+    :param n_segments: Number of equal segments to split the beats into.
+    """
+    if len(beats) < n_segments * 2:
+        return float(60.0 / np.mean(np.diff(beats)))
+
+    segment_bpms = []
+    for idx in np.array_split(np.arange(len(beats)), n_segments):
+        if len(idx) < 2:
+            continue
+        segment_bpms.append(60.0 / float(np.mean(np.diff(beats[idx]))))
+
+    if len(segment_bpms) < 2:
+        return float(60.0 / np.mean(np.diff(beats)))
+
+    seg_arr = np.array(segment_bpms)
+    median_bpm = float(np.median(seg_arr))
+    consistent = seg_arr[np.abs(seg_arr - median_bpm) <= 3.0]
+
+    if len(consistent) < 2:
+        # All segments too spread out — fall back to unfiltered mean
+        return float(np.mean(seg_arr))
+
+    return float(np.mean(consistent))
+
+
+@dataclass
+class SmartFadesData:
+    """Per-session data for smart fades analysis."""
+
+    item_id: str
+    provider: str
+    input_audio_format: AudioFormat
+    block_samples: int
+    features: AdvancedBeatFeatureExtractor
+    resampler: soxr.ResampleStream | None = None
+    pcm_buffer: list[np.ndarray] = field(default_factory=list)
+    pcm_samples: int = 0
+    total_pcm_samples: int = 0
+    feature_blocks: list[np.ndarray] = field(default_factory=list)
+    # Extended analysis accumulators
+    energy_chunks: list[np.ndarray] = field(default_factory=list)
+    centroid_chunks: list[np.ndarray] = field(default_factory=list)
+    chroma_chunks: list[np.ndarray] = field(default_factory=list)
+    bass_chroma_chunks: list[np.ndarray] = field(default_factory=list)
+
+
+class SmartFadesProvider(AudioAnalysisProvider):
+    """Smart fades audio analysis provider using Beat This for beat tracking."""
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
+    ) -> None:
+        """Initialize the provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._data: dict[str, SmartFadesData] = {}
+        self._model: Spect2Frames | None = None
+        self._post: Postprocessor | None = None
+        self._device = "cpu"
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        self._model = Spect2Frames(checkpoint_path="final0", device=self._device)
+        self._post = Postprocessor(type="minimal")
+        self.available = True
+
+    async def _start_analysis(
+        self,
+        session_id: str,
+        streamdetails: StreamDetails,
+        audio_format: AudioFormat,
+    ) -> bool:
+        """Start beat tracking analysis for a new track.
+
+        :param session_id: Session ID from the AudioAnalysisController.
+        :param streamdetails: The stream details for the item being analyzed.
+        :param audio_format: PCM format of the audio stream.
+        """
+        block_seconds = 10.0
+
+        needs_resample = audio_format.sample_rate != ANALYSIS_SAMPLE_RATE
+        self._data[session_id] = SmartFadesData(
+            item_id=streamdetails.item_id,
+            provider=streamdetails.provider,
+            input_audio_format=audio_format,
+            block_samples=int(block_seconds * audio_format.sample_rate),
+            features=AdvancedBeatFeatureExtractor(
+                sample_rate=ANALYSIS_SAMPLE_RATE,
+                device=self._device,
+            ),
+            resampler=soxr.ResampleStream(
+                in_rate=audio_format.sample_rate,
+                out_rate=ANALYSIS_SAMPLE_RATE,
+                num_channels=1,
+                dtype="float32",
+            )
+            if needs_resample
+            else None,
+        )
+        self.logger.debug("Started beat tracking session %s", session_id)
+        return True
+
+    async def process_pcm_chunk(
+        self,
+        session_id: str,
+        pcm_chunk: bytes,
+    ) -> None:
+        """Process a PCM chunk for beat tracking.
+
+        :param session_id: The analysis session ID.
+        :param pcm_chunk: Raw PCM audio data.
+        """
+        data = self._data.get(session_id)
+        if not data:
+            return
+
+        pcm_mono = await asyncio.to_thread(self._decode_chunk_sync, data, pcm_chunk)
+        if pcm_mono.size == 0:
+            return
+
+        data.pcm_buffer.append(pcm_mono)
+        data.pcm_samples += len(pcm_mono)
+
+        if data.pcm_samples >= data.block_samples:
+            await self._process_block(data)
+
+    async def _finalize(self, session_id: str) -> None:
+        """Finalize beat tracking and store results.
+
+        :param session_id: The analysis session ID.
+        """
+        data = self._data.pop(session_id, None)
+        if not data:
+            return
+
+        # Flush remaining buffered PCM
+        if data.pcm_samples:
+            await self._process_block(data, last=True)
+
+        # Get final features with end padding
+        final_feats = await data.features.finalize()
+        if final_feats.size:
+            data.feature_blocks.append(final_feats)
+
+        if not data.feature_blocks:
+            return
+
+        feats = np.concatenate(data.feature_blocks, axis=0)
+
+        self.logger.debug(
+            "Running model inference on %d frames (%.1fs of audio)",
+            feats.shape[0],
+            feats.shape[0] * 0.02,
+        )
+
+        beats, downbeats = await asyncio.to_thread(self._run_inference_sync, feats)
+        duration = data.total_pcm_samples / ANALYSIS_SAMPLE_RATE
+
+        if len(beats) < 2:
+            self.logger.debug("Not enough beats detected, skipping storage")
+            return
+
+        bpm = _calculate_overall_bpm(beats)
+
+        # Build extended analysis fields
+        rms_energy_per_second = None
+        if data.energy_chunks:
+            rms_energy_per_second = np.concatenate(data.energy_chunks)
+            peak = rms_energy_per_second.max()
+            if peak > 0:
+                rms_energy_per_second = rms_energy_per_second / peak
+
+        spectral_centroid_per_second = None
+        if data.centroid_chunks:
+            spectral_centroid_per_second = np.concatenate(data.centroid_chunks)
+
+        key: str | None = None
+        mode: str | None = None
+        if data.chroma_chunks:
+            chroma_all = np.concatenate(data.chroma_chunks, axis=0)
+            bass_chroma_all = (
+                np.concatenate(data.bass_chroma_chunks, axis=0) if data.bass_chroma_chunks else None
+            )
+            raw_energy = np.concatenate(data.energy_chunks) if data.energy_chunks else None
+            musical_key = detect_key(
+                chroma_all,
+                duration,
+                energy_per_second=raw_energy,
+                bass_chroma_per_second=bass_chroma_all,
+            )
+            key = musical_key["root"]
+            mode = musical_key["mode"]
+
+        analysis = AudioAnalysisData(
+            bpm=bpm,
+            beats=beats,
+            downbeats=downbeats,
+            duration=duration,
+            rms_energy_per_second=rms_energy_per_second,
+            spectral_centroid_per_second=spectral_centroid_per_second,
+            key=key,
+            mode=mode,
+        )
+
+        await self.mass.streams.audio_analysis.set_audio_analysis(
+            data.item_id,
+            data.provider,
+            self.domain,
+            analysis,
+            analysis_version=self.analysis_version,
+        )
+
+        self.logger.info(
+            "Stored beat analysis for %s: BPM=%.1f, %d beats, %d downbeats, key=%s",
+            data.item_id,
+            bpm,
+            len(beats),
+            len(downbeats),
+            f"{key} {mode}" if key else "unknown",
+        )
+
+    async def cancel(self, session_id: str) -> None:
+        """Cancel a beat tracking session.
+
+        :param session_id: The analysis session ID.
+        """
+        data = self._data.pop(session_id, None)
+        if data:
+            data.pcm_buffer.clear()
+            data.feature_blocks.clear()
+            data.features.reset()
+        await super().cancel(session_id)
+
+    @staticmethod
+    def _decode_chunk_sync(data: SmartFadesData, pcm_chunk: bytes) -> np.ndarray:
+        """Decode a PCM chunk to mono float32 numpy array. Runs synchronously."""
+        content_type = data.input_audio_format.content_type
+
+        if content_type == ContentType.PCM_F32LE:
+            audio = torch.frombuffer(pcm_chunk, dtype=torch.float32).clone()
+        elif content_type == ContentType.PCM_F64LE:
+            audio = torch.frombuffer(pcm_chunk, dtype=torch.float64).clone().to(torch.float32)
+        elif content_type == ContentType.PCM_S32LE:
+            audio = (
+                torch.frombuffer(pcm_chunk, dtype=torch.int32).clone().to(torch.float32)
+                / 2147483648.0
+            )
+        else:
+            audio = (
+                torch.frombuffer(pcm_chunk, dtype=torch.int16).clone().to(torch.float32) / 32768.0
+            )
+
+        if data.input_audio_format.channels == 2:
+            audio = audio.reshape(-1, 2).mean(dim=1)
+
+        return audio.numpy()
+
+    async def _process_block(self, data: SmartFadesData, *, last: bool = False) -> None:
+        """Resample accumulated PCM buffer and extract features.
+
+        Uses a stateful soxr resampler to eliminate block-boundary artifacts
+        from per-block stateless resampling.
+
+        :param data: Session data.
+        :param last: Set True for the final block to flush the resampler.
+        """
+        pcm_raw = np.concatenate(data.pcm_buffer)
+        data.pcm_buffer.clear()
+        data.pcm_samples = 0
+
+        if data.resampler is not None:
+            pcm_22k = await asyncio.to_thread(data.resampler.resample_chunk, pcm_raw, last)
+        else:
+            pcm_22k = pcm_raw
+
+        data.total_pcm_samples += len(pcm_22k)
+
+        start_time = time.perf_counter()
+        feats = await data.features.process_pcm(pcm_22k)
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+        if feats.size:
+            data.feature_blocks.append(feats)
+        self.logger.debug("Processed 10s of PCM chunks in %.1fms", elapsed_ms)
+
+        # Extended analysis: RMS energy from raw PCM (no STFT, streaming-safe)
+        rms = compute_rms_per_second(pcm_22k, ANALYSIS_SAMPLE_RATE)
+        if len(rms) > 0:
+            data.energy_chunks.append(rms)
+
+        # Extended analysis: spectral centroid + chroma from shared STFT
+        if len(pcm_22k) >= 2048:
+            centroid, chroma, bass_chroma = await asyncio.to_thread(
+                compute_stft_features,
+                pcm_22k,
+                ANALYSIS_SAMPLE_RATE,
+            )
+            if len(centroid) > 0:
+                data.centroid_chunks.append(centroid)
+            if len(chroma) > 0:
+                data.chroma_chunks.append(chroma)
+                data.bass_chroma_chunks.append(bass_chroma)
+
+    def _run_inference_sync(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Run model inference synchronously. Called from thread pool."""
+        assert self._model is not None
+        assert self._post is not None
+
+        tensor = torch.from_numpy(feats).to(self._device)
+
+        inference_start = time.perf_counter()
+        with torch.no_grad():
+            beat_logits, downbeat_logits = self._model(tensor)
+            model_elapsed = (time.perf_counter() - inference_start) * 1000
+
+            post_start = time.perf_counter()
+            beats, downbeats = self._post(beat_logits, downbeat_logits)
+            post_elapsed = (time.perf_counter() - post_start) * 1000
+
+        self.logger.debug(
+            "Model inference: %.1fms, postprocessing: %.1fms, detected %d beats, %d downbeats",
+            model_elapsed,
+            post_elapsed,
+            len(beats),
+            len(downbeats),
+        )
+
+        return beats, downbeats

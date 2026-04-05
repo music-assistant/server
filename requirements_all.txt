@@ -23,6 +23,7 @@ auntie-sounds==1.1.7
 av==16.1.0
 awesomeversion>=24.6.0
 bandcamp-async-api==0.1.1
+beat_this
 bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
