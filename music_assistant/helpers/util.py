@@ -1192,10 +1192,7 @@ def lock[**P, R](  # type: ignore[valid-type]
         instance = args[0] if args else None
         if instance is not None:
             try:
-                func_lock = instance_locks.get(instance)
-                if func_lock is None:
-                    func_lock = asyncio.Lock()
-                    instance_locks[instance] = func_lock
+                func_lock = instance_locks.setdefault(instance, asyncio.Lock())
             except TypeError:
                 # instance is not weakly referenceable, use fallback
                 if fallback_lock is None:
