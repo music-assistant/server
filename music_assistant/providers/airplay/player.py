@@ -656,7 +656,7 @@ class AirPlayPlayer(Player):
 
             # select audio source
             audio_source = self.mass.streams.get_stream(
-                media, AIRPLAY_FLOW_PCM_FORMAT, self.player_id
+                media, AIRPLAY_FLOW_PCM_FORMAT, self.player_id, use_flow_stream_buffering=True
             )
 
             # setup StreamSession for player (and its sync childs if any)
