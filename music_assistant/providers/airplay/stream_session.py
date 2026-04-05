@@ -143,38 +143,49 @@ class AirPlayStreamSession:
             # The stream position that corresponds to the preferred start time
             target_position = preferred_start_at - self.start_time
 
-            # From the ring buffer, select chunks that are at or before the
-            # target position AND whose start_at would still be in the future.
-            # This gives us "past" chunks (relative to stream position) that
-            # represent audio already buffered by other players' devices.
-            buffered_chunks = [
-                (chunk, pos)
-                for chunk, pos in all_buffered
-                if pos <= target_position and self.start_time + pos > now
-            ]
+            # Find the ring buffer chunk that contains target_position and
+            # trim it so byte 0 of the CLI stdin aligns exactly with
+            # preferred_start_at. This is the same approach as the sendspin
+            # bridge alignment logic.
+            pcm_sample_size = self.pcm_format.pcm_sample_size
+            bytes_per_frame = pcm_sample_size // self.pcm_format.sample_rate
+            buffered_chunks: list[tuple[bytes, float]] = []
+            start_at = preferred_start_at
 
-            if len(buffered_chunks) < 2 and all_buffered:
-                # Not enough buffer to reach the preferred start time.
-                # Postpone: use the latest available chunks to ensure
-                # start_at stays in the future.
+            for i, (chunk, pos) in enumerate(all_buffered):
+                chunk_duration = len(chunk) / pcm_sample_size
+                if pos <= target_position < pos + chunk_duration:
+                    # This chunk contains target_position - trim the beginning
+                    trim_seconds = target_position - pos
+                    trim_bytes = int(trim_seconds * pcm_sample_size)
+                    trim_bytes = (trim_bytes // bytes_per_frame) * bytes_per_frame
+                    trimmed = chunk[trim_bytes:]
+                    if trimmed:
+                        buffered_chunks.append((trimmed, target_position))
+                    # Include all subsequent chunks
+                    buffered_chunks.extend(all_buffered[i + 1 :])
+                    break
+
+            if not buffered_chunks and all_buffered:
+                # target_position is at or beyond the latest ring buffer chunk.
+                # This is the normal case when wait_start values match: real-time
+                # data arriving during the wait_start window fills the device buffer.
+                # Use preferred_start_at and send any future-mapped chunks to
+                # give the device a head start.
                 usable = [
                     (chunk, pos) for chunk, pos in all_buffered if self.start_time + pos > now
                 ]
-                buffered_chunks = usable[-2:] if len(usable) >= 2 else usable
+                if usable:
+                    buffered_chunks = usable
 
             if buffered_chunks:
-                first_chunk_position = buffered_chunks[0][1]
-                # Align start_at to the actual first chunk we can send
-                start_at = self.start_time + first_chunk_position
-                buffer_duration = self.seconds_streamed - first_chunk_position
                 buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
-
                 self.prov.logger.debug(
                     "Late joiner %s: sending %.2fs of buffered audio (%d bytes, %d chunks), "
                     "stream position=%.2fs, start_at is %.2fs from now, "
                     "wait_start=%.1fms, target_position=%.2f",
                     airplay_player.player_id,
-                    buffer_duration,
+                    self.seconds_streamed - target_position,
                     buffered_bytes,
                     len(buffered_chunks),
                     self.seconds_streamed,
@@ -183,8 +194,6 @@ class AirPlayStreamSession:
                     target_position,
                 )
             else:
-                # No usable buffer - use preferred start time as-is
-                start_at = preferred_start_at
                 self.prov.logger.debug(
                     "Late joiner %s: no buffered chunks available, "
                     "stream position=%.2fs, start_at is %.2fs from now",

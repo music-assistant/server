@@ -9,6 +9,10 @@ import pytest
 
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
+# 44.1kHz / 16-bit / 2ch
+PCM_SAMPLE_SIZE = 176400
+BYTES_PER_FRAME = 4  # 16-bit * 2ch
+
 
 def _make_session(
     start_time: float,
@@ -24,7 +28,8 @@ def _make_session(
     prov = MagicMock()
 
     pcm_format = MagicMock()
-    pcm_format.pcm_sample_size = 176400  # 44.1kHz/16bit/2ch
+    pcm_format.pcm_sample_size = PCM_SAMPLE_SIZE
+    pcm_format.sample_rate = 44100
 
     leader = MagicMock()
     leader.stream = MagicMock()
@@ -39,7 +44,7 @@ def _make_session(
     # Fill ring buffer with dummy chunks at specified positions
     session._chunk_buffer = deque(maxlen=12)
     for pos in chunk_positions:
-        session._chunk_buffer.append((b"\x00" * 176400, pos))
+        session._chunk_buffer.append((b"\x00" * PCM_SAMPLE_SIZE, pos))
 
     return session
 
@@ -104,8 +109,8 @@ async def _run_add_client(
 
 
 @pytest.mark.asyncio
-async def test_late_join_start_at_is_in_the_future() -> None:
-    """Test that a late joiner's start_at is always in the future."""
+async def test_late_join_start_at_equals_preferred() -> None:
+    """Test that start_at equals now + wait_start when buffer is available."""
     now = time.time()
     wait_start_s = 2.0
     start_time = now - 50 + wait_start_s
@@ -116,45 +121,81 @@ async def test_late_join_start_at_is_in_the_future() -> None:
     player = _make_late_joiner(wait_start_ms=2000)
 
     start_at, _ = await _run_add_client(session, player)
-    assert start_at > now, f"start_at should be in the future, got {start_at - now:.2f}s from now"
+
+    # start_at should be exactly preferred (now + wait_start), not just "in the future"
+    preferred = now + wait_start_s
+    assert abs(start_at - preferred) < 0.1, (
+        f"start_at should be ~preferred ({preferred:.2f}), got {start_at:.2f}"
+    )
 
 
 @pytest.mark.asyncio
-async def test_late_join_start_at_aligns_to_chunk_position() -> None:
-    """Test that start_at is aligned to actual ring buffer chunk positions."""
+async def test_late_join_trims_first_chunk_to_align() -> None:
+    """Test that the first chunk is trimmed so byte 0 aligns with start_at."""
     now = time.time()
-    wait_start_s = 2.0
-    start_time = now - 50 + wait_start_s
-    seconds_streamed = 50.0
-    chunk_positions = [float(i) for i in range(40, 50)]
+    # Use a larger wait_start so target_position lands inside a chunk
+    # (not at the very end of the ring buffer).
+    # start_time + target_position = now + wait_start
+    # target_position = now + wait_start - start_time
+    # With wait_start=5s, start_time = now - 50 + 2, target_position = 53
+    # but seconds_streamed=55, so chunk at pos 53 exists and is mid-buffer.
+    wait_start_s = 5.0
+    start_time = now - 55 + 2.0
+    seconds_streamed = 55.0
+    # Ring buffer: positions 45-54 (10 chunks)
+    chunk_positions = [float(i) for i in range(45, 55)]
 
     session = _make_session(start_time, seconds_streamed, chunk_positions)
-    player = _make_late_joiner(wait_start_ms=2000)
+    # target_position = now + 5 - (now - 53) = 58 ... hmm let me recalculate
+    # start_time = now - 53, target = (now + 5) - (now - 53) = 58? No.
+    # Let me be more precise:
+    # start_time = now - 55 + 2 = now - 53
+    # target_position = (now + 5) - (now - 53) = 58
+    # That's way beyond seconds_streamed (55). Need to adjust.
+    #
+    # For target to be ~52.5 (mid-chunk at pos 52):
+    # target = now + wait_start - start_time
+    # We want target = 52.5
+    # 52.5 = now + wait_start - start_time
+    # start_time = now + wait_start - 52.5
+    start_time_fixed = now + wait_start_s - 52.5
+    session.start_time = start_time_fixed
+
+    player = _make_late_joiner(wait_start_ms=int(wait_start_s * 1000))
 
     start_at, fed_chunks = await _run_add_client(session, player)
 
+    # start_at should match preferred (now + wait_start)
+    assert abs(start_at - (now + wait_start_s)) < 0.1
+
     assert fed_chunks, "Expected buffered chunks to be fed"
 
-    # All fed chunks should map to future wall-clock times
-    for _chunk_data, pos in fed_chunks:
-        chunk_wall_time = start_time + pos
-        assert chunk_wall_time > now, (
-            f"Chunk at position {pos} maps to wall time "
-            f"{chunk_wall_time - now:.2f}s from now (should be positive)"
-        )
+    first_chunk_data, first_chunk_pos = fed_chunks[0]
 
-    # start_at should match the first chunk's wall-clock time
-    first_pos = fed_chunks[0][1]
-    assert abs(start_at - (start_time + first_pos)) < 0.01
+    # First chunk position should be target_position (52.5)
+    assert abs(first_chunk_pos - 52.5) < 0.01
+
+    # The first chunk should be trimmed to roughly half (target is mid-chunk)
+    assert len(first_chunk_data) < PCM_SAMPLE_SIZE
+    half = PCM_SAMPLE_SIZE // 2
+    assert abs(len(first_chunk_data) - half) < PCM_SAMPLE_SIZE * 0.05
+
+    # Trimmed size should be frame-aligned
+    assert len(first_chunk_data) % BYTES_PER_FRAME == 0
+
+    # Subsequent chunks should be full-size
+    if len(fed_chunks) > 1:
+        assert len(fed_chunks[1][0]) == PCM_SAMPLE_SIZE
 
 
 @pytest.mark.asyncio
-async def test_late_join_postpones_when_insufficient_buffer() -> None:
-    """Test that start_at is postponed when < 2 chunks are available at target position."""
+async def test_late_join_fallback_when_buffer_too_old() -> None:
+    """Test fallback when ring buffer doesn't contain target_position."""
     now = time.time()
     wait_start_s = 2.0
     start_time = now - 50 + wait_start_s
     seconds_streamed = 50.0
+    # Only old chunks that are still in the future
     chunk_positions = [49.0, 50.0]
 
     session = _make_session(start_time, seconds_streamed, chunk_positions)
@@ -162,9 +203,9 @@ async def test_late_join_postpones_when_insufficient_buffer() -> None:
 
     start_at, fed_chunks = await _run_add_client(session, player)
 
+    # Should still use chunks and start_at should be in the future
     assert fed_chunks, "Expected buffered chunks to be fed"
-    assert len(fed_chunks) >= 1
-    assert start_at > now, "start_at should be in the future after postpone"
+    assert start_at > now, "start_at should be in the future"
 
 
 @pytest.mark.asyncio
@@ -181,7 +222,6 @@ async def test_late_join_no_buffer_uses_preferred_start() -> None:
     start_at, fed_chunks = await _run_add_client(session, player)
 
     assert not fed_chunks, "No chunks should be fed when buffer is empty"
-    # start_at should be approximately now + wait_start
     assert 1.5 < (start_at - now) < 2.5, (
         f"Expected start_at ~2s from now, got {start_at - now:.2f}s"
     )
