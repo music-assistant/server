@@ -130,34 +130,76 @@ class AirPlayStreamSession:
             return
 
         async with self._lock:
-            max_late_join_buffer_seconds = 7.0
+            now = time.time()
             all_buffered = list(self._chunk_buffer)
 
-            if all_buffered:
-                min_position = self.seconds_streamed - max_late_join_buffer_seconds
-                buffered_chunks = [
-                    (chunk, pos) for chunk, pos in all_buffered if pos >= min_position
+            # The preferred start time is now + wait_start (in the future),
+            # just like for the original players. We then find which stream
+            # position aligns with that timestamp and send ring buffer chunks
+            # to fill the pipeline with audio that other players already have
+            # in their device buffers.
+            wait_start_seconds = airplay_player.wait_start / 1000
+            preferred_start_at = now + wait_start_seconds
+            # The stream position that corresponds to the preferred start time
+            target_position = preferred_start_at - self.start_time
+
+            # Find the ring buffer chunk that contains target_position and
+            # trim it so byte 0 of the CLI stdin aligns exactly with
+            # preferred_start_at. This is the same approach as the sendspin
+            # bridge alignment logic.
+            pcm_sample_size = self.pcm_format.pcm_sample_size
+            bytes_per_frame = pcm_sample_size // self.pcm_format.sample_rate
+            buffered_chunks: list[tuple[bytes, float]] = []
+            start_at = preferred_start_at
+
+            for i, (chunk, pos) in enumerate(all_buffered):
+                chunk_duration = len(chunk) / pcm_sample_size
+                if pos <= target_position < pos + chunk_duration:
+                    # This chunk contains target_position - trim the beginning
+                    trim_seconds = target_position - pos
+                    trim_bytes = int(trim_seconds * pcm_sample_size)
+                    trim_bytes = (trim_bytes // bytes_per_frame) * bytes_per_frame
+                    trimmed = chunk[trim_bytes:]
+                    if trimmed:
+                        buffered_chunks.append((trimmed, target_position))
+                    # Include all subsequent chunks
+                    buffered_chunks.extend(all_buffered[i + 1 :])
+                    break
+
+            if not buffered_chunks and all_buffered:
+                # target_position is at or beyond the latest ring buffer chunk.
+                # This is the normal case when wait_start values match: real-time
+                # data arriving during the wait_start window fills the device buffer.
+                # Use preferred_start_at and send any future-mapped chunks to
+                # give the device a head start.
+                usable = [
+                    (chunk, pos) for chunk, pos in all_buffered if self.start_time + pos > now
                 ]
-            else:
-                buffered_chunks = []
+                if usable:
+                    buffered_chunks = usable
 
             if buffered_chunks:
-                first_chunk_position = buffered_chunks[0][1]
-                buffer_duration = self.seconds_streamed - first_chunk_position
-                start_at = self.start_time + (self.seconds_streamed - buffer_duration)
-
+                buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
                 self.prov.logger.debug(
-                    "Late joiner %s: sending %.2fs of buffered audio, start at %.2fs",
+                    "Late joiner %s: sending %.2fs of buffered audio (%d bytes, %d chunks), "
+                    "stream position=%.2fs, start_at is %.2fs from now, "
+                    "wait_start=%.1fms, target_position=%.2f",
                     airplay_player.player_id,
-                    buffer_duration,
-                    self.seconds_streamed - buffer_duration,
+                    self.seconds_streamed - target_position,
+                    buffered_bytes,
+                    len(buffered_chunks),
+                    self.seconds_streamed,
+                    start_at - now,
+                    wait_start_seconds * 1000,
+                    target_position,
                 )
             else:
-                start_at = self.start_time + self.seconds_streamed
                 self.prov.logger.debug(
-                    "Late joiner %s: no buffered chunks available, starting at %.2fs",
+                    "Late joiner %s: no buffered chunks available, "
+                    "stream position=%.2fs, start_at is %.2fs from now",
                     airplay_player.player_id,
                     self.seconds_streamed,
+                    start_at - now,
                 )
 
             start_ntp = unix_time_to_ntp(start_at)
@@ -177,10 +219,17 @@ class AirPlayStreamSession:
         if airplay_player.stream:
             try:
                 await airplay_player.stream.wait_for_connection()
+                elapsed = time.time() - now
+                self.prov.logger.debug(
+                    "Late joiner %s: device connected after %.2fs",
+                    airplay_player.player_id,
+                    elapsed,
+                )
             except TimeoutError:
                 self.prov.logger.warning(
-                    "Late joiner %s: device connection timed out",
+                    "Late joiner %s: device connection timed out after %.2fs",
                     airplay_player.player_id,
+                    time.time() - now,
                 )
                 self.mass.create_task(self.remove_client(airplay_player))
 

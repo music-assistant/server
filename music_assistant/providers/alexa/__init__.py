@@ -214,9 +214,11 @@ async def get_config_entries(
             required=True,
             options=[
                 ConfigValueOption("English (USA)", "en-US"),
+                ConfigValueOption("English (Canada)", "en-CA"),
                 ConfigValueOption("German (Germany)", "de-DE"),
                 ConfigValueOption("Spanish (Spain)", "es-ES"),
                 ConfigValueOption("French (France)", "fr-FR"),
+                ConfigValueOption("French (Canada)", "fr-CA"),
                 ConfigValueOption("Italian (Italy)", "it-IT"),
                 ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
             ],

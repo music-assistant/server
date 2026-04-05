@@ -348,7 +348,17 @@ class DLNAPlayer(Player):
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
-        self.set_current_media(uri=_device_uri, clear_all=True)
+        self.set_current_media(
+            uri=_device_uri,
+            clear_all=True,
+            title=self.device.media_title,
+            artist=self.device.media_artist,
+            album=self.device.media_album_name,
+            image_url=self.device.media_image_url,
+            duration=int(self.device.media_duration)
+            if self.device.media_duration is not None
+            else None,
+        )
 
         # Let player controller determine active source, only override for known external sources
         if _device_uri and _device_uri.startswith(self.mass.streams.base_url):
