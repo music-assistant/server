@@ -149,6 +149,8 @@ class LocalAudioPlayer(Player):
                 if rc != 0:
                     self.logger.warning("amixer mute failed for card %d", self._device_index)
                     self._hardware_volume_fallback = True
+            else:
+                self._hardware_volume_fallback = True
         except FileNotFoundError:
             self.logger.warning("Mute control command not found, falling back to software")
             self._hardware_volume_fallback = True
