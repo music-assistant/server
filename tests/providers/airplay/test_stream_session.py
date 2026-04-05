@@ -61,7 +61,7 @@ def _make_late_joiner(wait_start_ms: int = 2000) -> MagicMock:
 def _setup_stream(player: MagicMock) -> Any:
     """Return a side_effect callable that sets up the stream mock on the player."""
 
-    def _side_effect(*args: Any, **kwargs: Any) -> None:
+    def _side_effect(*_args: Any, **_kwargs: Any) -> None:
         player.stream = MagicMock()
         player.stream.running = True
         player.stream.wait_for_connection = AsyncMock()
@@ -69,12 +69,12 @@ def _setup_stream(player: MagicMock) -> Any:
     return _side_effect
 
 
-def _get_info_log_args(session: AirPlayStreamSession) -> tuple[Any, ...]:
-    """Get the positional args from the first info log call."""
+def _get_debug_log_args(session: AirPlayStreamSession) -> tuple[Any, ...]:
+    """Get the positional args from the first debug log call."""
     mock_logger: MagicMock = session.prov.logger  # type: ignore[assignment]
-    info_calls = mock_logger.info.call_args_list
-    assert len(info_calls) >= 1
-    result: tuple[Any, ...] = info_calls[0].args
+    debug_calls = mock_logger.debug.call_args_list
+    assert len(debug_calls) >= 1
+    result: tuple[Any, ...] = debug_calls[0].args
     return result
 
 
@@ -99,7 +99,7 @@ async def test_late_join_start_at_is_in_the_future() -> None:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    log_args = _get_info_log_args(session)
+    log_args = _get_debug_log_args(session)
     assert "start_at is" in log_args[0]
     # The "%.2fs from now" argument (start_at - now)
     start_at_from_now = log_args[6]
@@ -164,7 +164,7 @@ async def test_late_join_postpones_when_insufficient_buffer() -> None:
         assert len(fed_chunks) >= 1
 
         # start_at should still be in the future
-        log_args = _get_info_log_args(session)
+        log_args = _get_debug_log_args(session)
         start_at_from_now = log_args[6]
         assert start_at_from_now > 0
 
@@ -191,7 +191,7 @@ async def test_late_join_no_buffer_uses_preferred_start() -> None:
         assert not mock_feed.called
 
         # start_at should be approximately now + wait_start
-        log_args = _get_info_log_args(session)
+        log_args = _get_debug_log_args(session)
         start_at_from_now = log_args[3]
         assert 1.5 < start_at_from_now < 2.5, (
             f"Expected start_at ~2s from now, got {start_at_from_now}s"

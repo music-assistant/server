@@ -169,7 +169,7 @@ class AirPlayStreamSession:
                 buffer_duration = self.seconds_streamed - first_chunk_position
                 buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
 
-                self.prov.logger.info(
+                self.prov.logger.debug(
                     "Late joiner %s: sending %.2fs of buffered audio (%d bytes, %d chunks), "
                     "stream position=%.2fs, start_at is %.2fs from now, "
                     "wait_start=%.1fms, target_position=%.2f",
@@ -185,7 +185,7 @@ class AirPlayStreamSession:
             else:
                 # No usable buffer - use preferred start time as-is
                 start_at = preferred_start_at
-                self.prov.logger.info(
+                self.prov.logger.debug(
                     "Late joiner %s: no buffered chunks available, "
                     "stream position=%.2fs, start_at is %.2fs from now",
                     airplay_player.player_id,
@@ -211,7 +211,7 @@ class AirPlayStreamSession:
             try:
                 await airplay_player.stream.wait_for_connection()
                 elapsed = time.time() - now
-                self.prov.logger.info(
+                self.prov.logger.debug(
                     "Late joiner %s: device connected after %.2fs",
                     airplay_player.player_id,
                     elapsed,
