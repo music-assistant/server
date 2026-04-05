@@ -62,14 +62,17 @@ class GroupingCoordinator(WamProviderFeatureBase):
         self._update_player_membership(player.player_id, player.synced_to)
         if player.synced_to:
             if leader_player := self.provider.get_player(player.synced_to):
-                leader_player.update_state()
+                leader_player.state_sync.refresh_state()
 
     def unregister_player(self, player: WamPlayer) -> None:
         """Unregister a player from group tracking.
 
         :param player: The WamPlayer to unregister.
         """
+        old_leader_id = self._child_to_leader.get(player.player_id)
         self._remove_player_from_all_groups(player.player_id)
+        if old_leader_id and (leader_player := self.provider.get_player(old_leader_id)):
+            leader_player.state_sync.refresh_state()
 
     # --- MA Initiated ---
 
@@ -130,14 +133,26 @@ class GroupingCoordinator(WamProviderFeatureBase):
             children_after = [p for pid in target_children if (p := self.provider.get_player(pid))]
             children_to_remove = set(children_before) - set(children_after)
 
-            ungroup_tasks = [child.grouping.leave_group() for child in children_to_remove]
-            await asyncio.gather(*ungroup_tasks)
+            # Optimistically update state to prevent stale member lists leaking during transitions.
+            for pid in target_children:
+                self._update_player_membership(pid, leader_id)
+            for child in children_to_remove:
+                self._update_player_membership(child.player_id, None)
 
-            if children_after:
-                group_name = f"{leader.log_name} Group"
-                await leader.grouping.form_group(children_after, group_name)
-            else:
-                await leader.grouping.leave_group()
+            try:
+                ungroup_tasks = [child.grouping.leave_group() for child in children_to_remove]
+                await asyncio.gather(*ungroup_tasks)
+
+                if children_after:
+                    group_name = f"{leader.log_name} Group"
+                    await leader.grouping.form_group(children_after, group_name)
+                else:
+                    await leader.grouping.leave_group()
+            except Exception as err:
+                self.logger.warning("Group command failed, synchronizing state: %s", err)
+                self.synchronize_states()
+                leader.state_sync.refresh_state()
+                raise
 
     # --- Hardware Initiated ---
 
@@ -161,7 +176,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
         for pid in affected_leader_ids:
             if pid and pid != player.player_id:
                 if p := self.provider.get_player(pid):
-                    p.update_state()
+                    p.state_sync.refresh_state()
 
     # --- Internal Helpers ---
 
