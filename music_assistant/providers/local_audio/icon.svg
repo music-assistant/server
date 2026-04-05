@@ -1,15 +1,5 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <path fill="#4A90D9" d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0z"/>
-  <path fill="#FFFFFF" d="M12 4a2 2 0 0 0-2 2v5.17l-1.59-1.58A2 2 0 0 0 5 12v0a2 2 0 0 0 2 2h2.17l1.42 1.42A2 2 0 0 0 12 16h0a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/>
-  <path fill="#FFFFFF" d="M3.5 9.5a.75.75 0 0 0-.75.75v3.5a.75.75 0 0 0 1.5 0v-3.5A.75.75 0 0 0 3.5 9.5z"/>
-  <g fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round">
-    <path d="M8 7.5v9"/>
-    <path d="M5.5 9v6"/>
-    <path d="M10.5 5v14"/>
-    <path d="M13 6.5v11"/>
-    <path d="M15.5 8v8"/>
-    <path d="M18 9.5v5"/>
-    <path d="M20.5 10.5v3"/>
-  </g>
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M3 9V15H7L12 20V4L7 9H3Z" fill="#4A90D9"/>
+<path d="M15.54 8.46C16.48 9.4 17.01 10.67 17.01 12C17.01 13.33 16.48 14.6 15.54 15.54" stroke="#4A90D9" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M18.07 5.93C19.79 7.65 20.74 9.94 20.74 12.34C20.74 14.74 19.79 17.03 18.07 18.75" stroke="#4A90D9" stroke-width="1.5" stroke-linecap="round"/>
 </svg>
