@@ -190,10 +190,10 @@ class TestSelectSourceVsDeselectSource:
         controller._handle_cmd_stop.assert_awaited_once_with("player_1")
 
     @pytest.mark.asyncio
-    async def test_select_source_with_plugin_sets_in_use_by(
+    async def test_select_source_with_plugin_delegates_to_handler(
         self, controller: PlayerController, player: MockPlayer, mock_mass: MagicMock
     ) -> None:
-        """Selecting a plugin source should set in_use_by to the player."""
+        """Selecting a plugin source should delegate to _handle_select_plugin_source."""
         plugin_source = PluginSource(id="my_plugin", name="My Plugin")
         mock_plugin_prov = MagicMock(spec=PluginProvider)
         mock_plugin_prov.instance_id = "my_plugin"
@@ -209,30 +209,31 @@ class TestSelectSourceVsDeselectSource:
         controller._handle_select_plugin_source.assert_awaited_once()
 
 
-class TestAirplayReceiverDisconnectFlow:
-    """Integration-style test simulating the AirPlay receiver disconnect scenario."""
+class TestPluginSourceDisconnectFlow:
+    """Test the disconnect flow for plugin sources (AirPlay, Spotify Connect, etc.)."""
 
     @pytest.mark.asyncio
-    async def test_disconnect_clears_source_and_stops_player(
+    async def test_deselect_after_clearing_in_use_by_stops_player(
         self, controller: PlayerController, player: MockPlayer
     ) -> None:
-        """Simulating the disconnect flow: clear in_use_by, then deselect stops player.
+        """Verify that the provider disconnect pattern (clear in_use_by + deselect) stops the player.
 
-        This reproduces the scenario from music-assistant/support#5130.
+        Providers call _clear_active_player() which sets in_use_by=None,
+        then deselect_source() to stop the player. This test verifies both
+        steps work correctly together.
         """
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
 
         plugin_source = PluginSource(id="airplay_recv", name="AirPlay")
         plugin_source.in_use_by = "player_1"
 
-        # Step 1: Clear in_use_by (as _clear_active_player does)
+        # Provider clears in_use_by (breaks the stream loop in the controller)
         plugin_source.in_use_by = None
         assert plugin_source.in_use_by is None
 
-        # Step 2: Deselect source on the player (the fix)
+        # Provider calls deselect_source to stop the player (the fix for #5130)
         await controller.deselect_source("player_1")
 
-        # Step 3: Verify the player was stopped
         controller._handle_cmd_stop.assert_awaited_once_with("player_1")
 
     @pytest.mark.asyncio
