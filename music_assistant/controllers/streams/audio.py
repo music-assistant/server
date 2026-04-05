@@ -1845,12 +1845,7 @@ class StreamsAudio:
                             mix_err,
                         )
                         yield last_fadeout_part
-                        if last_play_log_entry:
-                            assert last_play_log_entry.seconds_streamed is not None
-                            # Add the remaining half (pre-count was only half the tail)
-                            last_play_log_entry.seconds_streamed += (
-                                len(last_fadeout_part) / pcm_sample_size / 2
-                            )
+                        # full tail was pre-counted and is now yielded as-is
                         crossfade_bytes_written = 0
                         remaining_bytes = crossfade_buffer
                     if crossfade_bytes_written:
@@ -1860,9 +1855,9 @@ class StreamsAudio:
                         bytes_written += fadein_share
                         if last_play_log_entry:
                             assert last_play_log_entry.seconds_streamed is not None
-                            # Correct estimated pre-count to actual share
+                            # Correct pre-counted full tail to actual half of crossfade output
                             last_play_log_entry.seconds_streamed += (
-                                fadeout_share - len(last_fadeout_part) / 2
+                                fadeout_share - len(last_fadeout_part)
                             ) / pcm_sample_size
                     if remaining_bytes:
                         yield remaining_bytes
@@ -1894,12 +1889,7 @@ class StreamsAudio:
                 # edge case: we did not get enough data to make the crossfade
                 # attribute these bytes to the previous track (they are its tail)
                 yield last_fadeout_part
-                if last_play_log_entry:
-                    assert last_play_log_entry.seconds_streamed is not None
-                    # Add the remaining half (pre-count was only half the tail)
-                    last_play_log_entry.seconds_streamed += (
-                        len(last_fadeout_part) / pcm_sample_size / 2
-                    )
+                # full tail was pre-counted and is now yielded as-is
                 last_fadeout_part = b""
             if self.crossfade_allowed(
                 queue_track,
@@ -1930,11 +1920,10 @@ class StreamsAudio:
             play_log_entry.seconds_streamed = seconds_streamed
             play_log_entry.duration = queue_track.streamdetails.duration
             if last_play_log_entry is play_log_entry and last_fadeout_part:
-                # Pre-count an estimated share of the crossfade tail so the queue index
-                # calculation doesn't undercount while waiting for the next track's
-                # crossfade mix. During crossfade, approximately half the tail is attributed
-                # to this track. This estimate is corrected once the mix actually completes.
-                play_log_entry.seconds_streamed += len(last_fadeout_part) / pcm_sample_size / 2
+                # Pre-count the full crossfade tail so the queue index calculation
+                # doesn't undercount while waiting for the next track's crossfade mix.
+                # This will be corrected to crossfade_total/2 once the mix completes.
+                play_log_entry.seconds_streamed += len(last_fadeout_part) / pcm_sample_size
             total_bytes_sent += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
@@ -1957,8 +1946,7 @@ class StreamsAudio:
             # also update the play log entry so elapsed time tracking stays in sync
             if last_play_log_entry:
                 assert last_play_log_entry.seconds_streamed is not None
-                # Add the remaining half (pre-count was only half the tail)
-                last_play_log_entry.seconds_streamed += last_part_seconds / 2
+                # full tail was pre-counted and is now yielded as-is
                 last_play_log_entry.duration = streamdetails.duration
             last_fadeout_part = b""
         total_bytes_sent += bytes_written
