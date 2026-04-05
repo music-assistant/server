@@ -81,6 +81,7 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
     # separation in chroma/tonnetz can produce sub-signals shorter than n_fft)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="n_fft=", category=UserWarning)
+        warnings.filterwarnings("ignore", message="Trying to estimate tuning", category=UserWarning)
         bf.mfcc_frames.append(librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=13))
         bf.chroma_frames.append(librosa.feature.chroma_stft(y=audio, sr=sample_rate))
         bf.tonnetz_frames.append(librosa.feature.tonnetz(y=audio, sr=sample_rate))
@@ -184,27 +185,34 @@ def _derive_key_and_mode(chroma: np.ndarray) -> tuple[str, str]:
     """
     mean_chroma = chroma.mean(axis=1).astype(np.float64)
 
-    # Correlate mean chroma profile with all 24 KK templates (12 major + 12 minor)
-    # by cyclically rotating the profiles to each pitch class
     best_score = -np.inf
     best_pitch = 0
     best_mode = "major"
 
-    for pitch in range(12):
-        rolled_major = np.roll(_KK_MAJOR, pitch)
-        rolled_minor = np.roll(_KK_MINOR, pitch)
+    # Suppress numpy divide warnings from corrcoef on flat chroma profiles
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        for pitch in range(12):
+            rolled_major = np.roll(_KK_MAJOR, pitch)
+            rolled_minor = np.roll(_KK_MINOR, pitch)
 
-        corr_major = float(np.corrcoef(mean_chroma, rolled_major)[0, 1])
-        corr_minor = float(np.corrcoef(mean_chroma, rolled_minor)[0, 1])
+            corr_major = float(np.corrcoef(mean_chroma, rolled_major)[0, 1])
+            corr_minor = float(np.corrcoef(mean_chroma, rolled_minor)[0, 1])
 
-        if corr_major > best_score:
-            best_score = corr_major
-            best_pitch = pitch
-            best_mode = "major"
-        if corr_minor > best_score:
-            best_score = corr_minor
-            best_pitch = pitch
-            best_mode = "minor"
+            # NaN from zero-std chroma — skip
+            if np.isnan(corr_major):
+                corr_major = -np.inf
+            if np.isnan(corr_minor):
+                corr_minor = -np.inf
+
+            if corr_major > best_score:
+                best_score = corr_major
+                best_pitch = pitch
+                best_mode = "major"
+            if corr_minor > best_score:
+                best_score = corr_minor
+                best_pitch = pitch
+                best_mode = "minor"
 
     return _PITCH_CLASSES[best_pitch], best_mode
 
