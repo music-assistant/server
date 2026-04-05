@@ -25,8 +25,6 @@ from .consts import (
     UPNP_DEVICE_DESCRIPTION_PATH,
     UPNP_PORT,
 )
-from .models import DiscoveryEventType, DiscoveryInfo, DiscoverySource, ProbeResult
-from .ssdp_listener import DiscoverySsdpListener
 
 if TYPE_CHECKING:
     from music_assistant.providers.samsung_wam.provider import SamsungWamProvider
@@ -41,47 +39,42 @@ class DiscoveryHandler(WamProviderFeatureBase):
         :param provider: The SamsungWamProvider instance.
         """
         super().__init__(provider)
-        self._ssdp_listener = DiscoverySsdpListener(self._handle_ssdp_event, self.logger)
         self._discovery_locks: dict[str, asyncio.Lock] = {}
-        self._discover_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start discovery mechanisms."""
-        self._discover_task = self.mass.create_task(self._ssdp_listener.start())
-        self.logger.debug("SSDP discovery listener started")
-
         manual_ips: list[str] = (
             cast("list[str]", self.provider.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
             or []
         )
-        await self._probe_ips(manual_ips, DiscoverySource.MANUAL)
-
+        await self._probe_ips(manual_ips)
         self.mass.create_task(self._periodic_probe_task(), task_id=PROBE_TASK_ID)
 
     async def stop(self) -> None:
         """Stop discovery mechanisms."""
         self.mass.cancel_task(PROBE_TASK_ID)
-        if self._discover_task and not self._discover_task.done():
-            self._discover_task.cancel()
-        await self._ssdp_listener.stop()
 
-    async def _handle_ssdp_event(self, info: DiscoveryInfo) -> None:
-        """Process callback from SSDP infrastructure.
+    async def on_upnp_discovered(self, udn: str, ip_address: str) -> None:
+        """Handle a UPnP/SSDP presence notification from MA's discovery system.
 
-        :param info: Information about the discovery event.
+        :param udn: The Universal Device Name parsed from the SSDP advertisement.
+        :param ip_address: The IP address of the discovered device.
         """
-        if info.event_type == DiscoveryEventType.PRESENCE:
-            # Re-probe to verify model compliance and alive status
-            if await self.probe_ip(info.ip_address):
-                await self.handle_discovery_event(info)
-        else:
-            await self.handle_discovery_event(info)
+        # Skip the probe entirely for already-registered, healthy players.
+        existing = self._get_player_by_udn(udn)
+        if existing and existing.available:
+            return
 
-    async def probe_ip(self, ip_address: str) -> ProbeResult | None:
-        """Perform an active probe to check if a device is online and valid.
+        # Probe the device to confirm model compatibility and obtain its canonical UDN,
+        # which is sourced directly from the device description XML rather than SSDP headers.
+        if canonical_udn := await self.probe_ip(ip_address):
+            await self._handle_presence(canonical_udn, ip_address)
+
+    async def probe_ip(self, ip_address: str) -> str | None:
+        """Probe a device to verify it is online and a supported WAM model.
 
         :param ip_address: The IP address to probe.
-        :return: A ProbeResult if the device is valid, else None.
+        :return: The device UDN if the device is valid, else None.
         """
         location = f"http://{ip_address}:{UPNP_PORT}{UPNP_DEVICE_DESCRIPTION_PATH}"
         try:
@@ -93,64 +86,50 @@ class DiscoveryHandler(WamProviderFeatureBase):
                 xml_text = await resp.text()
 
             root = DefusedET.fromstring(xml_text)
-            model_name = (
-                element.text if (element := root.find(".//{*}modelName")) is not None else "Unknown"
-            )
 
+            model_el = root.find(".//{*}modelName")
+            model_name = model_el.text if model_el is not None else None
             if model_name not in self.provider.supported_models:
                 return None
 
-            udn = element.text if (element := root.find(".//{*}UDN")) is not None else None
-            if not udn:
+            udn_el = root.find(".//{*}UDN")
+            if udn_el is None or not udn_el.text:
                 return None
 
-            udn = udn.removeprefix("uuid:")
-            return ProbeResult(udn=udn, model_name=model_name)
+            return str(udn_el.text.removeprefix("uuid:"))
         except (TimeoutError, aiohttp.ClientError, ET.ParseError):
             return None
 
-    async def handle_discovery_event(self, info: DiscoveryInfo) -> None:
-        """Process a validated discovery event.
+    async def _handle_presence(self, udn: str, ip_address: str) -> None:
+        """Process a validated presence event for a device.
 
-        :param info: The discovery details.
+        :param udn: The canonical Universal Device Name of the device.
+        :param ip_address: The IP address of the device.
         """
-        lock = self._discovery_locks.setdefault(info.udn, asyncio.Lock())
+        lock = self._discovery_locks.setdefault(udn, asyncio.Lock())
         async with lock:
-            if info.event_type == DiscoveryEventType.OFFLINE:
-                self.logger.debug("Received offline broadcast for %s", info.udn)
-                return
+            existing = self._get_player_by_udn(udn)
+            if existing:
+                if not existing.available:
+                    await existing.poll()
+            else:
+                await self._setup_player(udn, ip_address)
 
-            if info.event_type == DiscoveryEventType.PRESENCE:
-                existing_player = self._get_player_by_udn(info.udn)
-                if existing_player:
-                    if not existing_player.available:
-                        await existing_player.poll()
-                else:
-                    await self._setup_player(info)
-
-    async def _probe_ips(self, ips_to_probe: list[str], source: DiscoverySource) -> None:
+    async def _probe_ips(self, ips_to_probe: list[str]) -> None:
         """Actively probe a list of IP addresses.
 
         :param ips_to_probe: List of IP addresses to probe.
-        :param source: The source of the discovery trigger.
         """
         for ip in (ip for ip in ips_to_probe if ip):
-            self.logger.debug("Performing active probe for IP: %s (source: %s)", ip, source.value)
-            if probe_result := await self.probe_ip(ip):
-                info = DiscoveryInfo(
-                    udn=probe_result.udn,
-                    ip_address=ip,
-                    event_type=DiscoveryEventType.PRESENCE,
-                    discovery_source=source,
-                )
-                await self.handle_discovery_event(info)
+            self.logger.debug("Performing active probe for IP: %s", ip)
+            if udn := await self.probe_ip(ip):
+                await self._handle_presence(udn, ip)
 
     async def _periodic_probe_task(self) -> None:
-        """Background task to periodically probe known manual IPs."""
+        """Background task to periodically re-probe known manual IPs."""
         while not self.mass.closing:
             try:
                 await asyncio.sleep(PROBE_INTERVAL)
-                ips_to_check: set[str] = set()
                 manual_ips: list[str] = (
                     cast(
                         "list[str]",
@@ -158,26 +137,26 @@ class DiscoveryHandler(WamProviderFeatureBase):
                     )
                     or []
                 )
-                ips_to_check.update(manual_ips)
-                if ips_to_check:
-                    await self._probe_ips(list(ips_to_check), DiscoverySource.MANUAL)
+                if manual_ips:
+                    await self._probe_ips(manual_ips)
             except asyncio.CancelledError:
                 break
             except Exception as err:
                 self.logger.warning("Error in periodic probe task: %s", err, exc_info=err)
 
-    async def _setup_player(self, info: DiscoveryInfo) -> None:
+    async def _setup_player(self, udn: str, ip_address: str) -> None:
         """Initialize and register a newly discovered player.
 
-        :param info: Information about the discovered device.
+        :param udn: The Universal Device Name of the device.
+        :param ip_address: The IP address of the device.
         """
-        self.logger.debug("Pre-flight connection to new player at %s", info.ip_address)
+        self.logger.debug("Pre-flight connection to new player at %s", ip_address)
 
-        temp_speaker = Speaker(info.ip_address)
+        temp_speaker = Speaker(ip_address)
         try:
             await temp_speaker.connect()
         except Exception as err:
-            self.logger.warning("Failed to connect to player at %s: %s", info.ip_address, err)
+            self.logger.warning("Failed to connect to player at %s: %s", ip_address, err)
             return
 
         try:
@@ -190,17 +169,17 @@ class DiscoveryHandler(WamProviderFeatureBase):
             if not self.mass.config.get_raw_player_config_value(attrs.mac, "enabled", True):
                 raise PlayerDisabledError("Player disabled in configuration.")
 
-            player = WamPlayer(self.provider, info.ip_address, info.udn, attrs.mac, temp_speaker)
+            player = WamPlayer(self.provider, ip_address, udn, attrs.mac, temp_speaker)
             player.state_sync.apply_initial_state(attrs)
 
             await self.mass.players.register_or_update(player)
             self.provider.groups.register_player(player)
 
         except PlayerDisabledError:
-            self.logger.debug("Player at %s is disabled in configuration.", info.ip_address)
+            self.logger.debug("Player at %s is disabled in configuration.", ip_address)
             await temp_speaker.disconnect()
         except Exception as err:
-            self.logger.warning("Failed to set up player at %s: %s", info.ip_address, err)
+            self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()
 
     def _get_player_by_udn(self, udn: str) -> WamPlayer | None:

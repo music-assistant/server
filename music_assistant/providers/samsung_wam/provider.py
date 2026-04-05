@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 from music_assistant_models.enums import ProviderFeature
 from pywam.device import SPEAKER_MODELS
@@ -69,6 +71,26 @@ class SamsungWamProvider(PlayerProvider):
             self.logger.debug("Unloading player %s", player.log_name)
             await self.mass.players.unregister(player.player_id, is_removed)
         self.groups.states.clear()
+
+    async def on_upnp_service_discovered(
+        self, search_target: str, discovery_info: Mapping[str, Any]
+    ) -> None:
+        """Handle a UPnP/SSDP presence notification from Music Assistant.
+
+        :param search_target: The SSDP service type that was matched.
+        :param discovery_info: The raw SSDP response headers.
+        """
+        location = discovery_info.get("location", "")
+        ip_address = urlparse(location).hostname
+        if not ip_address:
+            return
+
+        usn = discovery_info.get("usn", "")
+        udn = usn.split("::")[0].removeprefix("uuid:")
+        if not udn:
+            return
+
+        await self.discovery.on_upnp_discovered(udn, ip_address)
 
 
 async def get_config_entries(
