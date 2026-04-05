@@ -129,8 +129,8 @@ class SendspinLocalAudioBridge:
             self._bridge_role = cast("BridgePlayerRole", roles[0])
             self._bridge_role.set_callbacks(
                 on_audio_chunk=self._on_audio_chunk,
-                on_volume_change=lambda _vol: None,
-                on_mute_change=lambda _muted: None,
+                on_volume_change=self._on_volume_change,
+                on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
             )
@@ -187,6 +187,14 @@ class SendspinLocalAudioBridge:
         """Stop streaming when the stream ends."""
         self._is_streaming = False
         self.mass.create_task(self._stop_streaming_locked())
+
+    def _on_volume_change(self, volume: int) -> None:
+        """Sync volume from Sendspin side back to our player."""
+        self.mass.create_task(self.player.volume_set(volume))
+
+    def _on_mute_change(self, muted: bool) -> None:
+        """Sync mute from Sendspin side back to our player."""
+        self.mass.create_task(self.player.volume_mute(muted))
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle an incoming audio chunk."""
