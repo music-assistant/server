@@ -360,6 +360,7 @@ class MetaDataController(CoreController):
             name=f"Update metadata for {item.name}",
             handler=lambda: self.update_metadata(_item),
             translation_key="background_task.update_metadata",
+            translation_args=[item.name],
             metadata={
                 "task_domain": "metadata_lookup",
                 "item_uri": item.uri,
