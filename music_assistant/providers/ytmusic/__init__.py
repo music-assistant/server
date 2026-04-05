@@ -103,9 +103,10 @@ VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 YT_PLAYLIST_ID_DELIMITER = "🎵"
 PODCAST_EPISODE_SPLITTER = "|"
 YT_LIKED_SONGS_PLAYLIST_ID = "LM"
+YT_EPISODES_FOR_LATER_ID = "SE"
 YT_PERSONAL_PLAYLISTS = (
     YT_LIKED_SONGS_PLAYLIST_ID,  # Liked songs
-    "SE",  # Episodes for Later
+    YT_EPISODES_FOR_LATER_ID,  # Episodes for Later
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
     "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
     "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
@@ -323,7 +324,8 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for podcast in podcasts_obj:
-            if podcast.get("podcastId") in YT_PERSONAL_PLAYLISTS:
+            podcast_id = podcast.get("podcastId")
+            if podcast_id in YT_PERSONAL_PLAYLISTS and podcast_id != YT_EPISODES_FOR_LATER_ID:
                 continue
             yield self._parse_podcast(podcast)
 
@@ -474,6 +476,27 @@ class YoutubeMusicProvider(MusicProvider):
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get the full details of a Podcast."""
+        if prov_podcast_id == YT_EPISODES_FOR_LATER_ID:
+            # "Episodes for Later" is a special playlist, not a real podcast,
+            # so we use the playlist API and construct a Podcast from it.
+            playlist_obj = await get_playlist(
+                prov_playlist_id=prov_podcast_id,
+                headers=self._headers,
+                language=self.language,
+                user=self._yt_user,
+            )
+            return Podcast(
+                item_id=YT_EPISODES_FOR_LATER_ID,
+                name=playlist_obj.get("title", "Episodes for Later"),
+                provider=self.instance_id,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=YT_EPISODES_FOR_LATER_ID,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         return self._parse_podcast(podcast_obj)
 
@@ -481,6 +504,24 @@ class YoutubeMusicProvider(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all episodes from a podcast."""
+        if prov_podcast_id == YT_EPISODES_FOR_LATER_ID:
+            # "Episodes for Later" is a special playlist, not a real podcast,
+            # so we fetch its tracks via the playlist API.
+            podcast = await self.get_podcast(prov_podcast_id)
+            playlist_obj = await get_playlist(
+                prov_playlist_id=prov_podcast_id,
+                headers=self._headers,
+                language=self.language,
+                user=self._yt_user,
+            )
+            for index, track in enumerate(playlist_obj.get("tracks", []), start=1):
+                try:
+                    episode = self._parse_podcast_episode(track, podcast)
+                except InvalidDataError:
+                    continue
+                episode.position = index
+                yield episode
+            return
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
         podcast = self._parse_podcast(podcast_obj)
