@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
@@ -175,16 +175,6 @@ SUPPORTED_EXTENSIONS = {
     *AUDIOBOOK_EXTENSIONS,
     *PODCAST_EPISODE_EXTENSIONS,
     *PLAYLIST_EXTENSIONS,
-}
-
-
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
 }
 
 
