@@ -1,0 +1,10 @@
+{
+  "type": "audio_analysis",
+  "domain": "sonic_analysis",
+  "name": "Sonic Analysis",
+  "description": "Extracts audio signatures from PCM audio streams during playback.",
+  "codeowners": ["@chrisuthe"],
+  "requirements": [],
+  "documentation": "",
+  "builtin": true
+}
