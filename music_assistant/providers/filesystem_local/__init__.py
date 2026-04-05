@@ -190,6 +190,8 @@ class LocalFileSystemProvider(MusicProvider):
         self.base_path: str = base_path
         self.write_access: bool = False
         self.sync_running: bool = False
+        self._sync_tracks: bool = True
+        self._sync_playlists: bool = True
         self.media_content_type = cast("str", config.get_value(CONF_ENTRY_CONTENT_TYPE.key))
 
     @property
@@ -333,6 +335,22 @@ class LocalFileSystemProvider(MusicProvider):
         if media_type in (MediaType.ARTIST, MediaType.ALBUM):
             # artists and albums are synced as part of track sync
             return
+        # check if any sync options are enabled for this content type
+        # the filesystem provider processes all file types in one scan,
+        # so we can return early if nothing needs syncing
+        if self.media_content_type == "music":
+            self._sync_tracks = bool(self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_TRACKS.key))
+            self._sync_playlists = bool(
+                self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key)
+            )
+            if not self._sync_tracks and not self._sync_playlists:
+                return
+        elif self.media_content_type == "audiobooks":
+            if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
+                return
+        elif self.media_content_type == "podcasts":
+            if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
+                return
         assert self.mass.music.database
         start_time = time.time()
         if self.sync_running:
@@ -444,7 +462,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
 
             if item.ext in TRACK_EXTENSIONS and self.media_content_type == "music":
-                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_TRACKS.key):
+                if not self._sync_tracks:
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
@@ -455,8 +473,6 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
-                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
-                    return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 try:
                     audiobook = await self._parse_audiobook(item, tags)
@@ -468,8 +484,6 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
 
             if item.ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
-                    return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 episode = await self._parse_podcast_episode(item, tags)
                 assert isinstance(episode.podcast, Podcast)
@@ -479,7 +493,7 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
 
             if item.ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
-                if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key):
+                if not self._sync_playlists:
                     return False
                 playlist = await self.get_playlist(item.relative_path)
                 await self.mass.music.playlists.add_item_to_library(

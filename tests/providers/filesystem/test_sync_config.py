@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import Podcast
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
@@ -51,6 +51,9 @@ def _create_provider(
     provider.config = mock_config
     provider.media_content_type = content_type
     provider.write_access = False
+    provider._sync_tracks = sync_tracks
+    provider._sync_playlists = sync_playlists
+    provider.sync_running = False
     provider.mass = MagicMock()
     provider.logger = MagicMock()
 
@@ -78,6 +81,31 @@ class TestSupportedFeatures:
         """Podcasts content type advertises podcast library feature."""
         provider = _create_provider(content_type="podcasts")
         assert ProviderFeature.LIBRARY_PODCASTS in provider.supported_features
+
+
+class TestSyncLibraryEarlyReturn:
+    """Test that sync_library returns early when all sync options are disabled."""
+
+    @pytest.mark.asyncio
+    async def test_music_returns_early_when_all_disabled(self) -> None:
+        """Music provider returns early when both tracks and playlists sync are disabled."""
+        provider = _create_provider(sync_tracks=False, sync_playlists=False)
+        await provider.sync_library(MediaType.TRACK)
+        provider.mass.music.database.get_rows_from_query.assert_not_called()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_audiobooks_returns_early_when_disabled(self) -> None:
+        """Audiobooks provider returns early when audiobook sync is disabled."""
+        provider = _create_provider(content_type="audiobooks", sync_audiobooks=False)
+        await provider.sync_library(MediaType.AUDIOBOOK)
+        provider.mass.music.database.get_rows_from_query.assert_not_called()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_podcasts_returns_early_when_disabled(self) -> None:
+        """Podcasts provider returns early when podcast sync is disabled."""
+        provider = _create_provider(content_type="podcasts", sync_podcasts=False)
+        await provider.sync_library(MediaType.PODCAST)
+        provider.mass.music.database.get_rows_from_query.assert_not_called()  # type: ignore[attr-defined]
 
 
 class TestProcessItemRespectsConfig:
@@ -151,19 +179,6 @@ class TestProcessItemRespectsConfig:
         provider.mass.music.playlists.add_item_to_library.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_audiobooks_skipped_when_sync_disabled(self) -> None:
-        """Audiobook files are not imported when audiobook sync is disabled."""
-        provider = _create_provider(content_type="audiobooks", sync_audiobooks=False)
-        item = MagicMock()
-        item.ext = next(iter(AUDIOBOOK_EXTENSIONS))
-        item.relative_path = "Author/Book/chapter01.m4b"
-
-        result = await provider._process_item_async(item, None)
-
-        assert result is False
-        provider.mass.music.audiobooks.add_item_to_library.assert_not_called()  # type: ignore[attr-defined]
-
-    @pytest.mark.asyncio
     async def test_audiobooks_imported_when_sync_enabled(self) -> None:
         """Audiobook files are imported when audiobook sync is enabled."""
         provider = _create_provider(content_type="audiobooks", sync_audiobooks=True)
@@ -185,19 +200,6 @@ class TestProcessItemRespectsConfig:
 
         assert result is True
         provider.mass.music.audiobooks.add_item_to_library.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_podcasts_skipped_when_sync_disabled(self) -> None:
-        """Podcast files are not imported when podcast sync is disabled."""
-        provider = _create_provider(content_type="podcasts", sync_podcasts=False)
-        item = MagicMock()
-        item.ext = next(iter(PODCAST_EPISODE_EXTENSIONS))
-        item.relative_path = "Podcast/episode01.mp3"
-
-        result = await provider._process_item_async(item, None)
-
-        assert result is False
-        provider.mass.music.podcasts.add_item_to_library.assert_not_called()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_podcasts_imported_when_sync_enabled(self) -> None:
