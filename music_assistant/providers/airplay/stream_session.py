@@ -130,34 +130,67 @@ class AirPlayStreamSession:
             return
 
         async with self._lock:
-            max_late_join_buffer_seconds = 7.0
+            now = time.time()
             all_buffered = list(self._chunk_buffer)
 
-            if all_buffered:
-                min_position = self.seconds_streamed - max_late_join_buffer_seconds
-                buffered_chunks = [
-                    (chunk, pos) for chunk, pos in all_buffered if pos >= min_position
+            # The preferred start time is now + wait_start (in the future),
+            # just like for the original players. We then find which stream
+            # position aligns with that timestamp and send ring buffer chunks
+            # to fill the pipeline with audio that other players already have
+            # in their device buffers.
+            wait_start_seconds = airplay_player.wait_start / 1000
+            preferred_start_at = now + wait_start_seconds
+            # The stream position that corresponds to the preferred start time
+            target_position = preferred_start_at - self.start_time
+
+            # From the ring buffer, select chunks that are at or before the
+            # target position AND whose start_at would still be in the future.
+            # This gives us "past" chunks (relative to stream position) that
+            # represent audio already buffered by other players' devices.
+            buffered_chunks = [
+                (chunk, pos)
+                for chunk, pos in all_buffered
+                if pos <= target_position and self.start_time + pos > now
+            ]
+
+            if len(buffered_chunks) < 2 and all_buffered:
+                # Not enough buffer to reach the preferred start time.
+                # Postpone: use the latest available chunks to ensure
+                # start_at stays in the future.
+                usable = [
+                    (chunk, pos) for chunk, pos in all_buffered if self.start_time + pos > now
                 ]
-            else:
-                buffered_chunks = []
+                buffered_chunks = usable[-2:] if len(usable) >= 2 else usable
 
             if buffered_chunks:
                 first_chunk_position = buffered_chunks[0][1]
+                # Align start_at to the actual first chunk we can send
+                start_at = self.start_time + first_chunk_position
                 buffer_duration = self.seconds_streamed - first_chunk_position
-                start_at = self.start_time + (self.seconds_streamed - buffer_duration)
+                buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
 
-                self.prov.logger.debug(
-                    "Late joiner %s: sending %.2fs of buffered audio, start at %.2fs",
+                self.prov.logger.info(
+                    "Late joiner %s: sending %.2fs of buffered audio (%d bytes, %d chunks), "
+                    "stream position=%.2fs, start_at is %.2fs from now, "
+                    "wait_start=%.1fms, target_position=%.2f",
                     airplay_player.player_id,
                     buffer_duration,
-                    self.seconds_streamed - buffer_duration,
+                    buffered_bytes,
+                    len(buffered_chunks),
+                    self.seconds_streamed,
+                    start_at - now,
+                    wait_start_seconds * 1000,
+                    target_position,
                 )
             else:
-                start_at = self.start_time + self.seconds_streamed
-                self.prov.logger.debug(
-                    "Late joiner %s: no buffered chunks available, starting at %.2fs",
+                # No usable buffer - use preferred start time as-is
+                start_at = preferred_start_at
+                self.prov.logger.info(
+                    "Late joiner %s: no buffered chunks available, "
+                    "stream position=%.2fs, start_at is %.2fs from now",
                     airplay_player.player_id,
                     self.seconds_streamed,
+                    start_at - now,
                 )
 
             start_ntp = unix_time_to_ntp(start_at)
@@ -177,10 +210,17 @@ class AirPlayStreamSession:
         if airplay_player.stream:
             try:
                 await airplay_player.stream.wait_for_connection()
+                elapsed = time.time() - now
+                self.prov.logger.info(
+                    "Late joiner %s: device connected after %.2fs",
+                    airplay_player.player_id,
+                    elapsed,
+                )
             except TimeoutError:
                 self.prov.logger.warning(
-                    "Late joiner %s: device connection timed out",
+                    "Late joiner %s: device connection timed out after %.2fs",
                     airplay_player.player_id,
+                    time.time() - now,
                 )
                 self.mass.create_task(self.remove_client(airplay_player))
 
