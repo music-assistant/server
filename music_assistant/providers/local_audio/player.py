@@ -45,6 +45,7 @@ class LocalAudioPlayer(Player):
         player_id: str,
         device_name: str,
         hostapi_index: int,
+        device_index: int,
     ) -> None:
         """
         Initialize the Local Audio player.
@@ -53,6 +54,7 @@ class LocalAudioPlayer(Player):
         :param player_id: Stable player ID derived from device UUID.
         :param device_name: The device name reported by PortAudio.
         :param hostapi_index: The host API index.
+        :param device_index: The PortAudio device index (maps to ALSA card on Linux).
         """
         super().__init__(provider, player_id)
         self._attr_type = PlayerType.PLAYER
@@ -70,6 +72,7 @@ class LocalAudioPlayer(Player):
         self._attr_device_info.add_identifier(IdentifierType.UUID, device_uuid)
         self._attr_can_group_with = set()
         self._attr_volume_level = 100
+        self._device_index = device_index
         # Set when hardware volume fails, causes automatic fallback to software
         self._hardware_volume_fallback = False
 
@@ -109,7 +112,10 @@ class LocalAudioPlayer(Player):
                     self.logger.warning("CoreAudio volume control failed for %s", self.name)
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
-                await check_output("amixer", "sset", "Master", f"{volume}%")
+                # Use -c to target the specific ALSA card by index
+                await check_output(
+                    "amixer", "-c", str(self._device_index), "sset", "Master", f"{volume}%"
+                )
             else:
                 self.logger.warning(
                     "Hardware volume not supported on %s, falling back to software",
@@ -134,7 +140,9 @@ class LocalAudioPlayer(Player):
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
                 toggle = "mute" if muted else "unmute"
-                await check_output("amixer", "sset", "Master", toggle)
+                await check_output(
+                    "amixer", "-c", str(self._device_index), "sset", "Master", toggle
+                )
         except FileNotFoundError:
             self.logger.warning("Mute control command not found, falling back to software")
             self._hardware_volume_fallback = True

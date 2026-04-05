@@ -329,7 +329,9 @@ class LocalAudioBridgeManager:
                     continue
 
                 # Register our own player with MA first
-                player = LocalAudioPlayer(self.provider, device_uuid, device_name, hostapi_index)
+                player = LocalAudioPlayer(
+                    self.provider, device_uuid, device_name, hostapi_index, device_index
+                )
                 await self.mass.players.register(player)
 
                 # Then set up the Sendspin bridge with identifier for protocol linking
