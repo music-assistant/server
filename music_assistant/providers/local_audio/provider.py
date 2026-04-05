@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from music_assistant.models.player_provider import PlayerProvider
 
-if TYPE_CHECKING:
-    from .sendspin_bridge import LocalAudioBridgeManager
+from .sendspin_bridge import LocalAudioBridgeManager
 
 
 class LocalAudioProvider(PlayerProvider):
@@ -17,8 +14,6 @@ class LocalAudioProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        from .sendspin_bridge import LocalAudioBridgeManager
-
         self._bridge_manager = LocalAudioBridgeManager(self)
 
     async def loaded_in_mass(self) -> None:
