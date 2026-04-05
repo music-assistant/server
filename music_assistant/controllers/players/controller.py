@@ -1059,7 +1059,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         player = self.get_player(player_id, raise_unavailable=False)
         if not player:
             return
-        with suppress(PlayerCommandFailed, RuntimeError):
+        with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
     @handle_player_command(lock=True)

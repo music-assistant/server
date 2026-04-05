@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
@@ -119,6 +119,17 @@ class TestDeselectSource:
         """Deselect should not raise RuntimeError."""
         controller._handle_cmd_stop = AsyncMock(  # type: ignore[method-assign]
             side_effect=RuntimeError("test error")
+        )
+
+        await controller.deselect_source("player_1")
+
+    @pytest.mark.asyncio
+    async def test_deselect_source_suppresses_player_unavailable(
+        self, controller: PlayerController, player: MockPlayer
+    ) -> None:
+        """Deselect should not raise PlayerUnavailableError."""
+        controller._handle_cmd_stop = AsyncMock(  # type: ignore[method-assign]
+            side_effect=PlayerUnavailableError("player unavailable")
         )
 
         await controller.deselect_source("player_1")
