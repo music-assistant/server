@@ -14,7 +14,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.controllers.players import PlayerController
@@ -241,9 +241,6 @@ class TestAirplayReceiverDisconnectFlow:
     ) -> None:
         """If no player was active, deselect should be a no-op."""
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
-
-        plugin_source = PluginSource(id="airplay_recv", name="AirPlay")
-        # in_use_by is already None (no active player)
 
         await controller.deselect_source("nonexistent")
 
