@@ -117,7 +117,7 @@ class MPDPlayer(Player):
             ConfigEntry(
                 key=CONF_PASSWORD,
                 type=ConfigEntryType.SECURE_STRING,
-                label="Password",
+                label="MPD Server Password",
                 description="MPD password, if required by the server.",
                 required=False,
             ),
@@ -180,7 +180,7 @@ class MPDPlayer(Player):
                 self._attr_available = False
                 self.update_state()
                 self.reconnect()
-        except MPDError as err:
+        except (MPDError, OSError) as err:
             self.logger.warning("Failed to connect to MPD at %s:%s: %s", self.host, self.port, err)
             self._attr_available = False
             self.update_state()
