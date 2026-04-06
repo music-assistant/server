@@ -40,14 +40,16 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Volume control mode",
             options=[
-                ConfigValueOption(title="Hardware (preferred)", value=VOLUME_CONTROL_HARDWARE),
+                ConfigValueOption(title="Hardware (pactl)", value=VOLUME_CONTROL_HARDWARE),
                 ConfigValueOption(title="Software", value=VOLUME_CONTROL_SOFTWARE),
                 ConfigValueOption(title="Disabled", value=VOLUME_CONTROL_DISABLED),
             ],
             default_value=VOLUME_CONTROL_HARDWARE,
-            description="Hardware uses pactl to control the PulseAudio sink volume directly. "
-            "Software applies volume scaling to PCM audio data before writing. "
-            "Disabled passes audio at full volume.",
+            description=(
+                "Hardware uses pactl to control the PulseAudio sink volume directly. "
+                "Software applies volume scaling to PCM audio data before writing. "
+                "Disabled passes audio at full volume."
+            ),
         ),
     )
 
