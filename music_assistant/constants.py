@@ -277,8 +277,8 @@ CONF_ENTRY_MIN_VOLUME = ConfigEntry(
     range=(0, 100),
     default_value=0,
     label="Minimum volume",
-    description="Minimum volume level allowed for this player. "
-    "Volume commands will not go below this level.",
+    description="Minimum device volume. "
+    "The volume slider (0-100) will be scaled to this as the lower bound.",
     category="player_controls",
     advanced=True,
 )
@@ -289,8 +289,8 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     range=(0, 100),
     default_value=100,
     label="Maximum volume",
-    description="Maximum volume level allowed for this player. "
-    "Volume commands will be capped at this level.",
+    description="Maximum device volume. "
+    "The volume slider (0-100) will be scaled to this as the upper bound.",
     category="player_controls",
     advanced=True,
 )
