@@ -8,10 +8,6 @@ from music_assistant_models.enums import ContentType
 AZURACAST_BASE_URL = "https://stream.motherearthradio.de"
 NOWPLAYING_API_URL = f"{AZURACAST_BASE_URL}/api/nowplaying"
 
-# Base URL for station icons hosted in the MA icons repo
-STATION_ICONS_BASE_URL = (
-    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/public/assets/icons"
-)
 
 # Mother Earth Radio channel configurations
 # Each station uses the FLAC 192 kHz stream as default (audiophile-first approach).
@@ -22,7 +18,7 @@ MER_CHANNELS: dict[str, dict[str, Any]] = {
         "shortcode": "motherearth",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth/motherearth",
         "content_type": ContentType.FLAC,
-        "station_icon": "motherearthradio-logo-main.png",
+        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
     },
     "motherearth_instrumental": {
         "name": "Mother Earth Instrumental",
@@ -30,7 +26,7 @@ MER_CHANNELS: dict[str, dict[str, Any]] = {
         "shortcode": "motherearth_instrumental",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_instrumental/motherearth.instrumental",
         "content_type": ContentType.FLAC,
-        "station_icon": "motherearthradio-logo-instrumental.png",
+        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
     },
     "motherearth_klassik": {
         "name": "Mother Earth Klassik",
@@ -38,7 +34,7 @@ MER_CHANNELS: dict[str, dict[str, Any]] = {
         "shortcode": "motherearth_klassik",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_klassik/motherearth.klassik",
         "content_type": ContentType.FLAC,
-        "station_icon": "motherearthradio-logo-klassik.png",
+        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
     },
     "motherearth_jazz": {
         "name": "Mother Earth Jazz",
@@ -46,6 +42,6 @@ MER_CHANNELS: dict[str, dict[str, Any]] = {
         "shortcode": "motherearth_jazz",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_jazz/motherearth.jazz",
         "content_type": ContentType.FLAC,
-        "station_icon": "motherearthradio-logo-jazz.png",
+        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
     },
 }

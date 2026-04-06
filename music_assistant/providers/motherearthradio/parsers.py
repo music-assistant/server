@@ -10,7 +10,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamMetadata
 
-from .constants import MER_CHANNELS, STATION_ICONS_BASE_URL
+from .constants import MER_CHANNELS
 
 
 def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radio:
@@ -39,7 +39,7 @@ def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radi
     # Add static station icon
     station_icon = channel_info.get("station_icon")
     if station_icon:
-        icon_url = f"{STATION_ICONS_BASE_URL}/{station_icon}"
+        icon_url = station_icon
         radio.metadata.add_image(
             MediaItemImage(
                 provider=instance_id,
