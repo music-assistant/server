@@ -195,7 +195,6 @@ RUN set -x \
         # AirPlay receiver dependencies (shairport-sync)
         libconfig9 \
         libpopt0 \
-        pulseaudio-utils \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
