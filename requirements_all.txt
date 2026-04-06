@@ -68,7 +68,7 @@ pywidevine==1.9.0
 radios==0.3.2
 rokuecp==0.19.5
 shortuuid==1.0.13
-skey==0.1.0
+skey @ git+https://github.com/deezer/skey.git@918b83d273568d5041569bb8068843d19a335726
 snapcast==2.3.7
 soco==0.30.14
 soundcloudpy==0.1.4

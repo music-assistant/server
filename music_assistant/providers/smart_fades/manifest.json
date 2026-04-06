@@ -4,7 +4,7 @@
   "name": "Smart Fades",
   "description": "Smart fades analyzes beat and downbeat detection, energy and musical key for smart crossfades.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["beat_this", "skey==0.1.0"],
+  "requirements": ["beat_this", "skey @ git+https://github.com/deezer/skey.git@918b83d273568d5041569bb8068843d19a335726"],
   "credits": ["[Beat This!](https://github.com/CPJKU/beat_this)", "[skey](https://github.com/deezer/skey)"],
   "documentation": "https://github.com/CPJKU/beat_this",
   "multi_instance": false,
