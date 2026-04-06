@@ -2634,21 +2634,29 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player: The player to check and potentially ungroup.
         :param log_context: Additional context for the log message (e.g., target player name).
         """
-        if not player.state.synced_to:
+        if not player.state.synced_to and not player.state.active_group:
             return
         self.logger.info(
             "Player %s is already synced to %s, ungrouping it first before %s",
             player.name,
-            player.state.synced_to,
+            player.state.synced_to or player.state.active_group,
             log_context,
         )
-        await self.wait_for_player_update(
-            player.player_id,
-            timeout=5,
-            action=self.cmd_set_members(
-                player.state.synced_to, player_ids_to_remove=[player.player_id]
-            ),
-        )
+        try:
+            await self.wait_for_player_update(
+                player.player_id,
+                timeout=5,
+                action=self.cmd_ungroup(player.player_id),
+            )
+        except Exception:
+            # If the ungroup fails (e.g. stale synced_to pointing to a
+            # dissolved group, or the parent doesn't support set_members),
+            # log and continue — the player may already be effectively ungrouped.
+            self.logger.warning(
+                "Failed to auto-ungroup %s from %s, proceeding anyway",
+                player.name,
+                player.state.synced_to or player.state.active_group,
+            )
 
     async def _handle_set_members(
         self,
