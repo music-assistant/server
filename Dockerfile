@@ -69,16 +69,6 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # copy the already built /app dir
 COPY --from=builder /app /app
 
-# Install pulseaudio-utils for pactl (PA sink enumeration)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pulseaudio \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-# the /app contents have correct permissions but for some reason /app itself does not.
-# so apply again, but ONLY to the dir (otherwise we increase the size)
-
-RUN apk add --no-cache pulseaudio-utils
-
 RUN chmod 777 /app
 
 # Set some labels
