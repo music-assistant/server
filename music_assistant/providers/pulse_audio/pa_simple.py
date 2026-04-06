@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 from typing import ClassVar, Final
 
 PA_SAMPLE_S16LE: Final = 3
@@ -73,13 +74,19 @@ def _get_lib() -> ctypes.CDLL:
 
 
 class PASimpleStream:
-    """Synchronous PCM playback stream to a named PulseAudio sink."""
+    """Synchronous PCM playback stream to a named PulseAudio sink.
+
+    All libpulse calls are serialized behind a threading.Lock so that
+    concurrent executor threads cannot simultaneously write/free the
+    same pa_simple connection, which causes assertion failures in libpulse.
+    """
 
     def __init__(self, sink_name: str, app_name: str, rate: int, channels: int) -> None:
         lib = _get_lib()
         spec = _PASampleSpec(format=PA_SAMPLE_S16LE, rate=rate, channels=channels)
         error = ctypes.c_int(0)
         self._lib = lib
+        self._lock = threading.Lock()
         self._conn: int | None = lib.pa_simple_new(
             PULSE_SERVER.encode() if PULSE_SERVER else None,
             app_name.encode(),
@@ -98,36 +105,34 @@ class PASimpleStream:
             )
 
     def write(self, data: bytes) -> None:
-        """Write a PCM chunk. Blocks until PA has buffered it.
-
-        Guards against calling into libpulse after close() has freed the
-        connection — a concurrent close() zeroes self._conn before freeing,
-        so this check is sufficient to prevent a use-after-free segfault.
-        """
-        if not self._conn:
-            return
-        error = ctypes.c_int(0)
-        ret = self._lib.pa_simple_write(self._conn, data, len(data), ctypes.byref(error))
-        if ret < 0:
-            raise OSError(f"pa_simple_write failed (pa_error={error.value})")
+        """Write a PCM chunk. Blocks until PA has buffered it."""
+        with self._lock:
+            if not self._conn:
+                return
+            error = ctypes.c_int(0)
+            ret = self._lib.pa_simple_write(self._conn, data, len(data), ctypes.byref(error))
+            if ret < 0:
+                raise OSError(f"pa_simple_write failed (pa_error={error.value})")
 
     def drain(self) -> None:
         """Block until all buffered audio has played out."""
-        if not self._conn:
-            return
-        error = ctypes.c_int(0)
-        self._lib.pa_simple_drain(self._conn, ctypes.byref(error))
+        with self._lock:
+            if not self._conn:
+                return
+            error = ctypes.c_int(0)
+            self._lib.pa_simple_drain(self._conn, ctypes.byref(error))
 
     def close(self) -> None:
         """Free the PA stream.
 
-        Atomically zeroes self._conn before calling pa_simple_free so that
-        any concurrent write() or drain() sees None and returns early rather
-        than touching the freed pointer.
+        Acquires the lock before zeroing _conn and calling pa_simple_free,
+        ensuring no concurrent write() or drain() can touch the pointer
+        between the None assignment and the free call.
         """
-        conn, self._conn = self._conn, None
-        if conn:
-            self._lib.pa_simple_free(conn)
+        with self._lock:
+            conn, self._conn = self._conn, None
+            if conn:
+                self._lib.pa_simple_free(conn)
 
     def __enter__(self) -> PASimpleStream:
         return self
