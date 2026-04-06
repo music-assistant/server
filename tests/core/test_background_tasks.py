@@ -448,9 +448,9 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert provider_mapping_task.metadata == {"task_domain": "music_provider_mapping_correction"}
     assert genre_scan_task.schedule == maintenance_schedule
 
-    assert artist_scan_task.translation_key == "background_task.scan_missing_artist_artwork"
+    assert artist_scan_task.translation_key == "background_task.scan_missing_artist_metadata"
     assert artist_scan_task.schedule == maintenance_schedule
-    assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_artwork_scan"}
+    assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_metadata_scan"}
 
     assert playlist_scan_task.translation_key == "background_task.refresh_playlist_metadata"
     assert playlist_scan_task.schedule == maintenance_schedule
