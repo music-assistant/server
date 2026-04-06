@@ -541,6 +541,12 @@ class SyncGroupPlayer(Player):
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members (lock must be held by caller)."""
         self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
+        self.logger.debug(
+            "Forming syncgroup %s, _attr_group_members=%s, sync_leader=%s",
+            self.display_name,
+            self._attr_group_members,
+            self.sync_leader.display_name if self.sync_leader else None,
+        )
         # always ensure static members are part of the group members,
         # even if they were (temporarily) removed by un unjoin
         self._attr_group_members = [
