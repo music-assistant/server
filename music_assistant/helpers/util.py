@@ -14,6 +14,7 @@ import socket
 import sys
 import urllib.error
 import urllib.request
+import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from functools import lru_cache
@@ -206,8 +207,10 @@ def try_parse_bool(possible_bool: Any) -> bool:
 
 def try_parse_duration(duration_str: str) -> float:
     """Try to parse a duration in seconds from a duration (HH:MM:SS) string."""
-    milliseconds = float("0." + duration_str.split(".")[-1]) if "." in duration_str else 0.0
-    duration_parts = duration_str.split(".")[0].split(",")[0].split(":")
+    milliseconds = (
+        float("0." + duration_str.rsplit(".", maxsplit=1)[-1]) if "." in duration_str else 0.0
+    )
+    duration_parts = duration_str.split(".", maxsplit=1)[0].split(",", maxsplit=1)[0].split(":")
     if len(duration_parts) == 3:
         seconds = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts, strict=False))
     elif len(duration_parts) == 2:
@@ -1172,14 +1175,33 @@ _P = ParamSpec("_P")
 def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
-    """Call async function using a Lock."""
+    """Call async function using a per-instance Lock.
+
+    Each instance gets its own lock so that e.g. SyncGroupPlayer A
+    does not block SyncGroupPlayer B when both call set_members().
+    """
+    # Per-instance lock storage (weak refs so locks are GC'd with their instance)
+    instance_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+    # Fallback lock for non-method (no self) usage
+    fallback_lock: asyncio.Lock | None = None
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using a Lock."""
-        if not (func_lock := getattr(func, "lock", None)):
-            func_lock = asyncio.Lock()
-            func.lock = func_lock  # type: ignore[attr-defined]
+        """Call async function using a per-instance Lock."""
+        nonlocal fallback_lock
+        instance = args[0] if args else None
+        if instance is not None:
+            try:
+                func_lock = instance_locks.setdefault(instance, asyncio.Lock())
+            except TypeError:
+                # instance is not weakly referenceable, use fallback
+                if fallback_lock is None:
+                    fallback_lock = asyncio.Lock()
+                func_lock = fallback_lock
+        else:
+            if fallback_lock is None:
+                fallback_lock = asyncio.Lock()
+            func_lock = fallback_lock
         async with func_lock:
             return await func(*args, **kwargs)
 

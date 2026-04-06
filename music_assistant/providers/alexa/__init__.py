@@ -50,8 +50,10 @@ CONF_ALEXA_LANGUAGE = "alexa_language"
 
 ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_de-DE": "sag music assistant spiele audio",
+    "play_audio_en-CA": "ask music assistant to play audio",
     "play_audio_en-US": "ask music assistant to play audio",
     "play_audio_es-ES": "pídele a music assistant que reproduzca audio",
+    "play_audio_fr-CA": "music assistant",
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
@@ -212,9 +214,11 @@ async def get_config_entries(
             required=True,
             options=[
                 ConfigValueOption("English (USA)", "en-US"),
+                ConfigValueOption("English (Canada)", "en-CA"),
                 ConfigValueOption("German (Germany)", "de-DE"),
                 ConfigValueOption("Spanish (Spain)", "es-ES"),
                 ConfigValueOption("French (France)", "fr-FR"),
+                ConfigValueOption("French (Canada)", "fr-CA"),
                 ConfigValueOption("Italian (Italy)", "it-IT"),
                 ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
             ],
@@ -434,7 +438,7 @@ class AlexaPlayer(Player):
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
-        ask_command_key = f"play_audio_{alexa_locale if alexa_locale else 'default'}"
+        ask_command_key = f"play_audio_{alexa_locale or 'default'}"
 
         if ask_command_key not in ALEXA_LANGUAGE_COMMANDS:
             _LOGGER.debug(

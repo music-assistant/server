@@ -14,6 +14,7 @@ from libopensonic.errors import (
     ParameterError,
     SonicError,
 )
+from libopensonic.media import PodcastChannel
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -67,7 +68,7 @@ if TYPE_CHECKING:
     from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicItem
     from libopensonic.media import Lyrics as SonicLyrics
-    from libopensonic.media import OpenSubsonicExtension, PodcastChannel, StructuredLyrics
+    from libopensonic.media import OpenSubsonicExtension, StructuredLyrics
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
@@ -340,7 +341,7 @@ class OpenSonicProvider(MusicProvider):
         while results.song:
             album: Album | None = None
             for entry in results.song:
-                aid = entry.album_id if entry.album_id else entry.parent
+                aid = entry.album_id or entry.parent
                 if aid is not None and (album is None or album.item_id != aid):
                     album = await self.get_album(prov_album_id=aid)
                 self._set_loudness(entry)
@@ -426,7 +427,7 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Item {prov_track_id} not found"
             raise MediaNotFoundError(msg) from e
-        aid = sonic_song.album_id if sonic_song.album_id else sonic_song.parent
+        aid = sonic_song.album_id or sonic_song.parent
         album: Album | None = None
         if not aid:
             self.logger.warning("Unable to find album id for track %s", sonic_song.id)
@@ -521,7 +522,7 @@ class OpenSonicProvider(MusicProvider):
 
         album: Album | None = None
         for index, sonic_song in enumerate(sonic_playlist.entry, 1):
-            aid = sonic_song.album_id if sonic_song.album_id else sonic_song.parent
+            aid = sonic_song.album_id or sonic_song.parent
             if not aid:
                 self.logger.warning("Unable to find album for track %s", sonic_song.id)
             if aid is not None and (not album or album.item_id != aid):
@@ -667,12 +668,12 @@ class OpenSonicProvider(MusicProvider):
             media_type=media_type,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(mime_type),
-                sample_rate=item.sampling_rate if item.sampling_rate else 44100,
-                bit_depth=item.bit_depth if item.bit_depth else 16,
-                channels=item.channel_count if item.channel_count else 2,
+                sample_rate=item.sampling_rate or 44100,
+                bit_depth=item.bit_depth or 16,
+                channels=item.channel_count or 2,
             ),
             stream_type=StreamType.CUSTOM,
-            duration=item.duration if item.duration else 0,
+            duration=item.duration or 0,
         )
 
     async def on_played(
@@ -750,7 +751,11 @@ class OpenSonicProvider(MusicProvider):
 
         for mark in bookmarks:
             if mark.entry.id == ep_id:
-                return (False, mark.position, None)
+                return (
+                    False,
+                    mark.position,
+                    datetime.fromisoformat(mark.created) if mark.created else None,
+                )
         # If we get here, there is no bookmark
         return (False, 0, None)
 
@@ -783,13 +788,14 @@ class OpenSonicProvider(MusicProvider):
             key=chan_id,
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST_CHANNEL,
+            base_class=PodcastChannel,
         ):
             return cache
         if channels := await self.conn.get_podcasts(inc_episodes=True, pid=chan_id):
             channel = channels[0]
             await self.mass.cache.set(
                 key=chan_id,
-                data=channel,
+                data=channel.to_dict(),
                 provider=self.instance_id,
                 expiration=600,
                 category=CACHE_CATEGORY_PODCAST_CHANNEL,

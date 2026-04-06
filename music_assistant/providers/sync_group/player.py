@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -18,7 +17,12 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import lock
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
-from .constants import CONF_ENTRY_SGP_NOTE, CONF_MEMBERS_FILTER, EXTRA_FEATURES_FROM_MEMBERS
+from .constants import (
+    CONF_ENTRY_SGP_NOTE,
+    CONF_MEMBERS_FILTER,
+    EXTRA_FEATURES_FROM_MEMBERS,
+    SUPPORT_DYNAMIC_LEADER,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerSource
@@ -88,17 +92,25 @@ class SyncGroupPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
         # by default we don't have any features, except play_media
-        # but we can gain some features based on the capabilities of the sync leader
+        # but we can gain some features based on the capabilities of the members
         # set_members is only supported if it's a dynamic group
         base_features: set[PlayerFeature] = {PlayerFeature.PLAY_MEDIA}
         if self.is_dynamic:
             base_features.add(PlayerFeature.SET_MEMBERS)
-        if not self.sync_leader:
-            return base_features
-        # add features supported by the sync leader
-        for feature in EXTRA_FEATURES_FROM_MEMBERS:
-            if feature in self.sync_leader.state.supported_features:
-                base_features.add(feature)
+        if self.sync_leader:
+            # add features supported by the sync leader
+            for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                if feature in self.sync_leader.state.supported_features:
+                    base_features.add(feature)
+        else:
+            # derive features from all (configured) group members
+            # so that features like volume control are always advertised
+            for member_id in self._attr_group_members:
+                member_player = self.mass.players.get_player(member_id)
+                if member_player and member_player.state.available:
+                    for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                        if feature in member_player.state.supported_features:
+                            base_features.add(feature)
         return base_features
 
     @property
@@ -341,7 +353,7 @@ class SyncGroupPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         self._attr_current_media = media
-        self._attr_active_source = media.source_id if media.source_id else None
+        self._attr_active_source = media.source_id or None
         await self._form_syncgroup()
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
@@ -434,28 +446,42 @@ class SyncGroupPlayer(Player):
 
         if self.sync_leader and leader_removed and self._attr_group_members:
             # we removed the current sync leader, but we still have members in the group
-            # we need to select a new leader and re-form the syncgroup with it
             old_leader_id = self.sync_leader.player_id
-            self.logger.info(
-                "Removing current sync leader %s from group %s while it is active, "
-                "dissolving the current syncgroup and will re-form it with a new leader",
-                self.sync_leader.display_name,
-                self.display_name,
-            )
-            await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
-            await asyncio.sleep(1)
-            await self._dissolve_syncgroup()
-            # remove the old leader from the group members list so it won't be re-selected
-            if old_leader_id in self._attr_group_members:
-                self._attr_group_members.remove(old_leader_id)
-            if was_playing and self._attr_group_members:
-                await asyncio.sleep(2)
-                await self.play()
+            protocol_domain = self._get_leader_protocol_domain()
+
+            if was_playing and protocol_domain in SUPPORT_DYNAMIC_LEADER:
+                # protocol supports dynamic leader switching: remove only the departing
+                # leader from the stream session, remaining members keep playing
+                await self._dynamic_leader_switch(old_leader_id)
+            else:
+                # protocol doesn't support dynamic leader switching or not playing:
+                # dissolve the entire syncgroup and re-form with a new leader
+                self.logger.info(
+                    "Removing current sync leader %s from group %s while it is active, "
+                    "dissolving the current syncgroup and will re-form it with a new leader",
+                    self.sync_leader.display_name,
+                    self.display_name,
+                )
+                await self.mass.players.wait_for_player_update(
+                    self.sync_leader.player_id,
+                    timeout=5,
+                    action=self.mass.players._handle_cmd_stop(self.sync_leader.player_id),
+                )
+                await self._dissolve_syncgroup()
+                # remove the old leader from the group members list
+                # so it won't be re-selected
+                if old_leader_id in self._attr_group_members:
+                    self._attr_group_members.remove(old_leader_id)
+                if was_playing and self._attr_group_members:
+                    await self.play()
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
-            await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
-            await asyncio.sleep(1)
+            await self.mass.players.wait_for_player_update(
+                self.sync_leader.player_id,
+                timeout=5,
+                action=self.mass.players._handle_cmd_stop(self.sync_leader.player_id),
+            )
             await self._dissolve_syncgroup()
 
         elif self.sync_leader:
@@ -516,7 +542,14 @@ class SyncGroupPlayer(Player):
                 x for x in sync_leader.state.group_members if x != sync_leader.player_id
             ]
             if sync_children:
-                await self.mass.players.cmd_set_members(sync_leader.player_id, [], sync_children)
+                # wait for the leader's state to reflect the ungroup
+                await self.mass.players.wait_for_player_update(
+                    sync_leader.player_id,
+                    timeout=5,
+                    action=self.mass.players.cmd_set_members(
+                        sync_leader.player_id, [], sync_children
+                    ),
+                )
         self.sync_leader = None
         self.update_state()
 
@@ -536,3 +569,65 @@ class SyncGroupPlayer(Player):
                 )
                 return member_player
         return None
+
+    def _get_leader_protocol_domain(self) -> str | None:
+        """Get the protocol domain of the current sync leader's active output."""
+        if not self.sync_leader:
+            return None
+        if (
+            self.sync_leader.active_output_protocol
+            and self.sync_leader.active_output_protocol != "native"
+        ):
+            if protocol_player := self.mass.players.get_player(
+                self.sync_leader.active_output_protocol
+            ):
+                return protocol_player.provider.domain
+        return self.sync_leader.provider.domain
+
+    async def _dynamic_leader_switch(self, old_leader_id: str) -> None:
+        """Switch the sync leader without tearing down the stream session.
+
+        Used when the protocol supports dynamic leader selection (e.g. AirPlay, Snapcast).
+        The old leader is removed from the stream session while remaining members
+        keep playing uninterrupted, then a new leader is selected.
+
+        :param old_leader_id: The player_id of the leader being removed.
+        """
+        old_leader = self.sync_leader
+        assert old_leader is not None
+
+        self.logger.info(
+            "Dynamic leader switch: removing %s from group %s, remaining members keep playing",
+            old_leader.display_name,
+            self.display_name,
+        )
+
+        # Remove the old leader at the protocol level
+        # This flows to e.g. AirPlayPlayer.set_members which calls
+        # stream_session.remove_client() - only removing that one client
+        await self.mass.players.cmd_set_members(
+            old_leader.player_id,
+            player_ids_to_remove=[old_leader_id],
+        )
+
+        # Remove the old leader from our group members
+        if old_leader_id in self._attr_group_members:
+            self._attr_group_members.remove(old_leader_id)
+
+        # Select a new leader from the remaining members
+        self.sync_leader = None
+        new_leader = self._select_sync_leader()
+        self.sync_leader = new_leader
+
+        if new_leader:
+            # Ensure the new leader is first in the members list
+            self._attr_group_members = [
+                new_leader.player_id,
+                *[x for x in self._attr_group_members if x != new_leader.player_id],
+            ]
+            self.logger.info(
+                "Dynamic leader switch complete: %s is now leader of group %s",
+                new_leader.display_name,
+                self.display_name,
+            )
+        self.update_state()

@@ -92,7 +92,7 @@ class TracksController(MediaControllerBase[Track]):
                 ) FROM albums WHERE albums.item_id = album_tracks.album_id) AS track_album
             FROM tracks
             LEFT JOIN album_tracks on album_tracks.track_id = tracks.item_id
-            """  # noqa: E501
+            """
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/track_versions", self.versions)
