@@ -12,9 +12,6 @@ import soxr
 import torch
 import torchaudio
 from beat_this.inference import Postprocessor, Spect2Frames
-from skey.key_detection import key_map as skey_key_map
-from skey.key_detection import load_checkpoint as load_skey_checkpoint
-from skey.key_detection import load_model_components as load_skey_components
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -22,6 +19,8 @@ from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 from .feature_extractor import AdvancedBeatFeatureExtractor
 from .helpers import calculate_overall_bpm, decode_pcm_chunk
+from .resources.skey_model import KEY_MAP as SKEY_KEY_MAP
+from .resources.skey_model import load_skey_components
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -75,10 +74,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
         """Handle async initialization of the provider."""
         self._beat_this_model = Spect2Frames(checkpoint_path="final0", device=self._device)
         self._beat_this_post_processor = Postprocessor(type="minimal")
-        skey_ckpt = load_skey_checkpoint()
-        skey_device = torch.device(self._device)
         self._skey_vqt, self._skey_chromanet, self._skey_crop = load_skey_components(
-            skey_ckpt, skey_device
+            device=self._device
         )
         self._spectral_centroid = torchaudio.transforms.SpectralCentroid(
             sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512
@@ -303,7 +300,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         with torch.no_grad():
             logits = self._skey_chromanet(vqt_features.to(self._device))
             key_idx = int(logits.argmax(dim=-1).item())
-            key_name = skey_key_map[key_idx]  # e.g. "C# Major"
+            key_name = SKEY_KEY_MAP[key_idx]  # e.g. "C# Major"
             parts = key_name.split()
         self.logger.log(
             VERBOSE_LOG_LEVEL,
