@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientConnectorError
 from aiosonos.api.models import ContainerType, MusicService, SonosCapability
@@ -352,21 +352,17 @@ class SonosPlayer(Player):
             object_id = f"mass:{media.source_id}:{media.queue_item_id}"
         else:
             object_id = stream_url
-        await self.group_controller.play_stream_url(
+        await self.client.player.group.play_stream_url(
             stream_url,
-            # Sonos API accepts this dict format but aiosonos Container TypedDict is stricter
-            cast(
-                "Any",
-                {
-                    "name": media.title,
-                    "type": "track",
-                    "imageUrl": media.image_url,
-                    "id": {
-                        "objectId": object_id,
-                    },
-                    "service": {"name": "Music Assistant", "id": "mass"},
+            {
+                "name": media.title,
+                "type": "track",
+                "imageUrl": media.image_url,
+                "id": {
+                    "objectId": object_id,
                 },
-            ),
+                "service": {"name": "Music Assistant", "id": "mass"},
+            },
         )
 
     async def select_source(self, source: str) -> None:
