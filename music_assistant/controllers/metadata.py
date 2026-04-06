@@ -311,36 +311,32 @@ class MetaDataController(CoreController):
                     raise TypeError("Cannot update metadata on a BrowseFolder item.")
                 item = retrieved_item
 
-            if item.provider != "library":
-                # this shouldn't happen but just in case.
-                raise RuntimeError("Metadata can only be updated for library items")
+        if item.provider != "library":
+            # this shouldn't happen but just in case.
+            raise RuntimeError("Metadata can only be updated for library items")
 
-            async with self._throttler:
-                if item.media_type == MediaType.ARTIST:
-                    await self._update_artist_metadata(
-                        cast("Artist", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.ALBUM:
-                    await self._update_album_metadata(
-                        cast("Album", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.TRACK:
-                    await self._update_track_metadata(
-                        cast("Track", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.PLAYLIST:
-                    await self._update_playlist_metadata(
-                        cast("Playlist", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.AUDIOBOOK:
-                    await self._update_audiobook_metadata(
-                        cast("Audiobook", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.PODCAST:
-                    await self._update_podcast_metadata(
-                        cast("Podcast", item), force_refresh=force_refresh
-                    )
-            return item
+        async with self._throttler:
+            if item.media_type == MediaType.ARTIST:
+                await self._update_artist_metadata(
+                    cast("Artist", item), force_refresh=force_refresh
+                )
+            if item.media_type == MediaType.ALBUM:
+                await self._update_album_metadata(cast("Album", item), force_refresh=force_refresh)
+            if item.media_type == MediaType.TRACK:
+                await self._update_track_metadata(cast("Track", item), force_refresh=force_refresh)
+            if item.media_type == MediaType.PLAYLIST:
+                await self._update_playlist_metadata(
+                    cast("Playlist", item), force_refresh=force_refresh
+                )
+            if item.media_type == MediaType.AUDIOBOOK:
+                await self._update_audiobook_metadata(
+                    cast("Audiobook", item), force_refresh=force_refresh
+                )
+            if item.media_type == MediaType.PODCAST:
+                await self._update_podcast_metadata(
+                    cast("Podcast", item), force_refresh=force_refresh
+                )
+        return item
 
     def schedule_update_metadata(self, item: MediaItemType) -> None:
         """Schedule metadata update for given MediaItem."""
@@ -360,6 +356,7 @@ class MetaDataController(CoreController):
             name=f"Update metadata for {item.name}",
             handler=lambda: self.update_metadata(_item),
             translation_key="background_task.update_metadata",
+            translation_args=[item.name],
             metadata={
                 "task_domain": "metadata_lookup",
                 "item_uri": item.uri,
