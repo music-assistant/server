@@ -142,12 +142,6 @@ LOCALES = {
 }
 
 DEFAULT_LANGUAGE = "en_US"
-REFRESH_INTERVAL_ARTISTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_ALBUMS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_TRACKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_AUDIOBOOKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PODCASTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PLAYLISTS = 60 * 60 * 24 * 14  # 14 days
 
 # Radio stream artwork cache settings
 CACHE_CATEGORY_RADIO_ARTWORK = 101
@@ -155,7 +149,6 @@ CACHE_EXPIRATION_RADIO_ARTWORK = 86400 * 90  # 90 days
 CACHE_EXPIRATION_RADIO_ARTWORK_MISS = 86400 * 7  # 7 days
 AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "promo")
 
-PERIODIC_SCAN_INTERVAL = 60 * 60 * 6  # 6 hours
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
