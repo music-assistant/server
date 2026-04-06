@@ -1,11 +1,9 @@
 """Sendspin Bridge for Local PulseAudio Out - streams audio to PA sinks."""
 from __future__ import annotations
 
-import os
-from .pa_simple import PULSE_SERVER
-
 import asyncio
 import json
+import os
 import subprocess
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
@@ -27,7 +25,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
 from .constants import VOLUME_CONTROL_SOFTWARE
-from .pa_simple import PASimpleStream
+from .pa_simple import PULSE_SERVER, PASimpleStream
 from .player import LocalPulseAudioPlayer, get_sink_uuid
 
 if TYPE_CHECKING:
@@ -231,6 +229,7 @@ class SendspinPulseAudioBridge:
             await self._stop_streaming()
 
     async def _stop_streaming(self) -> None:
+        """Stop streaming (called with lock held)."""
         self._is_streaming = False
         if self._writer_task:
             self._writer_task.cancel()
@@ -270,7 +269,7 @@ class LocalPulseAudioBridgeManager:
                 None, self._enumerate_pa_sinks
             )
         except Exception as err:
-            self.logger.warning("Failed to enumerate PA sinks: %s", err)
+            self.logger.warning("Failed to enumerate PA sinks: %s", err, exc_info=True)
             return
 
         if not sinks:
@@ -317,19 +316,26 @@ class LocalPulseAudioBridgeManager:
                     continue
 
                 self._bridges[client_id] = bridge
-                self.logger.info("Bridge created for sink %s (%s)", pa_sink_name, display_name)
+                self.logger.info(
+                    "Bridge created for sink %s (%s)", pa_sink_name, display_name
+                )
 
     @staticmethod
     def _enumerate_pa_sinks() -> list[dict[str, Any]]:
         """Enumerate stereo-capable PulseAudio sinks via pactl."""
         sinks: list[dict[str, Any]] = []
+        env = (
+            {**os.environ, "PULSE_SERVER": PULSE_SERVER}
+            if PULSE_SERVER
+            else os.environ.copy()
+        )
         try:
             result = subprocess.run(
                 ["pactl", "--format=json", "list", "sinks"],
                 capture_output=True,
                 text=True,
                 timeout=5,
-                env={**os.environ, "PULSE_SERVER": PULSE_SERVER},
+                env=env,
             )
             if result.returncode != 0:
                 raise RuntimeError(
@@ -351,8 +357,8 @@ class LocalPulseAudioBridgeManager:
                     "pa_sink_name": name,
                     "max_output_channels": channels,
                 })
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            raise
         return sinks
 
     async def stop_all(self) -> None:
