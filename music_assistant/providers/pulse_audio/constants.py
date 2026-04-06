@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import uuid
 
-# UUID namespace — different from local_audio to avoid player ID collisions
-# on servers that run both providers simultaneously
 DEVICE_UUID_NAMESPACE = uuid.UUID("b2c3d4e5-f6a7-8901-bcde-f12345678901")
 
 CONF_VOLUME_CONTROL = "volume_control"
