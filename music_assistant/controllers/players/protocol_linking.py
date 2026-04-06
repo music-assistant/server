@@ -1854,6 +1854,21 @@ class ProtocolLinkingMixin:
                     parent_player.state.name,
                     parent_protocol_player.provider.domain,
                 )
+                # Stop the old protocol's session to prevent orphaned streams.
+                # Without this, the old cliraop/stream processes keep running
+                # independently while the new protocol starts a fresh session.
+                if (
+                    previous_protocol
+                    and previous_protocol not in (None, "native")
+                    and (old_protocol_player := self.get_player(previous_protocol))
+                    and old_protocol_player.player_id != parent_protocol_player.player_id
+                ):
+                    self.logger.debug(
+                        "Stopping old protocol player %s before switching to %s",
+                        old_protocol_player.state.name,
+                        parent_protocol_player.state.name,
+                    )
+                    await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
                 # Use resume to restart from current position
                 await self.mass.players._handle_cmd_resume(parent_player.player_id)
 
