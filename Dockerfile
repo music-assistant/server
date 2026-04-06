@@ -51,7 +51,17 @@ RUN chmod -R 777 /app
 
 # FINAL docker image for music assistant server
 
+### Builder stage to extract pactl/pacmd
+FROM debian:bookworm AS pa-builder
+RUN apt-get update && apt-get install -y pulseaudio-utils
+
 FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
+
+# Copy pactl and pacmd manually
+COPY --from=pa-builder /usr/bin/pactl /usr/bin/pactl
+COPY --from=pa-builder /usr/bin/pacmd /usr/bin/pacmd
+# Copy required PulseAudio libs
+COPY --from=pa-builder /usr/lib/x86_64-linux-gnu/pulse* /usr/lib/x86_64-linux-gnu/
 
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
