@@ -25,7 +25,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
 from .constants import VOLUME_CONTROL_SOFTWARE
-from .pa_simple import PULSE_SERVER, PASimpleStream, enumerate_pa_sinks
+from .pa_simple import PULSE_SERVER, PASimpleStream
 from .player import LocalPulseAudioPlayer, get_sink_uuid
 
 if TYPE_CHECKING:
@@ -195,6 +195,7 @@ class SendspinPulseAudioBridge:
         """Write queued audio to the PA sink via pa_simple."""
         loop = asyncio.get_running_loop()
         stream: PASimpleStream | None = None
+        write_future: asyncio.Future | None = None
         try:
             stream = await loop.run_in_executor(
                 None,
@@ -212,12 +213,19 @@ class SendspinPulseAudioBridge:
                 if data is None or not self._is_streaming:
                     break
                 data = self._apply_software_volume(data)
-                await loop.run_in_executor(None, stream.write, data)
+                write_future = loop.run_in_executor(None, stream.write, data)
+                await write_future
+                write_future = None
 
+        except asyncio.CancelledError:
+            pass
         except OSError as err:
             self.logger.error("pa_simple error for sink %s: %s", self.sink_name, err)
         finally:
             self._is_streaming = False
+            if write_future is not None:
+                with suppress(Exception):
+                    await asyncio.shield(write_future)
             if stream is not None:
                 with suppress(Exception):
                     await loop.run_in_executor(None, stream.close)
@@ -321,9 +329,56 @@ class LocalPulseAudioBridgeManager:
                 )
 
     @staticmethod
+    def _find_pactl() -> str:
+        """Find the pactl binary, checking PATH and known install locations."""
+        import shutil
+        if path := shutil.which("pactl"):
+            return path
+        for candidate in ("/usr/bin/pactl", "/usr/local/bin/pactl", "/bin/pactl"):
+            if os.path.isfile(candidate):
+                return candidate
+        raise FileNotFoundError(
+            "pactl not found — install pulseaudio-utils or set PATH correctly"
+        )
+
+    @staticmethod
     def _enumerate_pa_sinks() -> list[dict[str, Any]]:
-        """Enumerate stereo-capable PulseAudio sinks via libpulse introspection."""
-        return enumerate_pa_sinks()
+        """Enumerate stereo-capable PulseAudio sinks via pactl."""
+        sinks: list[dict[str, Any]] = []
+        pactl = LocalPulseAudioBridgeManager._find_pactl()
+        env = (
+            {**os.environ, "PULSE_SERVER": PULSE_SERVER}
+            if PULSE_SERVER
+            else os.environ.copy()
+        )
+        result = subprocess.run(
+            [pactl, "--format=json", "list", "sinks"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"pactl exited {result.returncode}: {result.stderr.strip()}"
+            )
+        for sink in json.loads(result.stdout):
+            name: str = sink.get("name", "")
+            desc: str = sink.get("description", name)
+            spec_str: str = sink.get("sample_specification", "")
+            # spec_str format: "s32le 2ch 96000Hz"
+            try:
+                channels = int(spec_str.split()[1].replace("ch", ""))
+            except (IndexError, ValueError):
+                continue
+            if channels < 2:
+                continue
+            sinks.append({
+                "name": desc,
+                "pa_sink_name": name,
+                "max_output_channels": channels,
+            })
+        return sinks
 
     async def stop_all(self) -> None:
         """Stop all bridges."""
