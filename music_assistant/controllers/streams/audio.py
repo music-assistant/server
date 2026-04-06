@@ -599,7 +599,9 @@ class StreamsAudio:
             if err.status == 403:
                 raise InvalidDataError(f"Access denied to radio stream: {url}") from err
             if err.status >= 500:
-                raise InvalidDataError(f"Radio stream server error (HTTP {err.status}): {url}") from err
+                raise InvalidDataError(
+                    f"Radio stream server error (HTTP {err.status}): {url}"
+                ) from err
             if err.status == 400:
                 # 400 errors might be from legacy Shoutcast servers
                 return await self._handle_client_error_for_radio_stream(url, err, stream_type)
