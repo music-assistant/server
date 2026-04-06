@@ -163,9 +163,13 @@ class AirPlayStreamSession:
                     return
 
             now = time.time()
+            wait_start_seconds = airplay_player.wait_start / 1000
+            min_start_at = now + wait_start_seconds
             if buffered_chunks:
                 first_chunk_position = buffered_chunks[0][1]
                 start_at = self.start_time + first_chunk_position
+                # Sanity check: start_at must not be in the past for the device
+                start_at = max(start_at, min_start_at)
                 buffer_duration = self.seconds_streamed - first_chunk_position
                 buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
 
@@ -180,8 +184,6 @@ class AirPlayStreamSession:
                     start_at - now,
                 )
             else:
-                wait_start_seconds = airplay_player.wait_start / 1000
-                min_start_at = now + wait_start_seconds
                 start_at = max(min_start_at, self.start_time + self.seconds_streamed)
                 self.prov.logger.debug(
                     "Late joiner %s: no buffered chunks available, "
