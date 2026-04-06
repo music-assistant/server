@@ -95,6 +95,15 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if pcm_mono.size == 0:
             return
 
+        # Per-chunk VQT for key detection
+        if data.input_audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
+            chunk_22k = soxr.resample(
+                pcm_mono, data.input_audio_format.sample_rate, ANALYSIS_SAMPLE_RATE
+            )
+        else:
+            chunk_22k = pcm_mono
+        await asyncio.to_thread(self._compute_musical_key_features, chunk_22k, data)
+
         data.pcm_buffer.append(pcm_mono)
         data.pcm_samples += len(pcm_mono)
 
@@ -247,7 +256,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.beats_feature_blocks.append(feats)
 
         await asyncio.to_thread(self._compute_energy_and_spectral_centroids, pcm_22k, data)
-        await asyncio.to_thread(self._compute_musical_key_features, pcm_22k, data)
         self.logger.log(VERBOSE_LOG_LEVEL, "Processed 10s of PCM chunks in %.1fms", elapsed_ms)
 
     def _compute_energy_and_spectral_centroids(
