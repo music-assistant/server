@@ -25,7 +25,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
 from .constants import VOLUME_CONTROL_SOFTWARE
-from .pa_simple import PULSE_SERVER, PASimpleStream
+from .pa_simple import PULSE_SERVER, PASimpleStream, enumerate_pa_sinks
 from .player import LocalPulseAudioPlayer, get_sink_uuid
 
 if TYPE_CHECKING:
@@ -322,44 +322,8 @@ class LocalPulseAudioBridgeManager:
 
     @staticmethod
     def _enumerate_pa_sinks() -> list[dict[str, Any]]:
-        """Enumerate stereo-capable PulseAudio sinks via pactl."""
-        sinks: list[dict[str, Any]] = []
-        env = (
-            {**os.environ, "PULSE_SERVER": PULSE_SERVER}
-            if PULSE_SERVER
-            else os.environ.copy()
-        )
-        try:
-            result = subprocess.run(
-                ["pactl", "--format=json", "list", "sinks"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=env,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"pactl exited {result.returncode}: {result.stderr.strip()}"
-                )
-            for sink in json.loads(result.stdout):
-                name: str = sink.get("name", "")
-                desc: str = sink.get("description", name)
-                spec_str: str = sink.get("sample_specification", "")
-                # spec_str format: "s32le 2ch 96000Hz"
-                try:
-                    channels = int(spec_str.split()[1].replace("ch", ""))
-                except (IndexError, ValueError):
-                    continue
-                if channels < 2:
-                    continue
-                sinks.append({
-                    "name": desc,
-                    "pa_sink_name": name,
-                    "max_output_channels": channels,
-                })
-        except Exception:
-            raise
-        return sinks
+        """Enumerate stereo-capable PulseAudio sinks via libpulse introspection."""
+        return enumerate_pa_sinks()
 
     async def stop_all(self) -> None:
         """Stop all bridges."""
