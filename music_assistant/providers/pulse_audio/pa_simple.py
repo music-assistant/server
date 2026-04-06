@@ -4,7 +4,7 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final
 
 PA_SAMPLE_S16LE: Final = 3
 PA_STREAM_PLAYBACK: Final = 1
@@ -53,7 +53,7 @@ def _load_lib() -> ctypes.CDLL:
     lib.pa_simple_write.argtypes = [
         ctypes.c_void_p,
         ctypes.c_void_p,
-        ctypes.c_size_t,  # must be c_size_t not c_int
+        ctypes.c_size_t,
         ctypes.c_void_p,
     ]
     lib.pa_simple_drain.restype = ctypes.c_int
@@ -139,3 +139,145 @@ class PASimpleStream:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+def enumerate_pa_sinks() -> list[dict[str, Any]]:
+    """Enumerate PulseAudio sinks via libpulse introspection API.
+
+    Uses pa_mainloop + pa_context synchronously — no pactl binary needed.
+    Returns list of dicts with 'name', 'pa_sink_name', 'max_output_channels'.
+    """
+    lib = ctypes.CDLL("libpulse.so.0")
+
+    # --- function signatures ---
+    lib.pa_mainloop_new.restype = ctypes.c_void_p
+    lib.pa_mainloop_new.argtypes = []
+    lib.pa_mainloop_get_api.restype = ctypes.c_void_p
+    lib.pa_mainloop_get_api.argtypes = [ctypes.c_void_p]
+    lib.pa_mainloop_iterate.restype = ctypes.c_int
+    lib.pa_mainloop_iterate.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+    lib.pa_mainloop_free.restype = None
+    lib.pa_mainloop_free.argtypes = [ctypes.c_void_p]
+    lib.pa_context_new.restype = ctypes.c_void_p
+    lib.pa_context_new.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.pa_context_connect.restype = ctypes.c_int
+    lib.pa_context_connect.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p,
+    ]
+    lib.pa_context_get_state.restype = ctypes.c_int
+    lib.pa_context_get_state.argtypes = [ctypes.c_void_p]
+    lib.pa_context_get_sink_info_list.restype = ctypes.c_void_p
+    lib.pa_context_get_sink_info_list.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    lib.pa_operation_get_state.restype = ctypes.c_int
+    lib.pa_operation_get_state.argtypes = [ctypes.c_void_p]
+    lib.pa_operation_unref.restype = None
+    lib.pa_operation_unref.argtypes = [ctypes.c_void_p]
+    lib.pa_context_disconnect.restype = None
+    lib.pa_context_disconnect.argtypes = [ctypes.c_void_p]
+    lib.pa_context_unref.restype = None
+    lib.pa_context_unref.argtypes = [ctypes.c_void_p]
+
+    # PA context states
+    PA_CONTEXT_READY = 4
+    PA_CONTEXT_FAILED = 5
+    PA_CONTEXT_TERMINATED = 6
+    # PA operation states
+    PA_OPERATION_DONE = 0
+
+    class _PASampleSpecFull(ctypes.Structure):
+        _fields_ = [
+            ("format", ctypes.c_int),
+            ("rate", ctypes.c_uint32),
+            ("channels", ctypes.c_uint8),
+        ]
+
+    class _PASinkInfo(ctypes.Structure):
+        _fields_ = [
+            ("name", ctypes.c_char_p),
+            ("index", ctypes.c_uint32),
+            ("description", ctypes.c_char_p),
+            ("sample_spec", _PASampleSpecFull),
+        ]
+
+    sinks: list[dict[str, Any]] = []
+
+    SINK_CB = ctypes.CFUNCTYPE(
+        None,
+        ctypes.c_void_p,
+        ctypes.POINTER(_PASinkInfo),
+        ctypes.c_int,
+        ctypes.c_void_p,
+    )
+
+    def _sink_cb(
+        context: ctypes.c_void_p,
+        info_ptr: ctypes.POINTER(_PASinkInfo),
+        eol: int,
+        userdata: ctypes.c_void_p,
+    ) -> None:
+        if eol or not info_ptr:
+            return
+        info = info_ptr.contents
+        name = info.name.decode() if info.name else ""
+        desc = info.description.decode() if info.description else name
+        channels = info.sample_spec.channels
+        if channels >= 2:
+            sinks.append({
+                "name": desc,
+                "pa_sink_name": name,
+                "max_output_channels": channels,
+            })
+
+    sink_cb = SINK_CB(_sink_cb)
+
+    mainloop = lib.pa_mainloop_new()
+    if not mainloop:
+        raise OSError("pa_mainloop_new failed")
+
+    try:
+        api = lib.pa_mainloop_get_api(mainloop)
+        ctx = lib.pa_context_new(api, b"music-assistant-enum")
+        if not ctx:
+            raise OSError("pa_context_new failed")
+
+        server = PULSE_SERVER.encode() if PULSE_SERVER else None
+        ret = lib.pa_context_connect(ctx, server, 0, None)
+        if ret < 0:
+            lib.pa_context_unref(ctx)
+            raise OSError(f"pa_context_connect failed (ret={ret})")
+
+        # Wait for context to become ready (max ~2s)
+        for _ in range(2000):
+            lib.pa_mainloop_iterate(mainloop, 0, None)
+            state = lib.pa_context_get_state(ctx)
+            if state == PA_CONTEXT_READY:
+                break
+            if state in (PA_CONTEXT_FAILED, PA_CONTEXT_TERMINATED):
+                lib.pa_context_unref(ctx)
+                raise OSError(f"PA context failed to connect (state={state})")
+        else:
+            lib.pa_context_unref(ctx)
+            raise OSError("Timed out waiting for PA context to become ready")
+
+        # Issue get_sink_info_list and pump mainloop until operation completes
+        op = lib.pa_context_get_sink_info_list(ctx, sink_cb, None)
+        if not op:
+            lib.pa_context_disconnect(ctx)
+            lib.pa_context_unref(ctx)
+            raise OSError("pa_context_get_sink_info_list failed")
+
+        for _ in range(2000):
+            lib.pa_mainloop_iterate(mainloop, 0, None)
+            if lib.pa_operation_get_state(op) == PA_OPERATION_DONE:
+                break
+
+        lib.pa_operation_unref(op)
+        lib.pa_context_disconnect(ctx)
+        lib.pa_context_unref(ctx)
+
+    finally:
+        lib.pa_mainloop_free(mainloop)
+
+    return sinks
