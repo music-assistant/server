@@ -709,9 +709,12 @@ class AirPlayPlayer(Player):
             # handle removals first
             if player_ids_to_remove:
                 if self.player_id in player_ids_to_remove:
-                    # dissolve the entire sync group
-                    if stream_session:
-                        # stop the stream session if it is running
+                    if stream_session and len(stream_session.sync_clients) > 1:
+                        # Other clients remain: remove only this leader client,
+                        # session continues for remaining players (dynamic leader switch)
+                        await stream_session.remove_client(self)
+                    elif stream_session:
+                        # Last client, stop the whole session
                         await stream_session.stop()
                     self._attr_group_members = []
                     self.update_state()

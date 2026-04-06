@@ -100,7 +100,7 @@ class CacheController(CoreController):
         category: int = 0,
         checksum: str | int | None = None,
         default: Any = None,
-        allow_bypass: bool = True,
+        allow_bypass: bool | None = None,
         base_class: Any = None,
     ) -> Any:
         """
@@ -136,6 +136,12 @@ class CacheController(CoreController):
             and db_row["expires"] >= cur_time
             and (not checksum or db_row["checksum"] == checksum)
         ):
+            # if allow_bypass is not explicitly set,
+            # determine it based on the 'persistent' flag of the cache entry
+            if allow_bypass is None:
+                allow_bypass = not bool(db_row["persistent"])
+            if allow_bypass and BYPASS_CACHE.get():
+                return default
             try:
                 data = await async_json_loads(db_row["data"])
             except Exception as exc:
