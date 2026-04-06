@@ -200,8 +200,11 @@ _SEARCH_HYPHEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Superfluous suffixes to strip for display (video/audio markers, etc.)
 _DISPLAY_STRIP_PATTERN = re.compile(
-    r"\s*[\(\[](official\s+)?(lyric\s+|music\s+)?(video|audio)[\)\]]$",
+    r"\s*[\(\[]"
+    r"(official\s+)?(lyric\s+|music\s+)?(video|audio|visualizer|clip)"
+    r"[\)\]]$",
     re.IGNORECASE,
 )
 
@@ -213,42 +216,6 @@ _FEATURING_PATTERNS = (
     " ft. ",
     " ft ",
 )
-
-
-def clean_title_for_search(title: str) -> str:
-    """Remove version info and featuring credits from a song title for search matching.
-
-    Performs aggressive cleaning to maximize search API matching accuracy.
-    Removes parenthetical/bracketed metadata (remastered, live, featuring, etc.),
-    hyphen-separated suffixes, and standalone featuring credits.
-
-    TODO: Refactor genius_lyrics provider to use this function instead of its
-    own clean_song_title helper (providers/genius_lyrics/helpers.py).
-
-    :param title: The song title to clean.
-    """
-    # Strip parentheses/brackets containing keywords (including feat)
-    cleaned = _SEARCH_PAREN_PATTERN.sub("", title)
-
-    # Strip hyphen suffixes like "- Remastered 2019" or "- 2019"
-    cleaned = _SEARCH_HYPHEN_PATTERN.sub("", cleaned)
-
-    # Strip bare featuring credits (not in parentheses)
-    cleaned_lower = cleaned.lower()
-    for pattern in _FEATURING_PATTERNS:
-        if pattern in cleaned_lower:
-            idx = cleaned_lower.find(pattern)
-            cleaned = cleaned[:idx]
-            break
-
-    # Clean up dangling hyphens and extra spaces
-    cleaned = re.sub(r"\s*-\s*$", "", cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-
-def clean_title_for_display(title: str) -> str:
-    """Remove video-related suffixes from a song title for display."""
-    return _DISPLAY_STRIP_PATTERN.sub("", title).strip()
 
 
 def filename_from_string(string: str) -> str:
@@ -309,9 +276,45 @@ def normalize_unicode(value: str | None) -> str | None:
     return unicodedata.normalize("NFC", value)
 
 
-def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
-    """Try to parse version from the title."""
+def parse_title_and_version(
+    title: str,
+    track_version: str | None = None,
+    strip_for_search: bool = False,
+    strip_for_display: bool = False,
+) -> tuple[str, str]:
+    """
+    Parse version from the title and optionally clean for search or display.
+
+    :param title: The title to parse.
+    :param track_version: Optional existing version string.
+    :param strip_for_search: Aggressively strip for search matching (removes featuring,
+        version info in brackets, hyphen suffixes like "- Remastered 2019").
+    :param strip_for_display: Strip superfluous suffixes like "(Official Video)".
+    """
     version = track_version or ""
+
+    # Aggressive search cleaning - strip parentheses/brackets with version/feat keywords
+    if strip_for_search:
+        title = _SEARCH_PAREN_PATTERN.sub("", title)
+        title = _SEARCH_HYPHEN_PATTERN.sub("", title)
+        # Strip bare featuring credits (not in parentheses)
+        title_lower = title.lower()
+        for pattern in _FEATURING_PATTERNS:
+            if pattern in title_lower:
+                idx = title_lower.find(pattern)
+                title = title[:idx]
+                break
+        # Clean up dangling hyphens and extra spaces
+        title = re.sub(r"\s*-\s*$", "", title)
+        title = re.sub(r"\s+", " ", title).strip()
+        return title, version
+
+    # Display cleaning - just strip video-related suffixes
+    if strip_for_display:
+        title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
+        return title, version
+
+    # Standard version parsing
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
             # Extract the content without brackets/dashes for checking

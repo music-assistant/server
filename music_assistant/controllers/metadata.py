@@ -1,4 +1,9 @@
-"""All logic for metadata retrieval."""
+"""All logic for metadata retrieval.
+
+TODO: This controller is getting large. Refactor into a dedicated subfolder
+with split files (controller.py, helpers.py, etc.) following the pattern
+of other controllers.
+"""
 
 from __future__ import annotations
 
@@ -77,7 +82,7 @@ from music_assistant.helpers.images import (
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import Throttler
-from music_assistant.helpers.util import clean_title_for_search, try_parse_int
+from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 
@@ -730,7 +735,7 @@ class MetaDataController(CoreController):
         :returns: Tuple of (metadata, source_description, corrected_artist, corrected_track).
         """
         # Clean track name by stripping version suffixes and featuring credits
-        clean_track_name = clean_title_for_search(track_name)
+        clean_track_name, _ = parse_title_and_version(track_name, strip_for_search=True)
 
         # Check library track first - fast, no API calls, respects user-curated images
         if metadata := await self._get_library_track_metadata(artist_name, clean_track_name):
@@ -869,7 +874,7 @@ class MetaDataController(CoreController):
                     continue
                 if not compare_strings(track_name, track.name, strict=False):
                     continue
-                if image_url := await self._get_library_item_image(track):
+                if image_url := await self._get_library_item_thumb(track):
                     return MediaItemMetadata(
                         images=UniqueList(
                             [
@@ -932,7 +937,7 @@ class MetaDataController(CoreController):
                     return True
         return False
 
-    async def _get_library_item_image(self, track: Track) -> str | None:
+    async def _get_library_item_thumb(self, track: Track) -> str | None:
         """Get image URL for library track with fallback: track -> album -> artist.
 
         :param track: Track to get image for.
@@ -1048,17 +1053,22 @@ class MetaDataController(CoreController):
         # Standard flip (e.g., "Squier, Billy" -> "Billy Squier")
         return f"{after_comma} {before_comma}"
 
-    async def get_radio_stream_artwork(
+    async def get_image_url_by_name(
         self,
         artist_name: str,
         track_name: str,
         fallback_image_url: str | None = None,
     ) -> tuple[str | None, str | None, str | None]:
-        """Fetch artwork for radio stream based on current track metadata.
+        """
+        Look up artwork by artist and track name.
 
-        :param artist_name: Artist name (already normalized).
-        :param track_name: Track title.
-        :param fallback_image_url: Fallback image URL (e.g., station logo).
+        Searches library and external providers for matching artwork.
+        Also returns corrected artist/track names if the search detects
+        swapped metadata (e.g., "Track - Artist" instead of "Artist - Track").
+
+        :param artist_name: Artist name to search for.
+        :param track_name: Track title to search for.
+        :param fallback_image_url: Fallback image URL if no artwork found.
         :returns: Tuple of (image_url, corrected_artist, corrected_track).
         """
         if " / " in artist_name:
@@ -1152,7 +1162,7 @@ class MetaDataController(CoreController):
             fallback_url = streamdetails.stream_metadata.image_url
             original_artist = streamdetails.stream_metadata.artist
             original_title = streamdetails.stream_metadata.title
-            image_url, corrected_artist, corrected_track = await self.get_radio_stream_artwork(
+            image_url, corrected_artist, corrected_track = await self.get_image_url_by_name(
                 artist_name=original_artist,
                 track_name=original_title,
                 fallback_image_url=fallback_url,
