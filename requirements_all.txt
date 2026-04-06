@@ -74,6 +74,8 @@ soco==0.30.14
 soundcloudpy==0.1.4
 srptools>=1.0.0
 sxm==0.2.8
+torch==2.7.1
+torchaudio==2.7.1
 unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0
