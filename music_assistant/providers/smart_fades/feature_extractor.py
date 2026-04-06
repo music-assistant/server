@@ -11,7 +11,7 @@ import torchaudio
 
 
 class AdvancedBeatFeatureExtractor:
-    """Streaming log-mel extractor using torchaudio for exact Beat This compatibility.
+    """Streaming log-mel extractor using torchaudio for Beat This compatibility.
 
     Uses the same torchaudio.transforms.MelSpectrogram as beat_this.preprocessing.LogMelSpect:
     - sample_rate=22050
