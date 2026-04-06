@@ -1037,14 +1037,15 @@ class MetaDataController(CoreController):
         return f"{METADATA_LOOKUP_TASK_ID_PREFIX}_{uuid5(NAMESPACE_URL, uri).hex}"
 
     async def _scan_missing_artist_metadata(self) -> None:
-        """Refresh metadata for a small batch of artists missing artwork or description."""
+        """Scan for artists with missing metadata."""
         update_current_task_progress_text("Searching for artists with missing metadata")
         missing_images = (
             f"(json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
         missing_description = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.description') ISNULL"
-        query = f"{missing_images} OR {missing_description}"
+        never_refreshed = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL"
+        query = f"({missing_images} OR {missing_description}) AND {never_refreshed}"
         artists = await self.mass.music.artists.get_library_items_by_query(
             limit=METADATA_SCAN_BATCH_SIZE,
             order_by="random",
