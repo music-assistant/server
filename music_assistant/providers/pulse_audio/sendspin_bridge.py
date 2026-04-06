@@ -1,6 +1,9 @@
 """Sendspin Bridge for Local PulseAudio Out - streams audio to PA sinks."""
 from __future__ import annotations
 
+import os
+from .pa_simple import PULSE_SERVER
+
 import asyncio
 import json
 import subprocess
@@ -326,7 +329,12 @@ class LocalPulseAudioBridgeManager:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                env={**os.environ, "PULSE_SERVER": PULSE_SERVER},
             )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"pactl exited {result.returncode}: {result.stderr.strip()}"
+                )
             for sink in json.loads(result.stdout):
                 name: str = sink.get("name", "")
                 desc: str = sink.get("description", name)
