@@ -287,13 +287,12 @@ def parse_title_and_version(
 
     :param title: The title to parse.
     :param track_version: Optional existing version string.
-    :param strip_for_search: Aggressively strip for search matching (removes featuring,
-        version info in brackets, hyphen suffixes like "- Remastered 2019").
-    :param strip_for_display: Strip superfluous suffixes like "(Official Video)".
+    :param strip_for_search: Aggressively strip for search matching.
+    :param strip_for_display: Strip superfluous suffixes for display.
     """
     version = track_version or ""
 
-    # Aggressive search cleaning - strip parentheses/brackets with version/feat keywords
+    # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
     if strip_for_search:
         title = _SEARCH_PAREN_PATTERN.sub("", title)
         title = _SEARCH_HYPHEN_PATTERN.sub("", title)
@@ -309,7 +308,7 @@ def parse_title_and_version(
         title = re.sub(r"\s+", " ", title).strip()
         return title, version
 
-    # Display cleaning - just strip video-related suffixes
+    # Strip video/audio suffixes like "(Official Video)"
     if strip_for_display:
         title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
         return title, version
