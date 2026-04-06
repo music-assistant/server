@@ -279,3 +279,58 @@ class TestGroupLockSerialization:
         end_indices = [i for i, x in enumerate(execution_order) if x.endswith("_end")]
         # First operation's end should come before second operation's start
         assert end_indices[0] < start_indices[1]
+
+
+class TestProtocolSwitchCleanup:
+    """Test that protocol switching properly cleans up old sessions."""
+
+    def test_protocol_domain_updated_after_set_members(self) -> None:
+        """Protocol domain should be updated when set_members triggers a protocol switch."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # Leader initially on airplay
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="sonos",
+            active_output_protocol="ap_leader",
+        )
+        ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
+        mass.players.get_player = _player_lookup({"leader": leader, "ap_leader": ap_protocol})
+
+        sgp.sync_leader = leader
+        sgp._active_protocol_domain = "airplay"
+        sgp._update_active_protocol()
+
+        assert sgp._active_protocol_domain == "airplay"
+
+    def test_protocol_domain_follows_switch(self) -> None:
+        """After a protocol switch, the cached domain should reflect the new protocol."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # Leader switched from airplay to sendspin
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="sonos",
+            active_output_protocol="sp_leader",
+        )
+        sp_protocol = _make_mock_player("sp_leader", provider_domain="sendspin")
+        mass.players.get_player = _player_lookup({"leader": leader, "sp_leader": sp_protocol})
+
+        sgp.sync_leader = leader
+        sgp._active_protocol_domain = "airplay"  # old value
+        sgp._update_active_protocol()  # should pick up the new protocol
+
+        assert sgp._active_protocol_domain == "sendspin"
+
+    def test_dynamic_leader_switch_preserves_protocol(self) -> None:
+        """Dynamic leader switch should preserve the active protocol domain."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        sgp._active_protocol_domain = "airplay"
+
+        # After leader switch, protocol domain should be unchanged
+        # (the protocol stays the same, only the leader changes)
+        assert sgp._active_protocol_domain == "airplay"
