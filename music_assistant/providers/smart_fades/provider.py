@@ -95,14 +95,15 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if pcm_mono.size == 0:
             return
 
-        # Per-chunk VQT for key detection
-        if data.input_audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
-            chunk_22k = soxr.resample(
-                pcm_mono, data.input_audio_format.sample_rate, ANALYSIS_SAMPLE_RATE
-            )
-        else:
-            chunk_22k = pcm_mono
-        await asyncio.to_thread(self._compute_musical_key_features, chunk_22k, data)
+        # Per-chunk VQT for key detection (skip short tail chunks)
+        if len(pcm_mono) >= data.input_audio_format.sample_rate:
+            if data.input_audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
+                chunk_22k = soxr.resample(
+                    pcm_mono, data.input_audio_format.sample_rate, ANALYSIS_SAMPLE_RATE
+                )
+            else:
+                chunk_22k = pcm_mono
+            await asyncio.to_thread(self._compute_musical_key_features, chunk_22k, data)
 
         data.pcm_buffer.append(pcm_mono)
         data.pcm_samples += len(pcm_mono)

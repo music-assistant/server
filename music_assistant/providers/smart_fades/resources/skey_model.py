@@ -295,7 +295,7 @@ def load_skey_components(
     """
     ckpt = torch.load(_CHECKPOINT_PATH, map_location=device, weights_only=False)
 
-    hcqt = VQT(harmonics=[1], fmin=27.5, n_bins=99).to(device)
+    hcqt = VQT(harmonics=[1], fmin=27.5, n_bins=99, verbose=False).to(device)
     chromanet = ChromaNet(
         n_bins=84,
         n_harmonics=1,
