@@ -1854,23 +1854,51 @@ class ProtocolLinkingMixin:
                     parent_player.state.name,
                     parent_protocol_player.provider.domain,
                 )
-                # Stop the old protocol's session to prevent orphaned streams.
-                # Without this, the old cliraop/stream processes keep running
-                # independently while the new protocol starts a fresh session.
+                # Collect existing members from old protocol before stopping it,
+                # so we can re-add them to the new protocol after restart.
+                old_protocol_members: list[str] = []
                 if (
                     previous_protocol
                     and previous_protocol not in (None, "native")
                     and (old_protocol_player := self.get_player(previous_protocol))
                     and old_protocol_player.player_id != parent_protocol_player.player_id
                 ):
+                    # Collect child members (exclude the leader itself)
+                    old_protocol_members = [
+                        m
+                        for m in old_protocol_player.group_members
+                        if m != old_protocol_player.player_id
+                    ]
+                    # Translate protocol IDs back to parent player IDs
+                    old_parent_members: list[str] = []
+                    for member_id in old_protocol_members:
+                        if member_player := self.get_player(member_id):
+                            parent_id = member_player.protocol_parent_id or member_id
+                            if parent_id != parent_player.player_id:
+                                old_parent_members.append(parent_id)
                     self.logger.debug(
-                        "Stopping old protocol player %s before switching to %s",
+                        "Stopping old protocol player %s before switching to %s, "
+                        "migrating members: %s",
                         old_protocol_player.state.name,
                         parent_protocol_player.state.name,
+                        old_parent_members,
                     )
                     await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
-                # Use resume to restart from current position
+                else:
+                    old_parent_members = []
+                # Resume playback — this will start on the new protocol
                 await self.mass.players._handle_cmd_resume(parent_player.player_id)
+                # Re-add old members to the new protocol so they join the new session
+                if old_parent_members:
+                    self.logger.debug(
+                        "Re-adding migrated members %s to %s on new protocol",
+                        old_parent_members,
+                        parent_player.state.name,
+                    )
+                    await self.mass.players.cmd_set_members(
+                        parent_player.player_id,
+                        player_ids_to_add=old_parent_members,
+                    )
 
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
