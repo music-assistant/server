@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -14,7 +15,6 @@ from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
 )
-from music_assistant.helpers.util import lock
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -47,6 +47,7 @@ class SyncGroupPlayer(Player):
         self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
+        self._group_lock = asyncio.Lock()
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -334,34 +335,42 @@ class SyncGroupPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
-        self._attr_current_media = None
-        if sync_leader := self.sync_leader:
-            # Use internal handler to bypass group redirect logic and avoid infinite loop
-            # (sync_leader is part of this group, so redirect would loop back here)
+        async with self._group_lock:
+            self._attr_current_media = None
+            sync_leader = self.sync_leader
+            # dissolve the sync group since we stopped playback
+            self.mass.call_later(
+                5,
+                self._dissolve_syncgroup_locked,
+                task_id=f"syncgroup_dissolve_{self.player_id}",
+            )
+        # call stop outside the lock to avoid potential re-entry deadlock
+        if sync_leader:
             await self.mass.players._handle_cmd_stop(sync_leader.player_id)
-        # dissolve the sync group since we stopped playback
-        self.mass.call_later(
-            5, self._dissolve_syncgroup, task_id=f"syncgroup_dissolve_{self.player_id}"
-        )
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
-        await self.mass.players._handle_cmd_resume(
-            self.player_id, self._attr_active_source, self._attr_current_media
-        )
+        async with self._group_lock:
+            active_source = self._attr_active_source
+            current_media = self._attr_current_media
+        # call resume outside the lock since it re-enters play_media -> _group_lock
+        await self.mass.players._handle_cmd_resume(self.player_id, active_source, current_media)
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        self._attr_current_media = media
-        self._attr_active_source = media.source_id or None
-        await self._form_syncgroup()
-        # simply forward the command to the sync leader
-        if sync_leader := self.sync_leader:
-            # Use internal handler to bypass group redirect logic and preserve protocol selection
-            await self.mass.players._handle_play_media(sync_leader.player_id, media)
-            self.update_state()
-        else:
-            raise RuntimeError("An empty group cannot play media, consider adding members first")
+        async with self._group_lock:
+            self._attr_current_media = media
+            self._attr_active_source = media.source_id or None
+            await self._form_syncgroup()
+            # simply forward the command to the sync leader
+            if sync_leader := self.sync_leader:
+                # Use internal handler to bypass group redirect logic
+                await self.mass.players._handle_play_media(sync_leader.player_id, media)
+                self.update_state()
+            else:
+                raise RuntimeError(
+                    "An empty group cannot play media, consider adding members first"
+                )
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
@@ -373,13 +382,21 @@ class SyncGroupPlayer(Player):
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
-    @lock
-    async def set_members(  # noqa: PLR0915
+    async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
+        async with self._group_lock:
+            await self._set_members(player_ids_to_add, player_ids_to_remove)
+
+    async def _set_members(  # noqa: PLR0915
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Handle SET_MEMBERS command (lock must be held by caller)."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
@@ -473,7 +490,13 @@ class SyncGroupPlayer(Player):
                 if old_leader_id in self._attr_group_members:
                     self._attr_group_members.remove(old_leader_id)
                 if was_playing and self._attr_group_members:
-                    await self.play()
+                    # Schedule resume outside the lock to avoid deadlock
+                    # (resume -> play_media -> _group_lock)
+                    self.mass.call_later(
+                        0.5,
+                        self.play,
+                        task_id=f"syncgroup_resume_{self.player_id}",
+                    )
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
@@ -496,9 +519,8 @@ class SyncGroupPlayer(Player):
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(self.player_id)
 
-    @lock
     async def _form_syncgroup(self) -> None:
-        """Form syncgroup by syncing all (possible) members."""
+        """Form syncgroup by syncing all (possible) members (lock must be held by caller)."""
         self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
         # always ensure static members are part of the group members,
         # even if they were (temporarily) removed by un unjoin
@@ -533,9 +555,13 @@ class SyncGroupPlayer(Player):
                 await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
 
-    @lock
+    async def _dissolve_syncgroup_locked(self) -> None:
+        """Dissolve the current syncgroup (acquires lock, for use with call_later)."""
+        async with self._group_lock:
+            await self._dissolve_syncgroup()
+
     async def _dissolve_syncgroup(self) -> None:
-        """Dissolve the current syncgroup by ungrouping all members."""
+        """Dissolve the current syncgroup (lock must be held by caller)."""
         if sync_leader := self.sync_leader:
             # dissolve the temporary syncgroup from the sync leader
             sync_children = [
@@ -602,13 +628,19 @@ class SyncGroupPlayer(Player):
             self.display_name,
         )
 
-        # Remove the old leader at the protocol level
-        # This flows to e.g. AirPlayPlayer.set_members which calls
-        # stream_session.remove_client() - only removing that one client
-        await self.mass.players.cmd_set_members(
-            old_leader.player_id,
-            player_ids_to_remove=[old_leader_id],
-        )
+        # Remove the old leader directly at the protocol level, bypassing the
+        # controller's cmd_set_members which would interpret self-removal as
+        # "dissolve the entire group" (rewriting the removal list).
+        group_target = old_leader
+        remove_id = old_leader_id
+        if (
+            old_leader.active_output_protocol
+            and old_leader.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get_player(old_leader.active_output_protocol))
+        ):
+            group_target = protocol_player
+            remove_id = protocol_player.player_id
+        await group_target.set_members(player_ids_to_remove=[remove_id])
 
         # Remove the old leader from our group members
         if old_leader_id in self._attr_group_members:
