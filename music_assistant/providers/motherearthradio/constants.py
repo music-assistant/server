@@ -10,7 +10,7 @@ NOWPLAYING_API_URL = f"{AZURACAST_BASE_URL}/api/nowplaying"
 
 # Base URL for station icons hosted in the MA icons repo
 STATION_ICONS_BASE_URL = (
-    "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png"
+    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/public/assets/icons"
 )
 
 # Mother Earth Radio channel configurations
