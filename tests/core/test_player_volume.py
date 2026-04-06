@@ -55,6 +55,8 @@ class TestFinalVolumeLevel:
         control.volume_level = 80
         mock_mass.players.get_player = MagicMock(return_value=control)
         mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
 
         player.update_state(signal_event=False)
         assert player.state.volume_level == 80
@@ -78,6 +80,8 @@ class TestFinalVolumeLevel:
 
         mock_mass.players.get_player = MagicMock(return_value=None)
         mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
 
         player.update_state(signal_event=False)
         assert player.state.volume_level == 55
@@ -103,6 +107,8 @@ class TestFinalVolumeLevel:
         control.volume_level = None
         mock_mass.players.get_player = MagicMock(return_value=control)
         mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
 
         player.update_state(signal_event=False)
         assert player.state.volume_level == 42
