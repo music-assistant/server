@@ -1106,10 +1106,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-        lock_key = f"set_members_{target_player}"
-        if lock_key not in self._player_command_locks:
-            self._player_command_locks[lock_key] = asyncio.Lock()
-        async with self._player_command_locks[lock_key]:
+        # Acquire both the set_members lock and the play_media lock for this player.
+        # This prevents a concurrent play_media from racing with protocol switches
+        # triggered by set_members (which do stop + resume + re-add internally).
+        set_members_key = f"set_members_{target_player}"
+        play_media_key = f"play_media_{target_player}"
+        if set_members_key not in self._player_command_locks:
+            self._player_command_locks[set_members_key] = asyncio.Lock()
+        if play_media_key not in self._player_command_locks:
+            self._player_command_locks[play_media_key] = asyncio.Lock()
+        async with (
+            self._player_command_locks[play_media_key],
+            self._player_command_locks[set_members_key],
+        ):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")

@@ -903,9 +903,15 @@ class PlayerQueuesController(CoreController):
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
-            await self.mass.players.play_media(
-                player_id=queue_id,
-                media=await self.player_media_from_queue_item(queue_item),
+            # Use _handle_play_media directly to bypass the play_media lock.
+            # The queue controller is an internal consumer and play_index is
+            # already serialized by _play_action_locks. Going through the public
+            # play_media would deadlock when called from within cmd_set_members
+            # (which holds the play_media lock during protocol switches).
+            player = self.mass.players._get_player_with_redirect(queue_id)
+            await self.mass.players._handle_play_media(
+                player.player_id,
+                await self.player_media_from_queue_item(queue_item),
             )
             queue.current_index = index
             queue.current_item = queue_item
