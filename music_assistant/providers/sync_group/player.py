@@ -337,23 +337,24 @@ class SyncGroupPlayer(Player):
         """Send STOP command to given player."""
         async with self._group_lock:
             self._attr_current_media = None
-            if sync_leader := self.sync_leader:
-                # Use internal handler to bypass group redirect logic and avoid infinite loop
-                # (sync_leader is part of this group, so redirect would loop back here)
-                await self.mass.players._handle_cmd_stop(sync_leader.player_id)
+            sync_leader = self.sync_leader
             # dissolve the sync group since we stopped playback
             self.mass.call_later(
                 5,
                 self._dissolve_syncgroup_locked,
                 task_id=f"syncgroup_dissolve_{self.player_id}",
             )
+        # call stop outside the lock to avoid potential re-entry deadlock
+        if sync_leader:
+            await self.mass.players._handle_cmd_stop(sync_leader.player_id)
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
         async with self._group_lock:
-            await self.mass.players._handle_cmd_resume(
-                self.player_id, self._attr_active_source, self._attr_current_media
-            )
+            active_source = self._attr_active_source
+            current_media = self._attr_current_media
+        # call resume outside the lock since it re-enters play_media -> _group_lock
+        await self.mass.players._handle_cmd_resume(self.player_id, active_source, current_media)
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
