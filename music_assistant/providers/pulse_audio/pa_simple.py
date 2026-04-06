@@ -18,21 +18,17 @@ class _PASampleSpec(ctypes.Structure):
 
 
 def _find_pulse_server() -> str:
-    """Detect the PulseAudio server socket path.
-
-    Checks PULSE_SERVER env var first, then known non-standard paths,
-    then falls back to empty string (libpulse auto-discovery).
-    """
+    """Detect the PulseAudio server socket path."""
     if server := os.environ.get("PULSE_SERVER"):
         return server
     for path in (
-        "/run/audio/pulse.sock",   # HAOS addon layout
-        "/run/pulse/native",        # standard systemd layout
-        "/var/run/pulse/native",    # older distros
+        "/run/audio/pulse.sock",
+        "/run/pulse/native",
+        "/var/run/pulse/native",
     ):
         if os.path.exists(path):
             return f"unix:{path}"
-    return ""  # empty → pass NULL to pa_simple_new, let libpulse auto-discover
+    return ""
 
 
 PULSE_SERVER: Final = _find_pulse_server()
@@ -42,22 +38,22 @@ def _load_lib() -> ctypes.CDLL:
     lib = ctypes.CDLL("libpulse-simple.so.0")
     lib.pa_simple_new.restype = ctypes.c_void_p
     lib.pa_simple_new.argtypes = [
-        ctypes.c_char_p,  # server (NULL = auto)
-        ctypes.c_char_p,  # app name
-        ctypes.c_int,     # direction
-        ctypes.c_char_p,  # sink name
-        ctypes.c_char_p,  # stream description
-        ctypes.c_void_p,  # sample spec
-        ctypes.c_void_p,  # channel map (NULL)
-        ctypes.c_void_p,  # buffer attr (NULL)
-        ctypes.c_void_p,  # error ptr
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
     lib.pa_simple_write.restype = ctypes.c_int
     lib.pa_simple_write.argtypes = [
-        ctypes.c_void_p,  # stream
-        ctypes.c_void_p,  # data
-        ctypes.c_size_t,  # byte count — must be c_size_t not c_int
-        ctypes.c_void_p,  # error ptr
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,  # must be c_size_t not c_int
+        ctypes.c_void_p,
     ]
     lib.pa_simple_drain.restype = ctypes.c_int
     lib.pa_simple_drain.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -102,7 +98,14 @@ class PASimpleStream:
             )
 
     def write(self, data: bytes) -> None:
-        """Write a PCM chunk. Blocks until PA has buffered it."""
+        """Write a PCM chunk. Blocks until PA has buffered it.
+
+        Guards against calling into libpulse after close() has freed the
+        connection — a concurrent close() zeroes self._conn before freeing,
+        so this check is sufficient to prevent a use-after-free segfault.
+        """
+        if not self._conn:
+            return
         error = ctypes.c_int(0)
         ret = self._lib.pa_simple_write(self._conn, data, len(data), ctypes.byref(error))
         if ret < 0:
@@ -110,14 +113,21 @@ class PASimpleStream:
 
     def drain(self) -> None:
         """Block until all buffered audio has played out."""
+        if not self._conn:
+            return
         error = ctypes.c_int(0)
         self._lib.pa_simple_drain(self._conn, ctypes.byref(error))
 
     def close(self) -> None:
-        """Free the PA stream."""
-        if self._conn:
-            self._lib.pa_simple_free(self._conn)
-            self._conn = None
+        """Free the PA stream.
+
+        Atomically zeroes self._conn before calling pa_simple_free so that
+        any concurrent write() or drain() sees None and returns early rather
+        than touching the freed pointer.
+        """
+        conn, self._conn = self._conn, None
+        if conn:
+            self._lib.pa_simple_free(conn)
 
     def __enter__(self) -> PASimpleStream:
         return self
