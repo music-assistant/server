@@ -48,6 +48,8 @@ class SyncGroupPlayer(Player):
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
         self._group_lock = asyncio.Lock()
+        self._active_protocol_domain: str | None = None
+        self._transitioning = False
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -359,18 +361,21 @@ class SyncGroupPlayer(Player):
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         async with self._group_lock:
-            self._attr_current_media = media
-            self._attr_active_source = media.source_id or None
-            await self._form_syncgroup()
-            # simply forward the command to the sync leader
-            if sync_leader := self.sync_leader:
-                # Use internal handler to bypass group redirect logic
-                await self.mass.players._handle_play_media(sync_leader.player_id, media)
-                self.update_state()
-            else:
-                raise RuntimeError(
-                    "An empty group cannot play media, consider adding members first"
-                )
+            self._transitioning = True
+            try:
+                self._attr_current_media = media
+                self._attr_active_source = media.source_id or None
+                await self._form_syncgroup()
+                if sync_leader := self.sync_leader:
+                    await self.mass.players._handle_play_media(sync_leader.player_id, media)
+                    self._update_active_protocol()
+                    self.update_state()
+                else:
+                    raise RuntimeError(
+                        "An empty group cannot play media, consider adding members first"
+                    )
+            finally:
+                self._transitioning = False
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
@@ -389,6 +394,19 @@ class SyncGroupPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
         async with self._group_lock:
+            if self._transitioning:
+                # debounce: a play_media or resume is in progress, defer this command
+                self.logger.debug(
+                    "Deferring set_members on %s (transition in progress)", self.display_name
+                )
+                self.mass.call_later(
+                    1,
+                    self.set_members,
+                    player_ids_to_add,
+                    player_ids_to_remove,
+                    task_id=f"syncgroup_deferred_set_members_{self.player_id}",
+                )
+                return
             await self._set_members(player_ids_to_add, player_ids_to_remove)
 
     async def _set_members(  # noqa: PLR0915
@@ -515,6 +533,9 @@ class SyncGroupPlayer(Player):
                 player_ids_to_add=final_players_to_add,
                 player_ids_to_remove=final_players_to_remove,
             )
+            # update protocol domain (may have changed due to protocol switch)
+            if final_players_to_add:
+                self._update_active_protocol()
         # NOTE: If we weren't playing before, we don't need to do anything else,
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(self.player_id)
@@ -577,15 +598,38 @@ class SyncGroupPlayer(Player):
                     ),
                 )
         self.sync_leader = None
+        self._active_protocol_domain = None
         self.update_state()
 
     def _select_sync_leader(self, new_members: list[str] | None = None) -> Player | None:
-        """Select a (new) sync leader."""
+        """Select a (new) sync leader, preferring protocol continuity."""
         if self.group_members and self.sync_leader and self.sync_leader.state.available:
             # current leader is still available, no need to select a new one
             return self.sync_leader
         # with selecting a new leader, we prioritize the static group members
         group_members = self.static_group_members or self.group_members or new_members or []
+
+        # if we have an active protocol, prefer members that support it
+        if self._active_protocol_domain:
+            for member_id in group_members:
+                member_player = self.mass.players.get_player(member_id)
+                if (
+                    member_player
+                    and member_player.state.available
+                    and self._member_supports_protocol_domain(
+                        member_player, self._active_protocol_domain
+                    )
+                ):
+                    self.logger.debug(
+                        "Auto-selected %s as sync leader for group %s "
+                        "(supports active protocol %s)",
+                        member_player.display_name,
+                        self.display_name,
+                        self._active_protocol_domain,
+                    )
+                    return member_player
+
+        # fallback: pick any available member
         for member_id in group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:
@@ -595,6 +639,23 @@ class SyncGroupPlayer(Player):
                 )
                 return member_player
         return None
+
+    def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
+        """Check if a player supports the given protocol domain.
+
+        :param player: The player to check.
+        :param domain: The protocol domain string (e.g. "airplay", "sonos").
+        """
+        if player.provider.domain == domain:
+            return True
+        for protocol in player.linked_output_protocols:
+            if protocol.protocol_domain == domain and protocol.available:
+                return True
+        return False
+
+    def _update_active_protocol(self) -> None:
+        """Update the cached active protocol domain from the sync leader."""
+        self._active_protocol_domain = self._get_leader_protocol_domain()
 
     def _get_leader_protocol_domain(self) -> str | None:
         """Get the protocol domain of the current sync leader's active output."""
@@ -646,7 +707,9 @@ class SyncGroupPlayer(Player):
         if old_leader_id in self._attr_group_members:
             self._attr_group_members.remove(old_leader_id)
 
-        # Select a new leader from the remaining members
+        # Select a new leader from the remaining members.
+        # _active_protocol_domain is preserved so _select_sync_leader
+        # will prefer a member that supports the current protocol.
         self.sync_leader = None
         new_leader = self._select_sync_leader()
         self.sync_leader = new_leader
