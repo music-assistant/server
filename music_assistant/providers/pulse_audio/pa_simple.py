@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 from typing import ClassVar, Final
 
 PA_SAMPLE_S16LE: Final = 3
@@ -16,11 +17,32 @@ class _PASampleSpec(ctypes.Structure):
     ]
 
 
+def _find_pulse_server() -> str:
+    """Detect the PulseAudio server socket path.
+
+    Checks PULSE_SERVER env var first, then known non-standard paths,
+    then falls back to empty string (libpulse auto-discovery).
+    """
+    if server := os.environ.get("PULSE_SERVER"):
+        return server
+    for path in (
+        "/run/audio/pulse.sock",   # HAOS addon layout
+        "/run/pulse/native",        # standard systemd layout
+        "/var/run/pulse/native",    # older distros
+    ):
+        if os.path.exists(path):
+            return f"unix:{path}"
+    return ""  # empty → pass NULL to pa_simple_new, let libpulse auto-discover
+
+
+PULSE_SERVER: Final = _find_pulse_server()
+
+
 def _load_lib() -> ctypes.CDLL:
     lib = ctypes.CDLL("libpulse-simple.so.0")
     lib.pa_simple_new.restype = ctypes.c_void_p
     lib.pa_simple_new.argtypes = [
-        ctypes.c_char_p,  # server (NULL = default)
+        ctypes.c_char_p,  # server (NULL = auto)
         ctypes.c_char_p,  # app name
         ctypes.c_int,     # direction
         ctypes.c_char_p,  # sink name
@@ -63,7 +85,7 @@ class PASimpleStream:
         error = ctypes.c_int(0)
         self._lib = lib
         self._conn: int | None = lib.pa_simple_new(
-            None,
+            PULSE_SERVER.encode() if PULSE_SERVER else None,
             app_name.encode(),
             PA_STREAM_PLAYBACK,
             sink_name.encode(),
@@ -75,7 +97,8 @@ class PASimpleStream:
         )
         if not self._conn:
             raise OSError(
-                f"pa_simple_new failed for sink '{sink_name}' (pa_error={error.value})"
+                f"pa_simple_new failed for sink '{sink_name}' "
+                f"(pa_error={error.value}, server={PULSE_SERVER!r})"
             )
 
     def write(self, data: bytes) -> None:
@@ -91,6 +114,7 @@ class PASimpleStream:
         self._lib.pa_simple_drain(self._conn, ctypes.byref(error))
 
     def close(self) -> None:
+        """Free the PA stream."""
         if self._conn:
             self._lib.pa_simple_free(self._conn)
             self._conn = None
