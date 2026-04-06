@@ -1,4 +1,5 @@
-"""All logic for metadata retrieval.
+"""
+All logic for metadata retrieval.
 
 TODO: This controller is getting large. Refactor into a dedicated subfolder
 with split files (controller.py, helpers.py, etc.) following the pattern
@@ -1059,8 +1060,7 @@ class MetaDataController(CoreController):
         track_name: str,
         fallback_image_url: str | None = None,
     ) -> tuple[str | None, str | None, str | None]:
-        """
-        Look up artwork by artist and track name.
+        """Look up artwork by artist and track name.
 
         Searches library and external providers for matching artwork.
         Also returns corrected artist/track names if the search detects
