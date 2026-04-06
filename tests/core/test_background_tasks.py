@@ -431,7 +431,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     metadata._register_maintenance_tasks()
 
     cache_task = tasks_controller.get_task("cache_database_cleanup")
-    artist_scan_task = tasks_controller.get_task("metadata_missing_artist_artwork_scan")
+    artist_scan_task = tasks_controller.get_task("metadata_missing_artist_metadata_scan")
     playlist_scan_task = tasks_controller.get_task("metadata_playlist_metadata_scan")
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
