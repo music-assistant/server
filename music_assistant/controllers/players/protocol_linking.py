@@ -1888,15 +1888,17 @@ class ProtocolLinkingMixin:
                     old_parent_members = []
                 # Resume playback — this will start on the new protocol
                 await self.mass.players._handle_cmd_resume(parent_player.player_id)
-                # Re-add old members to the new protocol so they join the new session
+                # Re-add old members to the new protocol so they join the new session.
+                # Use _handle_set_members directly to avoid deadlocking on the
+                # controller's per-player cmd_set_members lock (we're already inside it).
                 if old_parent_members:
                     self.logger.debug(
                         "Re-adding migrated members %s to %s on new protocol",
                         old_parent_members,
                         parent_player.state.name,
                     )
-                    await self.mass.players.cmd_set_members(
-                        parent_player.player_id,
+                    await self.mass.players._handle_set_members(
+                        parent_player,
                         player_ids_to_add=old_parent_members,
                     )
 
