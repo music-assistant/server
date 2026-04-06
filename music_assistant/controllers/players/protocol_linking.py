@@ -1886,21 +1886,13 @@ class ProtocolLinkingMixin:
                     await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
                 else:
                     old_parent_members = []
-                # Resume playback — this will start on the new protocol
-                await self.mass.players._handle_cmd_resume(parent_player.player_id)
-                # Re-add old members to the new protocol so they join the new session.
-                # Use _handle_set_members directly to avoid deadlocking on the
-                # controller's per-player cmd_set_members lock (we're already inside it).
-                if old_parent_members:
-                    self.logger.debug(
-                        "Re-adding migrated members %s to %s on new protocol",
-                        old_parent_members,
-                        parent_player.state.name,
-                    )
-                    await self.mass.players._handle_set_members(
-                        parent_player,
-                        player_ids_to_add=old_parent_members,
-                    )
+                # Schedule resume and member re-add via call_later to avoid
+                # deadlocking on the syncgroup's _group_lock. If parent_player
+                # is part of a syncgroup, _handle_cmd_resume redirects to the
+                # syncgroup's play_media which acquires _group_lock (already held).
+                self.mass.create_task(
+                    self._complete_protocol_switch(parent_player, old_parent_members)
+                )
 
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",
@@ -1908,3 +1900,28 @@ class ProtocolLinkingMixin:
             parent_protocol_player.group_members,
             parent_protocol_player.synced_to,
         )
+
+    async def _complete_protocol_switch(
+        self,
+        parent_player: Player,
+        old_parent_members: list[str],
+    ) -> None:
+        """Complete a protocol switch by resuming playback and re-adding migrated members.
+
+        Runs as a separate task to avoid deadlocking on the syncgroup's _group_lock
+        (the set_members caller still holds it when scheduling this).
+
+        :param parent_player: The parent player that switched protocols.
+        :param old_parent_members: Parent player IDs to re-add after resume.
+        """
+        await self.mass.players._handle_cmd_resume(parent_player.player_id)
+        if old_parent_members:
+            self.logger.debug(
+                "Re-adding migrated members %s to %s on new protocol",
+                old_parent_members,
+                parent_player.state.name,
+            )
+            await self.mass.players._handle_set_members(
+                parent_player,
+                player_ids_to_add=old_parent_members,
+            )
