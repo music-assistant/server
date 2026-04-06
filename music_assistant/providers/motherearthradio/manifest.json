@@ -1,0 +1,11 @@
+{
+  "domain": "motherearthradio",
+  "name": "Mother Earth Radio",
+  "description": "Audiophile internet radio — FLAC up to 192 kHz/24-bit, human-curated, ad-free, listener supported.",
+  "documentation": "https://motherearthradio.de",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@fvonhoven",
+  "multi_instance": false,
+  "stage": "stable"
+}
