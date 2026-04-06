@@ -1,1 +1,12 @@
-
+{
+  "type": "player",
+  "domain": "pulse_audio",
+  "name": "Pulse Audio Out",
+  "description": "Play audio through locally attached pulse audio outputs.",
+  "codeowners": ["@music-assistant"],
+  "depends_on": "sendspin",
+  "documentation": "https://music-assistant.io/player-support/pulse-audio/",
+  "builtin": true,
+  "allow_disable": true,
+  "stage": "alpha"
+}
