@@ -264,14 +264,12 @@ class SyncGroupPlayer(Player):
 
     @property
     def group_members(self) -> list[str]:
-        """Return the list of player id's that are part of this sync group."""
+        """Return the list of parent player id's that are part of this sync group."""
         if (sync_leader := self.sync_leader) and sync_leader.state.group_members:
-            # prefer the group members as reported by the sync leader,
-            # since that is the source of truth for the actual active group members
-            # as the user may have decided to (temporarily) join/unjoin some members
-            # to/from the group, which would cause our internal list to be out of
-            # sync with the actual group members
-            return sync_leader.state.group_members
+            # The sync leader's group_members may contain protocol IDs (e.g. apc...)
+            # when playing via a protocol. Translate back to parent IDs so callers
+            # always get protocol-independent IDs.
+            return self._translate_to_parent_ids(sync_leader.state.group_members)
         return self._attr_group_members
 
     async def get_config_entries(
@@ -563,10 +561,13 @@ class SyncGroupPlayer(Player):
             self.sync_leader.player_id,
             *[x for x in self._attr_group_members if x != self.sync_leader.player_id],
         ]
+        # Translate the leader's group_members (may be protocol IDs) to parent IDs
+        # so we can compare against our _attr_group_members (always parent IDs)
+        already_synced = set(self._translate_to_parent_ids(self.sync_leader.state.group_members))
         members_to_sync = [
             x
             for x in self._attr_group_members
-            if x != self.sync_leader.player_id and x not in self.sync_leader.state.group_members
+            if x != self.sync_leader.player_id and x not in already_synced
         ]
         if members_to_sync:
             # If the sync leader is playing something independently, stop it first
@@ -639,6 +640,24 @@ class SyncGroupPlayer(Player):
                 )
                 return member_player
         return None
+
+    def _translate_to_parent_ids(self, player_ids: list[str]) -> list[str]:
+        """Translate a list of (possibly protocol) player IDs to parent player IDs.
+
+        Protocol players (e.g. AirPlay `apc...`) are translated to their parent
+        (e.g. Sonos `RINCON_...`). Non-protocol IDs pass through unchanged.
+
+        :param player_ids: List of player IDs that may be protocol or parent IDs.
+        """
+        result: list[str] = []
+        for pid in player_ids:
+            if player := self.mass.players.get_player(pid):
+                parent_id = player.protocol_parent_id or pid
+                if parent_id not in result:
+                    result.append(parent_id)
+            elif pid not in result:
+                result.append(pid)
+        return result
 
     def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
         """Check if a player supports the given protocol domain.
