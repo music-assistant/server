@@ -67,6 +67,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the /app contents have correct permissions but for some reason /app itself does not.
 # so apply again, but ONLY to the dir (otherwise we increase the size)
 
+RUN apk -U --no-cache add pulseaudio-utils
+
 RUN chmod 777 /app
 
 # Set some labels
