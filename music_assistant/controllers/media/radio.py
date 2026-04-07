@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.enums import EventType, MediaType, ProviderFeature
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant_models.media_items import ProviderMapping, Radio, Track
 
 from music_assistant.constants import DB_TABLE_RADIOS
@@ -43,6 +43,7 @@ class RadioController(MediaControllerBase[Radio]):
         self.mass.register_api_command(f"music/{api_base}/radio_versions", self.versions)
         self.mass.register_api_command(f"music/{api_base}/export_radios", self.export_radios)
         self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
+        self.mass.register_api_command(f"music/{api_base}/edit_radio", self.edit_radio)
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
@@ -60,6 +61,54 @@ class RadioController(MediaControllerBase[Radio]):
             raise ProviderUnavailableError("Builtin provider is not available")
         builtin_prov = cast("BuiltinProvider", provider)
         return await builtin_prov.import_radios(m3u_data)
+
+    async def edit_radio(
+        self,
+        item_id: int | str,
+        url: str,
+        name: str,
+        image_url: str | None = None,
+    ) -> Radio:
+        """
+        Edit a manually-added (builtin provider) radio station.
+
+        :param item_id: Library item ID.
+        :param url: Stream URL.
+        :param name: Display name.
+        :param image_url: Image URL.
+        """
+        db_id = int(item_id)
+        library_item = await self.get_library_item(db_id)
+
+        builtin_mapping = next(
+            (pm for pm in library_item.provider_mappings if pm.provider_domain == "builtin"),
+            None,
+        )
+        if not builtin_mapping:
+            msg = "Only manually-added radio stations can be edited"
+            raise InvalidDataError(msg)
+
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+
+        updated_radio = await builtin_prov.edit_radio(builtin_mapping.item_id, url, name, image_url)
+
+        # Ensure provider mapping stays in library
+        for pm in updated_radio.provider_mappings:
+            if pm.provider_domain == "builtin":
+                object.__setattr__(pm, "in_library", True)
+
+        await self._update_library_item(db_id, updated_radio, overwrite=True)
+
+        library_item = await self.get_library_item(db_id)
+        self.mass.signal_event(
+            EventType.MEDIA_ITEM_UPDATED,
+            library_item.uri,
+            library_item,
+        )
+        return library_item
 
     async def versions(
         self,

@@ -400,6 +400,36 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
+    async def edit_radio(
+        self,
+        old_item_id: str,
+        new_item_id: str,
+        name: str,
+        image_url: str | None = None,
+    ) -> Radio:
+        """
+        Edit a stored radio station in config.
+
+        :param old_item_id: Current URL/item_id of the radio.
+        :param new_item_id: New URL.
+        :param name: Display name.
+        :param image_url: Image URL.
+        """
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
+
+        if not any(x["item_id"] == old_item_id for x in stored_items):
+            msg = f"Radio station not found: {old_item_id}"
+            raise MediaNotFoundError(msg)
+
+        stored_items = [x for x in stored_items if x["item_id"] != old_item_id]
+        stored_item = StoredItem(item_id=new_item_id, name=name)
+        if image_url:
+            stored_item["image_url"] = image_url
+        stored_items.append(stored_item)
+        self.mass.config.set(CONF_KEY_RADIOS, stored_items)
+
+        return await self.get_radio(new_item_id)
+
     async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
     ) -> list[PlaylistPlayableItem]:
