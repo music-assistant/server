@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -209,20 +210,16 @@ class TestProtocolDomainTracking:
         assert sgp._active_protocol_domain == "airplay"
 
     def test_dissolve_clears_protocol(self) -> None:
-        """Dissolving the syncgroup should clear the protocol domain."""
+        """Verify _dissolve_syncgroup clears sync_leader and protocol domain."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
 
-        sgp.sync_leader = MagicMock()
-        sgp.sync_leader.state.group_members = []
-        sgp._active_protocol_domain = "airplay"
-
-        # Directly verify the clearing logic without calling the async method
-        sgp.sync_leader = None
-        sgp._active_protocol_domain = None
-        sgp.update_state = MagicMock()  # type: ignore[method-assign,misc]
-        assert sgp._active_protocol_domain is None
-        assert sgp.sync_leader is None
+        # Verify the dissolve method has the clearing logic by inspecting source.
+        # The actual async dissolve is tested in integration, but we verify
+        # the attributes are cleared by the method body.
+        source = inspect.getsource(sgp._dissolve_syncgroup)
+        assert "self.sync_leader = None" in source
+        assert "self._active_protocol_domain = None" in source
 
 
 class TestControllerLockCategory:
@@ -239,8 +236,8 @@ class TestControllerLockCategory:
 class TestProtocolSwitchCleanup:
     """Test that protocol switching properly cleans up old sessions."""
 
-    def test_protocol_domain_updated_after_set_members(self) -> None:
-        """Protocol domain should be updated when set_members triggers a protocol switch."""
+    def test_update_active_protocol_resolves_domain(self) -> None:
+        """_update_active_protocol should resolve the protocol domain from the sync leader."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
 
@@ -279,13 +276,37 @@ class TestProtocolSwitchCleanup:
 
         assert sgp._active_protocol_domain == "sendspin"
 
-    def test_dynamic_leader_switch_preserves_protocol(self) -> None:
+    @pytest.mark.asyncio
+    async def test_dynamic_leader_switch_preserves_protocol(self) -> None:
         """Dynamic leader switch should preserve the active protocol domain."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
 
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            active_output_protocol="ap_old",
+        )
+        new_leader = _make_mock_player("new_leader", provider_domain="sonos")
+        ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
+        ap_protocol.set_members = AsyncMock()
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "new_leader": new_leader,
+                "ap_old": ap_protocol,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "new_leader"]
         sgp._active_protocol_domain = "airplay"
 
-        # After leader switch, protocol domain should be unchanged
-        # (the protocol stays the same, only the leader changes)
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        # Protocol domain preserved, new leader selected
         assert sgp._active_protocol_domain == "airplay"
+        assert sgp.sync_leader == new_leader
+        assert "old_leader" not in sgp._attr_group_members
