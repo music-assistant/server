@@ -124,6 +124,16 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 
 ##################################################################################################
 
+# Small builder to install pulseaudio-utils and extract binaries/libs
+FROM debian:bookworm AS pa-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pulseaudio-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure the files we need exist (pactl, pacmd and pulse libs)
+# They will be copied into the final base image.
+
 FROM python:3.13-slim-bookworm
 
 # Enable non-free and contrib repositories for codec libraries
@@ -222,6 +232,14 @@ COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
 
 # Copy pre-built PyAV wheel for use by downstream images
 COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/
+
+# Copy pulseaudio binaries and libs from pa-builder
+COPY --from=pa-builder /usr/bin/pactl /usr/bin/pactl
+COPY --from=pa-builder /usr/bin/pacmd /usr/bin/pacmd
+# PulseAudio libraries location on Debian x86_64; copy the whole pulse dir to be safe
+COPY --from=pa-builder /usr/lib/x86_64-linux-gnu/pulse /usr/lib/x86_64-linux-gnu/pulse
+# Some systems place libs directly under /usr/lib; include these patterns if needed:
+COPY --from=pa-builder /usr/lib/x86_64-linux-gnu/libpulse* /usr/lib/x86_64-linux-gnu/ || true
 
 # Update shared library cache and verify FFmpeg
 RUN ldconfig && ffmpeg -version && ffprobe -version
