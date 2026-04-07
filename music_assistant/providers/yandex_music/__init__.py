@@ -138,16 +138,15 @@ async def get_config_entries(
             action_label="Reset authentication",
             hidden=not is_authenticated,
         ),
-        # Manual token entry (advanced fallback)
+        # Token storage (populated by QR action or manual entry)
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Yandex Music Token (manual)",
-            description="Advanced: manually enter a music token instead of using QR login. "
-            "See the documentation for how to obtain it.",
-            required=False,
+            label="Yandex Music Token",
+            description="Music token — populated automatically by QR login, "
+            "or enter manually. See the documentation for how to obtain it.",
+            required=True,
             hidden=is_authenticated,
-            advanced=True,
             value=cast("str", values.get(CONF_TOKEN)) if values else None,
         ),
         # x_token (internal storage, always hidden)
