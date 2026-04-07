@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, LoginFailed
+from music_assistant_models.errors import InvalidDataError
 
 from .constants import (
     CONF_ACTION_AUTH_QR,

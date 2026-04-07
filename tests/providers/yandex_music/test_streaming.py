@@ -738,3 +738,54 @@ async def test_get_audio_stream_exact_window_boundary(
 
     assert result == plaintext
     assert len(session.calls) == 1, "second window must not be requested when EOF is detected"
+
+
+async def test_get_audio_stream_continues_after_non_block_boundary_drop(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """TCP drop at a non-AES-block boundary must not cause premature EOF on reconnect.
+
+    Scenario (patched window = 32 bytes = 2 AES blocks, 50-byte file):
+    - Window 1 (bytes=0-31) drops at byte 17 (not on a 16-byte AES boundary).
+    - Reconnect re-requests from block_start=16; server returns full 32 bytes.
+    - Old bug: window_got = 31 < _RANGE_WINDOW = 32 → stream terminates at byte 48,
+      losing the final 2 bytes of the file.
+    - Fixed:   received = window_got + block_skip = 31 + 1 = 32 = _RANGE_WINDOW
+      → stream continues to window 2, which delivers the remaining 2 bytes.
+    """
+    small_window = 32  # 2 AES blocks
+    key = b"\xcc" * 32
+    plaintext = b"X" * 50  # 50 bytes → two windows (32 + 2 remaining)
+
+    nonce_16 = bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(nonce_16)).encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    drop_at = 17  # non-block boundary (17 % 16 != 0)
+
+    # Window 1: bytes=0-31, drops after delivering 17 bytes
+    resp1 = _MockResponse([ciphertext[:drop_at]], drop_payload_error=True)
+    # Reconnect: block_start=16, requests bytes=16-47, server returns full 32 bytes
+    resp2 = _MockResponse([ciphertext[16:48]], status=206)
+    # Window 2: bytes=48-79, only 2 bytes remain in the file
+    resp3 = _MockResponse([ciphertext[48:50]], status=206)
+
+    session = _MultiCallHttpSession([resp1, resp2, resp3])
+    streaming_provider_stub.mass.http_session = session
+
+    result = b""
+    with (
+        unittest.mock.patch.object(_streaming_mod, "_RANGE_WINDOW", small_window),
+        unittest.mock.patch("asyncio.sleep"),
+    ):
+        async for chunk in streaming_manager.get_audio_stream(
+            _make_encrypted_stream_details(key.hex())
+        ):
+            result += chunk
+
+    assert result == plaintext, f"Expected {len(plaintext)} bytes, got {len(result)}"
+    assert len(session.calls) == 3
+    assert session.calls[0]["headers"] == {"Range": "bytes=0-31"}
+    assert session.calls[1]["headers"] == {"Range": "bytes=16-47"}  # AES-aligned reconnect
+    assert session.calls[2]["headers"] == {"Range": "bytes=48-79"}  # second window
