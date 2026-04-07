@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,23 +45,25 @@ def _create_party_plugin() -> PartyPlugin:
 async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None:
     """Reject a duplicate that appears after the initial queue lookup."""
     plugin = _create_party_plugin()
+    player_queues = cast("MagicMock", plugin.mass.player_queues)
+    music = cast("MagicMock", plugin.mass.music)
     uri = "spotify://track/123"
 
     queue = MagicMock()
     queue.state = PlaybackState.PLAYING
     queue.current_index = 0
     queue.index_in_buffer = 0
-    plugin.mass.player_queues.get.return_value = queue
-    plugin.mass.player_queues.items.return_value = []
-    plugin.mass.player_queues.load = AsyncMock()
+    player_queues.get.return_value = queue
+    player_queues.items.return_value = []
+    player_queues.load = AsyncMock()
 
     async def mutate_queue_during_resolve(_uri: str) -> MagicMock:
         media_item = MagicMock()
         media_item.media_type = MediaType.TRACK
-        plugin.mass.player_queues.items.return_value = [MagicMock(uri=uri, extra_attributes={})]
+        player_queues.items.return_value = [MagicMock(uri=uri, extra_attributes={})]
         return media_item
 
-    plugin.mass.music.get_item_by_uri = AsyncMock(side_effect=mutate_queue_during_resolve)
+    music.get_item_by_uri = AsyncMock(side_effect=mutate_queue_during_resolve)
     queue_item = MagicMock()
     queue_item.extra_attributes = {}
 
@@ -70,8 +73,8 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
             return_value=SimpleNamespace(username=PARTY_GUEST_USER),
         ),
         patch("music_assistant.providers.party.QueueItem.from_media_item", return_value=queue_item),
+        pytest.raises(InvalidDataError, match="already in the queue"),
     ):
-        with pytest.raises(InvalidDataError, match="already in the queue"):
-            await plugin.add_to_queue(uri)
+        await plugin.add_to_queue(uri)
 
-    plugin.mass.player_queues.load.assert_not_awaited()
+    player_queues.load.assert_not_awaited()
