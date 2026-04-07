@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import suppress
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
@@ -120,9 +119,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 CACHE_CATEGORY_PLAYER_POWER = 1
-
-# Context variable to prevent circular calls between players and player_queues controllers
-IN_QUEUE_COMMAND: ContextVar[bool] = ContextVar("IN_QUEUE_COMMAND", default=False)
 
 
 class PlayerController(ProtocolLinkingMixin, CoreController):
@@ -445,7 +441,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self._get_player_with_redirect(player_id)
         # Redirect to queue controller if it is active (skip if already in queue command context)
-        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
+        if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.stop(active_queue.queue_id)
             return
         # Delegate to internal handler for actual implementation
@@ -483,7 +479,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self._get_player_with_redirect(player_id)
         # Redirect to queue controller if it is active (skip if already in queue command context)
-        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
+        if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.pause(active_queue.queue_id)
             return
         # Delegate to internal handler for actual implementation
@@ -531,7 +527,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 await plugin_source.on_seek(position)
                 return
         # Redirect to queue controller if it is active
-        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
+        if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
         # handle command on player/source directly
