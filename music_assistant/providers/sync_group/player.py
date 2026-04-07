@@ -385,6 +385,8 @@ class SyncGroupPlayer(Player):
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
             )
+        # Cancel any pending dissolve from a previous stop() call
+        self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
         sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
         was_playing = self.playback_state == PlaybackState.PLAYING
 
