@@ -11,7 +11,12 @@ CONF_BASE_URL = "base_url"
 
 # Actions
 CONF_ACTION_AUTH = "auth"
+CONF_ACTION_AUTH_QR = "auth_qr"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"
+
+# QR authentication config keys
+CONF_X_TOKEN = "x_token"
+CONF_REMEMBER_SESSION = "remember_session"
 
 # Labels
 LABEL_TOKEN = "token_label"

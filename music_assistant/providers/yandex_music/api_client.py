@@ -772,10 +772,10 @@ class YandexMusicClient:
             )
         except Exception as err:
             LOGGER.warning(
-                "get-file-info lossless for track %s: Unexpected error: %s",
+                "get-file-info lossless for track %s: Unexpected %s: %s",
                 track_id,
+                type(err).__name__,
                 err,
-                exc_info=True,
             )
 
         return None

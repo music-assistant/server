@@ -547,6 +547,9 @@ class YandexMusicStreamingManager:
                         ) from err
 
                     bytes_before = bytes_yielded
+                    # block_skip = bytes re-downloaded for AES-block alignment.
+                    # Needed below to compute actual HTTP bytes received.
+                    block_skip = bytes_before - block_start
                     async for chunk in self._decrypt_response_stream(
                         response, key_bytes, block_size, bytes_yielded
                     ):
@@ -555,7 +558,14 @@ class YandexMusicStreamingManager:
 
                     # window complete — check if EOF
                     window_got = bytes_yielded - bytes_before
-                    if response.status == 200 or window_got < _RANGE_WINDOW:
+                    # received = actual HTTP bytes the server sent for this Range
+                    # request.  window_got alone understates the window when
+                    # block_skip > 0 (reconnect at a non-AES-block boundary):
+                    # the decryptor skips block_skip bytes, so window_got would be
+                    # smaller than _RANGE_WINDOW even for a full server response,
+                    # causing premature stream termination without this correction.
+                    received = window_got + block_skip
+                    if response.status == 200 or received < _RANGE_WINDOW:
                         return  # full file received or last partial window
                     # Exact-boundary guard: if file size is an exact multiple of
                     # _RANGE_WINDOW the size check above won't catch EOF.
