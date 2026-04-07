@@ -52,6 +52,7 @@ def _make_mock_player(
     player.available = available
     player.active_output_protocol = active_output_protocol
     player.playback_state = playback_state
+    player.protocol_parent_id = None
     player.provider = MagicMock()
     player.provider.domain = provider_domain
 

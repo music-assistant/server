@@ -2655,6 +2655,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         parent, player_ids_to_remove=[player.player_id]
                     ),
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 self.logger.warning(
                     "Failed to auto-ungroup %s from %s, proceeding anyway",
