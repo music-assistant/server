@@ -340,6 +340,32 @@ class SendspinPlaybackSession:
 
     # -- Public API ------------------------------------------------------------
 
+    async def transfer_to(self, new_player: SendspinPlayer) -> None:
+        """Transfer session ownership to a new player.
+
+        Used during dynamic leader switching to keep the push stream alive
+        while the old leader is removed from the sendspin group. The PushStream
+        and all internal state (pipelines, history, join-catchup) stay intact;
+        only the owning player reference is updated.
+
+        Cleans up the old leader's pipeline/channel state so its FFmpeg
+        processor is released.
+
+        :param new_player: The SendspinPlayer that will take over as session owner.
+        """
+        old_leader_id = self.player.player_id
+        self.player = new_player
+        # Release the old leader's DSP pipeline -- it's no longer in the group
+        # and _refresh_member_mappings won't touch it since it only iterates
+        # current members + the (new) leader.
+        async with self._state_lock:
+            pipeline = self._member_pipelines.pop(old_leader_id, None)
+            self._pipeline_config_cache.pop(old_leader_id, None)
+            self._preassigned_channels.pop(old_leader_id, None)
+            self._mapping_dirty = True
+        if pipeline is not None and pipeline.processor is not None:
+            await self._close_member_ffmpeg(pipeline.processor)
+
     async def cancel(self, reason: str) -> None:
         """Cancel and await the active playback task, if any."""
         task = self.playback_task

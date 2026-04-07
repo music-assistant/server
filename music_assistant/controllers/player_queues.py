@@ -37,6 +37,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     AudioError,
+    InsufficientPermissions,
     InvalidCommand,
     InvalidDataError,
     MediaNotFoundError,
@@ -75,7 +76,6 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
 )
-from music_assistant.controllers.players.controller import IN_QUEUE_COMMAND
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -350,6 +350,21 @@ class PlayerQueuesController(CoreController):
         """Return PlayerQueue by queue_id or None if not found."""
         return self._queues.get(queue_id)
 
+    def _check_player_permission(self, queue_id: str) -> None:
+        """Check if the current user has permission to control this player/queue.
+
+        :param queue_id: The queue/player ID to check access for.
+        :raises InsufficientPermissions: If the user lacks access.
+        """
+        current_user = get_current_user()
+        if (
+            current_user
+            and current_user.player_filter
+            and queue_id not in current_user.player_filter
+        ):
+            msg = f"{current_user.username} does not have access to player {queue_id}"
+            raise InsufficientPermissions(msg)
+
     @api_command("player_queues/items")
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
@@ -496,6 +511,7 @@ class PlayerQueuesController(CoreController):
             to account for playback history per user when the play_media is
             called from a shared context (like a web hook or automation).
         """
+        self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
@@ -627,6 +643,7 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
+        self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         self._transitioning_players.discard(queue_id)
@@ -636,12 +653,8 @@ class PlayerQueuesController(CoreController):
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-        # Set context to prevent circular call, then forward the actual command to the player
-        token = IN_QUEUE_COMMAND.set(True)
-        try:
-            await self.mass.players.cmd_stop(queue_id)
-        finally:
-            IN_QUEUE_COMMAND.reset(token)
+        # Use internal handler to avoid circular redirect deadlock
+        await self.mass.players._handle_cmd_stop(queue_id)
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
@@ -651,6 +664,7 @@ class PlayerQueuesController(CoreController):
 
         :param queue_id: queue_id of the playerqueue to handle the command.
         """
+        self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
@@ -663,6 +677,7 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
+        self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         self._transitioning_players.discard(queue_id)
@@ -671,13 +686,9 @@ class PlayerQueuesController(CoreController):
         queue_active = queue.active
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
-        # forward the actual command to the player controller
-        # Set context to prevent circular call, then forward the actual command to the player
-        token = IN_QUEUE_COMMAND.set(True)
-        try:
-            await self.mass.players.cmd_pause(queue_id)
-        finally:
-            IN_QUEUE_COMMAND.reset(token)
+        # Use internal handler to avoid circular redirect
+        # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
+        await self.mass.players._handle_cmd_pause(queue_id)
 
         async def _watch_pause(player: Player) -> None:
             count = 0
@@ -722,6 +733,7 @@ class PlayerQueuesController(CoreController):
 
         :param queue_id: queue_id of the queue to handle the command.
         """
+        self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
@@ -735,6 +747,7 @@ class PlayerQueuesController(CoreController):
 
         :param queue_id: queue_id of the queue to handle the command.
         """
+        self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
@@ -782,6 +795,7 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the queue to handle the command.
         """
+        self._check_player_permission(queue_id)
         queue = self._queues[queue_id]
         queue_items = self._queue_items[queue_id]
         resume_item = queue.current_item
@@ -835,6 +849,7 @@ class PlayerQueuesController(CoreController):
         fade_in: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
+        self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         # we set a flag to notify the update logic that we're transitioning to a new track
@@ -903,9 +918,15 @@ class PlayerQueuesController(CoreController):
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
-            await self.mass.players.play_media(
-                player_id=queue_id,
-                media=await self.player_media_from_queue_item(queue_item),
+            # Use _handle_play_media directly to bypass the play_media lock.
+            # The queue controller is an internal consumer and play_index is
+            # already serialized by _play_action_locks. Going through the public
+            # play_media would deadlock when called from within cmd_set_members
+            # (which holds the play_media lock during protocol switches).
+            player = self.mass.players._get_player_with_redirect(queue_id)
+            await self.mass.players._handle_play_media(
+                player.player_id,
+                await self.player_media_from_queue_item(queue_item),
             )
             queue.current_index = index
             queue.current_item = queue_item

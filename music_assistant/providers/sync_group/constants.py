@@ -26,18 +26,11 @@ SUPPORT_DYNAMIC_LEADER = {
     # and the music keeps playing uninterrupted.
     "airplay",
     "snapcast",
+    "sendspin",
     # TODO: Get this working with Sonos as well (need to handle range requests)
     # TODO: Add squeezelite support. Currently restarts the entire stream session
     #  on member changes (no late-join support), so removing the leader would still
     #  cause a gap. Needs late-join / stream transfer support first.
-    # TODO: Add sendspin support. The aiosendspin library already supports removing a
-    #  client from a group without stopping the PushStream (group.remove_client only
-    #  stops the removed client's roles). However, the MA sendspin provider ties the
-    #  SendspinPlaybackSession to the leader player — when the leader is removed, its
-    #  playback session is cancelled, cutting off the audio source. To fix this, the
-    #  playback session needs to be decoupled from the leader player (group-owned
-    #  instead of player-owned), and _handle_group_member_removed should not call
-    #  group.stop() when other clients remain.
 }
 
 
