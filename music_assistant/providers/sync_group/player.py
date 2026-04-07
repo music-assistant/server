@@ -229,21 +229,20 @@ class SyncGroupPlayer(Player):
             if self.is_dynamic
             else []
         )
-        # if we already have a sync leader, we use its can_group_with as reference
-        if self.sync_leader:
-            return {
-                self.sync_leader.player_id,
-                *self.sync_leader.state.can_group_with.difference(members_filter),
-            }
-        # If we have no syncleader, but we do have group members
-        # grab 'can_group_with' from the first available member
-        for member_id in self._attr_group_members:
-            if member_id in members_filter:
-                continue
-            member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
-                can_group_with = {member_player.player_id, *member_player.state.can_group_with}
-                return can_group_with.difference(members_filter)
+        # Aggregate can_group_with from ALL current group members (not just the leader).
+        # A sync group can accommodate protocol switches, so a player compatible with
+        # ANY current member is a valid candidate to join.
+        member_ids = self._attr_group_members if self._attr_group_members else []
+        if member_ids:
+            can_group_with: set[str] = set()
+            for member_id in member_ids:
+                if member_id in members_filter:
+                    continue
+                member_player = self.mass.players.get_player(member_id)
+                if member_player and member_player.state.available:
+                    can_group_with.add(member_player.player_id)
+                    can_group_with.update(member_player.state.can_group_with)
+            return can_group_with.difference(members_filter)
         # Empty dynamic groups can potentially group with any compatible players
         # Actual compatibility is validated when adding members
         can_group_with: set[str] = set()  # type: ignore[no-redef]
