@@ -403,7 +403,8 @@ class BuiltinProvider(MusicProvider):
         return True
 
     async def on_item_updated(self, item: MediaItemType) -> None:
-        """Update stored item config when a library item is edited.
+        """
+        Update stored item config when a library item is edited.
 
         :param item: The updated media item with new metadata.
         """
