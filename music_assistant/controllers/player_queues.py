@@ -75,7 +75,6 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
 )
-from music_assistant.controllers.players.controller import IN_QUEUE_COMMAND
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -636,12 +635,9 @@ class PlayerQueuesController(CoreController):
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-        # Set context to prevent circular call, then forward the actual command to the player
-        token = IN_QUEUE_COMMAND.set(True)
-        try:
-            await self.mass.players.cmd_stop(queue_id)
-        finally:
-            IN_QUEUE_COMMAND.reset(token)
+        # Use internal handler to bypass the play lock (we're an internal consumer).
+        # The public cmd_stop also redirects back to us, causing a deadlock on the play lock.
+        await self.mass.players._handle_cmd_stop(queue_id)
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @api_command("player_queues/play")
@@ -671,13 +667,9 @@ class PlayerQueuesController(CoreController):
         queue_active = queue.active
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
-        # forward the actual command to the player controller
-        # Set context to prevent circular call, then forward the actual command to the player
-        token = IN_QUEUE_COMMAND.set(True)
-        try:
-            await self.mass.players.cmd_pause(queue_id)
-        finally:
-            IN_QUEUE_COMMAND.reset(token)
+        # Use internal handler to avoid circular redirect
+        # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
+        await self.mass.players._handle_cmd_pause(queue_id)
 
         async def _watch_pause(player: Player) -> None:
             count = 0
