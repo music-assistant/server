@@ -10,7 +10,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamMetadata
 
-from .constants import MER_CHANNELS, MerChannel
+from .constants import MER_CHANNELS, STATION_ICON_URL, MerChannel
 
 
 def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radio:
@@ -41,7 +41,7 @@ def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radi
         MediaItemImage(
             provider=instance_id,
             type=ImageType.THUMB,
-            path=channel_info["station_icon"],
+            path=STATION_ICON_URL,
             remotely_accessible=True,
         )
     )
