@@ -64,6 +64,7 @@ from music_assistant.helpers.playlists import (
     media_item_to_playlist_item,
     parse_extinf_title,
     parse_m3u,
+    parse_m3u_playlist_image,
     parse_m3u_playlist_name,
 )
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
@@ -79,7 +80,6 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
-    CONF_KEY_PLAYLIST_IMAGES,
     CONF_KEY_PLAYLISTS,
     CONF_KEY_RADIOS,
     CONF_KEY_TRACKS,
@@ -273,13 +273,11 @@ class BuiltinProvider(MusicProvider):
         playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
             raise MediaNotFoundError(f"Playlist file not found: {prov_playlist_id}")
-        # read playlist name from M3U #PLAYLIST directive, fall back to filename
+        # read playlist name and image from M3U
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         playlist_name = parse_m3u_playlist_name(m3u_data) or prov_playlist_id
-        # check for custom image
-        playlist_images: dict[str, str] = self.mass.config.get(CONF_KEY_PLAYLIST_IMAGES, {})
         metadata = MediaItemMetadata()
-        if image_url := playlist_images.get(prov_playlist_id):
+        if image_url := parse_m3u_playlist_image(m3u_data):
             metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -460,25 +458,18 @@ class BuiltinProvider(MusicProvider):
     async def _update_playlist_metadata(
         self, playlist_id: str, new_name: str, image_url: str | None
     ) -> None:
-        """Update the name and image of a playlist."""
+        """Update the name and image of a playlist in its M3U file."""
         if playlist_id in BUILTIN_PLAYLISTS:
             # builtin playlists are not editable
             return
-        # update name in M3U file
         m3u_data = await self._read_m3u_file(playlist_id)
-        if m3u_data:
-            existing_items = parse_m3u(m3u_data)
-            try:
-                await self._write_m3u_file(playlist_id, new_name, list(existing_items))
-            except OSError as err:
-                self.logger.warning("Failed to update playlist name: %s", err)
-        # update image in config
-        playlist_images: dict[str, str] = self.mass.config.get(CONF_KEY_PLAYLIST_IMAGES, {})
-        if image_url:
-            playlist_images[playlist_id] = image_url
-        elif playlist_id in playlist_images:
-            del playlist_images[playlist_id]
-        self.mass.config.set(CONF_KEY_PLAYLIST_IMAGES, playlist_images)
+        if not m3u_data:
+            return
+        existing_items = parse_m3u(m3u_data)
+        try:
+            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
+        except OSError as err:
+            self.logger.warning("Failed to update playlist metadata: %s", err)
 
     async def add_radio(self, url: str, name: str, image_url: str | None = None) -> Radio:
         """
@@ -1200,9 +1191,10 @@ class BuiltinProvider(MusicProvider):
         playlist_id: str,
         playlist_name: str,
         entries: list[PlaylistItem],
+        playlist_image_url: str | None = None,
     ) -> None:
         """Write an M3U playlist file to disk."""
-        m3u_content = generate_m3u(playlist_name, entries)
+        m3u_content = generate_m3u(playlist_name, entries, playlist_image_url)
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
         async with (
             self._playlist_lock,
