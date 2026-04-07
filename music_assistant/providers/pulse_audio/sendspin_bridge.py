@@ -27,6 +27,7 @@ from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uui
 from .constants import VOLUME_CONTROL_SOFTWARE
 from .pa_simple import PULSE_SERVER, PASimpleStream
 from .player import LocalPulseAudioPlayer, get_sink_uuid
+from .helpers import find_pactl, pactl_env
 
 if TYPE_CHECKING:
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
@@ -328,57 +329,37 @@ class LocalPulseAudioBridgeManager:
                     "Bridge created for sink %s (%s)", pa_sink_name, display_name
                 )
 
-    @staticmethod
-    def _find_pactl() -> str:
-        """Find the pactl binary, checking PATH and known install locations."""
-        import shutil
-        if path := shutil.which("pactl"):
-            return path
-        for candidate in ("/usr/bin/pactl", "/usr/local/bin/pactl", "/bin/pactl"):
-            if os.path.isfile(candidate):
-                return candidate
-        raise FileNotFoundError(
-            "pactl not found — install pulseaudio-utils or set PATH correctly"
+@staticmethod
+def _enumerate_pa_sinks() -> list[dict[str, Any]]:
+    """Enumerate stereo-capable PulseAudio sinks via pactl."""
+    sinks: list[dict[str, Any]] = []
+    result = subprocess.run(
+        [find_pactl(), "--format=json", "list", "sinks"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=pactl_env(),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pactl exited {result.returncode}: {result.stderr.strip()}"
         )
-
-    @staticmethod
-    def _enumerate_pa_sinks() -> list[dict[str, Any]]:
-        """Enumerate stereo-capable PulseAudio sinks via pactl."""
-        sinks: list[dict[str, Any]] = []
-        pactl = LocalPulseAudioBridgeManager._find_pactl()
-        env = (
-            {**os.environ, "PULSE_SERVER": PULSE_SERVER}
-            if PULSE_SERVER
-            else os.environ.copy()
-        )
-        result = subprocess.run(
-            [pactl, "--format=json", "list", "sinks"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env=env,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"pactl exited {result.returncode}: {result.stderr.strip()}"
-            )
-        for sink in json.loads(result.stdout):
-            name: str = sink.get("name", "")
-            desc: str = sink.get("description", name)
-            spec_str: str = sink.get("sample_specification", "")
-            # spec_str format: "s32le 2ch 96000Hz"
-            try:
-                channels = int(spec_str.split()[1].replace("ch", ""))
-            except (IndexError, ValueError):
-                continue
-            if channels < 2:
-                continue
-            sinks.append({
-                "name": desc,
-                "pa_sink_name": name,
-                "max_output_channels": channels,
-            })
-        return sinks
+    for sink in json.loads(result.stdout):
+        name: str = sink.get("name", "")
+        desc: str = sink.get("description", name)
+        spec_str: str = sink.get("sample_specification", "")
+        try:
+            channels = int(spec_str.split()[1].replace("ch", ""))
+        except (IndexError, ValueError):
+            continue
+        if channels < 2:
+            continue
+        sinks.append({
+            "name": desc,
+            "pa_sink_name": name,
+            "max_output_channels": channels,
+        })
+    return sinks
 
     async def stop_all(self) -> None:
         """Stop all bridges."""
