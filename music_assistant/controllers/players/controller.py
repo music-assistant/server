@@ -2643,21 +2643,24 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.state.synced_to or player.state.active_group,
             log_context,
         )
-        try:
-            await self.wait_for_player_update(
-                player.player_id,
-                timeout=5,
-                action=self.cmd_ungroup(player.player_id),
-            )
-        except Exception:
-            # If the ungroup fails (e.g. stale synced_to pointing to a
-            # dissolved group, or the parent doesn't support set_members),
-            # log and continue — the player may already be effectively ungrouped.
-            self.logger.warning(
-                "Failed to auto-ungroup %s from %s, proceeding anyway",
-                player.name,
-                player.state.synced_to or player.state.active_group,
-            )
+        # Use internal _handle_set_members to avoid deadlocking on the play lock
+        # (we're already inside a cmd_set_members chain that holds a play lock).
+        synced_to = player.state.synced_to or player.state.active_group
+        if synced_to and (parent := self.get_player(synced_to)):
+            try:
+                await self.wait_for_player_update(
+                    player.player_id,
+                    timeout=5,
+                    action=self._handle_set_members(
+                        parent, player_ids_to_remove=[player.player_id]
+                    ),
+                )
+            except Exception:
+                self.logger.warning(
+                    "Failed to auto-ungroup %s from %s, proceeding anyway",
+                    player.name,
+                    synced_to,
+                )
 
     async def _handle_set_members(
         self,
