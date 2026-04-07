@@ -27,7 +27,7 @@ from hass_client.utils import (
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.errors import LoginFailed, MusicAssistantError, SetupFailedError
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
@@ -38,6 +38,7 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import OFF_STATES, MediaPlayerEntityFeature
 
 if TYPE_CHECKING:
+    from aiohttp import ClientSession
     from hass_client.models import CompressedState, Device, EntityStateEvent
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
@@ -53,10 +54,13 @@ CONF_VERIFY_SSL = "verify_ssl"
 CONF_POWER_CONTROLS = "power_controls"
 CONF_MUTE_CONTROLS = "mute_controls"
 CONF_VOLUME_CONTROLS = "volume_controls"
+CONF_TTS_ENTITY = "tts_entity"
+CONF_AI_TASK_ENTITY = "ai_task_entity"
 
-SUPPORTED_FEATURES: set[ProviderFeature] = (
-    set()
-)  # we don't have any special supported features (yet)
+SUPPORTED_FEATURES: set[ProviderFeature] = {
+    ProviderFeature.TTS,
+    ProviderFeature.AI_QUERY,
+}
 
 
 async def setup(
@@ -184,7 +188,11 @@ async def get_config_entries(
     # append player controls entries (if we have an active instance)
     if instance_id and (hass_prov := mass.get_provider(instance_id)) and hass_prov.available:
         hass_prov = cast("HomeAssistantProvider", hass_prov)
-        return (*base_entries, *(await _get_player_control_config_entries(hass_prov.hass)))
+        return (
+            *base_entries,
+            *(await _get_player_control_config_entries(hass_prov.hass)),
+            *(await _get_feature_config_entries(hass_prov.hass)),
+        )
 
     return (
         *base_entries,
@@ -208,6 +216,18 @@ async def get_config_entries(
             multi_value=True,
             label=CONF_MUTE_CONTROLS,
             default_value=[],
+        ),
+        ConfigEntry(
+            key=CONF_TTS_ENTITY,
+            type=ConfigEntryType.STRING,
+            label="Text-to-Speech entity",
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_AI_TASK_ENTITY,
+            type=ConfigEntryType.STRING,
+            label="AI Task entity",
+            required=False,
         ),
     )
 
@@ -294,6 +314,52 @@ async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple
             category="player_controls",
         ),
     )
+
+
+async def _get_feature_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, ...]:
+    """Return config entries for TTS and AI task entity selection."""
+    tts_entities: list[ConfigValueOption] = []
+    ai_task_entities: list[ConfigValueOption] = []
+    if not hass.connected:
+        return ()
+    for state in await hass.get_states():
+        entity_platform = state["entity_id"].split(".")[0]
+        if "friendly_name" not in state["attributes"]:
+            name = state["entity_id"]
+        else:
+            name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
+        if entity_platform == "tts":
+            tts_entities.append(ConfigValueOption(name, state["entity_id"]))
+        elif entity_platform == "ai_task":
+            ai_task_entities.append(ConfigValueOption(name, state["entity_id"]))
+    tts_entities.sort(key=lambda x: x.title)
+    ai_task_entities.sort(key=lambda x: x.title)
+    entries: list[ConfigEntry] = []
+    if tts_entities:
+        entries.append(
+            ConfigEntry(
+                key=CONF_TTS_ENTITY,
+                type=ConfigEntryType.STRING,
+                label="Text-to-Speech entity",
+                required=False,
+                options=tts_entities,
+                description="Select which Home Assistant TTS entity to use for text-to-speech.",
+                category="features",
+            )
+        )
+    if ai_task_entities:
+        entries.append(
+            ConfigEntry(
+                key=CONF_AI_TASK_ENTITY,
+                type=ConfigEntryType.STRING,
+                label="AI Task entity",
+                required=False,
+                options=ai_task_entities,
+                description="Select which Home Assistant AI Task entity to use for AI queries.",
+                category="features",
+            )
+        )
+    return tuple(entries)
 
 
 class HomeAssistantProvider(PluginProvider):
@@ -585,18 +651,61 @@ class HomeAssistantProvider(PluginProvider):
 
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path."""
-        ha_url = cast("str", self.config.get_value(CONF_URL)).rstrip("/")
+        ha_url, headers, http_session = self._get_ha_http()
         if ha_url.endswith("/api") and path.startswith("/api/"):
             url = f"{ha_url}{path[4:]}"
         else:
             url = f"{ha_url}{path}"
-
-        # Use HASSIO_TOKEN when running as addon (token config is None)
-        token = self.config.get_value(CONF_AUTH_TOKEN) or os.environ.get("HASSIO_TOKEN")
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-
-        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
-        http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         async with http_session.get(url, headers=headers) as response:
             response.raise_for_status()
             return await response.read()
+
+    async def ai_query(self, query: str) -> str:
+        """Handle an AI query via Home Assistant's ai_task service."""
+        entity_id = self.config.get_value(CONF_AI_TASK_ENTITY)
+        if not entity_id:
+            msg = "No AI Task entity configured"
+            raise SetupFailedError(msg)
+        result = await self.hass.send_command(
+            "call_service",
+            domain="ai_task",
+            service="generate_data",
+            service_data={
+                "task_name": "music_assistant",
+                "instructions": query,
+                "entity_id": str(entity_id),
+            },
+            return_response=True,
+        )
+        response = result.get("response", {}) if isinstance(result, dict) else {}
+        data = response.get("data") if isinstance(response, dict) else None
+        if not data:
+            msg = f"AI Task returned no data in response: {result}"
+            raise MusicAssistantError(msg)
+        return str(data)
+
+    async def tts(self, message: str, language: str | None = None) -> str:
+        """Handle text-to-speech via Home Assistant's REST API."""
+        entity_id = self.config.get_value(CONF_TTS_ENTITY)
+        if not entity_id:
+            msg = "No TTS entity configured"
+            raise SetupFailedError(msg)
+        ha_url, headers, http_session = self._get_ha_http()
+        payload: dict[str, str] = {"engine_id": str(entity_id), "message": message}
+        if language:
+            payload["language"] = language
+        async with http_session.post(
+            f"{ha_url}/api/tts_get_url", headers=headers, json=payload
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+        return str(data["url"])
+
+    def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
+        """Return HA base URL, auth headers, and the appropriate HTTP session."""
+        ha_url = cast("str", self.config.get_value(CONF_URL)).rstrip("/")
+        token = self.config.get_value(CONF_AUTH_TOKEN) or os.environ.get("HASSIO_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
+        return ha_url, headers, http_session

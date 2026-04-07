@@ -175,6 +175,29 @@ class PluginProvider(Provider):
         yield b""
         raise NotImplementedError
 
+    async def tts(self, message: str, language: str | None = None) -> str:
+        """
+        Convert text to speech audio.
+
+        Will only be called if ProviderFeature.TTS is declared.
+
+        :param message: The text to convert to speech.
+        :param language: Optional language code.
+        :return: URL to the generated audio.
+        """
+        raise NotImplementedError
+
+    async def ai_query(self, query: str) -> str:
+        """
+        Handle an AI query.
+
+        Will only be called if ProviderFeature.AI_QUERY is declared.
+
+        :param query: The query/prompt to send.
+        :return: The AI response as a string.
+        """
+        raise NotImplementedError
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
