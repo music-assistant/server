@@ -1044,7 +1044,8 @@ class MetaDataController(CoreController):
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
         missing_description = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.description') ISNULL"
-        query = f"{missing_images} OR {missing_description}"
+        never_refreshed = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL"
+        query = f"({missing_images} OR {missing_description}) AND {never_refreshed}"
         artists = await self.mass.music.artists.get_library_items_by_query(
             limit=METADATA_SCAN_BATCH_SIZE,
             order_by="random",
