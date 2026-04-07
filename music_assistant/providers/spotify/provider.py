@@ -1060,7 +1060,8 @@ class SpotifyProvider(MusicProvider):
 
     @use_cache(43200)  # 12 hours - balances freshness with performance
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
-        """Get raw episode data from Spotify API (cached).
+        """
+        Get raw episode data from Spotify API (cached).
 
         :param prov_podcast_id: Spotify podcast ID.
         """
