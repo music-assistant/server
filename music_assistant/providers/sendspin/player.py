@@ -573,7 +573,7 @@ class SendspinPlayer(Player):
                             "Transferring playback session to %s for dynamic leader switch",
                             new_owner.display_name,
                         )
-                        self.playback_session.transfer_to(new_owner)
+                        await self.playback_session.transfer_to(new_owner)
                         new_owner.playback_session = self.playback_session
                         self.playback_session = SendspinPlaybackSession(self)
 
