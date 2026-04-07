@@ -178,6 +178,7 @@ class BuiltinProvider(MusicProvider):
         )
         # register API commands for manual item management
         self.mass.register_api_command("builtin/add_radio", self.add_radio)
+        self.mass.register_api_command("builtin/add_track", self.add_track)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -423,6 +424,7 @@ class BuiltinProvider(MusicProvider):
         if not builtin_mapping:
             return
 
+        # TODO: also allow updating description and other image types
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
         for stored_item in stored_items:
             if stored_item["item_id"] == builtin_mapping.item_id:
@@ -458,6 +460,31 @@ class BuiltinProvider(MusicProvider):
             [self.instance_id],
         )
         return await self.get_radio(url)
+
+    async def add_track(self, url: str, name: str, image_url: str | None = None) -> Track:
+        """
+        Add a track.
+
+        :param url: URL or local path.
+        :param name: Display name.
+        :param image_url: Image URL.
+        """
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
+        # Remove existing entry with same URL if present
+        stored_items = [x for x in stored_items if x["item_id"] != url]
+        stored_item = StoredItem(item_id=url, name=name)
+        if image_url:
+            stored_item["image_url"] = image_url
+        stored_items.append(stored_item)
+        self.mass.config.set(CONF_KEY_TRACKS, stored_items)
+        # Trigger library sync
+        self.mass.call_later(
+            1,
+            self.mass.music.start_sync,
+            [MediaType.TRACK],
+            [self.instance_id],
+        )
+        return await self.get_track(url)
 
     async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
