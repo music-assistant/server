@@ -344,7 +344,7 @@ async def _get_feature_config_entries(hass: HomeAssistantClient) -> tuple[Config
                 required=False,
                 options=tts_entities,
                 description="Select which Home Assistant TTS entity to use for text-to-speech.",
-                category="features",
+                category="Features",
             )
         )
     if ai_task_entities:
@@ -356,7 +356,7 @@ async def _get_feature_config_entries(hass: HomeAssistantClient) -> tuple[Config
                 required=False,
                 options=ai_task_entities,
                 description="Select which Home Assistant AI Task entity to use for AI queries.",
-                category="features",
+                category="Features",
             )
         )
     return tuple(entries)
