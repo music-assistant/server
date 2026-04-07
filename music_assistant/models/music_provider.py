@@ -478,7 +478,7 @@ class MusicProvider(Provider):
         """
         Handle callback when a library item's metadata has been updated.
 
-        Providers can override this to sync changes to their own storage
+        Providers can implement this to sync changes to their own storage
         (e.g. config entries, file tags).
 
         :param item: The updated library item.
