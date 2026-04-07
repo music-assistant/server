@@ -39,6 +39,4 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    return (
-        # No config entries needed — Mother Earth Radio is free and public
-    )
+    return ()

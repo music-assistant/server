@@ -29,17 +29,17 @@ class MotherEarthRadioProvider(MusicProvider):
 
     @property
     def is_streaming_provider(self) -> bool:
-        """Return True if the provider is a streaming provider."""
         return True
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id.
+        """
+        Get full radio details by id.
 
         :param prov_radio_id: Channel key, e.g. "motherearth_jazz".
         """
         if prov_radio_id not in MER_CHANNELS:
             raise MediaNotFoundError("Station not found")
-        return self._parse_radio(prov_radio_id)
+        return parsers.parse_radio(prov_radio_id, self.instance_id, self.domain)
 
     async def search(
         self,
@@ -47,7 +47,8 @@ class MotherEarthRadioProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on Mother Earth Radio channels.
+        """
+        Search Mother Earth Radio channels by name or description.
 
         :param search_query: User-entered search string.
         :param media_types: List of media types to include.
@@ -61,17 +62,18 @@ class MotherEarthRadioProvider(MusicProvider):
             return results
         radios: list[Radio] = []
         for channel_id, channel_info in MER_CHANNELS.items():
-            channel_name = channel_info.get("name", "").lower()
-            channel_desc = channel_info.get("description", "").lower()
+            channel_name = channel_info["name"].lower()
+            channel_desc = channel_info["description"].lower()
             if search_query_lower in channel_name or search_query_lower in channel_desc:
-                radios.append(self._parse_radio(channel_id))
+                radios.append(parsers.parse_radio(channel_id, self.instance_id, self.domain))
                 if len(radios) >= limit:
                     break
         results.radio = radios
         return results
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a radio station.
+        """
+        Return stream details for the given radio channel item_id.
 
         :param item_id: Channel key, e.g. "motherearth_klassik".
         :param media_type: Must be MediaType.RADIO.
@@ -82,22 +84,17 @@ class MotherEarthRadioProvider(MusicProvider):
             raise MediaNotFoundError(f"Unknown radio channel: {item_id}")
 
         channel_info = MER_CHANNELS[item_id]
-        stream_url = channel_info.get("stream_url")
-        if not stream_url:
-            raise UnplayableMediaError(f"No stream URL found for channel {item_id}")
-
-        content_type = channel_info["content_type"]
 
         stream_details = StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=content_type,
+                content_type=channel_info["content_type"],
                 channels=2,
             ),
             media_type=MediaType.RADIO,
             stream_type=StreamType.HTTP,
-            path=stream_url,
+            path=channel_info["stream_url"],
             allow_seek=False,
             can_seek=False,
             duration=0,
@@ -117,14 +114,14 @@ class MotherEarthRadioProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items."""
-        return [self._parse_radio(channel_id) for channel_id in MER_CHANNELS]
-
-    def _parse_radio(self, channel_id: str) -> Radio:
-        """Create a Radio object from channel configuration."""
-        return parsers.parse_radio(channel_id, self.instance_id, self.domain)
+        return [
+            parsers.parse_radio(channel_id, self.instance_id, self.domain)
+            for channel_id in MER_CHANNELS
+        ]
 
     async def _get_nowplaying(self, channel_id: str) -> dict[str, Any] | None:
-        """Get current now-playing data from the AzuraCast API.
+        """
+        Fetch current now-playing data from the AzuraCast API.
 
         :param channel_id: Channel key, e.g. "motherearth_jazz".
         """
@@ -139,24 +136,26 @@ class MotherEarthRadioProvider(MusicProvider):
             async with self.mass.http_session.get(api_url, timeout=timeout) as response:
                 if response.status != 200:
                     self.logger.debug(
-                        f"AzuraCast API returned status {response.status} for {channel_id}"
+                        "AzuraCast API returned status %s for %s", response.status, channel_id
                     )
                     return None
                 return await response.json()
 
         except aiohttp.ClientError as exc:
-            self.logger.debug(f"AzuraCast API request failed for {channel_id}: {exc}")
+            self.logger.debug("AzuraCast API request failed for %s: %s", channel_id, exc)
             return None
         except (KeyError, ValueError, TypeError) as exc:
-            self.logger.debug(f"Error parsing AzuraCast response for {channel_id}: {exc}")
+            self.logger.warning(
+                "Unexpected AzuraCast API response structure for %s: %s", channel_id, exc
+            )
             return None
 
     async def _update_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
-        """Update stream metadata callback called by player queue controller.
+        """
+        Update stream metadata with current track info from AzuraCast.
 
-        Fetches current track info from AzuraCast and updates StreamDetails.
         Alternates between showing the artist and upcoming track info.
 
         :param stream_details: StreamDetails object to update with metadata.
@@ -179,7 +178,6 @@ class MotherEarthRadioProvider(MusicProvider):
                     stream_details.data["last_song_id"] = current_song_id
                     stream_details.data["show_upcoming"] = False
 
-                # Toggle between artist and upcoming info
                 show_upcoming = stream_details.data.get("show_upcoming", False)
 
                 stream_metadata = parsers.build_stream_metadata(
@@ -189,8 +187,10 @@ class MotherEarthRadioProvider(MusicProvider):
                 )
 
                 self.logger.debug(
-                    f"Updating stream metadata for {item_id}: "
-                    f"{stream_metadata.artist} - {stream_metadata.title}"
+                    "Updating stream metadata for %s: %s - %s",
+                    item_id,
+                    stream_metadata.artist,
+                    stream_metadata.title,
                 )
                 stream_details.stream_metadata = stream_metadata
 
@@ -198,4 +198,4 @@ class MotherEarthRadioProvider(MusicProvider):
                 stream_details.data["show_upcoming"] = not show_upcoming
 
         except aiohttp.ClientError as exc:
-            self.logger.debug(f"Network error updating metadata for {item_id}: {exc}")
+            self.logger.debug("Network error updating metadata for %s: %s", item_id, exc)

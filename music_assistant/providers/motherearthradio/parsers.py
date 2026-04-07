@@ -10,22 +10,23 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamMetadata
 
-from .constants import MER_CHANNELS
+from .constants import MER_CHANNELS, MerChannel
 
 
 def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radio:
-    """Create a Radio object from channel configuration.
+    """
+    Create a Radio object from channel configuration.
 
     :param channel_id: Key into MER_CHANNELS (e.g. "motherearth_jazz").
     :param instance_id: Provider instance identifier.
     :param provider_domain: Provider domain string.
     """
-    channel_info = MER_CHANNELS.get(channel_id, {})
+    channel_info: MerChannel = MER_CHANNELS[channel_id]
 
     radio = Radio(
         provider=instance_id,
         item_id=channel_id,
-        name=channel_info.get("name", "Unknown Radio"),
+        name=channel_info["name"],
         provider_mappings={
             ProviderMapping(
                 provider_domain=provider_domain,
@@ -36,24 +37,21 @@ def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radi
         },
     )
 
-    # Add static station icon
-    station_icon = channel_info.get("station_icon")
-    if station_icon:
-        icon_url = station_icon
-        radio.metadata.add_image(
-            MediaItemImage(
-                provider=instance_id,
-                type=ImageType.THUMB,
-                path=icon_url,
-                remotely_accessible=True,
-            )
+    radio.metadata.add_image(
+        MediaItemImage(
+            provider=instance_id,
+            type=ImageType.THUMB,
+            path=channel_info["station_icon"],
+            remotely_accessible=True,
         )
+    )
 
     return radio
 
 
 def _build_source_label(custom_fields: dict[str, Any] | None) -> str | None:
-    """Build a compact source label from AzuraCast custom_fields.
+    """
+    Build a compact source label from AzuraCast custom_fields.
 
     Returns strings like "Vinyl · 1998 · !K7" or "Hi-Res Download · 2024".
 
@@ -82,7 +80,8 @@ def build_stream_metadata(
     *,
     show_upcoming: bool = False,
 ) -> StreamMetadata:
-    """Build StreamMetadata from AzuraCast now_playing data.
+    """
+    Build StreamMetadata from AzuraCast now_playing data.
 
     :param now_playing: The now_playing object from the AzuraCast API.
     :param playing_next: The playing_next object (may be None).

@@ -1,6 +1,6 @@
 """Constants for Mother Earth Radio provider."""
 
-from typing import Any
+from typing import TypedDict
 
 from music_assistant_models.enums import ContentType
 
@@ -8,17 +8,31 @@ from music_assistant_models.enums import ContentType
 AZURACAST_BASE_URL = "https://stream.motherearthradio.de"
 NOWPLAYING_API_URL = f"{AZURACAST_BASE_URL}/api/nowplaying"
 
+# Station icon URL
+STATION_ICON_URL = (
+    "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png"
+)
 
-# Mother Earth Radio channel configurations
-# Each station uses the FLAC 192 kHz stream as default (audiophile-first approach).
-MER_CHANNELS: dict[str, dict[str, Any]] = {
+
+class MerChannel(TypedDict):
+    """Type definition for a Mother Earth Radio channel."""
+
+    name: str
+    description: str
+    shortcode: str
+    stream_url: str
+    content_type: ContentType
+    station_icon: str
+
+
+MER_CHANNELS: dict[str, MerChannel] = {
     "motherearth": {
         "name": "Mother Earth Radio",
         "description": "Eclectic audiophile mix — vinyl, hi-res, CD — hand-picked by a human",
         "shortcode": "motherearth",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth/motherearth",
         "content_type": ContentType.FLAC,
-        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
+        "station_icon": STATION_ICON_URL,
     },
     "motherearth_instrumental": {
         "name": "Mother Earth Instrumental",
@@ -26,7 +40,7 @@ MER_CHANNELS: dict[str, dict[str, Any]] = {
         "shortcode": "motherearth_instrumental",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_instrumental/motherearth.instrumental",
         "content_type": ContentType.FLAC,
-        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
+        "station_icon": STATION_ICON_URL,
     },
     "motherearth_klassik": {
         "name": "Mother Earth Klassik",
@@ -34,7 +48,7 @@ MER_CHANNELS: dict[str, dict[str, Any]] = {
         "shortcode": "motherearth_klassik",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_klassik/motherearth.klassik",
         "content_type": ContentType.FLAC,
-        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
+        "station_icon": STATION_ICON_URL,
     },
     "motherearth_jazz": {
         "name": "Mother Earth Jazz",
@@ -42,6 +56,6 @@ MER_CHANNELS: dict[str, dict[str, Any]] = {
         "shortcode": "motherearth_jazz",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_jazz/motherearth.jazz",
         "content_type": ContentType.FLAC,
-        "station_icon": "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png",
+        "station_icon": STATION_ICON_URL,
     },
 }
