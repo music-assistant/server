@@ -54,7 +54,6 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     ProviderMapping,
-    Radio,
     SearchResults,
     Track,
     UniqueList,
@@ -454,6 +453,48 @@ class AppleMusicProvider(MusicProvider):
             )
         return playlist
 
+    async def _get_station_playlist(self, station_id: str) -> Playlist:
+        """Fetch name and artwork for a ra. station and return it as a dynamic Playlist."""
+        name = station_id
+        image: MediaItemImage | None = None
+        try:
+            station_response = await self._get_data(
+                f"catalog/{self._storefront}/stations/{station_id}"
+            )
+            attrs = station_response["data"][0].get("attributes", {})
+            name = attrs.get("name", station_id)
+            if artwork := attrs.get("artwork"):
+                url = artwork["url"]
+                if artwork.get("width") and artwork.get("height"):
+                    url = url.format(
+                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                    )
+                image = MediaItemImage(
+                    provider=self.instance_id,
+                    type=ImageType.THUMB,
+                    path=url,
+                    remotely_accessible=True,
+                )
+        except (MediaNotFoundError, KeyError, IndexError):
+            pass
+        playlist = Playlist(
+            item_id=station_id,
+            provider=self.instance_id,
+            name=name,
+            is_dynamic=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=station_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        if image:
+            playlist.metadata.add_image(image)
+        return playlist
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
@@ -545,29 +586,6 @@ class AppleMusicProvider(MusicProvider):
             elif item and item["id"]:
                 yield self._parse_playlist(item, is_favourite)
 
-    @use_cache(3600 * 24)
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio station details by id."""
-        endpoint = f"catalog/{self._storefront}/stations/{prov_radio_id}"
-        try:
-            response = await self._get_data(endpoint)
-            return self._parse_radio(response["data"][0])
-        except MediaNotFoundError:
-            pass
-        # Station not indexed in the user's storefront catalog but may still be streamable.
-        return Radio(
-            item_id=prov_radio_id,
-            provider=self.domain,
-            name=prov_radio_id,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=prov_radio_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-
     @use_cache()
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
@@ -593,50 +611,11 @@ class AppleMusicProvider(MusicProvider):
         is_favourite = rating_response.get(prov_track_id)
         return self._parse_track(response["data"][0], is_favourite)
 
-    @use_cache(cache_checksum="stations-metadata-v2")
+    @use_cache()
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id.startswith("ra."):
-            # Try the catalog endpoint to get the real name and artwork.
-            name = prov_playlist_id
-            image: MediaItemImage | None = None
-            try:
-                station_response = await self._get_data(
-                    f"catalog/{self._storefront}/stations/{prov_playlist_id}"
-                )
-                attrs = station_response["data"][0].get("attributes", {})
-                name = attrs.get("name", prov_playlist_id)
-                if artwork := attrs.get("artwork"):
-                    url = artwork["url"]
-                    if artwork.get("width") and artwork.get("height"):
-                        url = url.format(
-                            w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                            h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-                        )
-                    image = MediaItemImage(
-                        provider=self.instance_id,
-                        type=ImageType.THUMB,
-                        path=url,
-                        remotely_accessible=True,
-                    )
-            except (MediaNotFoundError, KeyError, IndexError):
-                pass
-            playlist = Playlist(
-                item_id=prov_playlist_id,
-                provider=self.instance_id,
-                name=name,
-                is_dynamic=True,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=prov_playlist_id,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                    )
-                },
-            )
-            if image:
-                playlist.metadata.add_image(image)
-            return playlist
+            return await self._get_station_playlist(prov_playlist_id)
         if not self.is_library_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
@@ -836,41 +815,28 @@ class AppleMusicProvider(MusicProvider):
                         "Live stream unavailable for %s, trying track-based fallback", item_id
                     )
             # Track-based Artist Radio: fetch next track from the station and stream it
-            (
-                track_id,
-                artist_name,
-                track_title,
-                duration_secs,
-            ) = await self._fetch_next_station_track(item_id)
-            streamdetails = await self._get_track_stream_details(track_id)
-            if track_title:
+            track = await self._fetch_next_radio_station_track(item_id)
+            streamdetails = await self._get_track_stream_details(track.item_id)
+            if track.name:
+                artist_name = track.artists[0].name if track.artists else None
                 streamdetails.stream_metadata = StreamMetadata(
-                    title=track_title,
+                    title=track.name,
                     artist=artist_name,
                 )
-            if duration_secs:
-                streamdetails.duration = duration_secs
+            if track.duration:
+                streamdetails.duration = track.duration
             return streamdetails
         return await self._get_track_stream_details(item_id)
 
-    async def _fetch_next_station_track(
-        self, station_id: str
-    ) -> tuple[str, str | None, str | None, int | None]:
-        """Fetch the next track for a track-based Apple Music radio station.
-
-        Returns a tuple of (track_id, artist_name, track_title, duration_seconds).
-        """
+    async def _fetch_next_radio_station_track(self, station_id: str) -> Track:
+        """Fetch the next track for a track-based Apple Music radio station."""
         response = await self._post_data(f"me/stations/next-tracks/{station_id}")
         tracks = response.get("data", [])
         if not tracks:
             raise MediaNotFoundError(f"No tracks available for station {station_id}")
-        track = tracks[0]
-        attributes = track.get("attributes", {})
-        title: str | None = attributes.get("name")
-        # artistName is always present as a plain-string attribute on catalog tracks
-        artist_name: str | None = attributes.get("artistName")
-        duration_ms: int | None = attributes.get("durationInMillis")
-        return track["id"], artist_name, title, int(duration_ms / 1000) if duration_ms else None
+        track_obj = tracks[0]
+        rating_response = await self._get_ratings([track_obj["id"]], MediaType.TRACK)
+        return self._parse_track(track_obj, rating_response.get(track_obj["id"]))
 
     async def _get_track_stream_details(self, item_id: str) -> StreamDetails:
         """Return StreamDetails for a single catalog or library track."""
@@ -928,42 +894,6 @@ class AppleMusicProvider(MusicProvider):
         else:
             endpoint = f"me/ratings/library-{item_type}/{prov_item_id}"
         await self._put_data(endpoint, data=data)
-
-    def _parse_radio(self, station_obj: dict[str, Any]) -> Radio:
-        """Parse a station object from the Apple Music API into a Radio model."""
-        attributes = station_obj.get("attributes", {})
-        station_id = station_obj["id"]
-        radio = Radio(
-            item_id=station_id,
-            provider=self.domain,
-            name=attributes.get("name", station_id),
-            provider_mappings={
-                ProviderMapping(
-                    item_id=station_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=attributes.get("url"),
-                )
-            },
-        )
-        if artwork := attributes.get("artwork"):
-            url = artwork["url"]
-            if artwork.get("width") and artwork.get("height"):
-                url = url.format(
-                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-                )
-            radio.metadata.add_image(
-                MediaItemImage(
-                    provider=self.instance_id,
-                    type=ImageType.THUMB,
-                    path=url,
-                    remotely_accessible=True,
-                )
-            )
-        if notes := attributes.get("editorialNotes"):
-            radio.metadata.description = notes.get("standard") or notes.get("short")
-        return radio
 
     async def _get_station_play_params(self, station_id: str) -> tuple[str | None, bool]:
         """Fetch playParams for a radio station. Returns (stationHash, isLive)."""
