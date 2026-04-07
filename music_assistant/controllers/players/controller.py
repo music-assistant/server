@@ -2668,7 +2668,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle the actual set_members logic.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
 
         :param parent_player: The parent player to add/remove members to/from.
         :param player_ids_to_add: List of player_id's to add to the parent player.
@@ -2778,6 +2778,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle set_members considering protocol and native members.
 
+        Skips permission checks, locking, and all redirect logic (internal use only).
         Translates visible player IDs to protocol player IDs when appropriate,
         and forwards to the correct player's set_members.
 
@@ -2875,7 +2876,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle resume playback command.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
         """
         player = self._get_player_with_redirect(player_id)
         source = source or player.state.active_source
@@ -2915,7 +2916,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle player power on/off command.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
 
         :param player_id: The player ID to power on/off.
         :param powered: True to power on, False to power off.
@@ -3030,7 +3031,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle Player volume set command.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
@@ -3107,7 +3108,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle play media command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         :param media: The Media that needs to be played on the player.
@@ -3172,7 +3173,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle enqueue next media command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         :param media: The Media that needs to be enqueued on the player.
@@ -3201,7 +3202,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle select source command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         :param source: The ID of the source that needs to be activated/selected.
@@ -3247,7 +3248,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle stop command without any redirects.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         """
@@ -3288,7 +3289,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle play command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         """
@@ -3346,7 +3347,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle pause command without any redirects.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         """
