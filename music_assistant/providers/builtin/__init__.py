@@ -468,7 +468,10 @@ class BuiltinProvider(MusicProvider):
         m3u_data = await self._read_m3u_file(playlist_id)
         if m3u_data:
             existing_items = parse_m3u(m3u_data)
-            await self._write_m3u_file(playlist_id, new_name, list(existing_items))
+            try:
+                await self._write_m3u_file(playlist_id, new_name, list(existing_items))
+            except OSError as err:
+                self.logger.warning("Failed to update playlist name: %s", err)
         # update image in config
         playlist_images: dict[str, str] = self.mass.config.get(CONF_KEY_PLAYLIST_IMAGES, {})
         if image_url:
