@@ -29,6 +29,7 @@ class MotherEarthRadioProvider(MusicProvider):
 
     @property
     def is_streaming_provider(self) -> bool:
+        """Whether this provider streams from an external source."""
         return True
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -139,7 +140,8 @@ class MotherEarthRadioProvider(MusicProvider):
                         "AzuraCast API returned status %s for %s", response.status, channel_id
                     )
                     return None
-                return await response.json()
+                result: dict[str, Any] = await response.json()
+                return result
 
         except aiohttp.ClientError as exc:
             self.logger.debug("AzuraCast API request failed for %s: %s", channel_id, exc)
