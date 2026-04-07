@@ -611,11 +611,16 @@ class AppleMusicProvider(MusicProvider):
         is_favourite = rating_response.get(prov_track_id)
         return self._parse_track(response["data"][0], is_favourite)
 
-    @use_cache()
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id.startswith("ra."):
+            # Station metadata is not cached so transient errors don't persist.
             return await self._get_station_playlist(prov_playlist_id)
+        return await self._get_regular_playlist(prov_playlist_id, is_favourite)
+
+    @use_cache()
+    async def _get_regular_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
+        """Fetch and cache details for a regular (non-station) playlist."""
         if not self.is_library_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
