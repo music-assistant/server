@@ -79,6 +79,7 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
+    CONF_KEY_PLAYLIST_IMAGES,
     CONF_KEY_PLAYLISTS,
     CONF_KEY_RADIOS,
     CONF_KEY_TRACKS,
@@ -275,6 +276,20 @@ class BuiltinProvider(MusicProvider):
         # read playlist name from M3U #PLAYLIST directive, fall back to filename
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         playlist_name = parse_m3u_playlist_name(m3u_data) or prov_playlist_id
+        # check for custom image
+        playlist_images: dict[str, str] = self.mass.config.get(CONF_KEY_PLAYLIST_IMAGES, {})
+        metadata = MediaItemMetadata()
+        if image_url := playlist_images.get(prov_playlist_id):
+            metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_url,
+                        provider=self.domain,
+                        remotely_accessible=image_url.startswith("http"),
+                    )
+                ]
+            )
         return Playlist(
             item_id=prov_playlist_id,
             provider=self.instance_id,
@@ -294,6 +309,7 @@ class BuiltinProvider(MusicProvider):
                 MediaType.TRACK,
             },
             is_editable=True,
+            metadata=metadata,
         )
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
@@ -409,19 +425,24 @@ class BuiltinProvider(MusicProvider):
 
         :param item: The updated media item with new metadata.
         """
-        if item.media_type == MediaType.RADIO:
-            key = CONF_KEY_RADIOS
-        elif item.media_type == MediaType.TRACK:
-            key = CONF_KEY_TRACKS
-        else:
-            return
-
-        # find the builtin provider mapping to get the item_id (URL)
+        # find the builtin provider mapping to get the item_id
         builtin_mapping = next(
             (pm for pm in item.provider_mappings if pm.provider_domain == self.domain),
             None,
         )
         if not builtin_mapping:
+            return
+
+        if item.media_type == MediaType.PLAYLIST:
+            image_url = item.image.path if item.image else None
+            await self._update_playlist_metadata(builtin_mapping.item_id, item.name, image_url)
+            return
+
+        if item.media_type == MediaType.RADIO:
+            key = CONF_KEY_RADIOS
+        elif item.media_type == MediaType.TRACK:
+            key = CONF_KEY_TRACKS
+        else:
             return
 
         # TODO: also allow updating description and other image types
@@ -435,6 +456,26 @@ class BuiltinProvider(MusicProvider):
                     del stored_item["image_url"]
                 break
         self.mass.config.set(key, stored_items)
+
+    async def _update_playlist_metadata(
+        self, playlist_id: str, new_name: str, image_url: str | None
+    ) -> None:
+        """Update the name and image of a playlist."""
+        if playlist_id in BUILTIN_PLAYLISTS:
+            # builtin playlists are not editable
+            return
+        # update name in M3U file
+        m3u_data = await self._read_m3u_file(playlist_id)
+        if m3u_data:
+            existing_items = parse_m3u(m3u_data)
+            await self._write_m3u_file(playlist_id, new_name, list(existing_items))
+        # update image in config
+        playlist_images: dict[str, str] = self.mass.config.get(CONF_KEY_PLAYLIST_IMAGES, {})
+        if image_url:
+            playlist_images[playlist_id] = image_url
+        elif playlist_id in playlist_images:
+            del playlist_images[playlist_id]
+        self.mass.config.set(CONF_KEY_PLAYLIST_IMAGES, playlist_images)
 
     async def add_radio(self, url: str, name: str, image_url: str | None = None) -> Radio:
         """
