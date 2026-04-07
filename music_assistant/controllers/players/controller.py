@@ -831,7 +831,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
     @api_command("players/cmd/play_announcement")
-    @handle_player_command(lock=True)
+    @handle_player_command(lock="play")
     async def play_announcement(
         self,
         player_id: str,
@@ -941,7 +941,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         finally:
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
 
-    @handle_player_command(lock=True)
+    @handle_player_command(lock="play")
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
@@ -1062,7 +1062,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
-    @handle_player_command(lock=True)
+    @handle_player_command(lock="play")
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
         Handle enqueuing of a next media item on the player.
@@ -1106,19 +1106,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-        # Acquire both the set_members lock and the play_media lock for this player.
-        # This prevents a concurrent play_media from racing with protocol switches
-        # triggered by set_members (which do stop + resume + re-add internally).
-        set_members_key = f"set_members_{target_player}"
-        play_media_key = f"play_media_{target_player}"
-        if set_members_key not in self._player_command_locks:
-            self._player_command_locks[set_members_key] = asyncio.Lock()
-        if play_media_key not in self._player_command_locks:
-            self._player_command_locks[play_media_key] = asyncio.Lock()
-        async with (
-            self._player_command_locks[play_media_key],
-            self._player_command_locks[set_members_key],
-        ):
+        # Use the "play" lock category — same as play_media, play_announcement,
+        # enqueue_next_media — to prevent concurrent playback-related commands
+        # from racing with protocol switches triggered by set_members.
+        lock_key = f"play_{target_player}"
+        if lock_key not in self._player_command_locks:
+            self._player_command_locks[lock_key] = asyncio.Lock()
+        async with self._player_command_locks[lock_key]:
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")

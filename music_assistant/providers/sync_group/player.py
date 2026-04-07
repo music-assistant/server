@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -47,9 +46,7 @@ class SyncGroupPlayer(Player):
         self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
-        self._group_lock = asyncio.Lock()
         self._active_protocol_domain: str | None = None
-        self._transitioning = False
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -335,45 +332,31 @@ class SyncGroupPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
-        async with self._group_lock:
-            self._attr_current_media = None
-            sync_leader = self.sync_leader
-            # dissolve the sync group since we stopped playback
-            self.mass.call_later(
-                5,
-                self._dissolve_syncgroup_locked,
-                task_id=f"syncgroup_dissolve_{self.player_id}",
-            )
-        # call stop outside the lock to avoid potential re-entry deadlock
-        if sync_leader:
+        self._attr_current_media = None
+        if sync_leader := self.sync_leader:
             await self.mass.players._handle_cmd_stop(sync_leader.player_id)
+        # dissolve the sync group since we stopped playback
+        self.mass.call_later(
+            5, self._dissolve_syncgroup, task_id=f"syncgroup_dissolve_{self.player_id}"
+        )
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
-        async with self._group_lock:
-            active_source = self._attr_active_source
-            current_media = self._attr_current_media
-        # call resume outside the lock since it re-enters play_media -> _group_lock
-        await self.mass.players._handle_cmd_resume(self.player_id, active_source, current_media)
+        await self.mass.players._handle_cmd_resume(
+            self.player_id, self._attr_active_source, self._attr_current_media
+        )
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        async with self._group_lock:
-            self._transitioning = True
-            try:
-                self._attr_current_media = media
-                self._attr_active_source = media.source_id or None
-                await self._form_syncgroup()
-                if sync_leader := self.sync_leader:
-                    await self.mass.players._handle_play_media(sync_leader.player_id, media)
-                    self._update_active_protocol()
-                    self.update_state()
-                else:
-                    raise RuntimeError(
-                        "An empty group cannot play media, consider adding members first"
-                    )
-            finally:
-                self._transitioning = False
+        self._attr_current_media = media
+        self._attr_active_source = media.source_id or None
+        await self._form_syncgroup()
+        if sync_leader := self.sync_leader:
+            await self.mass.players._handle_play_media(sync_leader.player_id, media)
+            self._update_active_protocol()
+            self.update_state()
+        else:
+            raise RuntimeError("An empty group cannot play media, consider adding members first")
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
@@ -391,28 +374,14 @@ class SyncGroupPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        async with self._group_lock:
-            if self._transitioning:
-                # debounce: a play_media or resume is in progress, defer this command
-                self.logger.debug(
-                    "Deferring set_members on %s (transition in progress)", self.display_name
-                )
-                self.mass.call_later(
-                    1,
-                    self.set_members,
-                    player_ids_to_add,
-                    player_ids_to_remove,
-                    task_id=f"syncgroup_deferred_set_members_{self.player_id}",
-                )
-                return
-            await self._set_members(player_ids_to_add, player_ids_to_remove)
+        await self._set_members(player_ids_to_add, player_ids_to_remove)
 
     async def _set_members(  # noqa: PLR0915
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Handle SET_MEMBERS command (lock must be held by caller)."""
+        """Handle SET_MEMBERS command (serialized by controller's play lock)."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
@@ -506,13 +475,7 @@ class SyncGroupPlayer(Player):
                 if old_leader_id in self._attr_group_members:
                     self._attr_group_members.remove(old_leader_id)
                 if was_playing and self._attr_group_members:
-                    # Schedule resume outside the lock to avoid deadlock
-                    # (resume -> play_media -> _group_lock)
-                    self.mass.call_later(
-                        0.5,
-                        self.play,
-                        task_id=f"syncgroup_resume_{self.player_id}",
-                    )
+                    await self.play()
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
@@ -539,7 +502,7 @@ class SyncGroupPlayer(Player):
         self.mass.players.trigger_player_update(self.player_id)
 
     async def _form_syncgroup(self) -> None:
-        """Form syncgroup by syncing all (possible) members (lock must be held by caller)."""
+        """Form syncgroup by syncing all (possible) members."""
         self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
         self.logger.debug(
             "Forming syncgroup %s, _attr_group_members=%s, sync_leader=%s",
@@ -583,13 +546,8 @@ class SyncGroupPlayer(Player):
                 await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
 
-    async def _dissolve_syncgroup_locked(self) -> None:
-        """Dissolve the current syncgroup (acquires lock, for use with call_later)."""
-        async with self._group_lock:
-            await self._dissolve_syncgroup()
-
     async def _dissolve_syncgroup(self) -> None:
-        """Dissolve the current syncgroup (lock must be held by caller)."""
+        """Dissolve the current syncgroup by ungrouping all members."""
         if sync_leader := self.sync_leader:
             # dissolve the temporary syncgroup from the sync leader
             sync_children = [
