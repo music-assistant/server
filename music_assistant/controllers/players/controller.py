@@ -1109,7 +1109,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Use the "play" lock category — same as play_media, play_announcement,
         # enqueue_next_media — to prevent concurrent playback-related commands
         # from racing with protocol switches triggered by set_members.
-        lock_key = f"play_{target_player}"
+        # Use resolved parent_player.player_id (not raw target_player) to match
+        # the lock key that handle_player_command produces after protocol resolution.
+        lock_key = f"play_{parent_player.player_id}"
         if lock_key not in self._player_command_locks:
             self._player_command_locks[lock_key] = asyncio.Lock()
         async with self._player_command_locks[lock_key]:
