@@ -1,0 +1,689 @@
+"""DLNA Receiver — UPnP MediaRenderer implementation.
+
+This module contains the HTTP server that serves UPnP device/service XML
+descriptions and processes incoming SOAP control actions from DLNA
+control points. Includes GENA eventing for state change notifications.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from pathlib import Path
+from typing import Any
+from xml.etree.ElementTree import Element, SubElement, tostring
+
+from aiohttp import web
+
+from .constants import (
+    DEFAULT_HTTP_PORT,
+    SUPPORTED_MIME_TYPES,
+    TRANSPORT_STATE_NO_MEDIA,
+    TRANSPORT_STATE_PAUSED,
+    TRANSPORT_STATE_PLAYING,
+    TRANSPORT_STATE_STOPPED,
+    UPNP_DEVICE_TYPE,
+    UPNP_SERVICE_AV_TRANSPORT,
+    UPNP_SERVICE_CONNECTION_MANAGER,
+    UPNP_SERVICE_RENDERING_CONTROL,
+)
+from .eventing import EventingManager
+
+LOGGER = logging.getLogger(__name__)
+
+SCPD_DIR = Path(__file__).parent / "scpd"
+
+
+class UPnPRenderer:
+    """Virtual UPnP MediaRenderer with SOAP action handling."""
+
+    def __init__(
+        self,
+        friendly_name: str,
+        bind_ip: str,
+        http_port: int = DEFAULT_HTTP_PORT,
+        udn: str | None = None,
+    ) -> None:
+        self.friendly_name = friendly_name
+        self.bind_ip = bind_ip
+        self.http_port = http_port
+        self.udn = udn or f"uuid:{uuid.uuid4()}"
+
+        # Transport state
+        self.transport_state: str = TRANSPORT_STATE_NO_MEDIA
+        self.current_uri: str = ""
+        self.current_uri_metadata: str = ""
+        self.volume: int = 50
+        self.mute: bool = False
+
+        # HTTP server
+        self._app = web.Application()
+        self._runner: web.AppRunner | None = None
+        self._setup_routes()
+
+        # GENA eventing managers (one per service)
+        self._evt_av_transport = EventingManager()
+        self._evt_rendering_control = EventingManager()
+        self._evt_connection_manager = EventingManager()
+
+        # Callbacks (set by provider)
+        self.on_set_av_transport_uri: Any = None
+        self.on_play: Any = None
+        self.on_pause: Any = None
+        self.on_stop: Any = None
+        self.on_seek: Any = None
+        self.on_set_volume: Any = None
+        self.on_set_mute: Any = None
+
+    def _setup_routes(self) -> None:
+        """Register HTTP routes for UPnP description, control, and eventing."""
+        self._app.router.add_get("/description.xml", self._handle_description)
+        # SCPD routes
+        self._app.router.add_get(
+            "/AVTransport/description.xml",
+            self._handle_av_transport_scpd,
+        )
+        self._app.router.add_get(
+            "/RenderingControl/description.xml",
+            self._handle_rendering_control_scpd,
+        )
+        self._app.router.add_get(
+            "/ConnectionManager/description.xml",
+            self._handle_connection_manager_scpd,
+        )
+        # SOAP control routes
+        self._app.router.add_post("/AVTransport/control", self._handle_av_transport)
+        self._app.router.add_post(
+            "/RenderingControl/control",
+            self._handle_rendering_control,
+        )
+        self._app.router.add_post(
+            "/ConnectionManager/control",
+            self._handle_connection_manager,
+        )
+        # GENA event subscription routes
+        self._app.router.add_route(
+            "SUBSCRIBE",
+            "/AVTransport/event",
+            self._handle_subscribe_av_transport,
+        )
+        self._app.router.add_route(
+            "UNSUBSCRIBE",
+            "/AVTransport/event",
+            self._handle_unsubscribe_av_transport,
+        )
+        self._app.router.add_route(
+            "SUBSCRIBE",
+            "/RenderingControl/event",
+            self._handle_subscribe_rendering_control,
+        )
+        self._app.router.add_route(
+            "UNSUBSCRIBE",
+            "/RenderingControl/event",
+            self._handle_unsubscribe_rendering_control,
+        )
+        self._app.router.add_route(
+            "SUBSCRIBE",
+            "/ConnectionManager/event",
+            self._handle_subscribe_connection_manager,
+        )
+        self._app.router.add_route(
+            "UNSUBSCRIBE",
+            "/ConnectionManager/event",
+            self._handle_unsubscribe_connection_manager,
+        )
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the UPnP HTTP server and eventing managers."""
+        self._runner = web.AppRunner(self._app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, self.bind_ip, self.http_port)
+        await site.start()
+        await self._evt_av_transport.start()
+        await self._evt_rendering_control.start()
+        await self._evt_connection_manager.start()
+        LOGGER.info(
+            "UPnP renderer HTTP server listening on %s:%s",
+            self.bind_ip,
+            self.http_port,
+        )
+
+    async def stop(self) -> None:
+        """Stop the UPnP HTTP server and eventing managers."""
+        await self._evt_av_transport.stop()
+        await self._evt_rendering_control.stop()
+        await self._evt_connection_manager.stop()
+        if self._runner:
+            await self._runner.cleanup()
+            self._runner = None
+        LOGGER.info("UPnP renderer HTTP server stopped")
+
+    @property
+    def description_url(self) -> str:
+        """Return the device description URL."""
+        return f"http://{self.bind_ip}:{self.http_port}/description.xml"
+
+    # ------------------------------------------------------------------
+    # UPnP Device Description
+    # ------------------------------------------------------------------
+
+    async def _handle_description(self, _request: web.Request) -> web.Response:
+        """Return the root UPnP device description XML."""
+        root = Element("root", xmlns="urn:schemas-upnp-org:device-1-0")
+        spec = SubElement(root, "specVersion")
+        SubElement(spec, "major").text = "1"
+        SubElement(spec, "minor").text = "0"
+
+        device = SubElement(root, "device")
+        SubElement(device, "deviceType").text = UPNP_DEVICE_TYPE
+        SubElement(device, "friendlyName").text = self.friendly_name
+        SubElement(device, "manufacturer").text = "Music Assistant"
+        SubElement(device, "modelName").text = "DLNA Receiver"
+        SubElement(device, "modelDescription").text = "Music Assistant DLNA Receiver Bridge"
+        SubElement(device, "UDN").text = self.udn
+
+        service_list = SubElement(device, "serviceList")
+        for svc_type, svc_id, scpd_url, ctrl_url, event_url in [
+            (
+                UPNP_SERVICE_AV_TRANSPORT,
+                "urn:upnp-org:serviceId:AVTransport",
+                "/AVTransport/description.xml",
+                "/AVTransport/control",
+                "/AVTransport/event",
+            ),
+            (
+                UPNP_SERVICE_RENDERING_CONTROL,
+                "urn:upnp-org:serviceId:RenderingControl",
+                "/RenderingControl/description.xml",
+                "/RenderingControl/control",
+                "/RenderingControl/event",
+            ),
+            (
+                UPNP_SERVICE_CONNECTION_MANAGER,
+                "urn:upnp-org:serviceId:ConnectionManager",
+                "/ConnectionManager/description.xml",
+                "/ConnectionManager/control",
+                "/ConnectionManager/event",
+            ),
+        ]:
+            svc = SubElement(service_list, "service")
+            SubElement(svc, "serviceType").text = svc_type
+            SubElement(svc, "serviceId").text = svc_id
+            SubElement(svc, "SCPDURL").text = scpd_url
+            SubElement(svc, "controlURL").text = ctrl_url
+            SubElement(svc, "eventSubURL").text = event_url
+
+        xml_bytes = b'<?xml version="1.0"?>' + tostring(root, encoding="unicode").encode()
+        return web.Response(body=xml_bytes, content_type="text/xml")
+
+    # ------------------------------------------------------------------
+    # Service SCPDs (served from static XML files)
+    # ------------------------------------------------------------------
+
+    async def _handle_av_transport_scpd(self, _request: web.Request) -> web.Response:
+        """Return AVTransport service description."""
+        return self._serve_scpd("AVTransport.xml")
+
+    async def _handle_rendering_control_scpd(
+        self,
+        _request: web.Request,
+    ) -> web.Response:
+        """Return RenderingControl service description."""
+        return self._serve_scpd("RenderingControl.xml")
+
+    async def _handle_connection_manager_scpd(
+        self,
+        _request: web.Request,
+    ) -> web.Response:
+        """Return ConnectionManager service description."""
+        return self._serve_scpd("ConnectionManager.xml")
+
+    @staticmethod
+    def _serve_scpd(filename: str) -> web.Response:
+        """Read and serve a SCPD XML file."""
+        xml_bytes = (SCPD_DIR / filename).read_bytes()
+        return web.Response(body=xml_bytes, content_type="text/xml")
+
+    # ------------------------------------------------------------------
+    # SOAP Action Handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_av_transport(self, request: web.Request) -> web.Response:
+        """Handle AVTransport SOAP actions."""
+        body = await request.text()
+        soap_action = request.headers.get("SOAPACTION", "").strip('"')
+        action_name = soap_action.rsplit("#", 1)[-1] if "#" in soap_action else ""
+        LOGGER.debug("AVTransport action: %s", action_name)
+
+        if action_name == "SetAVTransportURI":
+            uri = self._extract_xml_value(body, "CurrentURI")
+            metadata = self._extract_xml_value(body, "CurrentURIMetaData")
+            LOGGER.debug("SetAVTransportURI raw metadata (first 500): %s", (metadata or "")[:500])
+            self.current_uri = uri or ""
+            self.current_uri_metadata = metadata or ""
+            self.transport_state = TRANSPORT_STATE_STOPPED
+            if self.on_set_av_transport_uri:
+                await self.on_set_av_transport_uri(self.current_uri, metadata)
+            await self._notify_av_transport_change()
+            return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
+
+        if action_name == "Play":
+            self.transport_state = TRANSPORT_STATE_PLAYING
+            if self.on_play:
+                await self.on_play()
+            await self._notify_av_transport_change()
+            return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
+
+        if action_name == "Pause":
+            self.transport_state = TRANSPORT_STATE_PAUSED
+            if self.on_pause:
+                await self.on_pause()
+            await self._notify_av_transport_change()
+            return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
+
+        if action_name == "Stop":
+            self.transport_state = TRANSPORT_STATE_STOPPED
+            if self.on_stop:
+                await self.on_stop()
+            await self._notify_av_transport_change()
+            return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
+
+        if action_name == "Seek":
+            unit = self._extract_xml_value(body, "Unit") or ""
+            target = self._extract_xml_value(body, "Target") or ""
+            LOGGER.info("Seek requested: Unit=%s, Target=%s", unit, target)
+            if self.on_seek:
+                await self.on_seek(unit, target)
+            return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
+
+        if action_name == "GetTransportInfo":
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_AV_TRANSPORT,
+                {
+                    "CurrentTransportState": self.transport_state,
+                    "CurrentTransportStatus": "OK",
+                    "CurrentSpeed": "1",
+                },
+            )
+
+        if action_name == "GetPositionInfo":
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_AV_TRANSPORT,
+                {
+                    "Track": "1",
+                    "TrackDuration": "00:00:00",
+                    "TrackMetaData": self.current_uri_metadata,
+                    "TrackURI": self.current_uri,
+                    "RelTime": "00:00:00",
+                    "AbsTime": "00:00:00",
+                    "RelCount": "0",
+                    "AbsCount": "0",
+                },
+            )
+
+        if action_name == "GetMediaInfo":
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_AV_TRANSPORT,
+                {
+                    "NrTracks": "1",
+                    "MediaDuration": "00:00:00",
+                    "CurrentURI": self.current_uri,
+                    "CurrentURIMetaData": self.current_uri_metadata,
+                    "NextURI": "",
+                    "NextURIMetaData": "",
+                    "PlayMedium": "NETWORK",
+                    "RecordMedium": "NOT_IMPLEMENTED",
+                    "WriteStatus": "NOT_IMPLEMENTED",
+                },
+            )
+
+        LOGGER.warning("Unhandled AVTransport action: %s", action_name)
+        return self._soap_error(401, "Invalid Action")
+
+    async def _handle_rendering_control(self, request: web.Request) -> web.Response:
+        """Handle RenderingControl SOAP actions."""
+        body = await request.text()
+        soap_action = request.headers.get("SOAPACTION", "").strip('"')
+        action_name = soap_action.rsplit("#", 1)[-1] if "#" in soap_action else ""
+        LOGGER.debug("RenderingControl action: %s", action_name)
+
+        if action_name == "GetVolume":
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_RENDERING_CONTROL,
+                {"CurrentVolume": str(self.volume)},
+            )
+
+        if action_name == "SetVolume":
+            vol_str = self._extract_xml_value(body, "DesiredVolume")
+            if vol_str is not None:
+                self.volume = max(0, min(100, int(vol_str)))
+                if self.on_set_volume:
+                    await self.on_set_volume(self.volume)
+                await self._notify_rendering_control_change()
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_RENDERING_CONTROL,
+            )
+
+        if action_name == "GetMute":
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_RENDERING_CONTROL,
+                {"CurrentMute": "1" if self.mute else "0"},
+            )
+
+        if action_name == "SetMute":
+            mute_str = self._extract_xml_value(body, "DesiredMute")
+            if mute_str is not None:
+                self.mute = mute_str in ("1", "true", "True")
+                if self.on_set_mute:
+                    await self.on_set_mute(self.mute)
+                await self._notify_rendering_control_change()
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_RENDERING_CONTROL,
+            )
+
+        LOGGER.warning("Unhandled RenderingControl action: %s", action_name)
+        return self._soap_error(401, "Invalid Action")
+
+    async def _handle_connection_manager(self, request: web.Request) -> web.Response:
+        """Handle ConnectionManager SOAP actions."""
+        soap_action = request.headers.get("SOAPACTION", "").strip('"')
+        action_name = soap_action.rsplit("#", 1)[-1] if "#" in soap_action else ""
+        LOGGER.debug("ConnectionManager action: %s", action_name)
+
+        if action_name == "GetProtocolInfo":
+            sink_protocols = ",".join(f"http-get:*:{mime}:*" for mime in SUPPORTED_MIME_TYPES)
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_CONNECTION_MANAGER,
+                {"Source": "", "Sink": sink_protocols},
+            )
+
+        if action_name == "GetCurrentConnectionIDs":
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_CONNECTION_MANAGER,
+                {"ConnectionIDs": "0"},
+            )
+
+        if action_name == "GetCurrentConnectionInfo":
+            sink_protocols = ",".join(f"http-get:*:{mime}:*" for mime in SUPPORTED_MIME_TYPES)
+            return self._soap_response(
+                action_name,
+                UPNP_SERVICE_CONNECTION_MANAGER,
+                {
+                    "RcsID": "0",
+                    "AVTransportID": "0",
+                    "ProtocolInfo": sink_protocols,
+                    "PeerConnectionManager": "",
+                    "PeerConnectionID": "-1",
+                    "Direction": "Input",
+                    "Status": "OK",
+                },
+            )
+
+        LOGGER.warning("Unhandled ConnectionManager action: %s", action_name)
+        return self._soap_error(401, "Invalid Action")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_xml_value(xml_str: str, tag: str) -> str | None:
+        """Extract a value from a SOAP XML body by tag name (naive parser)."""
+        import re
+
+        pattern = rf"<[^>]*{tag}[^>]*>(.*?)</[^>]*{tag}>"
+        match = re.search(pattern, xml_str, re.DOTALL)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _soap_response(
+        action_name: str,
+        service_type: str,
+        values: dict[str, str] | None = None,
+    ) -> web.Response:
+        """Build a UPnP SOAP response envelope."""
+        body = f"""<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
+            s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:{action_name}Response xmlns:u="{service_type}">"""
+        if values:
+            for key, val in values.items():
+                body += f"\n      <{key}>{val}</{key}>"
+        body += f"""
+    </u:{action_name}Response>
+  </s:Body>
+</s:Envelope>"""
+        return web.Response(body=body, content_type="text/xml", charset="utf-8")
+
+    @staticmethod
+    def _soap_error(code: int, description: str) -> web.Response:
+        """Build a UPnP SOAP error response."""
+        body = f"""<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
+            s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <s:Fault>
+      <faultcode>s:Client</faultcode>
+      <faultstring>UPnPError</faultstring>
+      <detail>
+        <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+          <errorCode>{code}</errorCode>
+          <errorDescription>{description}</errorDescription>
+        </UPnPError>
+      </detail>
+    </s:Fault>
+  </s:Body>
+</s:Envelope>"""
+        return web.Response(
+            body=body,
+            status=500,
+            content_type="text/xml",
+            charset="utf-8",
+        )
+
+    # ------------------------------------------------------------------
+    # GENA Event Subscription Handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_subscribe_av_transport(
+        self,
+        request: web.Request,
+    ) -> web.Response:
+        """Handle SUBSCRIBE for AVTransport events."""
+        return await self._handle_subscribe(
+            request,
+            self._evt_av_transport,
+            self._get_av_transport_vars(),
+        )
+
+    async def _handle_unsubscribe_av_transport(
+        self,
+        request: web.Request,
+    ) -> web.Response:
+        """Handle UNSUBSCRIBE for AVTransport events."""
+        return self._handle_unsubscribe(request, self._evt_av_transport)
+
+    async def _handle_subscribe_rendering_control(
+        self,
+        request: web.Request,
+    ) -> web.Response:
+        """Handle SUBSCRIBE for RenderingControl events."""
+        return await self._handle_subscribe(
+            request,
+            self._evt_rendering_control,
+            self._get_rendering_control_vars(),
+        )
+
+    async def _handle_unsubscribe_rendering_control(
+        self,
+        request: web.Request,
+    ) -> web.Response:
+        """Handle UNSUBSCRIBE for RenderingControl events."""
+        return self._handle_unsubscribe(request, self._evt_rendering_control)
+
+    async def _handle_subscribe_connection_manager(
+        self,
+        request: web.Request,
+    ) -> web.Response:
+        """Handle SUBSCRIBE for ConnectionManager events."""
+        sink_protocols = ",".join(f"http-get:*:{mime}:*" for mime in SUPPORTED_MIME_TYPES)
+        initial_vars = {
+            "SourceProtocolInfo": "",
+            "SinkProtocolInfo": sink_protocols,
+            "CurrentConnectionIDs": "0",
+        }
+        return await self._handle_subscribe(
+            request,
+            self._evt_connection_manager,
+            initial_vars,
+        )
+
+    async def _handle_unsubscribe_connection_manager(
+        self,
+        request: web.Request,
+    ) -> web.Response:
+        """Handle UNSUBSCRIBE for ConnectionManager events."""
+        return self._handle_unsubscribe(request, self._evt_connection_manager)
+
+    async def _handle_subscribe(
+        self,
+        request: web.Request,
+        manager: EventingManager,
+        initial_vars: dict[str, str],
+    ) -> web.Response:
+        """Handle SUBSCRIBE requests for a UPnP service."""
+        sid = request.headers.get("SID")
+
+        if sid:
+            # Renewal
+            try:
+                timeout = manager.renew(
+                    sid,
+                    request.headers.get("TIMEOUT"),
+                )
+            except KeyError:
+                return web.Response(status=412, text="Invalid SID")
+            return web.Response(
+                status=200,
+                headers={
+                    "SID": sid,
+                    "TIMEOUT": f"Second-{timeout}",
+                },
+            )
+
+        # New subscription
+        callback = request.headers.get("CALLBACK")
+        if not callback:
+            return web.Response(status=412, text="Missing CALLBACK header")
+
+        try:
+            sid, timeout = manager.subscribe(
+                callback,
+                request.headers.get("TIMEOUT"),
+            )
+        except ValueError as exc:
+            return web.Response(status=412, text=str(exc))
+
+        # Send initial event with current state
+        await manager.notify_initial(sid, initial_vars)
+
+        return web.Response(
+            status=200,
+            headers={
+                "SID": sid,
+                "TIMEOUT": f"Second-{timeout}",
+                "Server": "UPnP/1.0 MusicAssistant/1.0",
+            },
+        )
+
+    @staticmethod
+    def _handle_unsubscribe(
+        request: web.Request,
+        manager: EventingManager,
+    ) -> web.Response:
+        """Handle UNSUBSCRIBE requests for a UPnP service."""
+        sid = request.headers.get("SID")
+        if not sid:
+            return web.Response(status=412, text="Missing SID header")
+        manager.unsubscribe(sid)
+        return web.Response(status=200)
+
+    # ------------------------------------------------------------------
+    # Event Notification Helpers
+    # ------------------------------------------------------------------
+
+    def _get_av_transport_vars(self) -> dict[str, str]:
+        """Get current AVTransport state as a LastChange XML fragment."""
+        last_change = self._build_last_change(
+            "urn:schemas-upnp-org:service:AVTransport:1",
+            {
+                "TransportState": self.transport_state,
+                "TransportStatus": "OK",
+                "TransportPlaySpeed": "1",
+                "CurrentTrackURI": self.current_uri,
+                "AVTransportURI": self.current_uri,
+                "AVTransportURIMetaData": self.current_uri_metadata,
+                "CurrentTrackMetaData": self.current_uri_metadata,
+            },
+        )
+        return {"LastChange": last_change}
+
+    def _get_rendering_control_vars(self) -> dict[str, str]:
+        """Get current RenderingControl state as a LastChange XML fragment."""
+        last_change = self._build_last_change(
+            "urn:schemas-upnp-org:service:RenderingControl:1",
+            {
+                "Volume": str(self.volume),
+                "Mute": "1" if self.mute else "0",
+            },
+            channel="Master",
+        )
+        return {"LastChange": last_change}
+
+    async def _notify_av_transport_change(self) -> None:
+        """Notify AVTransport subscribers of state changes."""
+        await self._evt_av_transport.notify(self._get_av_transport_vars())
+
+    async def _notify_rendering_control_change(self) -> None:
+        """Notify RenderingControl subscribers of state changes."""
+        await self._evt_rendering_control.notify(
+            self._get_rendering_control_vars(),
+        )
+
+    @staticmethod
+    def _build_last_change(
+        namespace: str,
+        variables: dict[str, str],
+        channel: str | None = None,
+    ) -> str:
+        """Build a LastChange XML value for GENA eventing.
+
+        The LastChange event wraps state variable changes in an
+        <Event><InstanceID> structure as required by UPnP spec.
+        """
+        from xml.sax.saxutils import escape
+
+        parts: list[str] = []
+        for name, value in variables.items():
+            attrs = f'val="{escape(value)}"'
+            if channel:
+                attrs += f' channel="{channel}"'
+            parts.append(f"<{name} {attrs}/>")
+
+        return (
+            f'<Event xmlns="{namespace}"><InstanceID val="0">{"".join(parts)}</InstanceID></Event>'
+        )
