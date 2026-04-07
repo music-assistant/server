@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import suppress
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
@@ -120,9 +119,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 CACHE_CATEGORY_PLAYER_POWER = 1
-
-# Context variable to prevent circular calls between players and player_queues controllers
-IN_QUEUE_COMMAND: ContextVar[bool] = ContextVar("IN_QUEUE_COMMAND", default=False)
 
 
 class PlayerController(ProtocolLinkingMixin, CoreController):
@@ -437,7 +433,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     # Player commands
 
     @api_command("players/cmd/stop")
-    @handle_player_command
+    @handle_player_command(lock="play")
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
 
@@ -445,7 +441,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self._get_player_with_redirect(player_id)
         # Redirect to queue controller if it is active (skip if already in queue command context)
-        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
+        if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.stop(active_queue.queue_id)
             return
         # Delegate to internal handler for actual implementation
@@ -483,7 +479,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self._get_player_with_redirect(player_id)
         # Redirect to queue controller if it is active (skip if already in queue command context)
-        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
+        if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.pause(active_queue.queue_id)
             return
         # Delegate to internal handler for actual implementation
@@ -531,7 +527,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 await plugin_source.on_seek(position)
                 return
         # Redirect to queue controller if it is active
-        if not IN_QUEUE_COMMAND.get() and (active_queue := self.get_active_queue(player)):
+        if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
         # handle command on player/source directly
@@ -831,7 +827,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
     @api_command("players/cmd/play_announcement")
-    @handle_player_command(lock=True)
+    @handle_player_command(lock="play")
     async def play_announcement(
         self,
         player_id: str,
@@ -941,7 +937,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         finally:
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
 
-    @handle_player_command(lock=True)
+    @handle_player_command(lock="play")
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
@@ -1062,7 +1058,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
-    @handle_player_command(lock=True)
+    @handle_player_command(lock="play")
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
         Handle enqueuing of a next media item on the player.
@@ -1106,7 +1102,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-        lock_key = f"set_members_{target_player}"
+        # Use the "play" lock category — same as play_media, play_announcement,
+        # enqueue_next_media — to prevent concurrent playback-related commands
+        # from racing with protocol switches triggered by set_members.
+        # Use resolved parent_player.player_id (not raw target_player) to match
+        # the lock key that handle_player_command produces after protocol resolution.
+        lock_key = f"play_{parent_player.player_id}"
         if lock_key not in self._player_command_locks:
             self._player_command_locks[lock_key] = asyncio.Lock()
         async with self._player_command_locks[lock_key]:
@@ -2186,7 +2187,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
                 prev_media_name,
             )
-            await self.cmd_stop(player.player_id)
+            await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
             await self.wait_for_state(player, PlaybackState.IDLE, 10, 0.4)
         # adjust volume if needed
@@ -2212,7 +2213,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         player.state.name,
                         volume_player.state.name,
                     )
-                    tg.create_task(self.cmd_stop(volume_player.player_id))
+                    tg.create_task(self._handle_cmd_stop(volume_player.player_id))
                 if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
                     continue
                 if (prev_volume := volume_player.state.volume_level) is None:
@@ -2236,7 +2237,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             "Announcement to player %s - playing the announcement on the player...",
             player.state.name,
         )
-        await self.play_media(player_id=player.player_id, media=announcement)
+        await self._handle_play_media(player.player_id, announcement)
         # wait for the player(s) to play
         await self.wait_for_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
         # wait for the player to stop playing
@@ -2634,21 +2635,34 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player: The player to check and potentially ungroup.
         :param log_context: Additional context for the log message (e.g., target player name).
         """
-        if not player.state.synced_to:
+        if not player.state.synced_to and not player.state.active_group:
             return
         self.logger.info(
             "Player %s is already synced to %s, ungrouping it first before %s",
             player.name,
-            player.state.synced_to,
+            player.state.synced_to or player.state.active_group,
             log_context,
         )
-        await self.wait_for_player_update(
-            player.player_id,
-            timeout=5,
-            action=self.cmd_set_members(
-                player.state.synced_to, player_ids_to_remove=[player.player_id]
-            ),
-        )
+        # Use internal _handle_set_members to avoid deadlocking on the play lock
+        # (we're already inside a cmd_set_members chain that holds a play lock).
+        synced_to = player.state.synced_to or player.state.active_group
+        if synced_to and (parent := self.get_player(synced_to)):
+            try:
+                await self.wait_for_player_update(
+                    player.player_id,
+                    timeout=5,
+                    action=self._handle_set_members(
+                        parent, player_ids_to_remove=[player.player_id]
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.warning(
+                    "Failed to auto-ungroup %s from %s, proceeding anyway",
+                    player.name,
+                    synced_to,
+                )
 
     async def _handle_set_members(
         self,
@@ -2659,7 +2673,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle the actual set_members logic.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
 
         :param parent_player: The parent player to add/remove members to/from.
         :param player_ids_to_add: List of player_id's to add to the parent player.
@@ -2769,6 +2783,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle set_members considering protocol and native members.
 
+        Skips permission checks, locking, and all redirect logic (internal use only).
         Translates visible player IDs to protocol player IDs when appropriate,
         and forwards to the correct player's set_members.
 
@@ -2866,7 +2881,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle resume playback command.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
         """
         player = self._get_player_with_redirect(player_id)
         source = source or player.state.active_source
@@ -2906,7 +2921,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle player power on/off command.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
 
         :param player_id: The player ID to power on/off.
         :param powered: True to power on, False to power off.
@@ -3021,7 +3036,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle Player volume set command.
 
-        Skips the permission checks (internal use only).
+        Skips permission checks and locking (internal use only).
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
@@ -3098,7 +3113,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle play media command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         :param media: The Media that needs to be played on the player.
@@ -3163,7 +3178,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle enqueue next media command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         :param media: The Media that needs to be enqueued on the player.
@@ -3192,7 +3207,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle select source command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         :param source: The ID of the source that needs to be activated/selected.
@@ -3238,7 +3253,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle stop command without any redirects.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         """
@@ -3279,7 +3294,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle play command without group redirect.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         """
@@ -3337,7 +3352,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Handle pause command without any redirects.
 
-        Skips permission checks and all redirect logic (internal use only).
+        Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
         """

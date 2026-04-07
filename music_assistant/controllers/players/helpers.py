@@ -44,7 +44,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: None = None,
     *,
-    lock: bool = False,
+    lock: str | bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -54,7 +54,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
-    lock: bool = False,
+    lock: str | bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -69,7 +69,10 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     Also checks user permissions and optionally acquires a per-player lock.
 
     :param func: The function to wrap (when used without parentheses).
-    :param lock: If True, acquire a lock per player_id and function name before executing.
+    :param lock: Lock category string (e.g. "play", "volume") to serialize commands
+        in the same category per player. Commands with the same lock category on the
+        same player will not run concurrently. True uses the function name as category.
+        False (default) means no locking.
     """  # noqa: D401
 
     def decorator(
@@ -131,8 +134,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                         raise PlayerCommandFailed(str(err)) from err
 
             if lock:
-                # Acquire a lock specific to player_id and function name
-                lock_key = f"{fn.__name__}_{player_id}"
+                lock_category = lock if isinstance(lock, str) else fn.__name__
+                lock_key = f"{lock_category}_{player.player_id}"
                 if lock_key not in self._player_command_locks:
                     self._player_command_locks[lock_key] = asyncio.Lock()
                 async with self._player_command_locks[lock_key]:
@@ -142,7 +145,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 
         return wrapper
 
-    # Support both @handle_player_command and @handle_player_command(lock=True)
+    # Support both @handle_player_command and @handle_player_command(lock="play")
     if func is not None:
         return decorator(func)
     return decorator
