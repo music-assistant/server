@@ -2239,7 +2239,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             "Announcement to player %s - playing the announcement on the player...",
             player.state.name,
         )
-        await self.play_media(player_id=player.player_id, media=announcement)
+        await self._handle_play_media(player.player_id, announcement)
         # wait for the player(s) to play
         await self.wait_for_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
         # wait for the player to stop playing
