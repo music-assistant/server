@@ -340,6 +340,18 @@ class SendspinPlaybackSession:
 
     # -- Public API ------------------------------------------------------------
 
+    def transfer_to(self, new_player: SendspinPlayer) -> None:
+        """Transfer session ownership to a new player.
+
+        Used during dynamic leader switching to keep the push stream alive
+        while the old leader is removed from the sendspin group. The PushStream
+        and all internal state (pipelines, history, join-catchup) stay intact;
+        only the owning player reference is updated.
+
+        :param new_player: The SendspinPlayer that will take over as session owner.
+        """
+        self.player = new_player
+
     async def cancel(self, reason: str) -> None:
         """Cancel and await the active playback task, if any."""
         task = self.playback_task
