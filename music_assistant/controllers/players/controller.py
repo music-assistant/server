@@ -437,7 +437,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     # Player commands
 
     @api_command("players/cmd/stop")
-    @handle_player_command
+    @handle_player_command(lock="play")
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
 
@@ -2189,7 +2189,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
                 prev_media_name,
             )
-            await self.cmd_stop(player.player_id)
+            await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
             await self.wait_for_state(player, PlaybackState.IDLE, 10, 0.4)
         # adjust volume if needed
@@ -2215,7 +2215,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         player.state.name,
                         volume_player.state.name,
                     )
-                    tg.create_task(self.cmd_stop(volume_player.player_id))
+                    tg.create_task(self._handle_cmd_stop(volume_player.player_id))
                 if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
                     continue
                 if (prev_volume := volume_player.state.volume_level) is None:
