@@ -431,7 +431,7 @@ class MusicAssistant:
             "list[PluginProvider]",
             [
                 prov
-                for prov in self._providers.values()
+                for prov in list(self._providers.values())
                 if prov.available
                 and isinstance(prov, PluginProvider)
                 and feature in prov.supported_features
