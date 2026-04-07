@@ -10,6 +10,9 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.helpers.process import check_output
 from music_assistant.models.player import Player
 
+import os
+from .helpers import find_pactl, pactl_env
+
 from .constants import (
     CONF_VOLUME_CONTROL,
     DEVICE_UUID_NAMESPACE,
@@ -82,28 +85,30 @@ class LocalPulseAudioPlayer(Player):
             await self._set_pa_mute(muted)
         self.update_state()
 
-    async def _set_pa_volume(self, volume: int) -> None:
-        """Set PulseAudio sink volume via pactl."""
-        try:
-            rc, _ = await check_output(
-                "pactl", "set-sink-volume", self._pa_sink_name, f"{volume}%"
-            )
-            if rc != 0:
-                self.logger.warning("pactl volume failed for sink %s", self._pa_sink_name)
-                self._hardware_volume_fallback = True
-        except FileNotFoundError:
-            self.logger.warning("pactl not found, falling back to software volume")
+async def _set_pa_volume(self, volume: int) -> None:
+    """Set PulseAudio sink volume via pactl."""
+    try:
+        rc, _ = await check_output(
+            find_pactl(), "set-sink-volume", self._pa_sink_name, f"{volume}%",
+            env=pactl_env(),
+        )
+        if rc != 0:
+            self.logger.warning("pactl volume failed for sink %s", self._pa_sink_name)
             self._hardware_volume_fallback = True
+    except FileNotFoundError as err:
+        self.logger.warning("pactl not found: %s", err)
+        self._hardware_volume_fallback = True
 
-    async def _set_pa_mute(self, muted: bool) -> None:
-        """Set PulseAudio sink mute via pactl."""
-        try:
-            rc, _ = await check_output(
-                "pactl", "set-sink-mute", self._pa_sink_name, "1" if muted else "0"
-            )
-            if rc != 0:
-                self.logger.warning("pactl mute failed for sink %s", self._pa_sink_name)
-                self._hardware_volume_fallback = True
-        except FileNotFoundError:
-            self.logger.warning("pactl not found, falling back to software volume")
+async def _set_pa_mute(self, muted: bool) -> None:
+    """Set PulseAudio sink mute via pactl."""
+    try:
+        rc, _ = await check_output(
+            find_pactl(), "set-sink-mute", self._pa_sink_name, "1" if muted else "0",
+            env=pactl_env(),
+        )
+        if rc != 0:
+            self.logger.warning("pactl mute failed for sink %s", self._pa_sink_name)
             self._hardware_volume_fallback = True
+    except FileNotFoundError as err:
+        self.logger.warning("pactl not found: %s", err)
+        self._hardware_volume_fallback = True
