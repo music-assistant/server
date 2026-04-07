@@ -447,9 +447,13 @@ class SendspinPlayer(Player):
                 bool(self._attr_group_members) and self._attr_group_members[0] == self.player_id
             )
             if was_leader and len(group.clients) > 0:
-                # We were removed as the group leader:
-                # stop playback on the old group before we continue as solo.
-                await group.stop()
+                # We were removed as the group leader but other clients remain.
+                # Don't stop the group -- the PushStream keeps running for
+                # remaining members (playback session was transferred in set_members).
+                self.logger.debug(
+                    "Player %s removed as group leader; group continues for remaining members",
+                    self.player_id,
+                )
             elif not was_leader:
                 self.logger.debug(
                     "Player %s removed from group as non-leader; keeping old group playing",
@@ -549,13 +553,35 @@ class SendspinPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
         for player_id in player_ids_to_remove or []:
-            player = self.mass.players.get_player(player_id, True)
-            player = cast("SendspinPlayer", player)  # For type checking
-            await self.api.group.remove_client(player.api)
+            member_player = self.mass.players.get_player(player_id, True)
+            member_player = cast("SendspinPlayer", member_player)
+
+            # Dynamic leader switch: transfer the active playback session to the
+            # next remaining group member before removing ourselves from the group.
+            # This keeps the PushStream alive for the remaining members.
+            if (
+                player_id == self.player_id
+                and self.playback_session.playback_task is not None
+                and not self.playback_session.playback_task.done()
+            ):
+                remaining = [c for c in self.api.group.clients if c.client_id != self.player_id]
+                if remaining:
+                    new_owner_id = remaining[0].client_id
+                    new_owner = self.mass.players.get_player(new_owner_id)
+                    if isinstance(new_owner, SendspinPlayer):
+                        self.logger.info(
+                            "Transferring playback session to %s for dynamic leader switch",
+                            new_owner.display_name,
+                        )
+                        await self.playback_session.transfer_to(new_owner)
+                        new_owner.playback_session = self.playback_session
+                        self.playback_session = SendspinPlaybackSession(self)
+
+            await self.api.group.remove_client(member_player.api)
         for player_id in player_ids_to_add or []:
-            player = self.mass.players.get_player(player_id, True)
-            player = cast("SendspinPlayer", player)  # For type checking
-            await self.api.group.add_client(player.api)
+            member_player = self.mass.players.get_player(player_id, True)
+            member_player = cast("SendspinPlayer", member_player)
+            await self.api.group.add_client(member_player.api)
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
