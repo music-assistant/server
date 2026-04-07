@@ -7,7 +7,7 @@
   "credits": [
     "[async-upnp-client](https://github.com/StevenLooman/async_upnp_client)"
   ],
-  "requirements": ["defusedxml>=0.7.0"],
+  "requirements": [],
   "documentation": "https://trudenboy.github.io/ma-provider-dlna-receiver/",
   "stage": "experimental",
   "multi_instance": false,

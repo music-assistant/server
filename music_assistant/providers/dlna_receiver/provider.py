@@ -15,12 +15,12 @@ import logging
 import socket
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from html import unescape
 from typing import TYPE_CHECKING
 
-import defusedxml.ElementTree as DefusedET
 from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.streamdetails import StreamMetadata
@@ -387,7 +387,7 @@ class DLNAReceiverProvider(PluginProvider):
         metadata = unescape(metadata)
 
         try:
-            root = DefusedET.fromstring(metadata)
+            root = ET.fromstring(metadata)  # noqa: S314
         except Exception:
             LOGGER.info("Failed to parse DIDL-Lite metadata: %s", metadata[:300])
             return result
