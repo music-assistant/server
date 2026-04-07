@@ -739,9 +739,9 @@ class PartyPlugin(PluginProvider):
             # Queue is not playing — resolve the item, insert, and start playback.
             # Hold the lock so concurrent guests don't both start playback.
             async with self._queue_lock:
-                if self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS) and self._queue_contains_uri(
-                    self.mass.player_queues.items(queue_id), uri
-                ):
+                if self.config.get_value(
+                    CONF_PREVENT_DUPLICATE_TRACKS
+                ) and self._queue_contains_uri(self.mass.player_queues.items(queue_id), uri):
                     raise InvalidDataError("This track is already in the queue")
                 media_item = await self.mass.music.get_item_by_uri(uri)
                 if not media_item or media_item.media_type not in (
