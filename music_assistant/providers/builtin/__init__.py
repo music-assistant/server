@@ -176,6 +176,8 @@ class BuiltinProvider(MusicProvider):
             schedule=TaskSchedule.hourly(every=24),
             initial_delay=60,
         )
+        # register API commands for manual item management
+        self.mass.register_api_command("builtin/add_radio", self.add_radio)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -400,35 +402,61 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def edit_radio(
-        self,
-        old_item_id: str,
-        new_item_id: str,
-        name: str,
-        image_url: str | None = None,
-    ) -> Radio:
-        """
-        Edit a stored radio station in config.
+    async def on_item_updated(self, item: MediaItemType) -> None:
+        """Update stored item config when a library item is edited.
 
-        :param old_item_id: Current URL/item_id of the radio.
-        :param new_item_id: New URL.
+        :param item: The updated media item with new metadata.
+        """
+        if item.media_type == MediaType.RADIO:
+            key = CONF_KEY_RADIOS
+        elif item.media_type == MediaType.TRACK:
+            key = CONF_KEY_TRACKS
+        else:
+            return
+
+        # find the builtin provider mapping to get the item_id (URL)
+        builtin_mapping = next(
+            (pm for pm in item.provider_mappings if pm.provider_domain == self.domain),
+            None,
+        )
+        if not builtin_mapping:
+            return
+
+        stored_items: list[StoredItem] = self.mass.config.get(key, [])
+        for stored_item in stored_items:
+            if stored_item["item_id"] == builtin_mapping.item_id:
+                stored_item["name"] = item.name
+                if item.image:
+                    stored_item["image_url"] = item.image.path
+                elif "image_url" in stored_item:
+                    del stored_item["image_url"]
+                break
+        self.mass.config.set(key, stored_items)
+
+    async def add_radio(self, url: str, name: str, image_url: str | None = None) -> Radio:
+        """
+        Add a radio station.
+
+        :param url: Stream URL.
         :param name: Display name.
         :param image_url: Image URL.
         """
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
-
-        if not any(x["item_id"] == old_item_id for x in stored_items):
-            msg = f"Radio station not found: {old_item_id}"
-            raise MediaNotFoundError(msg)
-
-        stored_items = [x for x in stored_items if x["item_id"] != old_item_id]
-        stored_item = StoredItem(item_id=new_item_id, name=name)
+        # Remove existing entry with same URL if present
+        stored_items = [x for x in stored_items if x["item_id"] != url]
+        stored_item = StoredItem(item_id=url, name=name)
         if image_url:
             stored_item["image_url"] = image_url
         stored_items.append(stored_item)
         self.mass.config.set(CONF_KEY_RADIOS, stored_items)
-
-        return await self.get_radio(new_item_id)
+        # Trigger library sync
+        self.mass.call_later(
+            1,
+            self.mass.music.start_sync,
+            [MediaType.RADIO],
+            [self.instance_id],
+        )
+        return await self.get_radio(url)
 
     async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
