@@ -53,7 +53,7 @@ class LocalPulseAudioPlayer(Player):
         )
         self._attr_device_info.add_identifier(IdentifierType.UUID, player_id)
         self._attr_can_group_with = set()
-        self._attr_volume_level = 100
+        self._attr_volume_level = 25
         self._pa_sink_name = pa_sink_name
         self._hardware_volume_fallback = False
 
