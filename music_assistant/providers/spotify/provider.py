@@ -1086,7 +1086,8 @@ class SpotifyProvider(MusicProvider):
 
     @use_cache(7200)  # 2 hours - shorter cache for resume point data
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
-        """Get raw chapter data from Spotify API (cached).
+        """
+        Get raw chapter data from Spotify API (cached).
 
         :param prov_audiobook_id: Spotify audiobook ID.
         """
