@@ -377,7 +377,8 @@ class LocalAudioBridgeManager:
 
     @staticmethod
     def _enumerate_output_devices() -> list[dict[str, Any]]:
-        """Enumerate available audio output devices via sounddevice.
+        """
+        Enumerate available audio output devices via sounddevice.
 
         Only devices that can actually be opened are returned. This filters out
         ALSA virtual devices (dmix, surround*, etc.) that may be unavailable
