@@ -10,15 +10,13 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.helpers.process import check_output
 from music_assistant.models.player import Player
 
-import os
-from .helpers import find_pactl, pactl_env
-
 from .constants import (
-    CONF_VOLUME_CONTROL,
+    CONF_HARDWARE_VOLUME_CEILING,
+    DEFAULT_HARDWARE_VOLUME_CEILING,
     DEVICE_UUID_NAMESPACE,
-    VOLUME_CONTROL_HARDWARE,
     VOLUME_CONTROL_SOFTWARE,
 )
+from .helpers import find_pactl, pactl_env
 
 if TYPE_CHECKING:
     from .provider import LocalPulseAudioProvider
@@ -55,7 +53,6 @@ class LocalPulseAudioPlayer(Player):
         self._attr_can_group_with = set()
         self._attr_volume_level = 25
         self._pa_sink_name = pa_sink_name
-        self._hardware_volume_fallback = False
 
     @property
     def pa_sink_name(self) -> str:
@@ -64,51 +61,47 @@ class LocalPulseAudioPlayer(Player):
 
     @property
     def volume_control_mode(self) -> str:
-        """Return the effective volume control mode."""
-        if self._hardware_volume_fallback:
-            return VOLUME_CONTROL_SOFTWARE
-        return str(
-            self._provider.config.get_value(CONF_VOLUME_CONTROL) or VOLUME_CONTROL_HARDWARE
-        )
+        """Always use software volume — hardware ceiling is set once on startup."""
+        return VOLUME_CONTROL_SOFTWARE
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command."""
         self._attr_volume_level = volume_level
-        if self.volume_control_mode == VOLUME_CONTROL_HARDWARE:
-            await self._set_pa_volume(volume_level)
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME_MUTE command."""
         self._attr_volume_muted = muted
-        if self.volume_control_mode == VOLUME_CONTROL_HARDWARE:
-            await self._set_pa_mute(muted)
         self.update_state()
 
-async def _set_pa_volume(self, volume: int) -> None:
-    """Set PulseAudio sink volume via pactl."""
-    try:
-        rc, _ = await check_output(
-            find_pactl(), "set-sink-volume", self._pa_sink_name, f"{volume}%",
-            env=pactl_env(),
-        )
-        if rc != 0:
-            self.logger.warning("pactl volume failed for sink %s", self._pa_sink_name)
-            self._hardware_volume_fallback = True
-    except FileNotFoundError as err:
-        self.logger.warning("pactl not found: %s", err)
-        self._hardware_volume_fallback = True
+    async def apply_hardware_ceiling(self) -> None:
+        """Set PA sink hardware volume ceiling via pactl.
 
-async def _set_pa_mute(self, muted: bool) -> None:
-    """Set PulseAudio sink mute via pactl."""
-    try:
-        rc, _ = await check_output(
-            find_pactl(), "set-sink-mute", self._pa_sink_name, "1" if muted else "0",
-            env=pactl_env(),
+        Called on every startup to ensure the hardware output level is
+        attenuated to the configured ceiling. Software volume control
+        then operates within this ceiling for day-to-day use.
+        """
+        ceiling = int(
+            self._provider.config.get_value(CONF_HARDWARE_VOLUME_CEILING)
+            or DEFAULT_HARDWARE_VOLUME_CEILING
         )
-        if rc != 0:
-            self.logger.warning("pactl mute failed for sink %s", self._pa_sink_name)
-            self._hardware_volume_fallback = True
-    except FileNotFoundError as err:
-        self.logger.warning("pactl not found: %s", err)
-        self._hardware_volume_fallback = True
+        try:
+            rc, _ = await check_output(
+                find_pactl(),
+                "set-sink-volume",
+                self._pa_sink_name,
+                f"{ceiling}%",
+                env=pactl_env(),
+            )
+            if rc != 0:
+                self.logger.warning(
+                    "Failed to set hardware ceiling for sink %s", self._pa_sink_name
+                )
+            else:
+                self.logger.debug(
+                    "Hardware ceiling set to %d%% for sink %s",
+                    ceiling,
+                    self._pa_sink_name,
+                )
+        except FileNotFoundError as err:
+            self.logger.warning("pactl not found: %s", err)
