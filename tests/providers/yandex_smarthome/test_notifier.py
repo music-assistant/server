@@ -29,7 +29,7 @@ class MockPlayer:
     synced_to: str | None = None
     device_info: Any = None
     supported_features: set[str] = field(default_factory=set)
-    source_list: list = field(default_factory=list)
+    source_list: list[str] = field(default_factory=list)
     active_source: str | None = None
 
 

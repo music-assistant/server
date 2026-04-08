@@ -41,23 +41,23 @@ from provider.schema import (
 class TestEnums:
     """Test enum string values match Yandex Smart Home API."""
 
-    def test_device_types(self):
+    def test_device_types(self) -> None:
         assert YandexDeviceType.MEDIA_DEVICE == "devices.types.media_device"
         assert YandexDeviceType.MEDIA_DEVICE_RECEIVER == "devices.types.media_device.receiver"
 
-    def test_capability_types(self):
+    def test_capability_types(self) -> None:
         assert YandexCapabilityType.ON_OFF == "devices.capabilities.on_off"
         assert YandexCapabilityType.RANGE == "devices.capabilities.range"
         assert YandexCapabilityType.TOGGLE == "devices.capabilities.toggle"
 
-    def test_range_instances(self):
+    def test_range_instances(self) -> None:
         assert YandexRangeInstance.VOLUME == "volume"
 
-    def test_toggle_instances(self):
+    def test_toggle_instances(self) -> None:
         assert YandexToggleInstance.MUTE == "mute"
         assert YandexToggleInstance.PAUSE == "pause"
 
-    def test_response_codes(self):
+    def test_response_codes(self) -> None:
         assert YandexResponseCode.DONE == "DONE"
         assert YandexResponseCode.DEVICE_UNREACHABLE == "DEVICE_UNREACHABLE"
         assert YandexResponseCode.INVALID_ACTION == "INVALID_ACTION"
@@ -73,7 +73,7 @@ class TestEnums:
 class TestDeviceDescription:
     """Test DeviceDescription serialization."""
 
-    def test_minimal(self):
+    def test_minimal(self) -> None:
         desc = DeviceDescription(
             id="p1", name="Living Room", type=YandexDeviceType.MEDIA_DEVICE_RECEIVER
         )
@@ -83,7 +83,7 @@ class TestDeviceDescription:
         assert data["type"] == "devices.types.media_device.receiver"
         assert data["capabilities"] == []
 
-    def test_with_capabilities(self):
+    def test_with_capabilities(self) -> None:
         desc = DeviceDescription(
             id="p1",
             name="Speaker",
@@ -113,7 +113,7 @@ class TestDeviceDescription:
 class TestDeviceState:
     """Test DeviceState serialization."""
 
-    def test_with_capabilities(self):
+    def test_with_capabilities(self) -> None:
         state = DeviceState(
             id="p1",
             capabilities=[
@@ -128,7 +128,7 @@ class TestDeviceState:
         assert data["capabilities"][0]["state"]["value"] is True
         assert data["error_code"] is None
 
-    def test_error_state(self):
+    def test_error_state(self) -> None:
         state = DeviceState(id="p1", error_code="DEVICE_UNREACHABLE", error_message="Offline")
         data = asdict(state)
         assert data["error_code"] == "DEVICE_UNREACHABLE"
@@ -138,7 +138,7 @@ class TestDeviceState:
 class TestActionRequestPayload:
     """Test action request parsing structures."""
 
-    def test_single_device_action(self):
+    def test_single_device_action(self) -> None:
         payload = ActionRequestPayload(
             devices=[
                 DeviceAction(
@@ -158,7 +158,7 @@ class TestActionRequestPayload:
         cap = data["devices"][0]["capabilities"][0]
         assert cap["state"]["relative"] is False
 
-    def test_relative_volume(self):
+    def test_relative_volume(self) -> None:
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=10, relative=True),
@@ -171,11 +171,11 @@ class TestActionRequestPayload:
 class TestActionResult:
     """Test action result structures."""
 
-    def test_success(self):
+    def test_success(self) -> None:
         result = ActionResult(status="DONE")
         assert asdict(result) == {"status": "DONE", "error_code": None, "error_message": None}
 
-    def test_error(self):
+    def test_error(self) -> None:
         result = ActionResult(status="ERROR", error_code="INVALID_ACTION", error_message="Oops")
         data = asdict(result)
         assert data["status"] == "ERROR"
@@ -185,7 +185,7 @@ class TestActionResult:
 class TestCallbackRequest:
     """Test callback state request."""
 
-    def test_serialization(self):
+    def test_serialization(self) -> None:
         req = CallbackRequest(
             ts=1234567890.0,
             payload=CallbackPayload(
@@ -202,7 +202,7 @@ class TestCallbackRequest:
 class TestCloudMessages:
     """Test cloud WebSocket message models."""
 
-    def test_cloud_request(self):
+    def test_cloud_request(self) -> None:
         req = CloudRequest(
             request_id="abc-123", action="/v1.0/user/devices", message={"key": "val"}
         )
@@ -210,11 +210,11 @@ class TestCloudMessages:
         assert req.action == "/v1.0/user/devices"
         assert req.message == {"key": "val"}
 
-    def test_cloud_request_no_message(self):
+    def test_cloud_request_no_message(self) -> None:
         req = CloudRequest(request_id="abc", action="/v1.0/user/unlink")
         assert req.message is None
 
-    def test_cloud_response(self):
+    def test_cloud_response(self) -> None:
         resp = CloudResponse(request_id="abc", payload={"user_id": "u1"})
         data = asdict(resp)
         assert data["request_id"] == "abc"
@@ -224,13 +224,13 @@ class TestCloudMessages:
 class TestDeviceListPayload:
     """Test response payload structures."""
 
-    def test_empty(self):
+    def test_empty(self) -> None:
         payload = DeviceListPayload(user_id="u1")
         data = asdict(payload)
         assert data["user_id"] == "u1"
         assert data["devices"] == []
 
-    def test_with_devices(self):
+    def test_with_devices(self) -> None:
         payload = DeviceListPayload(
             user_id="u1",
             devices=[DeviceDescription(id="p1", name="Test", type="devices.types.media_device")],
@@ -241,7 +241,7 @@ class TestDeviceListPayload:
 class TestDeviceStatesPayload:
     """Test query response payload."""
 
-    def test_serialization(self):
+    def test_serialization(self) -> None:
         payload = DeviceStatesPayload(devices=[DeviceState(id="p1")])
         data = asdict(payload)
         assert len(data["devices"]) == 1
@@ -251,7 +251,7 @@ class TestDeviceStatesPayload:
 class TestCapabilityActionResult:
     """Test action result with default factory."""
 
-    def test_default_result(self):
+    def test_default_result(self) -> None:
         result = CapabilityActionResult(
             type=YandexCapabilityType.ON_OFF,
             state=CapabilityActionResultState(
