@@ -571,9 +571,9 @@ class AirPlayReceiverProvider(PluginProvider):
             # This will cause ffmpeg to output a chunk, which will then check in_use_by
             # and break out of the loop when it sees it's None
             self.mass.create_task(self._write_silence_to_unblock_stream())
-            # Deselect source from player if there was one
+            # Stop the player that was using this source
             if current_player_id:
-                self.mass.create_task(self.mass.players.select_source(current_player_id, None))
+                self.mass.create_task(self.mass.players.deselect_source(current_player_id))
 
     def _handle_volume_change(self, volume: int) -> None:
         """Handle volume changes from AirPlay client (iOS/macOS device).

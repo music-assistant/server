@@ -20,7 +20,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 from pychromecast import IDLE_APP_ID
-from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE
+from pychromecast.controllers.media import STREAM_TYPE_LIVE
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
@@ -616,10 +616,9 @@ class ChromecastPlayer(Player):
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
-        if "/flow/" in stream_url or media.media_type != MediaType.TRACK or not media.duration:
-            stream_type = STREAM_TYPE_LIVE
-        else:
-            stream_type = STREAM_TYPE_BUFFERED
+        # Always use LIVE stream type because MA streams are real-time encoded by FFmpeg,
+        # so they are not seekable and don't have a known content length.
+        stream_type = STREAM_TYPE_LIVE
         metadata = {
             "metadataType": 3,
             "albumName": media.album or "",
