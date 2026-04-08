@@ -179,9 +179,7 @@ class SendspinPulseAudioBridge:
         self._write_queue.put_nowait(chunk.data)
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
-        """Apply software volume scaling if configured."""
-        if self.player.volume_control_mode != VOLUME_CONTROL_SOFTWARE:
-            return pcm_data
+        """Apply software volume scaling."""
         if self.player.volume_muted:
             return b"\x00" * len(pcm_data)
         volume = self.player.volume_level
@@ -305,6 +303,7 @@ class LocalPulseAudioBridgeManager:
                     pa_sink_name=pa_sink_name,
                 )
                 await self.mass.players.register_or_update(player)
+                await player.apply_hardware_ceiling()
 
                 bridge = SendspinPulseAudioBridge(
                     self.provider, player, sink, sendspin_server
