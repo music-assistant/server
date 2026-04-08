@@ -9,7 +9,9 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.mass import MusicAssistant
 
 from .constants import (
+    CONF_HARDWARE_VOLUME_CEILING,
     CONF_VOLUME_CONTROL,
+    DEFAULT_HARDWARE_VOLUME_CEILING,
     VOLUME_CONTROL_DISABLED,
     VOLUME_CONTROL_HARDWARE,
     VOLUME_CONTROL_SOFTWARE,
@@ -36,20 +38,17 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_VOLUME_CONTROL,
-            type=ConfigEntryType.STRING,
-            label="Volume control mode",
-            options=[
-                ConfigValueOption(title="Hardware (pactl)", value=VOLUME_CONTROL_HARDWARE),
-                ConfigValueOption(title="Software", value=VOLUME_CONTROL_SOFTWARE),
-                ConfigValueOption(title="Disabled", value=VOLUME_CONTROL_DISABLED),
-            ],
-            default_value=VOLUME_CONTROL_HARDWARE,
+            key=CONF_HARDWARE_VOLUME_CEILING,
+            type=ConfigEntryType.INTEGER,
+            label="Hardware volume ceiling",
             description=(
-                "Hardware uses pactl to control the PulseAudio sink volume directly. "
-                "Software applies volume scaling to PCM audio data before writing. "
-                "Disabled passes audio at full volume."
+                "Sets the PulseAudio sink volume to this level on every startup. "
+                "This attenuates the maximum output level of the hardware. "
+                "Day-to-day volume control uses software scaling within this ceiling. "
+                "Range: 0-100. Default: 50."
             ),
+            default_value=DEFAULT_HARDWARE_VOLUME_CEILING,
+            required=False,
         ),
     )
 
