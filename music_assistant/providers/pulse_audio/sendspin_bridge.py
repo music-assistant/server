@@ -122,6 +122,7 @@ class SendspinPulseAudioBridge:
                 on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
+                initial_volume=25,
             )
             self._bridge_role.setup_audio_requirements()
 
