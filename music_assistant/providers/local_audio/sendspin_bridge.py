@@ -394,6 +394,7 @@ class LocalAudioBridgeManager:
                 continue
             # Test if the device can actually be opened - many ALSA virtual
             # devices will fail if PipeWire or another audio server is active
+            # TODO: query supported sample rates per device and default to 48kHz
             try:
                 test_stream = sd.RawOutputStream(
                     device=idx,
