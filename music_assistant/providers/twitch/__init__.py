@@ -500,6 +500,9 @@ class TwitchProvider(MusicProvider):
         if status == 429:
             msg = f"Twitch API: rate limited ({status})"
             raise ResourceTemporarilyUnavailable(msg)
+        if status in (401, 403):
+            msg = f"Twitch API: authentication failed ({status})"
+            raise LoginFailed(msg)
         if status >= 500:
             msg = f"Twitch API: server error ({status})"
             raise ProviderUnavailableError(msg)
