@@ -129,10 +129,10 @@ class TestGetDeviceDescription:
         desc = get_device_description(player)  # type: ignore[arg-type]
         range_cap = next(c for c in desc.capabilities if c.type == YandexCapabilityType.RANGE)
         assert range_cap.parameters is not None
-        assert range_cap.parameters.instance == "volume"  # type: ignore[union-attr]
-        assert range_cap.parameters.range is not None  # type: ignore[union-attr]
-        assert range_cap.parameters.range.min == 0  # type: ignore[union-attr]
-        assert range_cap.parameters.range.max == 100  # type: ignore[union-attr]
+        assert range_cap.parameters.instance == "volume"
+        assert range_cap.parameters.range is not None
+        assert range_cap.parameters.range.min == 0
+        assert range_cap.parameters.range.max == 100
 
     def test_device_info_model(self) -> None:
         """Test device info model."""
@@ -414,7 +414,7 @@ class TestChannelCapability:
             for c in desc.capabilities
             if c.type == YandexCapabilityType.RANGE
             and c.parameters
-            and c.parameters.instance == INSTANCE_CHANNEL  # type: ignore[union-attr]
+            and c.parameters.instance == INSTANCE_CHANNEL
         ]
         assert len(channel_caps) == 1
         cap = channel_caps[0]
@@ -497,7 +497,7 @@ class TestInputSourceCapability:
         cap = mode_caps[0]
         assert cap.parameters.instance == INSTANCE_INPUT_SOURCE  # type: ignore[union-attr]
         assert cap.parameters.modes is not None  # type: ignore[union-attr]
-        assert len(cap.parameters.modes) == 2  # type: ignore[arg-type,union-attr]
+        assert len(cap.parameters.modes) == 2  # type: ignore[union-attr]
         assert cap.parameters.modes[0].value == "one"  # type: ignore[union-attr]
         assert cap.parameters.modes[1].value == "two"  # type: ignore[union-attr]
 
