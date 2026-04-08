@@ -60,10 +60,18 @@ async def test_track_stream_start_subscribes_on_first(provider: TwitchProvider) 
     provider._eventsub.subscribe_raids = AsyncMock()
     provider._eventsub.start = AsyncMock()
 
+    subscribed = asyncio.Event()
+    original_subscribe = provider._eventsub.subscribe_raids
+
+    async def subscribe_and_signal(*args: object, **kwargs: object) -> None:
+        await original_subscribe(*args, **kwargs)
+        subscribed.set()
+
+    provider._eventsub.subscribe_raids = AsyncMock(side_effect=subscribe_and_signal)
+
     with patch.object(provider, "_get_users", new_callable=AsyncMock, return_value=[{"id": "123"}]):
         provider._track_stream_start("streamer_a")
-        # Let the created task run
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(subscribed.wait(), timeout=1.0)
 
     provider._eventsub.subscribe_raids.assert_called_once_with("123")
 
@@ -77,7 +85,7 @@ async def test_track_stream_start_no_subscribe_on_second(provider: TwitchProvide
 
     with patch.object(provider, "_subscribe_raids_for_channel", new_callable=AsyncMock) as mock_sub:
         provider._track_stream_start("streamer_a")
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)  # yield to event loop — no task should be pending
 
     mock_sub.assert_not_called()
 

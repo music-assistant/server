@@ -345,18 +345,31 @@ async def test_welcome_resubscribes_active_broadcasters(
 ) -> None:
     """If subscriptions exist, welcome re-creates them on new session."""
     client._subscriptions = {"123": "old_sub", "456": "old_sub2"}
+    expected_posts = len(client._subscriptions)
     msg = load_fixture("eventsub_welcome.json")
+
+    all_posted = asyncio.Event()
+    post_count = 0
+    original_post = http_session.post
+
+    def counting_post(*args: object, **kwargs: object) -> object:
+        nonlocal post_count
+        result = original_post(*args, **kwargs)
+        post_count += 1
+        if post_count >= expected_posts:
+            all_posted.set()
+        return result
+
+    http_session.post = Mock(side_effect=counting_post)
 
     client._handle_message(msg)
 
     assert client._ready.is_set()
     assert client._session_id == "test_session_123"
 
-    # Give the create_tasks a chance to run
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(all_posted.wait(), timeout=1.0)
 
-    # POST should have been called for each broadcaster
-    assert http_session.post.call_count == 2
+    assert http_session.post.call_count == expected_posts
 
 
 async def test_ready_set_after_resubscribe(client: EventSubClient) -> None:
