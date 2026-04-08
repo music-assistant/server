@@ -104,7 +104,10 @@ async def _handle_auth_action(
         msg = "Client ID and Client Secret are required to authenticate."
         raise LoginFailed(msg)
 
-    session_id = str(values.get("session_id", ""))
+    if not values or "session_id" not in values:
+        msg = "Session ID is required to authenticate with Twitch."
+        raise LoginFailed(msg)
+    session_id = str(values["session_id"])
 
     async with AuthenticationHelper(mass, session_id) as auth_helper:
         params = {
