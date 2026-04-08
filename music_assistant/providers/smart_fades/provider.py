@@ -12,12 +12,13 @@ import numpy as np
 import soxr
 import torch
 import torchaudio
-from beat_this.inference import Postprocessor, Spect2Frames
+from beat_this.inference import Spect2Frames
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
+from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
 from .helpers import calculate_overall_bpm, decode_pcm_chunk
 from .resources.skey_model import KEY_MAP as SKEY_KEY_MAP
@@ -79,7 +80,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
         self._beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
             self._beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
         )
-        self._beat_this_post_processor = Postprocessor(type="minimal")
+        self._beat_this_post_processor = DBNDownBeatTracker(
+            beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
+        )
         self._skey_vqt, self._skey_chromanet, self._skey_crop = load_skey_components(
             device=self._device
         )
@@ -336,11 +339,27 @@ class SmartFadesProvider(AudioAnalysisProvider):
         inference_start = time.perf_counter()
         with torch.inference_mode():
             beat_logits, downbeat_logits = self._beat_this_model(tensor)
-            model_elapsed = (time.perf_counter() - inference_start) * 1000
+        model_elapsed = (time.perf_counter() - inference_start) * 1000
 
-            post_start = time.perf_counter()
-            beats, downbeats = self._beat_this_post_processor(beat_logits, downbeat_logits)
-            post_elapsed = (time.perf_counter() - post_start) * 1000
+        # Prepare activations for DBN: sigmoid + clamp + combine
+        post_start = time.perf_counter()
+        beat_prob = torch.sigmoid(beat_logits).double().cpu().numpy()
+        downbeat_prob = torch.sigmoid(downbeat_logits).double().cpu().numpy()
+        epsilon = 1e-5
+        beat_prob = beat_prob * (1 - epsilon) + epsilon / 2
+        downbeat_prob = downbeat_prob * (1 - epsilon) + epsilon / 2
+        combined_act = np.column_stack(
+            [
+                np.maximum(beat_prob - downbeat_prob, epsilon / 2),
+                downbeat_prob,
+            ]
+        )
+
+        dbn_out = self._beat_this_post_processor(combined_act)
+        post_elapsed = (time.perf_counter() - post_start) * 1000
+
+        beats = dbn_out[:, 0]
+        downbeats = dbn_out[dbn_out[:, 1] == 1, 0]
 
         self.logger.log(
             VERBOSE_LOG_LEVEL,
