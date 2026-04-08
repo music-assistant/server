@@ -156,8 +156,11 @@ class PandoraProvider(MusicProvider):
                 self._user_id = response_data.get("listenerId")
 
                 # Check whether the account is eligible for high-quality streaming.
-                flags: list[str] = response_data.get("config", {}).get("flags", [])
-                self._high_quality_available = ACCOUNT_FLAG_HIGH_QUALITY in flags
+                try:
+                    flags: list[str] = response_data.get("config", {}).get("flags", [])
+                    self._high_quality_available = ACCOUNT_FLAG_HIGH_QUALITY in flags
+                except (AttributeError, TypeError):
+                    self._high_quality_available = False
 
                 self.logger.info(
                     "Successfully authenticated with Pandora "
