@@ -47,7 +47,7 @@ class MockEvent:
 def _make_mass(players: list[MockPlayer] | None = None) -> MagicMock:
     """Create a mock MusicAssistant."""
     mass = MagicMock()
-    mass.loop = asyncio.get_event_loop()
+    mass.loop = MagicMock()
 
     if players is None:
         players = [MockPlayer()]

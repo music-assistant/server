@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import music_assistant.providers.yandex_smarthome.constants as _cmod
 from music_assistant.providers.yandex_smarthome.constants import (
     CAPABILITY_ON_OFF,
     CAPABILITY_RANGE,
@@ -23,11 +24,13 @@ from music_assistant.providers.yandex_smarthome.constants import (
     YANDEX_OAUTH_URL,
 )
 
+# Locate manifest.json relative to the provider module (works in both local and upstream layouts)
+_MANIFEST_PATH = Path(_cmod.__file__).parent / "manifest.json"
+
 
 def test_manifest_valid() -> None:
     """Manifest should be valid JSON with required fields."""
-    manifest_path = Path(__file__).parent.parent / "provider" / "manifest.json"
-    data = json.loads(manifest_path.read_text())
+    data = json.loads(_MANIFEST_PATH.read_text())
 
     assert data["type"] == "plugin"
     assert data["domain"] == "yandex_smarthome"
@@ -41,8 +44,7 @@ def test_manifest_valid() -> None:
 
 def test_manifest_has_codeowners() -> None:
     """Manifest should declare codeowners."""
-    manifest_path = Path(__file__).parent.parent / "provider" / "manifest.json"
-    data = json.loads(manifest_path.read_text())
+    data = json.loads(_MANIFEST_PATH.read_text())
 
     assert "codeowners" in data
     assert len(data["codeowners"]) > 0
