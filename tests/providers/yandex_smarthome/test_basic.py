@@ -18,7 +18,7 @@ def test_manifest_valid() -> None:
     assert data["multi_instance"] is False
     assert data["builtin"] is False
     assert isinstance(data["requirements"], list)
-    assert "aiohttp>=3.9.0" in data["requirements"]
+    assert data["requirements"] == []
 
 
 def test_manifest_has_codeowners() -> None:

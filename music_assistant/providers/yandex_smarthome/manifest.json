@@ -7,9 +7,7 @@
   "credits": [
     "[dext0r/yandex_smart_home](https://github.com/dext0r/yandex_smart_home)"
   ],
-  "requirements": [
-    "aiohttp>=3.9.0"
-  ],
+  "requirements": [],
   "documentation": "https://github.com/trudenboy/ma-provider-yandex-smarthome",
   "stage": "alpha",
   "multi_instance": false,
