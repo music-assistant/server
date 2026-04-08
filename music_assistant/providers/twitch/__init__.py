@@ -98,13 +98,17 @@ async def _handle_auth_action(
     values: dict[str, ConfigValueType],
 ) -> None:
     """Handle OAuth authentication action."""
+    if not values:
+        msg = "No configuration values provided for authentication."
+        raise LoginFailed(msg)
+
     client_id = str(values.get(CONF_CLIENT_ID, "")).strip()
     client_secret = str(values.get(CONF_CLIENT_SECRET, "")).strip()
     if not client_id or not client_secret:
         msg = "Client ID and Client Secret are required to authenticate."
         raise LoginFailed(msg)
 
-    if not values or "session_id" not in values:
+    if "session_id" not in values:
         msg = "Session ID is required to authenticate with Twitch."
         raise LoginFailed(msg)
     session_id = str(values["session_id"])
