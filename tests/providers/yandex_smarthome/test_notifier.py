@@ -115,7 +115,7 @@ class TestStateNotifierLifecycle:
         unsub = notifier._unsub
         await notifier.stop()
 
-        unsub.assert_called_once()
+        unsub.assert_called_once()  # type: ignore[union-attr]
         assert notifier._unsub is None
         assert notifier._heartbeat_task is None
 
@@ -138,7 +138,7 @@ class TestStateNotifierEvents:
         player = MockPlayer(player_id="p1", playback_state=PlaybackState.PLAYING)
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
 
-        notifier._on_player_event(event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
 
         assert "p1" in notifier._pending
 
@@ -150,7 +150,7 @@ class TestStateNotifierEvents:
         player = MockPlayer(player_id="p1", available=False)
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
 
-        notifier._on_player_event(event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
 
         assert "p1" not in notifier._pending
 
@@ -160,7 +160,7 @@ class TestStateNotifierEvents:
         notifier = _make_notifier(mass=mass)
 
         event = MockEvent(event=EventType.PLAYER_ADDED, data=MockPlayer())
-        notifier._on_player_event(event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
 
         # Discovery triggers create_task
         mass.create_task.assert_called()
@@ -171,7 +171,7 @@ class TestStateNotifierEvents:
         notifier = _make_notifier(mass=mass)
 
         event = MockEvent(event=EventType.PLAYER_REMOVED, data="p1")
-        notifier._on_player_event(event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
 
         mass.create_task.assert_called()
 
@@ -181,7 +181,7 @@ class TestStateNotifierEvents:
         notifier = _make_notifier(mass=mass)
 
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=None)
-        notifier._on_player_event(event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
 
         assert len(notifier._pending) == 0
 
@@ -193,7 +193,7 @@ class TestStateNotifierEvents:
 
         player = MockPlayer(player_id="p1", playback_state=PlaybackState.PLAYING)
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
-        notifier._on_player_event(event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
 
         assert "p1" not in notifier._pending
 
@@ -205,7 +205,7 @@ class TestStateNotifierEvents:
 
         player = MockPlayer(player_id="p1", playback_state=PlaybackState.PLAYING)
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
-        notifier._on_player_event(event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
 
         assert "p1" in notifier._pending
 
@@ -230,7 +230,7 @@ class TestStateNotifierFlush:
 
         # Queue a pending state
         player = MockPlayer(player_id="p1")
-        notifier._pending["p1"] = get_device_state(player)
+        notifier._pending["p1"] = get_device_state(player)  # type: ignore[arg-type]
 
         await notifier._flush_pending()
 
@@ -313,7 +313,7 @@ class TestStateNotifierCloudPlus:
         )
 
         player = MockPlayer(player_id="p1")
-        notifier._pending["p1"] = get_device_state(player)
+        notifier._pending["p1"] = get_device_state(player)  # type: ignore[arg-type]
 
         await notifier._flush_pending()
 
@@ -339,7 +339,7 @@ class TestStateNotifierCloudPlus:
         notifier = _make_notifier(mass=mass, session=session)
 
         player = MockPlayer(player_id="p1")
-        notifier._pending["p1"] = get_device_state(player)
+        notifier._pending["p1"] = get_device_state(player)  # type: ignore[arg-type]
 
         await notifier._flush_pending()
 

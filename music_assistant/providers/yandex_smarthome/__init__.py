@@ -112,33 +112,20 @@ async def setup(
     return YandexSmartHomePlugin(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
+async def _handle_config_actions(
     mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
-
-    Supports two actions:
-    - register_cloud: Auto-register a new instance on yaha-cloud.ru
-    - get_otp: Get a fresh OTP code for linking in the Yandex app
-    """
-    if values is None:
-        values = {}
-
-    # For SECURE_STRING fields, values dict contains 'this_value_is_encrypted'.
-    # Get the real decrypted values from the saved provider config if available.
+    action: str | None,
+    values: dict[str, ConfigValueType],
+    instance_id: str | None,
+    is_cloud_plus: bool,
+) -> str | None:
+    """Execute register/OTP actions and return OTP code if obtained."""
     saved_config = None
     if instance_id:
         prov = mass.get_provider(instance_id)
         if prov:
             saved_config = prov.config
 
-    connection_type = str(values.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_CLOUD))
-    is_cloud_plus = connection_type == CONNECTION_TYPE_CLOUD_PLUS
-
-    # --- Handle register action ---
     if action == CONF_ACTION_REGISTER:
         try:
             platform = "yandex" if is_cloud_plus else None
@@ -151,11 +138,9 @@ async def get_config_entries(
         except Exception:
             _LOGGER.exception("Failed to register cloud instance")
 
-    # --- Handle get OTP action ---
     otp_code: str | None = None
     if action == CONF_ACTION_GET_OTP:
         cloud_id = str(values.get(CONF_CLOUD_INSTANCE_ID, ""))
-        # Prefer decrypted token from saved config over masked value from form
         cloud_token = ""
         if saved_config:
             cloud_token = str(saved_config.get_value(CONF_CLOUD_CONNECTION_TOKEN) or "")
@@ -168,7 +153,6 @@ async def get_config_entries(
             except Exception:
                 _LOGGER.exception("Failed to get OTP code")
 
-    # --- Auto-fetch OTP after registration ---
     if action == CONF_ACTION_REGISTER and not otp_code:
         cloud_id = str(values.get(CONF_CLOUD_INSTANCE_ID, ""))
         cloud_token = str(values.get(CONF_CLOUD_CONNECTION_TOKEN, ""))
@@ -179,7 +163,24 @@ async def get_config_entries(
             except Exception:
                 _LOGGER.exception("Failed to get OTP after registration")
 
-    # --- Determine state ---
+    return otp_code
+
+
+async def get_config_entries(
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    if values is None:
+        values = {}
+
+    connection_type = str(values.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_CLOUD))
+    is_cloud_plus = connection_type == CONNECTION_TYPE_CLOUD_PLUS
+
+    otp_code = await _handle_config_actions(mass, action, values, instance_id, is_cloud_plus)
+
     is_registered = bool(values.get(CONF_CLOUD_INSTANCE_ID)) and bool(
         values.get(CONF_CLOUD_CONNECTION_TOKEN)
     )

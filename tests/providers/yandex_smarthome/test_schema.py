@@ -43,23 +43,23 @@ class TestEnums:
 
     def test_device_types(self) -> None:
         """Test device types."""
-        assert YandexDeviceType.MEDIA_DEVICE == "devices.types.media_device"
-        assert YandexDeviceType.MEDIA_DEVICE_RECEIVER == "devices.types.media_device.receiver"
+        assert YandexDeviceType.MEDIA_DEVICE.value == "devices.types.media_device"
+        assert YandexDeviceType.MEDIA_DEVICE_RECEIVER.value == "devices.types.media_device.receiver"
 
     def test_capability_types(self) -> None:
         """Test capability types."""
-        assert YandexCapabilityType.ON_OFF == "devices.capabilities.on_off"
-        assert YandexCapabilityType.RANGE == "devices.capabilities.range"
-        assert YandexCapabilityType.TOGGLE == "devices.capabilities.toggle"
+        assert YandexCapabilityType.ON_OFF.value == "devices.capabilities.on_off"
+        assert YandexCapabilityType.RANGE.value == "devices.capabilities.range"
+        assert YandexCapabilityType.TOGGLE.value == "devices.capabilities.toggle"
 
     def test_range_instances(self) -> None:
         """Test range instances."""
-        assert YandexRangeInstance.VOLUME == "volume"
+        assert YandexRangeInstance.VOLUME.value == "volume"
 
     def test_toggle_instances(self) -> None:
         """Test toggle instances."""
-        assert YandexToggleInstance.MUTE == "mute"
-        assert YandexToggleInstance.PAUSE == "pause"
+        assert YandexToggleInstance.MUTE.value == "mute"
+        assert YandexToggleInstance.PAUSE.value == "pause"
 
     def test_response_codes(self) -> None:
         """Test response codes."""
