@@ -54,6 +54,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -90,6 +91,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+    ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
@@ -417,6 +419,40 @@ class AppleMusicProvider(MusicProvider):
                     if playlist.name != station_id:
                         result.append(playlist)
         return result
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get personalized station recommendations for the Discover page."""
+        response = await self._get_data(
+            "me/recommendations?include[personal-recommendation]=contents"
+        )
+        seen: set[str] = set()
+        folders: list[RecommendationFolder] = []
+        for recommendation in response.get("data", []):
+            attributes = recommendation.get("attributes", {})
+            title = attributes.get("title", {}).get("stringForDisplay", "")
+            if not title:
+                continue
+            folder = RecommendationFolder(
+                item_id=f"recommendations_{recommendation['id']}",
+                provider=self.instance_id,
+                name=title,
+            )
+            contents = recommendation.get("relationships", {}).get("contents", {})
+            for item in contents.get("data", []):
+                if item.get("type") != "stations":
+                    continue
+                station_id = item.get("id")
+                if not station_id or station_id in seen:
+                    continue
+                item_attributes = item.get("attributes", {})
+                if item_attributes.get("isLive", False):
+                    continue
+                if item_attributes.get("name"):
+                    seen.add(station_id)
+                    folder.items.append(self._parse_station_as_playlist(item))
+            if folder.items:
+                folders.append(folder)
+        return folders
 
     def _parse_station_as_playlist(self, station_obj: dict[str, Any]) -> Playlist:
         """Parse a station object from recommendations into a Playlist."""
