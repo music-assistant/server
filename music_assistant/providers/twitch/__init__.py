@@ -467,7 +467,7 @@ class TwitchProvider(MusicProvider):
             try:
                 await self.mass.player_queues.play_media(
                     queue_id=queue.queue_id,
-                    media=f"twitch://radio/{to_login}",
+                    media=f"{self.instance_id}://radio/{to_login}",
                 )
             except Exception:
                 self.logger.warning(
