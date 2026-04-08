@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -72,7 +73,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._beat_this_model = Spect2Frames(checkpoint_path="final0", device=self._device)
+        torch.set_num_threads(os.cpu_count() or 4)
+        torch.backends.quantized.engine = "qnnpack"
+        self._beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        self._beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
+            self._beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
+        )
         self._beat_this_post_processor = Postprocessor(type="minimal")
         self._skey_vqt, self._skey_chromanet, self._skey_crop = load_skey_components(
             device=self._device
@@ -328,7 +334,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         tensor = torch.from_numpy(feats).to(self._device)
 
         inference_start = time.perf_counter()
-        with torch.no_grad():
+        with torch.inference_mode():
             beat_logits, downbeat_logits = self._beat_this_model(tensor)
             model_elapsed = (time.perf_counter() - inference_start) * 1000
 
