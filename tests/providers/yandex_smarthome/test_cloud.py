@@ -17,6 +17,7 @@ from provider.schema import CloudRequest
 
 class TestCloudManager:
     def _make_manager(self, on_request: AsyncMock | None = None) -> CloudManager:
+        """Create make manager helper."""
         session = MagicMock(spec=aiohttp.ClientSession)
         if on_request is None:
             on_request = AsyncMock(return_value={"request_id": "r1", "payload": {}})
@@ -27,11 +28,13 @@ class TestCloudManager:
         )
 
     def test_initial_state(self) -> None:
+        """Test initial state."""
         mgr = self._make_manager()
         assert mgr.connected is False
         assert mgr._running is False
 
     def test_connected_property(self) -> None:
+        """Test connected property."""
         mgr = self._make_manager()
         assert mgr.connected is False
 
@@ -47,6 +50,7 @@ class TestCloudManager:
 
     @pytest.mark.asyncio
     async def test_handle_message_calls_callback(self) -> None:
+        """Test handle message calls callback."""
         callback = AsyncMock(return_value={"request_id": "r1", "payload": {}})
         mgr = self._make_manager(on_request=callback)
 
@@ -63,6 +67,7 @@ class TestCloudManager:
 
     @pytest.mark.asyncio
     async def test_handle_message_exception_logged(self) -> None:
+        """Test handle message exception logged."""
         callback = AsyncMock(side_effect=RuntimeError("boom"))
         mgr = self._make_manager(on_request=callback)
 
@@ -72,6 +77,7 @@ class TestCloudManager:
 
     @pytest.mark.asyncio
     async def test_disconnect(self) -> None:
+        """Test disconnect."""
         mgr = self._make_manager()
         mgr._running = True
         ws = AsyncMock()
@@ -86,6 +92,7 @@ class TestCloudManager:
 
     @pytest.mark.asyncio
     async def test_disconnect_when_already_closed(self) -> None:
+        """Test disconnect when already closed."""
         mgr = self._make_manager()
         mgr._running = True
         ws = AsyncMock()
@@ -98,6 +105,7 @@ class TestCloudManager:
 
     @pytest.mark.asyncio
     async def test_disconnect_when_no_ws(self) -> None:
+        """Test disconnect when no ws."""
         mgr = self._make_manager()
         mgr._running = True
         # No WS at all
@@ -120,6 +128,7 @@ class TestCloudManager:
 class TestRegisterCloudInstance:
     @pytest.mark.asyncio
     async def test_register(self) -> None:
+        """Test register."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.raise_for_status = MagicMock()
@@ -144,6 +153,7 @@ class TestRegisterCloudInstance:
 
     @pytest.mark.asyncio
     async def test_register_no_platform_param(self) -> None:
+        """Test register no platform param."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.raise_for_status = MagicMock()
@@ -170,6 +180,7 @@ class TestRegisterCloudInstance:
 class TestGetCloudOtp:
     @pytest.mark.asyncio
     async def test_get_otp(self) -> None:
+        """Test get otp."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.raise_for_status = MagicMock()
@@ -186,6 +197,7 @@ class TestGetCloudOtp:
 
     @pytest.mark.asyncio
     async def test_get_otp_uses_post(self) -> None:
+        """Test get otp uses post."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.raise_for_status = MagicMock()

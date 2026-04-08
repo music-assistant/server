@@ -63,6 +63,7 @@ def _make_mass(players: list[MockPlayer]) -> MagicMock:
 class TestHandleDeviceList:
     @pytest.mark.asyncio
     async def test_empty(self) -> None:
+        """Test empty."""
         mass = _make_mass([])
         result = await handle_device_list(mass, "user1")
         assert result.user_id == "user1"
@@ -70,6 +71,7 @@ class TestHandleDeviceList:
 
     @pytest.mark.asyncio
     async def test_exposes_available_players(self) -> None:
+        """Test exposes available players."""
         players = [
             MockPlayer(player_id="p1", name="Speaker 1"),
             MockPlayer(player_id="p2", name="Speaker 2"),
@@ -82,6 +84,7 @@ class TestHandleDeviceList:
 
     @pytest.mark.asyncio
     async def test_filters_unavailable(self) -> None:
+        """Test filters unavailable."""
         players = [
             MockPlayer(player_id="p1", available=True),
             MockPlayer(player_id="p2", available=False),
@@ -93,6 +96,7 @@ class TestHandleDeviceList:
 
     @pytest.mark.asyncio
     async def test_filters_synced(self) -> None:
+        """Test filters synced."""
         players = [
             MockPlayer(player_id="leader"),
             MockPlayer(player_id="follower", synced_to="leader"),
@@ -104,6 +108,7 @@ class TestHandleDeviceList:
 
     @pytest.mark.asyncio
     async def test_filters_by_exposed_ids(self) -> None:
+        """Test filters by exposed ids."""
         players = [
             MockPlayer(player_id="p1", name="Speaker 1"),
             MockPlayer(player_id="p2", name="Speaker 2"),
@@ -124,6 +129,7 @@ class TestHandleDeviceList:
 class TestHandleDevicesQuery:
     @pytest.mark.asyncio
     async def test_returns_states(self) -> None:
+        """Test returns states."""
         mass = _make_mass([MockPlayer(player_id="p1", volume_level=75)])
         result = await handle_devices_query(mass, ["p1"])
         assert len(result.devices) == 1
@@ -132,6 +138,7 @@ class TestHandleDevicesQuery:
 
     @pytest.mark.asyncio
     async def test_unknown_device_returns_error(self) -> None:
+        """Test unknown device returns error."""
         mass = _make_mass([])
         result = await handle_devices_query(mass, ["missing"])
         assert len(result.devices) == 1
@@ -139,6 +146,7 @@ class TestHandleDevicesQuery:
 
     @pytest.mark.asyncio
     async def test_unavailable_device_returns_error(self) -> None:
+        """Test unavailable device returns error."""
         mass = _make_mass([MockPlayer(player_id="p1", available=False)])
         result = await handle_devices_query(mass, ["p1"])
         assert result.devices[0].error_code == "DEVICE_UNREACHABLE"
@@ -152,6 +160,7 @@ class TestHandleDevicesQuery:
 class TestHandleDevicesAction:
     @pytest.mark.asyncio
     async def test_executes_on_off(self) -> None:
+        """Test executes on off."""
         mass = _make_mass([MockPlayer(player_id="p1")])
         payload = parse_action_payload(
             {
@@ -176,6 +185,7 @@ class TestHandleDevicesAction:
 
     @pytest.mark.asyncio
     async def test_missing_device_returns_error(self) -> None:
+        """Test missing device returns error."""
         mass = _make_mass([])
         payload = parse_action_payload(
             {
@@ -208,6 +218,7 @@ class TestHandleDevicesAction:
 class TestHandleUserUnlink:
     @pytest.mark.asyncio
     async def test_returns_empty(self) -> None:
+        """Test returns empty."""
         result = await handle_user_unlink()
         assert result == {}
 
@@ -219,6 +230,7 @@ class TestHandleUserUnlink:
 
 class TestParseActionPayload:
     def test_basic_payload(self) -> None:
+        """Test basic payload."""
         raw = {
             "payload": {
                 "devices": [
@@ -245,6 +257,7 @@ class TestParseActionPayload:
         assert cap.state.relative is False
 
     def test_relative_volume(self) -> None:
+        """Test relative volume."""
         raw = {
             "payload": {
                 "devices": [
@@ -266,6 +279,7 @@ class TestParseActionPayload:
         assert cap.state.value == 10
 
     def test_multiple_devices(self) -> None:
+        """Test multiple devices."""
         raw = {
             "payload": {
                 "devices": [
@@ -303,14 +317,17 @@ class TestParseActionPayload:
 
 class TestBuildResponse:
     def test_dict_payload(self) -> None:
+        """Test dict payload."""
         resp = build_response("req-1", {"key": "val"})
         assert resp == {"request_id": "req-1", "payload": {"key": "val"}}
 
     def test_none_payload(self) -> None:
+        """Test none payload."""
         resp = build_response("req-1", None)
         assert resp == {"request_id": "req-1", "payload": {}}
 
     def test_dataclass_payload(self) -> None:
+        """Test dataclass payload."""
         from provider.schema import DeviceListPayload
 
         payload = DeviceListPayload(user_id="u1", devices=[])

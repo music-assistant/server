@@ -86,6 +86,7 @@ def _make_notifier(
 class TestStateNotifierLifecycle:
     @pytest.mark.asyncio
     async def test_start_subscribes(self) -> None:
+        """Test start subscribes."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -99,6 +100,7 @@ class TestStateNotifierLifecycle:
 
     @pytest.mark.asyncio
     async def test_stop_unsubscribes(self) -> None:
+        """Test stop unsubscribes."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -112,6 +114,7 @@ class TestStateNotifierLifecycle:
 
     @pytest.mark.asyncio
     async def test_stop_without_start(self) -> None:
+        """Test stop without start."""
         notifier = _make_notifier()
         # Should not raise
         await notifier.stop()
@@ -119,6 +122,7 @@ class TestStateNotifierLifecycle:
 
 class TestStateNotifierEvents:
     def test_on_player_updated_queues_state(self) -> None:
+        """Test on player updated queues state."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -130,6 +134,7 @@ class TestStateNotifierEvents:
         assert "p1" in notifier._pending
 
     def test_on_player_updated_unavailable_ignored(self) -> None:
+        """Test on player updated unavailable ignored."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -141,6 +146,7 @@ class TestStateNotifierEvents:
         assert "p1" not in notifier._pending
 
     def test_on_player_added_triggers_discovery(self) -> None:
+        """Test on player added triggers discovery."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -151,6 +157,7 @@ class TestStateNotifierEvents:
         mass.create_task.assert_called()
 
     def test_on_player_removed_triggers_discovery(self) -> None:
+        """Test on player removed triggers discovery."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -160,6 +167,7 @@ class TestStateNotifierEvents:
         mass.create_task.assert_called()
 
     def test_on_none_data_ignored(self) -> None:
+        """Test on none data ignored."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -196,6 +204,7 @@ class TestStateNotifierEvents:
 class TestStateNotifierFlush:
     @pytest.mark.asyncio
     async def test_flush_sends_callback(self) -> None:
+        """Test flush sends callback."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
 
@@ -221,6 +230,7 @@ class TestStateNotifierFlush:
 
     @pytest.mark.asyncio
     async def test_flush_empty_noop(self) -> None:
+        """Test flush empty noop."""
         session = MagicMock(spec=aiohttp.ClientSession)
         mass = _make_mass()
         notifier = _make_notifier(mass=mass, session=session)
@@ -233,6 +243,7 @@ class TestStateNotifierFlush:
 class TestStateNotifierReportAll:
     @pytest.mark.asyncio
     async def test_report_all_states(self) -> None:
+        """Test report all states."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
 
@@ -256,6 +267,7 @@ class TestStateNotifierReportAll:
 
     @pytest.mark.asyncio
     async def test_report_all_no_players(self) -> None:
+        """Test report all no players."""
         session = MagicMock(spec=aiohttp.ClientSession)
         mass = _make_mass([])
         notifier = _make_notifier(mass=mass, session=session)

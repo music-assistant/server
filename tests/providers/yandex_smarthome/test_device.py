@@ -97,6 +97,7 @@ class MockMass:
 
 class TestGetDeviceDescription:
     def test_basic_description(self) -> None:
+        """Test basic description."""
         player = MockPlayer()
         desc = get_device_description(player)
         assert desc.id == "test_player_1"
@@ -106,6 +107,7 @@ class TestGetDeviceDescription:
         assert len(desc.capabilities) == 5
 
     def test_capability_types(self) -> None:
+        """Test capability types."""
         player = MockPlayer()
         desc = get_device_description(player)
         types = [c.type for c in desc.capabilities]
@@ -114,6 +116,7 @@ class TestGetDeviceDescription:
         assert YandexCapabilityType.TOGGLE in types
 
     def test_volume_range_params(self) -> None:
+        """Test volume range params."""
         player = MockPlayer()
         desc = get_device_description(player)
         range_cap = next(c for c in desc.capabilities if c.type == YandexCapabilityType.RANGE)
@@ -124,12 +127,14 @@ class TestGetDeviceDescription:
         assert range_cap.parameters.range.max == 100
 
     def test_device_info_model(self) -> None:
+        """Test device info model."""
         player = MockPlayer(device_info=MockDeviceInfo(model="KEF LS50"))
         desc = get_device_description(player)
         assert desc.device_info is not None
         assert desc.device_info.model == "KEF LS50"
 
     def test_device_info_default(self) -> None:
+        """Test device info default."""
         player = MockPlayer()
         desc = get_device_description(player)
         assert desc.device_info is not None
@@ -143,6 +148,7 @@ class TestGetDeviceDescription:
 
 class TestGetDeviceState:
     def test_idle_state(self) -> None:
+        """Test idle state."""
         player = MockPlayer(playback_state=PlaybackState.IDLE, volume_level=30, volume_muted=False)
         state = get_device_state(player)
         assert state.id == "test_player_1"
@@ -154,6 +160,7 @@ class TestGetDeviceState:
         assert by_instance[INSTANCE_PAUSE] is False
 
     def test_playing_state(self) -> None:
+        """Test playing state."""
         player = MockPlayer(playback_state=PlaybackState.PLAYING, volume_level=75)
         state = get_device_state(player)
 
@@ -163,6 +170,7 @@ class TestGetDeviceState:
         assert by_instance[INSTANCE_PAUSE] is False
 
     def test_paused_state(self) -> None:
+        """Test paused state."""
         player = MockPlayer(playback_state=PlaybackState.PAUSED, volume_level=50)
         state = get_device_state(player)
 
@@ -171,6 +179,7 @@ class TestGetDeviceState:
         assert by_instance[INSTANCE_PAUSE] is True
 
     def test_none_volume(self) -> None:
+        """Test none volume."""
         player = MockPlayer(volume_level=None, volume_muted=None)
         state = get_device_state(player)
 
@@ -187,6 +196,7 @@ class TestGetDeviceState:
 class TestExecuteCapabilityAction:
     @pytest.mark.asyncio
     async def test_on_off_true_plays(self) -> None:
+        """Test on off true plays."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
@@ -198,6 +208,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_on_off_false_stops(self) -> None:
+        """Test on off false stops."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
@@ -209,6 +220,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_volume_absolute(self) -> None:
+        """Test volume absolute."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
@@ -220,6 +232,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_volume_relative_up(self) -> None:
+        """Test volume relative up."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
@@ -231,6 +244,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_volume_relative_clamp_max(self) -> None:
+        """Test volume relative clamp max."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
@@ -242,6 +256,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_volume_relative_clamp_min(self) -> None:
+        """Test volume relative clamp min."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
@@ -253,6 +268,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_mute_toggle(self) -> None:
+        """Test mute toggle."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
@@ -264,6 +280,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_pause_true(self) -> None:
+        """Test pause true."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
@@ -275,6 +292,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_pause_false_plays(self) -> None:
+        """Test pause false plays."""
         mass = MockMass()
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
@@ -285,6 +303,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_unknown_capability_returns_error(self) -> None:
+        """Test unknown capability returns error."""
         mass = MockMass()
         action = CapabilityAction(
             type="devices.capabilities.unknown",
@@ -296,6 +315,7 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_command_exception_returns_error(self) -> None:
+        """Test command exception returns error."""
         mass = MockMass()
         mass.players.cmd_play.side_effect = RuntimeError("Connection lost")
         action = CapabilityAction(
@@ -314,15 +334,19 @@ class TestExecuteCapabilityAction:
 
 class TestIsPlayerExposable:
     def test_normal_player(self) -> None:
+        """Test normal player."""
         assert is_player_exposable(MockPlayer()) is True
 
     def test_unavailable(self) -> None:
+        """Test unavailable."""
         assert is_player_exposable(MockPlayer(available=False)) is False
 
     def test_disabled(self) -> None:
+        """Test disabled."""
         assert is_player_exposable(MockPlayer(enabled=False)) is False
 
     def test_synced_to_another(self) -> None:
+        """Test synced to another."""
         assert is_player_exposable(MockPlayer(synced_to="other_player")) is False
 
 
@@ -333,12 +357,14 @@ class TestIsPlayerExposable:
 
 class TestErrorHelpers:
     def test_make_error_device_state(self) -> None:
+        """Test make error device state."""
         state = make_error_device_state("p1")
         assert state.id == "p1"
         assert state.error_code == "DEVICE_UNREACHABLE"
         assert state.capabilities == []
 
     def test_make_error_action_result(self) -> None:
+        """Test make error action result."""
         actions = [
             CapabilityAction(
                 type=YandexCapabilityType.ON_OFF,
