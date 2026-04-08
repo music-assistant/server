@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
-from music_assistant.providers.yandex_smarthome.cloud import CloudManager, get_cloud_otp, register_cloud_instance
+from music_assistant.providers.yandex_smarthome.cloud import (
+    CloudManager,
+    get_cloud_otp,
+    register_cloud_instance,
+)
 from music_assistant.providers.yandex_smarthome.constants import CLOUD_RECONNECT_MIN
 from music_assistant.providers.yandex_smarthome.schema import CloudRequest
 
