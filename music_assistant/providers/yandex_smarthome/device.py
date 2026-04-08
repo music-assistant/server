@@ -43,7 +43,7 @@ from .schema import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.player import Player
+    from music_assistant_models.player import Player, PlayerSource
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def _supports_select_source(player: Player) -> bool:
     )
 
 
-def _get_source_list(player: Player) -> list[str]:
+def _get_source_list(player: Player) -> list[PlayerSource]:
     """Get the source list from a player, or empty list if not available."""
     if not _supports_select_source(player):
         return []
@@ -74,12 +74,12 @@ def _get_source_list(player: Player) -> list[str]:
     return []
 
 
-def _build_source_modes(source_list: list[str]) -> list[ModeValue]:
+def _build_source_modes(source_list: list[PlayerSource]) -> list[ModeValue]:
     """Build Yandex mode values from an MA source list (max 10)."""
     return [ModeValue(value=YANDEX_MODE_VALUES[i]) for i in range(min(len(source_list), 10))]
 
 
-def _source_to_mode(active_source: str | None, source_list: list[str]) -> str | None:
+def _source_to_mode(active_source: str | None, source_list: list[PlayerSource]) -> str | None:
     """Map active MA source name/id to a Yandex mode value."""
     if not active_source or not source_list:
         return None
@@ -91,7 +91,7 @@ def _source_to_mode(active_source: str | None, source_list: list[str]) -> str | 
     return None
 
 
-def _mode_to_source(mode_value: str, source_list: list[str]) -> str | None:
+def _mode_to_source(mode_value: str, source_list: list[PlayerSource]) -> str | None:
     """Resolve a Yandex mode value to an MA source name."""
     try:
         idx = list(YANDEX_MODE_VALUES).index(mode_value)
@@ -99,8 +99,7 @@ def _mode_to_source(mode_value: str, source_list: list[str]) -> str | None:
         return None
     if idx >= len(source_list):
         return None
-    source = source_list[idx]
-    return getattr(source, "name", str(source))
+    return source_list[idx].name
 
 
 # ---------------------------------------------------------------------------

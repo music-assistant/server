@@ -59,6 +59,7 @@ class StateNotifier:
 
         self._pending: dict[str, DeviceState] = {}
         self._flush_handle: asyncio.TimerHandle | None = None
+        self._initial_report_handle: asyncio.TimerHandle | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._unsub: Callable[[], None] | None = None
 
@@ -74,7 +75,7 @@ class StateNotifier:
         )
 
         # Schedule initial full state report after startup delay
-        self._mass.loop.call_later(
+        self._initial_report_handle = self._mass.loop.call_later(
             STATE_INITIAL_REPORT_DELAY,
             lambda: self._mass.create_task(self._report_all_states()),
         )
@@ -91,6 +92,9 @@ class StateNotifier:
         if self._unsub:
             self._unsub()
             self._unsub = None
+        if self._initial_report_handle:
+            self._initial_report_handle.cancel()
+            self._initial_report_handle = None
         if self._flush_handle:
             self._flush_handle.cancel()
             self._flush_handle = None

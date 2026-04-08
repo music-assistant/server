@@ -110,6 +110,12 @@ class YandexSmartHomePlugin(PluginProvider):
             )
             return
 
+        # Validate Cloud Plus credentials before starting any tasks
+        if self._connection_type == CONNECTION_TYPE_CLOUD_PLUS:
+            if not self._skill_id or not self._skill_token:
+                self.logger.error("Cloud Plus mode requires skill_id and skill_token")
+                return
+
         session = self.mass.http_session
 
         # Cloud WebSocket manager
@@ -126,9 +132,6 @@ class YandexSmartHomePlugin(PluginProvider):
 
         # State notifier — different callback URL/auth for cloud_plus
         if self._connection_type == CONNECTION_TYPE_CLOUD_PLUS:
-            if not self._skill_id or not self._skill_token:
-                self.logger.error("Cloud Plus mode requires skill_id and skill_token")
-                return
             callback_url = f"{YANDEX_DIALOGS_CALLBACK_BASE}/{self._skill_id}/callback/state"
             auth_header = {"Authorization": f"OAuth {self._skill_token}"}
             user_id = self._cloud_instance_id
