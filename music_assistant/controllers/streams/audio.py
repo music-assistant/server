@@ -2074,7 +2074,8 @@ class StreamsAudio:
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes, None]:
-        """Get (radio) audio stream from legacy Shoutcast server using raw socket connection.
+        """
+        Get (radio) audio stream from legacy Shoutcast server using raw socket connection.
 
         Legacy Shoutcast servers return "ICY 200 OK" instead of "HTTP/1.1 200 OK",
         which aiohttp cannot parse. This function handles the connection manually.
