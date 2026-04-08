@@ -83,9 +83,10 @@ class SonosPlayerProvider(PlayerProvider):
         assert isinstance(player_id, str)  # for type checking
         # handle update for existing device
         if sonos_player := self.mass.players.get_player(player_id):
-            if not isinstance(sonos_player, SonosPlayer):
-                msg = f"Player {player_id} already exists but is not a SonosPlayer"
-                raise TypeError(msg)
+            assert isinstance(sonos_player, SonosPlayer), (
+                "Player ID already exists but is not a SonosPlayer"
+            )
+            # if mass_player := sonos_player.mass_player:
             cur_address = get_primary_ip_address(info)
             if cur_address and cur_address != sonos_player.device_info.ip_address:
                 sonos_player.logger.debug(
