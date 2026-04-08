@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
+import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -132,16 +132,40 @@ async def test_returns_none_when_no_qualities(provider: TwitchProvider) -> None:
     assert result is None
 
 
-async def test_streamlink_called_via_to_thread(provider: TwitchProvider) -> None:
-    """Verify get_audio_stream uses asyncio.to_thread for blocking Streamlink calls.
+async def test_streamlink_called_via_to_thread(
+    provider: TwitchProvider, stream_details: StreamDetails
+) -> None:
+    """Verify get_audio_stream dispatches blocking Streamlink calls via asyncio.to_thread."""
+    mock_fd = MagicMock()
+    read_results = iter([b"chunk", b""])
+    mock_fd.read.side_effect = lambda *_args: next(read_results, b"")
+    mock_fd.close.return_value = None
 
-    Inspects the source to confirm to_thread is used rather than running
-    the full generator (which requires complex mock choreography).
-    """
-    source = inspect.getsource(provider.get_audio_stream)
-    assert "asyncio.to_thread" in source, (
-        "get_audio_stream must use asyncio.to_thread for blocking Streamlink calls"
-    )
+    mock_stream = MagicMock()
+    mock_stream.open.return_value = mock_fd
+
+    resolve_results = iter([{"audio_only": mock_stream}])
+
+    with patch.object(
+        provider, "_resolve_streams", side_effect=lambda *_a: next(resolve_results, None)
+    ):
+        to_thread_calls: list[tuple[Any, ...]] = []
+        original_to_thread = asyncio.to_thread
+
+        async def tracking_to_thread(func: Any, /, *args: Any) -> Any:
+            to_thread_calls.append((func, *args))
+            return await original_to_thread(func, *args)
+
+        with patch("asyncio.to_thread", side_effect=tracking_to_thread):
+            async for _ in provider.get_audio_stream(stream_details):
+                pass
+
+    called_funcs = [call[0] for call in to_thread_calls]
+    # Blocking Streamlink operations must go through to_thread
+    assert provider._create_streamlink_session in called_funcs
+    assert mock_stream.open in called_funcs
+    assert mock_fd.read in called_funcs
+    assert mock_fd.close in called_funcs
 
 
 async def test_chunk_size_is_64kb() -> None:
