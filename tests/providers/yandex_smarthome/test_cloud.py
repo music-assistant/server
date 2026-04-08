@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
-from provider.cloud import CloudManager, get_cloud_otp, register_cloud_instance
-from provider.schema import CloudRequest
+from music_assistant.providers.yandex_smarthome.cloud import CloudManager, get_cloud_otp, register_cloud_instance
+from music_assistant.providers.yandex_smarthome.constants import CLOUD_RECONNECT_MIN
+from music_assistant.providers.yandex_smarthome.schema import CloudRequest
 
 # ---------------------------------------------------------------------------
 # CloudManager tests
@@ -16,6 +17,8 @@ from provider.schema import CloudRequest
 
 
 class TestCloudManager:
+    """Tests for CloudManager WebSocket client."""
+
     def _make_manager(self, on_request: AsyncMock | None = None) -> CloudManager:
         """Create make manager helper."""
         session = MagicMock(spec=aiohttp.ClientSession)
@@ -114,8 +117,6 @@ class TestCloudManager:
 
     def test_reconnect_delay_reset_logic(self) -> None:
         """Verify that _reconnect_delay is set to min by default."""
-        from provider.constants import CLOUD_RECONNECT_MIN
-
         mgr = self._make_manager()
         assert mgr._reconnect_delay == CLOUD_RECONNECT_MIN
 
@@ -126,6 +127,8 @@ class TestCloudManager:
 
 
 class TestRegisterCloudInstance:
+    """Tests for register_cloud_instance helper."""
+
     @pytest.mark.asyncio
     async def test_register(self) -> None:
         """Test register."""
@@ -178,6 +181,8 @@ class TestRegisterCloudInstance:
 
 
 class TestGetCloudOtp:
+    """Tests for get_cloud_otp helper."""
+
     @pytest.mark.asyncio
     async def test_get_otp(self) -> None:
         """Test get otp."""

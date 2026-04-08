@@ -10,7 +10,7 @@ import pytest
 # Use the PlaybackState from conftest's mock enums
 from music_assistant_models.enums import PlaybackState
 
-from provider.constants import (
+from music_assistant.providers.yandex_smarthome.constants import (
     INSTANCE_CHANNEL,
     INSTANCE_INPUT_SOURCE,
     INSTANCE_MUTE,
@@ -19,7 +19,7 @@ from provider.constants import (
     INSTANCE_VOLUME,
     YANDEX_DEVICE_TYPE_RECEIVER,
 )
-from provider.device import (
+from music_assistant.providers.yandex_smarthome.device import (
     execute_capability_action,
     get_device_description,
     get_device_state,
@@ -27,7 +27,7 @@ from provider.device import (
     make_error_action_result,
     make_error_device_state,
 )
-from provider.schema import (
+from music_assistant.providers.yandex_smarthome.schema import (
     CapabilityAction,
     CapabilityActionState,
     YandexCapabilityType,
@@ -36,6 +36,8 @@ from provider.schema import (
 
 @dataclass
 class MockDeviceInfo:
+    """Mock device info for testing."""
+
     model: str = "Test Speaker"
 
 
@@ -70,6 +72,7 @@ class MockPlayers:
     """Mock of mass.players controller."""
 
     def __init__(self) -> None:
+        """Initialize mock players controller."""
         self.cmd_play = AsyncMock()
         self.cmd_stop = AsyncMock()
         self.cmd_pause = AsyncMock()
@@ -82,11 +85,14 @@ class MockPlayers:
         self._players: dict[str, MockPlayer] = {}
 
     def get_player(self, player_id: str) -> MockPlayer | None:
+        """Return player by ID."""
         return self._players.get(player_id)
 
 
 @dataclass
 class MockMass:
+    """Mock MusicAssistant for testing."""
+
     players: MockPlayers = field(default_factory=MockPlayers)
 
 
@@ -96,6 +102,8 @@ class MockMass:
 
 
 class TestGetDeviceDescription:
+    """Tests for get_device_description."""
+
     def test_basic_description(self) -> None:
         """Test basic description."""
         player = MockPlayer()
@@ -147,6 +155,8 @@ class TestGetDeviceDescription:
 
 
 class TestGetDeviceState:
+    """Tests for get_device_state."""
+
     def test_idle_state(self) -> None:
         """Test idle state."""
         player = MockPlayer(playback_state=PlaybackState.IDLE, volume_level=30, volume_muted=False)
@@ -194,6 +204,8 @@ class TestGetDeviceState:
 
 
 class TestExecuteCapabilityAction:
+    """Tests for execute_capability_action."""
+
     @pytest.mark.asyncio
     async def test_on_off_true_plays(self) -> None:
         """Test on off true plays."""
@@ -333,6 +345,8 @@ class TestExecuteCapabilityAction:
 
 
 class TestIsPlayerExposable:
+    """Tests for is_player_exposable."""
+
     def test_normal_player(self) -> None:
         """Test normal player."""
         assert is_player_exposable(MockPlayer()) is True
@@ -356,6 +370,8 @@ class TestIsPlayerExposable:
 
 
 class TestErrorHelpers:
+    """Tests for error helper functions."""
+
     def test_make_error_device_state(self) -> None:
         """Test make error device state."""
         state = make_error_device_state("p1")
@@ -387,6 +403,8 @@ class TestErrorHelpers:
 
 
 class TestChannelCapability:
+    """Tests for channel capability handling."""
+
     def test_channel_in_description(self) -> None:
         """Channel capability should always be present in device description."""
         player = MockPlayer()
@@ -457,6 +475,8 @@ class TestChannelCapability:
 
 
 class TestInputSourceCapability:
+    """Tests for input source capability handling."""
+
     def test_no_source_list_no_mode_cap(self) -> None:
         """Player without source_list should not have mode capability."""
         player = MockPlayer(source_list=[])
@@ -559,6 +579,8 @@ class TestInputSourceCapability:
 
 
 class TestPlayerFilter:
+    """Tests for player filtering with exposed_ids."""
+
     def test_no_filter_exposes_all(self) -> None:
         """Without exposed_ids, all valid players are exposed."""
         assert is_player_exposable(MockPlayer()) is True

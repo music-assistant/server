@@ -5,6 +5,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from music_assistant.providers.yandex_smarthome.constants import (
+    CAPABILITY_ON_OFF,
+    CAPABILITY_RANGE,
+    CAPABILITY_TOGGLE,
+    CLOUD_SKILL_WEBHOOK_TEMPLATE,
+    CONF_CLOUD_INSTANCE_PASSWORD,
+    CONF_INSTANCE_NAME,
+    CONF_SKILL_TOKEN,
+    CONNECTION_TYPE_CLOUD_PLUS,
+    INSTANCE_MUTE,
+    INSTANCE_PAUSE,
+    INSTANCE_VOLUME,
+    YANDEX_DEVICE_TYPE_RECEIVER,
+    YANDEX_DIALOGS_CALLBACK_BASE,
+    YANDEX_DIALOGS_DEVELOPER_URL,
+    YANDEX_OAUTH_URL,
+)
+
 
 def test_manifest_valid() -> None:
     """Manifest should be valid JSON with required fields."""
@@ -32,12 +50,6 @@ def test_manifest_has_codeowners() -> None:
 
 def test_constants_defined() -> None:
     """Core constants should be importable and non-empty."""
-    from music_assistant.providers.yandex_smarthome.constants import (
-        CONF_CLOUD_INSTANCE_PASSWORD,
-        CONF_INSTANCE_NAME,
-        YANDEX_DEVICE_TYPE_RECEIVER,
-    )
-
     assert CONF_INSTANCE_NAME
     assert CONF_CLOUD_INSTANCE_PASSWORD
     assert YANDEX_DEVICE_TYPE_RECEIVER
@@ -45,15 +57,6 @@ def test_constants_defined() -> None:
 
 def test_cloud_plus_constants() -> None:
     """Cloud Plus constants should be importable and well-formed."""
-    from music_assistant.providers.yandex_smarthome.constants import (
-        CLOUD_SKILL_WEBHOOK_TEMPLATE,
-        CONF_SKILL_TOKEN,
-        CONNECTION_TYPE_CLOUD_PLUS,
-        YANDEX_DIALOGS_CALLBACK_BASE,
-        YANDEX_DIALOGS_DEVELOPER_URL,
-        YANDEX_OAUTH_URL,
-    )
-
     assert CONNECTION_TYPE_CLOUD_PLUS == "cloud_plus"
     assert CONF_SKILL_TOKEN == "skill_token"
     assert "dialogs.yandex.net" in YANDEX_DIALOGS_CALLBACK_BASE
@@ -64,15 +67,6 @@ def test_cloud_plus_constants() -> None:
 
 def test_constants_capability_types() -> None:
     """Yandex capability constants should be properly defined."""
-    from music_assistant.providers.yandex_smarthome.constants import (
-        CAPABILITY_ON_OFF,
-        CAPABILITY_RANGE,
-        CAPABILITY_TOGGLE,
-        INSTANCE_MUTE,
-        INSTANCE_PAUSE,
-        INSTANCE_VOLUME,
-    )
-
     assert "on_off" in CAPABILITY_ON_OFF
     assert "range" in CAPABILITY_RANGE
     assert "toggle" in CAPABILITY_TOGGLE

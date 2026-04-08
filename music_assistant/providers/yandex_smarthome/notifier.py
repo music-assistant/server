@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import aiohttp
 
+from music_assistant_models.enums import EventType
+
 from .constants import (
     STATE_HEARTBEAT_INTERVAL,
     STATE_INITIAL_REPORT_DELAY,
@@ -46,6 +48,7 @@ class StateNotifier:
         logger: logging.Logger | None = None,
         exposed_ids: set[str] | None = None,
     ) -> None:
+        """Initialize state notifier."""
         self._mass = mass
         self._session = session
         self._user_id = user_id
@@ -61,8 +64,6 @@ class StateNotifier:
 
     async def start(self) -> None:
         """Subscribe to player events and start background tasks."""
-        from music_assistant_models.enums import EventType
-
         self._unsub = self._mass.subscribe(
             self._on_player_event,
             event_filter=(
@@ -105,8 +106,6 @@ class StateNotifier:
 
     def _on_player_event(self, event: MassEvent) -> None:
         """Handle player state change — queue for batched reporting."""
-        from music_assistant_models.enums import EventType
-
         if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED):
             self._schedule_discovery()
             return

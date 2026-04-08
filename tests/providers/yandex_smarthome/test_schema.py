@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from provider.schema import (
+from music_assistant.providers.yandex_smarthome.schema import (
     ActionRequestPayload,
     ActionResult,
     CallbackPayload,

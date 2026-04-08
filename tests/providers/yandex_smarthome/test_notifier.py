@@ -13,11 +13,14 @@ import pytest
 # Use mock enums from conftest
 from music_assistant_models.enums import EventType, PlaybackState
 
-from provider.notifier import StateNotifier
+from music_assistant.providers.yandex_smarthome.device import get_device_state
+from music_assistant.providers.yandex_smarthome.notifier import StateNotifier
 
 
 @dataclass
 class MockPlayer:
+    """Mock player for notifier tests."""
+
     player_id: str = "p1"
     name: str = "Speaker"
     available: bool = True
@@ -35,6 +38,8 @@ class MockPlayer:
 
 @dataclass
 class MockEvent:
+    """Mock event for notifier tests."""
+
     event: str
     data: Any = None
 
@@ -84,6 +89,8 @@ def _make_notifier(
 
 
 class TestStateNotifierLifecycle:
+    """Tests for StateNotifier lifecycle methods."""
+
     @pytest.mark.asyncio
     async def test_start_subscribes(self) -> None:
         """Test start subscribes."""
@@ -121,6 +128,8 @@ class TestStateNotifierLifecycle:
 
 
 class TestStateNotifierEvents:
+    """Tests for StateNotifier event handling."""
+
     def test_on_player_updated_queues_state(self) -> None:
         """Test on player updated queues state."""
         mass = _make_mass()
@@ -202,6 +211,8 @@ class TestStateNotifierEvents:
 
 
 class TestStateNotifierFlush:
+    """Tests for StateNotifier flush mechanism."""
+
     @pytest.mark.asyncio
     async def test_flush_sends_callback(self) -> None:
         """Test flush sends callback."""
@@ -218,8 +229,6 @@ class TestStateNotifierFlush:
         notifier = _make_notifier(mass=mass, session=session)
 
         # Queue a pending state
-        from provider.device import get_device_state
-
         player = MockPlayer(player_id="p1")
         notifier._pending["p1"] = get_device_state(player)
 
@@ -241,6 +250,8 @@ class TestStateNotifierFlush:
 
 
 class TestStateNotifierReportAll:
+    """Tests for StateNotifier report-all-states."""
+
     @pytest.mark.asyncio
     async def test_report_all_states(self) -> None:
         """Test report all states."""
@@ -301,8 +312,6 @@ class TestStateNotifierCloudPlus:
             auth_header={"Authorization": "OAuth test-oauth-token"},
         )
 
-        from provider.device import get_device_state
-
         player = MockPlayer(player_id="p1")
         notifier._pending["p1"] = get_device_state(player)
 
@@ -328,8 +337,6 @@ class TestStateNotifierCloudPlus:
 
         mass = _make_mass()
         notifier = _make_notifier(mass=mass, session=session)
-
-        from provider.device import get_device_state
 
         player = MockPlayer(player_id="p1")
         notifier._pending["p1"] = get_device_state(player)

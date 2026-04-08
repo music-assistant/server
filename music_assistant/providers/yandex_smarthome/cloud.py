@@ -40,6 +40,7 @@ class CloudManager:
         on_request: Callable[[CloudRequest], Awaitable[dict[str, Any]]],
         logger: logging.Logger | None = None,
     ) -> None:
+        """Initialize cloud relay manager."""
         self._session = session
         self._token = connection_token
         self._on_request = on_request

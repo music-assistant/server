@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.enums import PlaybackState
+
 from .constants import (
     ERROR_DEVICE_UNREACHABLE,
     ERROR_INTERNAL_ERROR,
@@ -171,8 +173,6 @@ def get_device_description(player: Player) -> DeviceDescription:
 
 def get_device_state(player: Player) -> DeviceState:
     """Read current MA player state and convert to Yandex capability states."""
-    from music_assistant_models.enums import PlaybackState
-
     is_paused = player.playback_state == PlaybackState.PAUSED
     volume = player.volume_level if player.volume_level is not None else 0
     muted = player.volume_muted if player.volume_muted is not None else False

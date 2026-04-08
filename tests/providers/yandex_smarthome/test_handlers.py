@@ -11,7 +11,7 @@ import pytest
 # Use the PlaybackState from conftest's mock enums
 from music_assistant_models.enums import PlaybackState
 
-from provider.handlers import (
+from music_assistant.providers.yandex_smarthome.handlers import (
     build_response,
     handle_device_list,
     handle_devices_action,
@@ -19,10 +19,13 @@ from provider.handlers import (
     handle_user_unlink,
     parse_action_payload,
 )
+from music_assistant.providers.yandex_smarthome.schema import DeviceListPayload
 
 
 @dataclass
 class MockPlayer:
+    """Mock player for handler tests."""
+
     player_id: str = "p1"
     name: str = "Speaker"
     available: bool = True
@@ -61,6 +64,8 @@ def _make_mass(players: list[MockPlayer]) -> MagicMock:
 
 
 class TestHandleDeviceList:
+    """Tests for handle_device_list."""
+
     @pytest.mark.asyncio
     async def test_empty(self) -> None:
         """Test empty."""
@@ -127,6 +132,8 @@ class TestHandleDeviceList:
 
 
 class TestHandleDevicesQuery:
+    """Tests for handle_devices_query."""
+
     @pytest.mark.asyncio
     async def test_returns_states(self) -> None:
         """Test returns states."""
@@ -158,6 +165,8 @@ class TestHandleDevicesQuery:
 
 
 class TestHandleDevicesAction:
+    """Tests for handle_devices_action."""
+
     @pytest.mark.asyncio
     async def test_executes_on_off(self) -> None:
         """Test executes on off."""
@@ -216,6 +225,8 @@ class TestHandleDevicesAction:
 
 
 class TestHandleUserUnlink:
+    """Tests for handle_user_unlink."""
+
     @pytest.mark.asyncio
     async def test_returns_empty(self) -> None:
         """Test returns empty."""
@@ -229,6 +240,8 @@ class TestHandleUserUnlink:
 
 
 class TestParseActionPayload:
+    """Tests for parse_action_payload."""
+
     def test_basic_payload(self) -> None:
         """Test basic payload."""
         raw = {
@@ -316,6 +329,8 @@ class TestParseActionPayload:
 
 
 class TestBuildResponse:
+    """Tests for build_response."""
+
     def test_dict_payload(self) -> None:
         """Test dict payload."""
         resp = build_response("req-1", {"key": "val"})
@@ -328,8 +343,6 @@ class TestBuildResponse:
 
     def test_dataclass_payload(self) -> None:
         """Test dataclass payload."""
-        from provider.schema import DeviceListPayload
-
         payload = DeviceListPayload(user_id="u1", devices=[])
         resp = build_response("req-1", payload)
         assert resp["request_id"] == "req-1"
