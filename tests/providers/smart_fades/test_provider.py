@@ -205,16 +205,16 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     set_aa_mock = mass_mock.streams.audio_analysis.set_audio_analysis
     analysis = set_aa_mock.call_args[0][3]
 
-    # Energy curve should be populated and normalized to [0, 1]
-    assert analysis.rms_energy_per_second is not None
-    assert len(analysis.rms_energy_per_second) > 0
-    assert analysis.rms_energy_per_second.max() <= 1.0
-    assert analysis.rms_energy_per_second.min() >= 0.0
+    # Energy curve should be 1800 bins, normalized to [0, 1]
+    assert analysis.rms_energy is not None
+    assert len(analysis.rms_energy) == 1800
+    assert analysis.rms_energy.max() <= 1.0
+    assert analysis.rms_energy.min() >= 0.0
 
-    # Spectral centroid should be populated with positive Hz values
-    assert analysis.spectral_centroid_per_second is not None
-    assert len(analysis.spectral_centroid_per_second) > 0
-    assert all(v >= 0 for v in analysis.spectral_centroid_per_second)
+    # Spectral centroid should be 1800 bins with positive Hz values
+    assert analysis.spectral_centroid is not None
+    assert len(analysis.spectral_centroid) == 1800
+    assert all(v >= 0 for v in analysis.spectral_centroid)
 
     # Musical key should be detected
     assert analysis.key is not None

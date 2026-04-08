@@ -26,8 +26,8 @@ def test_state_space_sizes() -> None:
 
 def test_state_space_small() -> None:
     """Test state space with small interval range for easy verification."""
-    positions, intervals = _build_bar_state_space(num_beats=2, min_interval=3, max_interval=4)
-    # interval=3: 3 states, interval=4: 4 states, × 2 beats = 14 states
+    positions, _intervals = _build_bar_state_space(num_beats=2, min_interval=3, max_interval=4)
+    # interval=3: 3 states, interval=4: 4 states, x 2 beats = 14 states
     assert len(positions) == 14
     # Beat 0 positions: [0/3, 1/3, 2/3, 0/4, 1/4, 2/4, 3/4]
     # Beat 1 positions: [1+0/3, 1+1/3, 1+2/3, 1+0/4, 1+1/4, 1+2/4, 1+3/4]
@@ -38,7 +38,7 @@ def test_state_space_small() -> None:
 def test_transition_model_structure() -> None:
     """Test that the transition model is a valid sparse matrix."""
     positions, intervals = _build_bar_state_space(num_beats=4, min_interval=14, max_interval=55)
-    tm_states, tm_pointers, tm_log_probs = _build_transition_model(
+    tm_states, tm_pointers, _tm_log_probs = _build_transition_model(
         positions, intervals, num_beats=4, transition_lambda=100
     )
     num_states = len(positions)
@@ -131,7 +131,8 @@ def test_dbn_tracker_output_format() -> None:
     """Test that output matches the madmom interface: (M, 2) with [time, beat_pos]."""
     fps = 50
     num_frames = 500  # 10s
-    combined = np.random.uniform(0.01, 0.1, (num_frames, 2)).astype(np.float64)
+    rng = np.random.default_rng(42)
+    combined = rng.uniform(0.01, 0.1, (num_frames, 2)).astype(np.float64)
     # Place a few clear peaks
     for i in range(0, num_frames, 25):  # 120 BPM
         combined[i, 0] = 0.9

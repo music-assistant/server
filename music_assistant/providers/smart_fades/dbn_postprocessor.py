@@ -11,10 +11,12 @@ Based on:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 
 def _build_bar_state_space(
@@ -26,7 +28,7 @@ def _build_bar_state_space(
 
     Each state represents a position within a bar at a specific tempo.
     For each tempo interval i (in frames), there are i discrete positions
-    per beat. A bar with B beats has B × i states for interval i.
+    per beat. A bar with B beats has B x i states for interval i.
 
     :param num_beats: Number of beats per bar (e.g. 4 for 4/4 time).
     :param min_interval: Minimum beat interval in frames.
@@ -129,18 +131,25 @@ def _build_transition_model(
                     dests.append(state)
                     log_probs.append(float(lp))
 
-    # Convert to CSR format indexed by destination
+    return _build_csr(sources, dests, log_probs, num_states)
+
+
+def _build_csr(
+    sources: list[int],
+    dests: list[int],
+    log_probs: list[float],
+    num_states: int,
+) -> tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.float64]]:
+    """Convert transition triples to CSR format indexed by destination."""
     sources_arr = np.array(sources, dtype=np.int32)
     dests_arr = np.array(dests, dtype=np.int32)
     log_probs_arr = np.array(log_probs, dtype=np.float64)
 
-    # Sort by destination for CSR construction
     order = np.argsort(dests_arr, kind="stable")
     sources_arr = sources_arr[order]
     dests_arr = dests_arr[order]
     log_probs_arr = log_probs_arr[order]
 
-    # Build pointer array
     tm_pointers = np.zeros(num_states + 1, dtype=np.int32)
     for d in dests_arr:
         tm_pointers[d + 1] += 1
@@ -298,6 +307,7 @@ class DBNDownBeatTracker:
         threshold: float = 0.05,
         correct: bool = True,
     ) -> None:
+        """Initialize the DBN tracker with the given parameters."""
         if beats_per_bar is None:
             beats_per_bar = [3, 4]
         self.fps = fps
@@ -306,8 +316,8 @@ class DBNDownBeatTracker:
         self.observation_lambda = observation_lambda
 
         self._hmms: list[dict[str, Any]] = []
-        min_interval = int(round(60.0 * fps / max_bpm))
-        max_interval = int(round(60.0 * fps / min_bpm))
+        min_interval = round(60.0 * fps / max_bpm)
+        max_interval = round(60.0 * fps / min_bpm)
 
         for num_beats in beats_per_bar:
             positions, intervals = _build_bar_state_space(num_beats, min_interval, max_interval)

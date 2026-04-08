@@ -205,25 +205,36 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         bpm = calculate_overall_bpm(beats)
 
-        # Build extended analysis fields
-        rms_energy_per_second = None
+        # Interpolate energy and centroid to 1800 fixed bins
+        rms_energy = None
         if data.energy_chunks:
-            rms_energy_per_second = np.concatenate(data.energy_chunks)
-            peak = rms_energy_per_second.max()
-            if peak > 0:
-                rms_energy_per_second = rms_energy_per_second / peak
+            energy_all = np.concatenate(data.energy_chunks)
+            if len(energy_all) >= 2:
+                src_x = np.linspace(0, 1, len(energy_all))
+                dst_x = np.linspace(0, 1, 1800)
+                rms_energy = np.interp(dst_x, src_x, energy_all).astype(np.float32)
+                peak = rms_energy.max()
+                if peak > 0:
+                    rms_energy = rms_energy / peak
 
-        spectral_centroid_per_second = None
+        spectral_centroid = None
         if data.centroid_chunks:
-            spectral_centroid_per_second = np.concatenate(data.centroid_chunks)
+            centroid_all = np.concatenate(data.centroid_chunks)
+            if len(centroid_all) >= 2:
+                src_x = np.linspace(0, 1, len(centroid_all))
+                dst_x = np.linspace(0, 1, 1800)
+                spectral_centroid = np.interp(dst_x, src_x, centroid_all).astype(np.float32)
+                # Zero out centroid where energy is negligible (noise dominates)
+                if rms_energy is not None:
+                    spectral_centroid[rms_energy < 0.01] = 0.0
 
         analysis = AudioAnalysisData(
             bpm=bpm,
             beats=beats,
             downbeats=downbeats,
             duration=duration,
-            rms_energy_per_second=rms_energy_per_second,
-            spectral_centroid_per_second=spectral_centroid_per_second,
+            rms_energy=rms_energy,
+            spectral_centroid=spectral_centroid,
             key=key,
             mode=mode,
         )
@@ -271,26 +282,33 @@ class SmartFadesProvider(AudioAnalysisProvider):
     def _compute_energy_and_spectral_centroids(
         self, pcm_22k: np.ndarray, data: SmartFadesData
     ) -> None:
-        """Compute RMS energy and spectral centroid per second for a 10s block."""
-        sr = ANALYSIS_SAMPLE_RATE
-        n_full_seconds = len(pcm_22k) // sr
-        if n_full_seconds > 0:
-            frames = pcm_22k[: n_full_seconds * sr].reshape(n_full_seconds, sr)
-            rms = np.sqrt(np.mean(frames**2, axis=1)).astype(np.float32)
-            data.energy_chunks.append(rms)
+        """Compute fine-resolution RMS energy and spectral centroid for a block.
 
+        RMS is computed in 100ms windows (~2205 samples at 22050 Hz).
+        Spectral centroid is computed per hop frame (~43 frames/s).
+        Both are resampled to per-beat resolution in _finalize.
+        """
+        sr = ANALYSIS_SAMPLE_RATE
+        # RMS energy in 100ms windows, including partial final window
+        window_samples = sr // 10  # 2205 samples = 100ms
+        if len(pcm_22k) > 0:
+            n_full = len(pcm_22k) // window_samples
+            rms_list = []
+            if n_full > 0:
+                frames = pcm_22k[: n_full * window_samples].reshape(n_full, window_samples)
+                rms_list.append(np.sqrt(np.mean(frames**2, axis=1)))
+            remainder = len(pcm_22k) - n_full * window_samples
+            if remainder > 0:
+                tail = pcm_22k[n_full * window_samples :]
+                rms_list.append(np.array([np.sqrt(np.mean(tail**2))]))
+            if rms_list:
+                data.energy_chunks.append(np.concatenate(rms_list).astype(np.float32))
+
+        # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
         pcm_tensor = torch.from_numpy(pcm_22k)
         centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
-        hop_length = 512
-        frames_per_sec = sr // hop_length
-        if frames_per_sec > 0:
-            n_secs = len(centroid_frames) // frames_per_sec
-            if n_secs > 0:
-                trimmed = centroid_frames[: n_secs * frames_per_sec]
-                centroid_per_sec = (
-                    trimmed.reshape(n_secs, frames_per_sec).mean(axis=1).astype(np.float32)
-                )
-                data.centroid_chunks.append(centroid_per_sec)
+        if len(centroid_frames) > 0:
+            data.centroid_chunks.append(centroid_frames.astype(np.float32))
 
     def _compute_musical_key_features(self, pcm_22k: np.ndarray, data: SmartFadesData) -> None:
         """Extract VQT features for S-KEY key detection."""
