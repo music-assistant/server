@@ -92,15 +92,24 @@ class BridgePlayerRole(Role):
         """Return role family name."""
         return "player"
 
-    def setup_audio_requirements(self) -> None:
+    def setup_audio_requirements(
+        self,
+        sample_rate: int = BRIDGE_SAMPLE_RATE,
+        bit_depth: int = BRIDGE_BIT_DEPTH,
+        channels: int = BRIDGE_CHANNELS,
+    ) -> None:
         """Set up audio requirements for bridge PCM format."""
         self._audio_requirements = AudioRequirements(
-            sample_rate=BRIDGE_SAMPLE_RATE,
-            bit_depth=BRIDGE_BIT_DEPTH,
-            channels=BRIDGE_CHANNELS,
-            transformer=None,  # Raw PCM, no encoding
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            channels=channels,
+            transformer=None,
         )
-
+    @property
+    def preferred_format(self) -> AudioRequirements | None:
+        """Return the audio format declared via setup_audio_requirements."""
+        return self._audio_requirements
+    
     def get_audio_requirements(self) -> AudioRequirements | None:
         """Return audio requirements for PushStream."""
         return self._audio_requirements
