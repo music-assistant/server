@@ -653,7 +653,7 @@ class AppleMusicProvider(MusicProvider):
 
     async def _get_station_tracks(self, station_id: str) -> list[Track]:
         """Fetch the next batch of tracks for a radio station."""
-        response = await self._post_data(f"me/stations/next-tracks/{station_id}")
+        response = await self._post_data(f"me/stations/next-tracks/{station_id}", include="artists")
         tracks = response.get("data", [])
         if not tracks:
             return []
