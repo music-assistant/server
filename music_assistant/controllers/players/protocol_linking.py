@@ -110,10 +110,10 @@ class ProtocolLinkingMixin:
         if player.state.type == PlayerType.PROTOCOL:
             # Protocol player: try to find a native parent
             self._try_link_protocol_to_native(player)
-        elif player.state.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+        elif player.state.type == PlayerType.GROUP:
             return
         else:
-            # Native player: try to find protocol players to link
+            # Native player (including STEREO_PAIR): try to find protocol players to link
             self._try_link_protocols_to_native(player)
 
     def _try_link_protocol_to_native(self, protocol_player: Player) -> None:
@@ -150,7 +150,7 @@ class ProtocolLinkingMixin:
         :return: True if handled (linked or waiting), False if should fall through.
         """
         if parent_player := self.get_player(cached_parent_id):
-            if parent_player.state.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+            if parent_player.state.type == PlayerType.GROUP:
                 self._clear_protocol_parent_id(protocol_player.player_id)
                 return False
             already_linked = any(
@@ -202,11 +202,7 @@ class ProtocolLinkingMixin:
         for native_player in self.all_players(return_protocol_players=False):
             if native_player.player_id == protocol_player.player_id:
                 continue
-            if native_player.state.type in (
-                PlayerType.PROTOCOL,
-                PlayerType.GROUP,
-                PlayerType.STEREO_PAIR,
-            ):
+            if native_player.state.type in (PlayerType.PROTOCOL, PlayerType.GROUP):
                 continue
 
             # For universal players, check if this protocol player is in its stored list
@@ -1053,7 +1049,7 @@ class ProtocolLinkingMixin:
                 continue
 
             # Extract domain from provider instance_id (e.g., "airplay--uuid" -> "airplay")
-            protocol_domain = protocol_provider.split("--")[0]
+            protocol_domain = protocol_provider.split("--", maxsplit=1)[0]
 
             # Skip if parent already has a link from this domain
             existing_domains = {
@@ -1858,8 +1854,50 @@ class ProtocolLinkingMixin:
                     parent_player.state.name,
                     parent_protocol_player.provider.domain,
                 )
-                # Use resume to restart from current position
+                # Collect existing members from old protocol before stopping it,
+                # so we can re-add them to the new protocol after restart.
+                old_protocol_members: list[str] = []
+                if (
+                    previous_protocol
+                    and previous_protocol not in (None, "native")
+                    and (old_protocol_player := self.get_player(previous_protocol))
+                    and old_protocol_player.player_id != parent_protocol_player.player_id
+                ):
+                    # Collect child members (exclude the leader itself)
+                    old_protocol_members = [
+                        m
+                        for m in old_protocol_player.group_members
+                        if m != old_protocol_player.player_id
+                    ]
+                    # Translate protocol IDs back to parent player IDs
+                    old_parent_members: list[str] = []
+                    for member_id in old_protocol_members:
+                        if member_player := self.get_player(member_id):
+                            parent_id = member_player.protocol_parent_id or member_id
+                            if parent_id != parent_player.player_id:
+                                old_parent_members.append(parent_id)
+                    self.logger.debug(
+                        "Stopping old protocol player %s before switching to %s, "
+                        "migrating members: %s",
+                        old_protocol_player.state.name,
+                        parent_protocol_player.state.name,
+                        old_parent_members,
+                    )
+                    await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
+                else:
+                    old_parent_members = []
+                # Resume playback on the new protocol and re-add migrated members.
                 await self.mass.players._handle_cmd_resume(parent_player.player_id)
+                if old_parent_members:
+                    self.logger.debug(
+                        "Re-adding migrated members %s to %s on new protocol",
+                        old_parent_members,
+                        parent_player.state.name,
+                    )
+                    await self.mass.players._handle_set_members(
+                        parent_player,
+                        player_ids_to_add=old_parent_members,
+                    )
 
         self.logger.debug(
             "After set_members, protocol player %s state: group_members=%s, synced_to=%s",

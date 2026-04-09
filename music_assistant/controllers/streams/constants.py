@@ -28,9 +28,9 @@ TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
 
 # Buffer size in seconds for each preset
 BUFFER_SIZE_MAP: Final[dict[str, int]] = {
-    BufferSize.MINIMAL: 15,
-    BufferSize.BALANCED: 240,
-    BufferSize.MAXIMUM: 600,
+    BufferSize.MINIMAL: 60,
+    BufferSize.BALANCED: 300,
+    BufferSize.MAXIMUM: 1200,
 }
 
 # Buffer size for radio streams (short rolling buffer)
@@ -44,7 +44,7 @@ CONF_BUFFER_SIZE: Final[str] = "buffer_size"
 def _get_default_buffer_size() -> str:
     if TOTAL_SYSTEM_MEMORY_GB >= 8.0:
         return BufferSize.MAXIMUM
-    if TOTAL_SYSTEM_MEMORY_GB >= 4.0:
+    if TOTAL_SYSTEM_MEMORY_GB > 4.0:
         return BufferSize.BALANCED
     return BufferSize.MINIMAL
 

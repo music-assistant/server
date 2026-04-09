@@ -31,6 +31,10 @@ if TYPE_CHECKING:
     from music_assistant.controllers.streams.controller import StreamsController
 
 ANALYSIS_FPS = 100
+# Sample rate used for librosa beat analysis.
+# librosa defaults to 22050 Hz; using a higher rate than necessary
+# wastes CPU (e.g. 192 kHz is ~8.7x more work for no benefit).
+ANALYSIS_SAMPLE_RATE = 22050
 
 
 class SmartFadesAnalyzer:
@@ -65,10 +69,10 @@ class SmartFadesAnalyzer:
         outro_chunks: deque[bytes] = deque(maxlen=analysis_seconds)
         intro_analyzed = False
 
-        def _on_chunk(position_seconds: int, pcm_data: bytes) -> None:  # noqa: ARG001
+        async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
             nonlocal intro_analyzed
 
-            if not pcm_data:
+            if is_last_chunk:
                 # EOF — trigger outro analysis
                 if outro_chunks:
                     outro_data = b"".join(outro_chunks)
@@ -125,6 +129,12 @@ class SmartFadesAnalyzer:
             )
             audio_buffer.register_chunk_callback(_on_chunk)
 
+            def _on_cancel() -> None:
+                outro_chunks.clear()
+                intro_chunks.clear()
+
+            audio_buffer.register_cancel_callback(_on_cancel)
+
         self.streams.mass.create_task(_attach)
 
     async def analyze(
@@ -149,45 +159,23 @@ class SmartFadesAnalyzer:
         audio_data = align_audio_to_frame_boundary(audio_data, pcm_format)
 
         fragment_duration = len(audio_data) / (pcm_format.pcm_sample_size)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Audio data: %.2fs, %d bytes",
+            fragment_duration,
+            len(audio_data),
+        )
         try:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Audio data: %.2fs, %d bytes",
-                fragment_duration,
-                len(audio_data),
+            # Run all CPU-intensive work (PCM conversion, resampling, beat analysis)
+            # in a single thread call to avoid multiple thread pool round-trips
+            # and the asyncio slow-task warning from long-running coroutines.
+            analysis = await asyncio.to_thread(
+                self._analyze_in_thread,
+                audio_data,
+                pcm_format,
+                fragment,
+                stream_details_name,
             )
-            # Convert PCM bytes to numpy array and then to mono for analysis
-            audio_array = self._pcm_bytes_to_float32(audio_data, pcm_format)
-            if pcm_format.channels > 1:
-                # Ensure array size is divisible by channel count
-                samples_per_channel = len(audio_array) // pcm_format.channels
-                valid_samples = samples_per_channel * pcm_format.channels
-                if valid_samples != len(audio_array):
-                    self.logger.warning(
-                        "Audio buffer size (%d) not divisible by channels (%d), "
-                        "truncating %d samples",
-                        len(audio_array),
-                        pcm_format.channels,
-                        len(audio_array) - valid_samples,
-                    )
-                    audio_array = audio_array[:valid_samples]
-
-                # Reshape to separate channels and take average for mono conversion
-                audio_array = audio_array.reshape(-1, pcm_format.channels)
-                mono_audio = np.asarray(np.mean(audio_array, axis=1, dtype=np.float32))
-            else:
-                # Single channel - ensure consistent array type
-                mono_audio = np.asarray(audio_array, dtype=np.float32)
-
-            # Validate that the audio is finite (no NaN or Inf values)
-            if not np.all(np.isfinite(mono_audio)):
-                self.logger.error(
-                    "Audio buffer contains non-finite values (NaN/Inf) for %s, cannot analyze",
-                    stream_details_name,
-                )
-                return None
-
-            analysis = await self._analyze_track_beats(mono_audio, fragment, pcm_format.sample_rate)
 
             total_time = time.perf_counter() - start_time
             if not analysis:
@@ -223,6 +211,47 @@ class SmartFadesAnalyzer:
                 total_time,
             )
             return None
+
+    def _analyze_in_thread(
+        self,
+        audio_data: bytes,
+        pcm_format: AudioFormat,
+        fragment: SmartFadesAnalysisFragment,
+        stream_details_name: str,
+    ) -> SmartFadesAnalysis | None:
+        """Run all CPU-intensive analysis work in a single thread.
+
+        Combines PCM-to-float conversion, optional resampling, and beat analysis
+        to avoid multiple thread pool round-trips.
+
+        :param audio_data: Raw PCM audio data (frame-aligned).
+        :param pcm_format: Audio format of the PCM data.
+        :param fragment: Which fragment (intro/outro) is being analyzed.
+        :param stream_details_name: Display name for logging.
+        """
+        mono_audio = self._pcm_to_mono_float32_sync(audio_data, pcm_format)
+        if mono_audio is None:
+            self.logger.error(
+                "Audio buffer contains non-finite values (NaN/Inf) for %s, cannot analyze",
+                stream_details_name,
+            )
+            return None
+
+        # downsample to ANALYSIS_SAMPLE_RATE before beat analysis to avoid
+        # wasting CPU on high sample rates (e.g. 192 kHz)
+        analysis_sr = pcm_format.sample_rate
+        if analysis_sr > ANALYSIS_SAMPLE_RATE:
+            mono_audio = np.asarray(
+                librosa.resample(
+                    mono_audio,
+                    orig_sr=analysis_sr,
+                    target_sr=ANALYSIS_SAMPLE_RATE,
+                ),
+                dtype=np.float32,
+            )
+            analysis_sr = ANALYSIS_SAMPLE_RATE
+
+        return self._librosa_beat_analysis(mono_audio, fragment, analysis_sr)
 
     def _librosa_beat_analysis(
         self,
@@ -332,20 +361,36 @@ class SmartFadesAnalyzer:
 
         return downbeats
 
-    async def _analyze_track_beats(
+    def _pcm_to_mono_float32_sync(
         self,
-        audio_data: npt.NDArray[np.float32],
-        fragment: SmartFadesAnalysisFragment,
-        sample_rate: int,
-    ) -> SmartFadesAnalysis | None:
-        """Analyze track for beat tracking using librosa."""
-        try:
-            return await asyncio.to_thread(
-                self._librosa_beat_analysis, audio_data, fragment, sample_rate
-            )
-        except Exception as e:
-            self.logger.exception("Beat tracking analysis failed: %s", e)
+        audio_data: bytes,
+        pcm_format: AudioFormat,
+    ) -> npt.NDArray[np.float32] | None:
+        """
+        Convert raw PCM bytes to a mono float32 numpy array.
+
+        :param audio_data: Raw PCM audio data.
+        :param pcm_format: Audio format of the PCM data.
+        """
+        audio_array = self._pcm_bytes_to_float32(audio_data, pcm_format)
+        if pcm_format.channels > 1:
+            # Ensure array size is divisible by channel count
+            samples_per_channel = len(audio_array) // pcm_format.channels
+            valid_samples = samples_per_channel * pcm_format.channels
+            if valid_samples != len(audio_array):
+                audio_array = audio_array[:valid_samples]
+
+            # Reshape to separate channels and take average for mono conversion
+            audio_array_reshaped = audio_array.reshape(-1, pcm_format.channels)
+            mono_audio = np.asarray(np.mean(audio_array_reshaped, axis=1, dtype=np.float32))
+        else:
+            # Single channel - ensure consistent array type
+            mono_audio = np.asarray(audio_array, dtype=np.float32)
+
+        # Validate that the audio is finite (no NaN or Inf values)
+        if not np.all(np.isfinite(mono_audio)):
             return None
+        return mono_audio
 
     def _pcm_bytes_to_float32(
         self,

@@ -25,9 +25,12 @@ SUPPORT_DYNAMIC_LEADER = {
     # the provider will automatically select a new leader from the remaining members
     # and the music keeps playing uninterrupted.
     "airplay",
-    "squeezelite",
     "snapcast",
+    "sendspin",
     # TODO: Get this working with Sonos as well (need to handle range requests)
+    # TODO: Add squeezelite support. Currently restarts the entire stream session
+    #  on member changes (no late-join support), so removing the leader would still
+    #  cause a gap. Needs late-join / stream transfer support first.
 }
 
 

@@ -103,9 +103,12 @@ VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 YT_PLAYLIST_ID_DELIMITER = "🎵"
 PODCAST_EPISODE_SPLITTER = "|"
 YT_LIKED_SONGS_PLAYLIST_ID = "LM"
+YT_PERSONAL_PODCAST_PLAYLISTS = (
+    "SE",  # Episodes for later
+    "RDPN",  # New episodes
+)
 YT_PERSONAL_PLAYLISTS = (
     YT_LIKED_SONGS_PLAYLIST_ID,  # Liked songs
-    "SE",  # Episodes for Later
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
     "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
     "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
@@ -301,6 +304,9 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for playlist in playlists_obj:
+            playlist_id = playlist["id"]
+            if playlist_id in YT_PERSONAL_PODCAST_PLAYLISTS:
+                continue
             yield self._parse_playlist(playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -323,6 +329,9 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for podcast in podcasts_obj:
+            podcast_id = podcast.get("podcastId")
+            if podcast_id in YT_PERSONAL_PODCAST_PLAYLISTS:
+                continue
             yield self._parse_podcast(podcast)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
@@ -406,7 +415,7 @@ class YoutubeMusicProvider(MusicProvider):
         limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
-            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
         if (
             prov_playlist_id in YT_PERSONAL_PLAYLISTS
             and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
@@ -547,7 +556,7 @@ class YoutubeMusicProvider(MusicProvider):
         """Add track(s) to playlist."""
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
-            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
         return await add_remove_playlist_tracks(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
@@ -564,7 +573,7 @@ class YoutubeMusicProvider(MusicProvider):
         limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
-            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
         if (
             prov_playlist_id in YT_PERSONAL_PLAYLISTS
             and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
@@ -713,7 +722,7 @@ class YoutubeMusicProvider(MusicProvider):
     def _initialize_headers(self) -> dict[str, str]:
         """Return headers to include in the requests."""
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",  # noqa: E501
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.5",
             "Content-Type": "application/json",
@@ -1070,7 +1079,7 @@ class YoutubeMusicProvider(MusicProvider):
         processed_images = set()
         for img in sorted(thumbnails_obj, key=lambda w: w.get("width", 0), reverse=True):
             url: str = img["url"]
-            url_base = url.split("=w")[0]
+            url_base = url.split("=w", maxsplit=1)[0]
             width: int = img["width"]
             height: int = img["height"]
             image_ratio: float = width / height

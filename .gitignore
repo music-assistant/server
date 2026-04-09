@@ -20,3 +20,4 @@ venv/
 .coverage
 uv.lock
 /.claude/worktrees
+docs/superpowers

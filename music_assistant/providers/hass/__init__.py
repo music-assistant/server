@@ -501,7 +501,7 @@ class HomeAssistantProvider(PluginProvider):
             return
         if not (player_control := self._player_controls.get(entity_id)):
             return
-        entity_platform = entity_id.split(".")[0]
+        entity_platform = entity_id.split(".", maxsplit=1)[0]
         if "s" in state:
             # state changed
             if player_control.supports_power:
