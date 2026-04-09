@@ -193,51 +193,55 @@ class SendspinPulseAudioBridge:
         volume = self.player.volume_level
         if volume is None or volume >= 100:
             return pcm_data
-        samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
+        dtype = np.int32 if self.bit_depth == 32 else np.int16
+        clip_max = 2147483647 if self.bit_depth == 32 else 32767
+        clip_min = -2147483648 if self.bit_depth == 32 else -32768
         scale = volume / 100.0
-        samples = np.clip(samples * scale, -32768, 32767).astype(np.int16)
+        samples = np.frombuffer(pcm_data, dtype=dtype).copy()
+        samples = np.clip(samples * scale, clip_min, clip_max).astype(dtype)
         return samples.tobytes()
 
     async def _audio_writer(self) -> None:
-        """Write queued audio to the PA sink via pa_simple."""
-        loop = asyncio.get_running_loop()
-        stream: PASimpleStream | None = None
-        write_future: asyncio.Future | None = None
-        try:
-            stream = await loop.run_in_executor(
-                None,
-                lambda: PASimpleStream(
-                    sink_name=self.sink_name,
-                    app_name="music-assistant",
-                    self.sample_rate,
-                    channels=BRIDGE_CHANNELS,
-                ),
-            )
-            self.logger.debug("pa_simple stream opened for sink %s", self.sink_name)
-
-            while True:
-                data = await self._write_queue.get()
-                if data is None or not self._is_streaming:
-                    break
-                data = self._apply_software_volume(data)
-                write_future = loop.run_in_executor(None, stream.write, data)
-                await write_future
-                write_future = None
-
-        except asyncio.CancelledError:
-            pass
-        except OSError as err:
-            self.logger.error("pa_simple error for sink %s: %s", self.sink_name, err)
-        finally:
-            self._is_streaming = False
-            if write_future is not None:
-                with suppress(Exception):
-                    await asyncio.shield(write_future)
-            if stream is not None:
-                with suppress(Exception):
-                    await loop.run_in_executor(None, stream.close)
-            if self._writer_task is asyncio.current_task():
-                self._writer_task = None
+            """Write queued audio to the PA sink via pa_simple."""
+            loop = asyncio.get_running_loop()
+            stream: PASimpleStream | None = None
+            write_future: asyncio.Future | None = None
+            try:
+                stream = await loop.run_in_executor(
+                    None,
+                    lambda: PASimpleStream(
+                        sink_name=self.sink_name,
+                        app_name="music-assistant",
+                        rate=self.sample_rate,
+                        channels=BRIDGE_CHANNELS,
+                        bit_depth=self.bit_depth,
+                    ),
+                )
+                self.logger.debug("pa_simple stream opened for sink %s", self.sink_name)
+    
+                while True:
+                    data = await self._write_queue.get()
+                    if data is None or not self._is_streaming:
+                        break
+                    data = self._apply_software_volume(data)
+                    write_future = loop.run_in_executor(None, stream.write, data)
+                    await write_future
+                    write_future = None
+    
+            except asyncio.CancelledError:
+                pass
+            except OSError as err:
+                self.logger.error("pa_simple error for sink %s: %s", self.sink_name, err)
+            finally:
+                self._is_streaming = False
+                if write_future is not None:
+                    with suppress(Exception):
+                        await asyncio.shield(write_future)
+                if stream is not None:
+                    with suppress(Exception):
+                        await loop.run_in_executor(None, stream.close)
+                if self._writer_task is asyncio.current_task():
+                    self._writer_task = None
 
     async def _stop_streaming_locked(self) -> None:
         async with self._lock:
