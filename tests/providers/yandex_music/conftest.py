@@ -32,6 +32,18 @@ class ProviderStub:
         )
 
 
+class ConfigStub:
+    """Minimal config stub for provider tests."""
+
+    def __init__(self, values: dict[str, object] | None = None) -> None:
+        """Initialize with optional config values."""
+        self._values = values or {}
+
+    def get_value(self, key: str, default: object = None) -> object:
+        """Return config value or default."""
+        return self._values.get(key, default)
+
+
 class StreamingProviderStub:
     """Minimal provider stub for streaming tests (no Mock).
 
@@ -46,6 +58,7 @@ class StreamingProviderStub:
         """Initialize stub with minimal client."""
         self.client = type("ClientStub", (), {"user_id": 12345})()
         self.mass = type("MassStub", (), {})()
+        self.config = ConfigStub()
         self._warning_count = 0
 
     def _count_warning(self, *args: object, **kwargs: object) -> None:
@@ -93,6 +106,7 @@ class StreamingProviderStubWithTracking:
         """Initialize stub with tracking logger."""
         self.client = type("ClientStub", (), {"user_id": 12345})()
         self.mass = type("MassStub", (), {})()
+        self.config = ConfigStub()
         self.logger = TrackingLogger()
 
 
