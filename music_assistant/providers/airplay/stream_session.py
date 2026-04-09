@@ -165,8 +165,7 @@ class AirPlayStreamSession:
                     buffered_chunks = self._collect_buffered_chunks(airplay_player)
                 except TimeoutError:
                     self.prov.logger.warning(
-                        "Late joiner %s: timed out waiting for audio data "
-                        "(stream position=%.2fs)",
+                        "Late joiner %s: timed out waiting for audio data (stream position=%.2fs)",
                         airplay_player.player_id,
                         self.seconds_streamed,
                     )
