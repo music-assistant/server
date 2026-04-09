@@ -55,10 +55,10 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples
-        # Chunks from streams controller are ~1 second each (pcm_sample_size bytes)
-        # Keep ~10 seconds of buffer for late joiners (maxlen=12 for safety with variable sizes)
-        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=12)
+        # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples.
+        # Chunk sizes vary (~100ms-1s depending on the source), so use a generous
+        # maxlen to keep enough audio history for late joiners.
+        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=100)
 
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Initialize stream session for all players."""
@@ -121,10 +121,11 @@ class AirPlayStreamSession:
         """Add a sync client to the session as a late joiner.
 
         The late joiner will:
-        1. Collect buffered chunks and calculate correct NTP start time
-        2. Start the stream and immediately feed buffered audio into the pipeline
-        3. Wait for device connection outside the lock (data buffers in the pipe)
-        4. Join the real-time stream in sync with other players
+        1. Wait (if needed) for the ring buffer to have audio at the target position
+        2. Collect buffered chunks and calculate correct NTP start time
+        3. Start the stream and immediately feed buffered audio into the pipeline
+        4. Wait for device connection outside the lock (data buffers in the pipe)
+        5. Join the real-time stream in sync with other players
         """
         if not self.sync_clients:
             return
@@ -135,63 +136,70 @@ class AirPlayStreamSession:
         async with self._chunk_available:
             buffered_chunks = self._collect_buffered_chunks(airplay_player)
 
-            # If no usable chunks available (stream just started), wait for the
-            # audio streamer to produce at least one chunk so we get an accurate
-            # NTP start time instead of guessing.
+            # If no usable chunks at the target position (stream just started or
+            # buffer too short), wait for the audio streamer to produce enough data.
+            # Without this, the NTP start time would target a future position while
+            # the actual audio fed starts from an earlier position — putting the
+            # late joiner seconds behind the other players.
             if (
                 not buffered_chunks
                 and self._audio_source_task
                 and not self._audio_source_task.done()
             ):
+                wait_start_seconds = airplay_player.wait_start / 1000
                 self.prov.logger.debug(
-                    "Late joiner %s: waiting for first audio chunk (stream position=%.2fs)",
+                    "Late joiner %s: waiting for audio at target position "
+                    "(stream position=%.2fs, need position >= %.2fs)",
                     airplay_player.player_id,
                     self.seconds_streamed,
+                    (time.time() + wait_start_seconds) - self.start_time,
                 )
                 try:
                     await asyncio.wait_for(
-                        self._chunk_available.wait_for(lambda: len(self._chunk_buffer) > 0),
-                        timeout=5.0,
+                        self._chunk_available.wait_for(
+                            lambda: bool(self._collect_buffered_chunks(airplay_player))
+                        ),
+                        timeout=wait_start_seconds + 5.0,
                     )
                     # Re-collect with updated buffer and timing
                     buffered_chunks = self._collect_buffered_chunks(airplay_player)
                 except TimeoutError:
                     self.prov.logger.warning(
-                        "Late joiner %s: timed out waiting for audio data",
+                        "Late joiner %s: timed out waiting for audio data (stream position=%.2fs)",
                         airplay_player.player_id,
+                        self.seconds_streamed,
                     )
                     return
 
+            if not buffered_chunks:
+                self.prov.logger.warning(
+                    "Late joiner %s: no usable buffered audio available, "
+                    "cannot join in sync (stream position=%.2fs)",
+                    airplay_player.player_id,
+                    self.seconds_streamed,
+                )
+                return
+
             now = time.time()
+            first_chunk_position = buffered_chunks[0][1]
+            start_at = self.start_time + first_chunk_position
+            # Sanity check: start_at must not be in the past for the device
             wait_start_seconds = airplay_player.wait_start / 1000
             min_start_at = now + wait_start_seconds
-            if buffered_chunks:
-                first_chunk_position = buffered_chunks[0][1]
-                start_at = self.start_time + first_chunk_position
-                # Sanity check: start_at must not be in the past for the device
-                start_at = max(start_at, min_start_at)
-                buffer_duration = self.seconds_streamed - first_chunk_position
-                buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
+            start_at = max(start_at, min_start_at)
+            buffer_duration = self.seconds_streamed - first_chunk_position
+            buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
 
-                self.prov.logger.debug(
-                    "Late joiner %s: sending %.2fs of buffered audio (%d bytes, %d chunks), "
-                    "stream position=%.2fs, start_at is %.2fs from now",
-                    airplay_player.player_id,
-                    buffer_duration,
-                    buffered_bytes,
-                    len(buffered_chunks),
-                    self.seconds_streamed,
-                    start_at - now,
-                )
-            else:
-                start_at = max(min_start_at, self.start_time + self.seconds_streamed)
-                self.prov.logger.debug(
-                    "Late joiner %s: no buffered chunks available, "
-                    "stream position=%.2fs, start_at is %.2fs from now",
-                    airplay_player.player_id,
-                    self.seconds_streamed,
-                    start_at - now,
-                )
+            self.prov.logger.debug(
+                "Late joiner %s: sending %.2fs of buffered audio (%d bytes, %d chunks), "
+                "stream position=%.2fs, start_at is %.2fs from now",
+                airplay_player.player_id,
+                buffer_duration,
+                buffered_bytes,
+                len(buffered_chunks),
+                self.seconds_streamed,
+                start_at - now,
+            )
 
             start_ntp = unix_time_to_ntp(start_at)
 
@@ -202,8 +210,7 @@ class AirPlayStreamSession:
 
             # Feed buffered chunks immediately - data will buffer in the pipe
             # while the device connection is being established
-            if buffered_chunks:
-                await self._feed_buffered_chunks(airplay_player, buffered_chunks)
+            await self._feed_buffered_chunks(airplay_player, buffered_chunks)
 
         # Wait for device connection OUTSIDE the lock so the audio streamer
         # continues feeding real-time chunks to all players (including this one)
