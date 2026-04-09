@@ -325,8 +325,8 @@ async def test_get_stream_details(mass: MusicAssistant) -> None:
     assert prov is not None
     stream_details = await prov.get_stream_details("400", MediaType.TRACK)
     assert stream_details is not None
-    assert stream_details.stream_type == StreamType.HTTP
-    assert stream_details.path == "https://example.com/yandex_track.mp3"
+    assert stream_details.stream_type == StreamType.CUSTOM
+    assert stream_details.data["url"] == "https://example.com/yandex_track.mp3"
 
 
 @pytest.mark.usefixtures("yandex_music_provider_lossless")
@@ -339,7 +339,7 @@ async def test_get_stream_details_returns_flac_when_lossless_selected(
     stream_details = await prov.get_stream_details("400", MediaType.TRACK)
     assert stream_details is not None
     assert stream_details.audio_format.content_type == ContentType.FLAC
-    assert stream_details.path == "https://example.com/yandex_track.flac"
+    assert stream_details.data["url"] == "https://example.com/yandex_track.flac"
 
 
 @pytest.mark.usefixtures("yandex_music_provider")
