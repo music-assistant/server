@@ -252,7 +252,6 @@ class PandoraProvider(MusicProvider):
                                 exhausted_retry_reasons=exhausted_retry_reasons
                                 | {RETRY_REASON_STREAM_VIOLATION},
                             )
-                        await self.close()
                         raise StreamViolationError("STREAM_VIOLATION")
                     # This is some other, not concurrent streaming error kind of 429
                     await self.close()
@@ -442,7 +441,6 @@ class PandoraProvider(MusicProvider):
                 "To manually take over the stream on this device, use the "
                 "'Take over stream' button on the provider configuration page.",
             )
-            await self.close()
             raise
         except InvalidDataError as err:
             self.logger.error("Invalid fragment data for station %s: %s", session.station_id, err)
