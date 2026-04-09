@@ -56,7 +56,8 @@ class PandoraStationSession:
     """Manages streaming state for a single Pandora station."""
 
     def __init__(self, station_id: str):
-        """Initialize a new station streaming session.
+        """
+        Initialize a new station streaming session.
 
         Args:
             station_id: The Pandora station ID.
@@ -180,7 +181,8 @@ class PandoraProvider(MusicProvider):
     async def _api_request(
         self, method: str, url: str, data: dict[str, Any] | None = None, retry: bool = True
     ) -> dict[str, Any]:
-        """Make an API request to Pandora.
+        """
+        Make an API request to Pandora.
 
         :param method: HTTP method (GET, POST, etc.)
         :param url: API endpoint URL
@@ -423,7 +425,8 @@ class PandoraProvider(MusicProvider):
             raise
 
     async def _handle_stream_request(self, request: web.Request) -> web.Response:
-        """Handle dynamic stream request.
+        """
+        Handle dynamic stream request.
 
         Map track numbers to Pandora fragments and redirect to audio URLs.
         """
@@ -594,7 +597,8 @@ class PandoraProvider(MusicProvider):
             await self.http_session.close()
 
     def _use_high_quality(self) -> bool:
-        """Whether high quality audio should be requested from Pandora.
+        """
+        Whether high quality audio should be requested from Pandora.
 
         This allows a graceful fallback to standard quality if the account is not eligible for
         high-quality streaming, while still respecting the user's preference if they are eligible.
@@ -602,7 +606,8 @@ class PandoraProvider(MusicProvider):
         return self._high_quality_available and self.config.get_value(CONF_QUALITY) == QUALITY_HIGH
 
     async def takeover_stream(self) -> None:
-        """Force Pandora to end any other active session and resume here.
+        """
+        Force Pandora to end any other active session and resume here.
 
         This sends "forceActive=true" to the playbackResumed endpoint, which instructs Pandora to
         terminate any conflicting stream on other devices. The user must manually restart playback
