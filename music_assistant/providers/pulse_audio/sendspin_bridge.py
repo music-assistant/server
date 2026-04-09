@@ -225,7 +225,7 @@ class SendspinPulseAudioBridge:
                     data = await self._write_queue.get()
                     if data is None or not self._is_streaming:
                         break
-                    data = self._apply_software_volume(data)
+                    #data = self._apply_software_volume(data)
                     write_future = loop.run_in_executor(None, stream.write, data)
                     await write_future
                     write_future = None
