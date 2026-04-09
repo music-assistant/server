@@ -455,45 +455,15 @@ class AppleMusicProvider(MusicProvider):
 
     async def _get_station_playlist(self, station_id: str) -> Playlist:
         """Fetch name and artwork for a ra. station and return it as a dynamic Playlist."""
-        name = station_id
-        image: MediaItemImage | None = None
         try:
             station_response = await self._get_data(
                 f"catalog/{self._storefront}/stations/{station_id}"
             )
-            attrs = station_response["data"][0].get("attributes", {})
-            name = attrs.get("name", station_id)
-            if artwork := attrs.get("artwork"):
-                url = artwork["url"]
-                if artwork.get("width") and artwork.get("height"):
-                    url = url.format(
-                        w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                        h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-                    )
-                image = MediaItemImage(
-                    provider=self.instance_id,
-                    type=ImageType.THUMB,
-                    path=url,
-                    remotely_accessible=True,
-                )
+            station_obj = station_response["data"][0]
+            station_obj["id"] = station_id
+            return self._parse_station_as_playlist(station_obj)
         except (MediaNotFoundError, KeyError, IndexError):
-            pass
-        playlist = Playlist(
-            item_id=station_id,
-            provider=self.instance_id,
-            name=name,
-            is_dynamic=True,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=station_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        if image:
-            playlist.metadata.add_image(image)
-        return playlist
+            return self._parse_station_as_playlist({"id": station_id})
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
