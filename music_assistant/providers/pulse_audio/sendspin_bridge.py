@@ -53,6 +53,8 @@ class SendspinPulseAudioBridge:
         self.sendspin_server = sendspin_server
         self.sink_name: str = sink_info["pa_sink_name"]
         self.display_name: str = sink_info["name"]
+        self.sample_rate: int = sink_info.get("sample_rate", BRIDGE_SAMPLE_RATE)
+        self.bit_depth: int = sink_info.get("bit_depth", BRIDGE_BIT_DEPTH)
         self.sink_info = sink_info
         self.logger = provider.logger.getChild(f"bridge.{self.sink_name}")
 
@@ -126,7 +128,11 @@ class SendspinPulseAudioBridge:
                 on_stream_end=self._on_bridge_stream_end,
                 initial_volume=25,
             )
-            self._bridge_role.setup_audio_requirements()
+            self._bridge_role.setup_audio_requirements(
+                sample_rate=self.sample_rate,
+                bit_depth=self.bit_depth,
+                channels=BRIDGE_CHANNELS,
+            )
 
         self.logger.info(
             "Sendspin bridge registered for sink %s (client_id=%s)",
@@ -203,7 +209,7 @@ class SendspinPulseAudioBridge:
                 lambda: PASimpleStream(
                     sink_name=self.sink_name,
                     app_name="music-assistant",
-                    rate=BRIDGE_SAMPLE_RATE,
+                    self.sample_rate,
                     channels=BRIDGE_CHANNELS,
                 ),
             )
