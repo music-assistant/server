@@ -349,8 +349,14 @@ class LocalPulseAudioBridgeManager:
             name: str = sink.get("name", "")
             desc: str = sink.get("description", name)
             spec_str: str = sink.get("sample_specification", "")
+            # spec_str format: "s32le 2ch 96000Hz"
             try:
-                channels = int(spec_str.split()[1].replace("ch", ""))
+                parts = spec_str.split()
+                fmt = parts[0]           # e.g. "s32le"
+                channels = int(parts[1].replace("ch", ""))
+                sample_rate = int(parts[2].replace("Hz", ""))
+                # Extract bit depth from format string: s16le→16, s32le→32
+                bit_depth = int("".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0])))
             except (IndexError, ValueError):
                 continue
             if channels < 2:
@@ -359,6 +365,8 @@ class LocalPulseAudioBridgeManager:
                 "name": desc,
                 "pa_sink_name": name,
                 "max_output_channels": channels,
+                "sample_rate": sample_rate,
+                "bit_depth": bit_depth,
             })
         return sinks
 
