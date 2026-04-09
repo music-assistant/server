@@ -1889,8 +1889,6 @@ class ProtocolLinkingMixin:
                 else:
                     old_parent_members = []
                 # Resume playback on the new protocol and re-add migrated members.
-                # Use public API — the queue redirect is desired here, and the
-                # re-entrant playback lock prevents deadlocks in nested calls.
                 await self.mass.players.cmd_resume(parent_player.player_id)
                 if old_parent_members:
                     self.logger.debug(

@@ -343,9 +343,6 @@ class SyncGroupPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
-        # Use the public API — the re-entrant playback lock prevents deadlocks,
-        # and the queue redirect in cmd_resume is the correct behavior here
-        # (the syncgroup IS the queue player, so no circular redirect risk).
         await self.mass.players.cmd_resume(
             self.player_id, self._attr_active_source, self._attr_current_media
         )

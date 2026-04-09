@@ -76,6 +76,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -513,7 +514,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        async with self.mass.players.get_player_lock(queue_id, "playback"):
+        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_play_media(queue_id, media, option, radio_mode, start_item, username)
 
     @api_command("player_queues/move_item")
@@ -667,7 +668,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        async with self.mass.players.get_player_lock(queue_id, "playback"):
+        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_play(queue_id)
 
     @api_command("player_queues/pause")
@@ -735,7 +736,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        async with self.mass.players.get_player_lock(queue_id, "playback"):
+        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_next(queue_id)
 
     @api_command("player_queues/previous")
@@ -748,7 +749,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        async with self.mass.players.get_player_lock(queue_id, "playback"):
+        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_previous(queue_id)
 
     @api_command("player_queues/skip")

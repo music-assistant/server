@@ -104,6 +104,7 @@ from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
+from .constants import PlayerLockPurpose
 from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
@@ -157,7 +158,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     @contextlib.asynccontextmanager
     async def get_player_lock(
-        self, player_id: str, purpose: str = "playback"
+        self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
     ) -> AsyncIterator[None]:
         """
         Acquire a purpose-scoped lock for a player, with re-entrant support.
@@ -168,10 +169,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         (e.g. queue -> player -> syncgroup -> player).
 
         :param player_id: The player to lock.
-        :param purpose: Lock category (e.g. "playback", "volume"). Commands with
-            different purposes can run concurrently on the same player.
+        :param purpose: Lock category. Commands with different purposes can run
+            concurrently on the same player.
         """
-        lock_key = f"{purpose}_{player_id}"
+        lock_key = f"{purpose.value}_{player_id}"
         held = _held_player_locks.get()
 
         if lock_key in held:
@@ -474,7 +475,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     # Player commands
 
     @api_command("players/cmd/stop")
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
 
@@ -654,7 +655,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set")
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
@@ -802,7 +803,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await asyncio.gather(*coros)
 
     @api_command("players/cmd/volume_mute")
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME_MUTE command to given player.
 
@@ -868,7 +869,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
     @api_command("players/cmd/play_announcement")
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def play_announcement(
         self,
         player_id: str,
@@ -978,7 +979,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         finally:
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
 
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
@@ -1099,7 +1100,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
         Handle enqueuing of a next media item on the player.
@@ -1143,13 +1144,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-        # Use the shared playback lock — same lock used by play_media, play_announcement,
-        # enqueue_next_media, and queue play commands — to prevent concurrent
-        # playback-related commands from racing with protocol switches triggered
-        # by set_members. The lock is re-entrant via ContextVar so nested calls
-        # (e.g. set_members -> protocol switch -> resume -> play_index -> form_syncgroup
-        # -> set_members) won't deadlock.
-        async with self.get_player_lock(parent_player.player_id, "playback"):
+        # Serialize with playback commands to prevent protocol switches from
+        # racing with concurrent play_media / play_index / resume calls.
+        async with self.get_player_lock(parent_player.player_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")
