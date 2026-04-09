@@ -55,7 +55,11 @@ async def handle_device_list(
     return DeviceListPayload(user_id=user_id, devices=devices)
 
 
-async def handle_devices_query(mass: MusicAssistant, device_ids: list[str]) -> DeviceStatesPayload:
+async def handle_devices_query(
+    mass: MusicAssistant,
+    device_ids: list[str],
+    exposed_ids: set[str] | None = None,
+) -> DeviceStatesPayload:
     """Handle /user/devices/query — return current states for requested devices."""
     states: list[DeviceState] = []
     for device_id in device_ids:
@@ -69,7 +73,7 @@ async def handle_devices_query(mass: MusicAssistant, device_ids: list[str]) -> D
             continue
 
         player_state = player.state if hasattr(player, "state") else player
-        if not player_state.available:
+        if not is_player_exposable(player_state, exposed_ids=exposed_ids):  # type: ignore[arg-type]
             states.append(make_error_device_state(device_id))
             continue
 
@@ -79,7 +83,9 @@ async def handle_devices_query(mass: MusicAssistant, device_ids: list[str]) -> D
 
 
 async def handle_devices_action(
-    mass: MusicAssistant, payload: ActionRequestPayload
+    mass: MusicAssistant,
+    payload: ActionRequestPayload,
+    exposed_ids: set[str] | None = None,
 ) -> ActionResultPayload:
     """Handle /user/devices/action — execute capability actions on devices."""
     results: list[DeviceActionResult] = []
@@ -102,7 +108,7 @@ async def handle_devices_action(
             continue
 
         player_state = player.state if hasattr(player, "state") else player
-        if not player_state.available:
+        if not is_player_exposable(player_state, exposed_ids=exposed_ids):  # type: ignore[arg-type]
             results.append(
                 DeviceActionResult(
                     id=device_action.id,

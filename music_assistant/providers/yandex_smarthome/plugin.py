@@ -60,6 +60,7 @@ class YandexSmartHomePlugin(PluginProvider):
     _cloud_manager: CloudManager | None = None
     _state_notifier: StateNotifier | None = None
     _cloud_task: Any = None
+    _user_id: str = ""
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
@@ -116,6 +117,17 @@ class YandexSmartHomePlugin(PluginProvider):
                 self.logger.error("Cloud Plus mode requires skill_id and skill_token")
                 return
 
+        # Validate cloud password (used for callback auth in basic cloud mode)
+        if self._connection_type == CONNECTION_TYPE_CLOUD and not self._cloud_token:
+            self.logger.error(
+                "Cloud instance password not configured — "
+                "set the password from yaha-cloud.ru instance settings"
+            )
+            return
+
+        # Determine user_id once — used in both API responses and state callbacks
+        self._user_id = self._cloud_instance_id or self._instance_name
+
         session = self.mass.http_session
 
         # Cloud WebSocket manager
@@ -134,16 +146,14 @@ class YandexSmartHomePlugin(PluginProvider):
         if self._connection_type == CONNECTION_TYPE_CLOUD_PLUS:
             callback_url = f"{YANDEX_DIALOGS_CALLBACK_BASE}/{self._skill_id}/callback/state"
             auth_header = {"Authorization": f"OAuth {self._skill_token}"}
-            user_id = self._cloud_instance_id
         else:
             callback_url = f"{CLOUD_CALLBACK_URL}/state"
             auth_header = {"Authorization": f"Bearer {self._cloud_token}"}
-            user_id = self._instance_name
 
         self._state_notifier = StateNotifier(
             mass=self.mass,
             session=session,
-            user_id=user_id,
+            user_id=self._user_id,
             callback_url=callback_url,
             auth_header=auth_header,
             logger=self.logger,
@@ -170,19 +180,23 @@ class YandexSmartHomePlugin(PluginProvider):
             if normalized == "/user/devices":
                 device_list = await handle_device_list(
                     self.mass,
-                    self._cloud_instance_id,
+                    self._user_id,
                     exposed_ids=self._exposed_ids,
                 )
                 return build_response(request_id, asdict(device_list))
 
             if normalized == "/user/devices/query":
                 device_ids = [d["id"] for d in message.get("devices", [])]
-                states = await handle_devices_query(self.mass, device_ids)
+                states = await handle_devices_query(
+                    self.mass, device_ids, exposed_ids=self._exposed_ids
+                )
                 return build_response(request_id, asdict(states))
 
             if normalized == "/user/devices/action":
                 action_payload = parse_action_payload(message)
-                action_result = await handle_devices_action(self.mass, action_payload)
+                action_result = await handle_devices_action(
+                    self.mass, action_payload, exposed_ids=self._exposed_ids
+                )
                 return build_response(request_id, asdict(action_result))
 
             if normalized == "/user/unlink":

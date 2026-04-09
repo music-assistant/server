@@ -172,6 +172,7 @@ def get_device_description(player: Player) -> DeviceDescription:
 
 def get_device_state(player: Player) -> DeviceState:
     """Read current MA player state and convert to Yandex capability states."""
+    is_on = player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
     is_paused = player.playback_state == PlaybackState.PAUSED
     volume = player.volume_level if player.volume_level is not None else 0
     muted = player.volume_muted if player.volume_muted is not None else False
@@ -179,7 +180,7 @@ def get_device_state(player: Player) -> DeviceState:
     capabilities = [
         CapabilityState(
             type=YandexCapabilityType.ON_OFF,
-            state=CapabilityInstanceState(instance=INSTANCE_ON, value=True),
+            state=CapabilityInstanceState(instance=INSTANCE_ON, value=is_on),
         ),
         CapabilityState(
             type=YandexCapabilityType.RANGE,

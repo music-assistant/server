@@ -164,7 +164,7 @@ class TestGetDeviceState:
         assert state.id == "test_player_1"
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
-        assert by_instance[INSTANCE_ON] is True  # always on while available
+        assert by_instance[INSTANCE_ON] is False  # idle means "off"
         assert by_instance[INSTANCE_VOLUME] == 30
         assert by_instance[INSTANCE_MUTE] is False
         assert by_instance[INSTANCE_PAUSE] is False
