@@ -1162,6 +1162,16 @@ class SendspinPlaybackSession:
                             channels=preferred_fmt.channels,
                         )
                 elif isinstance(role, BridgePlayerRole):
+                    # Use the format declared by the bridge client if available,
+                    # otherwise fall back to the global bridge constants.
+                    fmt = role.get_supported_format()
+                    if fmt is not None:
+                        return AudioFormat(
+                            content_type=ContentType.from_bit_depth(fmt.bit_depth),
+                            sample_rate=fmt.sample_rate,
+                            bit_depth=fmt.bit_depth,
+                            channels=fmt.channels,
+                        )
                     return AudioFormat(
                         content_type=ContentType.from_bit_depth(BRIDGE_BIT_DEPTH),
                         sample_rate=BRIDGE_SAMPLE_RATE,
