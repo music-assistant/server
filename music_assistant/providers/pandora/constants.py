@@ -51,6 +51,9 @@ PANDORA_ERROR_CODES = {
     1039: "Device not found",
 }
 
+RETRY_REASON_AUTH = "auth"
+RETRY_REASON_STREAM_VIOLATION = "stream_violation"
+
 CONF_TAKEOVER_ACTION = "takeover_stream"
 CONF_QUALITY = "quality"
 QUALITY_HIGH = "high"
