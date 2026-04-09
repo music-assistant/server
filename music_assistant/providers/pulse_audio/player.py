@@ -77,3 +77,27 @@ class LocalPulseAudioPlayer(Player):
 
     async def apply_hardware_ceiling(self) -> None:
         """Set PA sink hardware volume ceiling via pactl.
+
+        Called on every startup to ensure the hardware output level is
+        capped at the configured ceiling percentage.
+        """
+        provider: LocalPulseAudioProvider = self.provider
+        ceiling = provider.config.get_value(
+            CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
+        )
+        sink_name = self._pa_sink_name
+        try:
+            await check_output(
+                find_pactl(),
+                "set-sink-volume",
+                sink_name,
+                f"{ceiling}%",
+                env=pactl_env(),
+            )
+            provider.logger.debug(
+                "Hardware ceiling set to %d%% for sink %s", ceiling, sink_name
+            )
+        except Exception as err:
+            provider.logger.warning(
+                "Failed to set hardware ceiling for sink %s: %s", sink_name, err
+            )
