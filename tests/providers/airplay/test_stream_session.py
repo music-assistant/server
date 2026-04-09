@@ -183,14 +183,26 @@ async def test_late_join_trims_first_chunk() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_join_no_buffer() -> None:
-    """Test that with no ring buffer, start_at is still >= now + wait_start."""
+async def test_late_join_no_buffer_returns_early() -> None:
+    """Test that with no usable buffered audio, the late joiner is not added.
+
+    When the ring buffer has no chunks at the target position, adding the
+    player would cause a sync mismatch (NTP targets a future position but
+    audio data starts from the current position). Instead, add_client
+    should return without starting the player.
+    """
     now = time.time()
     start_time = now - 50
     session = _make_session(start_time, 50.0, chunk_positions=[])
     player = _make_late_joiner(wait_start_ms=2000)
 
-    start_at, fed_chunks = await _run_add_client(session, player)
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_feed_buffered_chunks", new_callable=AsyncMock) as mock_feed,
+    ):
+        await session.add_client(player)
 
-    assert not fed_chunks
-    assert start_at >= now + 2.0 - 0.1
+        # Player should NOT have been started or added since there's no usable audio
+        mock_start.assert_not_called()
+        mock_feed.assert_not_called()
+        assert player not in session.sync_clients
