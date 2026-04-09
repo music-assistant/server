@@ -37,8 +37,11 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    ACCOUNT_FLAG_HIGH_QUALITY,
+    CONF_QUALITY,
     LOGIN_ENDPOINT,
     PLAYLIST_FRAGMENT_ENDPOINT,
+    QUALITY_HIGH,
     STATIONS_ENDPOINT,
 )
 from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
@@ -83,6 +86,7 @@ class PandoraProvider(MusicProvider):
     _csrf_token: str | None = None
     _sessions: dict[str, PandoraStationSession]
     _socks_proxy: bool = False
+    _high_quality_available: bool = False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -150,7 +154,19 @@ class PandoraProvider(MusicProvider):
                     raise LoginFailed("No auth token received from Pandora")
 
                 self._user_id = response_data.get("listenerId")
-                self.logger.info("Successfully authenticated with Pandora")
+
+                # Check whether the account is eligible for high-quality streaming.
+                try:
+                    flags: list[str] = response_data.get("config", {}).get("flags", [])
+                    self._high_quality_available = ACCOUNT_FLAG_HIGH_QUALITY in flags
+                except (AttributeError, TypeError):
+                    self._high_quality_available = False
+
+                self.logger.info(
+                    "Successfully authenticated with Pandora "
+                    "(high-quality streaming available: %s)",
+                    self._high_quality_available,
+                )
 
         except aiohttp.ClientError as err:
             await self.close()
@@ -291,7 +307,7 @@ class PandoraProvider(MusicProvider):
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
-                content_type=ContentType.AAC,
+                content_type=ContentType.MP3 if self._use_high_quality() else ContentType.AAC,
             ),
             media_type=MediaType.RADIO,
             stream_type=StreamType.HTTP,
@@ -319,7 +335,7 @@ class PandoraProvider(MusicProvider):
             "stationId": session.station_id,
             "isStationStart": fragment_index == 0,
             "fragmentRequestReason": "Normal",
-            "audioFormat": "aacplus",
+            "audioFormat": "mp3-hifi" if self._use_high_quality() else "aacplus",
             "startingAtTrackId": None,
             "onDemandArtistMessageArtistUidHex": None,
             "onDemandArtistMessageIdHex": None,
@@ -539,3 +555,11 @@ class PandoraProvider(MusicProvider):
         """Handle closing of http session if using socks."""
         if self._socks_proxy and self.http_session:
             await self.http_session.close()
+
+    def _use_high_quality(self) -> bool:
+        """Whether high quality audio should be requested from Pandora.
+
+        This allows a graceful fallback to standard quality if the account is not eligible for
+        high-quality streaming, while still respecting the user's preference if they are eligible.
+        """
+        return self._high_quality_available and self.config.get_value(CONF_QUALITY) == QUALITY_HIGH
