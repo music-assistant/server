@@ -97,7 +97,7 @@ class SendspinPulseAudioBridge:
                         codec=AudioCodec.PCM,
                         channels=BRIDGE_CHANNELS,
                         sample_rate=BRIDGE_SAMPLE_RATE,
-                        bit_depth=BRIDGE_BIT_DEPTH
+                        bit_depth=BRIDGE_BIT_DEPTH,
                     )
                 ],
                 buffer_capacity=1_000,
@@ -116,27 +116,30 @@ class SendspinPulseAudioBridge:
         )
 
         for role in self._sendspin_client.roles_by_family("player"):
-            self.logger.warning("Found player role: %s type=%s", role.role_id, type(role).__name__)
+            self.logger.warning(
+                "Found player role: %s type=%s", role.role_id, type(role).__name__
+            )
             if isinstance(role, BridgePlayerRole):
                 self._bridge_role = role
                 break
-        
+
         if self._bridge_role is None:
             self.logger.error("No BridgePlayerRole found for sink %s", self.sink_name)
-            
-            self._bridge_role.set_callbacks(
-                on_audio_chunk=self._on_audio_chunk,
-                on_volume_change=self._on_volume_change,
-                on_mute_change=self._on_mute_change,
-                on_stream_start=self._on_bridge_stream_start,
-                on_stream_end=self._on_bridge_stream_end,
-                initial_volume=25,
-            )
-            self._bridge_role.setup_audio_requirements(
-                sample_rate=self.sample_rate,
-                bit_depth=self.bit_depth,
-                channels=BRIDGE_CHANNELS,
-            )
+            return
+
+        self._bridge_role.set_callbacks(
+            on_audio_chunk=self._on_audio_chunk,
+            on_volume_change=self._on_volume_change,
+            on_mute_change=self._on_mute_change,
+            on_stream_start=self._on_bridge_stream_start,
+            on_stream_end=self._on_bridge_stream_end,
+            initial_volume=25,
+        )
+        self._bridge_role.setup_audio_requirements(
+            sample_rate=self.sample_rate,
+            bit_depth=self.bit_depth,
+            channels=BRIDGE_CHANNELS,
+        )
 
         self.logger.info(
             "Sendspin bridge registered for sink %s (client_id=%s)",
