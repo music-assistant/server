@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
@@ -149,9 +150,11 @@ class AirPlay2Stream(AirPlayProtocol):
             elif "Restarted at" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
             elif "Starting at" in line:
-                # streaming has started
+                # streaming has started - derive elapsed time from the stream
+                # session start_time to handle dynamic leader switching correctly
+                elapsed_time = (time.time() - self.session.start_time) if self.session else 0
                 player.set_state_from_stream(
-                    state=PlaybackState.PLAYING, elapsed_time=0, stream=self
+                    state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
                 )
             if "put delay detected" in line:
                 if "resetting all outputs" in line:
