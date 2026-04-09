@@ -199,19 +199,20 @@ class SendspinPulseAudioBridge:
             return b"\x00" * len(pcm_data)
         volume = self.player.volume_level
         if not hasattr(self, '_logged_vol'):
-            self.logger.warning("VOL CHECK: level=%s muted=%s", volume, self.player.volume_muted)
+            self.logger.warning(
+                "VOL CHECK: level=%s muted=%s", volume, self.player.volume_muted
+            )
             self._logged_vol = True
         if volume is None or volume >= 100:
             return pcm_data
         scale = volume / 100.0
         if self.bit_depth == 32:
             samples = np.frombuffer(pcm_data, dtype=np.int32).copy()
-            # Use float64 intermediate to avoid int32 overflow before clip
-            scaled = (samples.astype(np.float64) * scale)
+            scaled = samples.astype(np.float64) * scale
             samples = np.clip(scaled, -2147483648, 2147483647).astype(np.int32)
         else:
             samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
-            scaled = (samples.astype(np.float64) * scale)
+            scaled = samples.astype(np.float64) * scale
             samples = np.clip(scaled, -32768, 32767).astype(np.int16)
         return samples.tobytes()
 
@@ -242,177 +243,3 @@ class SendspinPulseAudioBridge:
                 if data is None or not self._is_streaming:
                     break
                 if not hasattr(self, '_logged_chunk'):
-                    import numpy as np
-                    samples_32 = np.frombuffer(data, dtype=np.int32)
-                    samples_16 = np.frombuffer(data, dtype=np.int16)
-                    self.logger.warning(
-                        "CHUNK DIAG: len=%d max32=%d max16=%d rate=%d depth=%d",
-                        len(data), int(samples_32.max()), int(samples_16.max()),
-                        self.sample_rate, self.bit_depth
-                    )
-                    self._logged_chunk = True
-                data = self._apply_software_volume(data)
-                write_future = loop.run_in_executor(None, stream.write, data)
-                await write_future
-                write_future = None
-    
-            except asyncio.CancelledError:
-                pass
-            except OSError as err:
-                self.logger.error("pa_simple error for sink %s: %s", self.sink_name, err)
-            finally:
-                self._is_streaming = False
-                if write_future is not None:
-                    with suppress(Exception):
-                        await asyncio.shield(write_future)
-                if stream is not None:
-                    with suppress(Exception):
-                        await loop.run_in_executor(None, stream.close)
-                if self._writer_task is asyncio.current_task():
-                    self._writer_task = None
-
-    async def _stop_streaming_locked(self) -> None:
-        async with self._lock:
-            await self._stop_streaming()
-
-    async def _stop_streaming(self) -> None:
-        """Stop streaming (called with lock held)."""
-        self._is_streaming = False
-        if self._writer_task:
-            self._writer_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._writer_task
-            self._writer_task = None
-        while not self._write_queue.empty():
-            self._write_queue.get_nowait()
-
-
-class LocalPulseAudioBridgeManager:
-    """Manages Sendspin bridges for all PulseAudio output sinks."""
-
-    def __init__(self, provider: LocalPulseAudioProvider) -> None:
-        self.provider = provider
-        self.mass = provider.mass
-        self.logger = provider.logger.getChild("bridge_manager")
-        self._bridges: dict[str, SendspinPulseAudioBridge] = {}
-        self._lock = asyncio.Lock()
-
-    @property
-    def sendspin_server(self) -> SendspinServer | None:
-        if provider := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
-            return provider.server_api
-        return None
-
-    async def discover_and_register(self) -> None:
-        """Enumerate PA sinks and register players and Sendspin bridges."""
-        sendspin_server = self.sendspin_server
-        if not sendspin_server:
-            self.logger.debug("Sendspin provider not available, skipping sink enumeration")
-            return
-
-        loop = asyncio.get_running_loop()
-        try:
-            sinks: list[dict[str, Any]] = await loop.run_in_executor(
-                None, self._enumerate_pa_sinks
-            )
-        except Exception as err:
-            self.logger.warning("Failed to enumerate PA sinks: %s", err, exc_info=True)
-            return
-
-        if not sinks:
-            self.logger.info("No PulseAudio output sinks found")
-            return
-
-        self.logger.info("Found %d PulseAudio sink(s)", len(sinks))
-
-        async with self._lock:
-            for sink in sinks:
-                pa_sink_name: str = sink["pa_sink_name"]
-                display_name: str = sink["name"]
-                device_uuid = get_sink_uuid(pa_sink_name)
-                client_id = bridge_client_id_from_uuid(device_uuid)
-
-                if client_id in self._bridges:
-                    self.logger.debug("Bridge already exists for sink %s", pa_sink_name)
-                    continue
-
-                player = LocalPulseAudioPlayer(
-                    self.provider,
-                    player_id=device_uuid,
-                    display_name=display_name,
-                    pa_sink_name=pa_sink_name,
-                )
-                await self.mass.players.register_or_update(player)
-                await player.apply_hardware_ceiling()
-
-                bridge = SendspinPulseAudioBridge(
-                    self.provider, player, sink, sendspin_server
-                )
-                try:
-                    await bridge.start()
-                except Exception:
-                    self.logger.warning("Failed to start bridge for sink %s", pa_sink_name)
-                    with suppress(Exception):
-                        await bridge.stop()
-                    player._attr_available = False
-                    player.update_state()
-                    continue
-
-                if not bridge.is_registered:
-                    player._attr_available = False
-                    player.update_state()
-                    continue
-
-                self._bridges[client_id] = bridge
-                self.logger.info(
-                    "Bridge created for sink %s (%s)", pa_sink_name, display_name
-                )
-
-    @staticmethod
-    def _enumerate_pa_sinks() -> list[dict[str, Any]]:
-        """Enumerate stereo-capable PulseAudio sinks via pactl."""
-        sinks: list[dict[str, Any]] = []
-        result = subprocess.run(
-            [find_pactl(), "--format=json", "list", "sinks"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env=pactl_env(),
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"pactl exited {result.returncode}: {result.stderr.strip()}"
-            )
-        for sink in json.loads(result.stdout):
-            name: str = sink.get("name", "")
-            desc: str = sink.get("description", name)
-            spec_str: str = sink.get("sample_specification", "")
-            # spec_str format: "s32le 2ch 96000Hz"
-            try:
-                parts = spec_str.split()
-                fmt = parts[0]           # e.g. "s32le"
-                channels = int(parts[1].replace("ch", ""))
-                sample_rate = int(parts[2].replace("Hz", ""))
-                # Extract bit depth from format string: s16le→16, s32le→32
-                bit_depth = int("".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0])))
-            except (IndexError, ValueError):
-                continue
-            if channels < 2:
-                continue
-            sinks.append({
-                "name": desc,
-                "pa_sink_name": name,
-                "max_output_channels": channels,
-                "sample_rate": sample_rate,
-                "bit_depth": bit_depth,
-            })
-        return sinks
-
-    async def stop_all(self) -> None:
-        """Stop all bridges."""
-        async with self._lock:
-            for bridge in list(self._bridges.values()):
-                with suppress(Exception):
-                    await bridge.stop()
-            self._bridges.clear()
-        self.logger.debug("All PulseAudio bridges stopped")
