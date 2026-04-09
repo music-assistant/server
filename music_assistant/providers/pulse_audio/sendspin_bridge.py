@@ -225,6 +225,17 @@ class SendspinPulseAudioBridge:
                     data = await self._write_queue.get()
                     if data is None or not self._is_streaming:
                         break
+                # Quick diagnostic - log first chunk stats
+                    # Quick diagnostic - log first chunk stats
+                    if not hasattr(self, '_logged_chunk'):
+                        import numpy as np
+                        samples = np.frombuffer(data, dtype=np.int32)
+                        self.logger.warning(
+                            "CHUNK DIAG: len=%d max=%d min=%d mean=%.1f rate=%d depth=%d",
+                            len(data), samples.max(), samples.min(), 
+                            float(samples.mean()), self.sample_rate, self.bit_depth
+                        )
+                        self._logged_chunk = True                   
                     #data = self._apply_software_volume(data)
                     write_future = loop.run_in_executor(None, stream.write, data)
                     await write_future
