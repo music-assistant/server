@@ -105,9 +105,9 @@ class SendspinLocalAudioBridge:
                     SupportedAudioFormat(
                         codec=AudioCodec.PCM,
                         channels=BRIDGE_CHANNELS,
-                        rate=96000,   # instead of BRIDGE_SAMPLE_RATE
+                        sample_rate=96000,   # instead of BRIDGE_SAMPLE_RATE
                         bit_depth=24,        # instead of BRIDGE_BIT_DEPTH
-                        #rate=BRIDGE_SAMPLE_RATE,
+                        #sample_rate=BRIDGE_SAMPLE_RATE,
                         #bit_depth=BRIDGE_BIT_DEPTH,
                     )
                 ],
