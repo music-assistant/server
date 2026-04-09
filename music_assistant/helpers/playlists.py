@@ -234,7 +234,8 @@ def parse_m3u_playlist_name(m3u_data: str) -> str | None:
 
 
 def parse_m3u_playlist_image(m3u_data: str) -> str | None:
-    """Extract the playlist cover image from an M3U #EXTIMG directive.
+    """
+    Extract the playlist cover image from an M3U #EXTIMG directive.
 
     Looks for a simple #EXTIMG:url line before the first track entry.
     This is a de facto standard for playlist-level cover images.
