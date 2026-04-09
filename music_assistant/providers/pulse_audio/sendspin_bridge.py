@@ -249,7 +249,7 @@ class SendspinPulseAudioBridge:
                             float(samples.mean()), self.sample_rate, self.bit_depth
                         )
                         self._logged_chunk = True                   
-                    #data = self._apply_software_volume(data)
+                    data = self._apply_software_volume(data)
                     write_future = loop.run_in_executor(None, stream.write, data)
                     await write_future
                     write_future = None
