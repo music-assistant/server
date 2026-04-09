@@ -333,6 +333,8 @@ class SyncGroupPlayer(Player):
         """Send STOP command to given player."""
         self._attr_current_media = None
         if sync_leader := self.sync_leader:
+            # Use internal handler to target the sync leader directly,
+            # bypassing group/sync redirect that would loop back to this player.
             await self.mass.players._handle_cmd_stop(sync_leader.player_id)
         # dissolve the sync group since we stopped playback
         self.mass.call_later(
@@ -341,7 +343,7 @@ class SyncGroupPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
-        await self.mass.players._handle_cmd_resume(
+        await self.mass.players.cmd_resume(
             self.player_id, self._attr_active_source, self._attr_current_media
         )
 
@@ -351,6 +353,8 @@ class SyncGroupPlayer(Player):
         self._attr_active_source = media.source_id or None
         await self._form_syncgroup()
         if sync_leader := self.sync_leader:
+            # Use internal handler to target the sync leader directly,
+            # bypassing group/sync redirect that would loop back to this player.
             await self.mass.players._handle_play_media(sync_leader.player_id, media)
             self._update_active_protocol()
             self.update_state()
@@ -465,6 +469,8 @@ class SyncGroupPlayer(Player):
                     self.sync_leader.display_name,
                     self.display_name,
                 )
+                # Use internal handler to stop the sync leader directly,
+                # bypassing group redirect that would loop back to this player.
                 await self.mass.players.wait_for_player_update(
                     self.sync_leader.player_id,
                     timeout=5,
@@ -480,6 +486,8 @@ class SyncGroupPlayer(Player):
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
+            # Use internal handler to stop the sync leader directly,
+            # bypassing group redirect that would loop back to this player.
             await self.mass.players.wait_for_player_update(
                 self.sync_leader.player_id,
                 timeout=5,
@@ -543,6 +551,8 @@ class SyncGroupPlayer(Player):
             # If the sync leader is playing something independently, stop it first
             # to prevent protocol switching from trying to resume the previous playback
             # (we're about to start new playback on the syncgroup)
+            # Use internal handler to stop the sync leader directly,
+            # bypassing group redirect that would loop back to this player.
             if self.sync_leader.state.playback_state == PlaybackState.PLAYING:
                 await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
