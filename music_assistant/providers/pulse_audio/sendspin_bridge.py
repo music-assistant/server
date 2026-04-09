@@ -198,6 +198,9 @@ class SendspinPulseAudioBridge:
         if self.player.volume_muted:
             return b"\x00" * len(pcm_data)
         volume = self.player.volume_level
+        if not hasattr(self, '_logged_vol'):
+            self.logger.warning("VOL CHECK: level=%s muted=%s", volume, self.player.volume_muted)
+            self._logged_vol = True
         if volume is None or volume >= 100:
             return pcm_data
         scale = volume / 100.0
@@ -213,45 +216,45 @@ class SendspinPulseAudioBridge:
         return samples.tobytes()
 
     async def _audio_writer(self) -> None:
-            """Write queued audio to the PA sink via pa_simple."""
-            loop = asyncio.get_running_loop()
-            stream: PASimpleStream | None = None
-            write_future: asyncio.Future | None = None
-            try:
-                self.logger.warning(
-                    "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
-                    self.sink_name, self.sample_rate, BRIDGE_CHANNELS, self.bit_depth
-                )
-                stream = await loop.run_in_executor(
-                    None,
-                    lambda: PASimpleStream(
-                        sink_name=self.sink_name,
-                        app_name="music-assistant",
-                        rate=self.sample_rate,
-                        channels=BRIDGE_CHANNELS,
-                        bit_depth=self.bit_depth,
-                    ),
-                )
-                self.logger.debug("pa_simple stream opened for sink %s", self.sink_name)
-    
-                while True:
-                    data = await self._write_queue.get()
-                    if data is None or not self._is_streaming:
-                        break
-                    if not hasattr(self, '_logged_chunk'):
-                        import numpy as np
-                        samples_32 = np.frombuffer(data, dtype=np.int32)
-                        samples_16 = np.frombuffer(data, dtype=np.int16)
-                        self.logger.warning(
-                            "CHUNK DIAG: len=%d max32=%d max16=%d rate=%d depth=%d",
-                            len(data), int(samples_32.max()), int(samples_16.max()),
-                            self.sample_rate, self.bit_depth
-                        )
-                        self._logged_chunk = True
-                    data = self._apply_software_volume(data)
-                    write_future = loop.run_in_executor(None, stream.write, data)
-                    await write_future
-                    write_future = None
+        """Write queued audio to the PA sink via pa_simple."""
+        loop = asyncio.get_running_loop()
+        stream: PASimpleStream | None = None
+        write_future: asyncio.Future | None = None
+        try:
+            self.logger.warning(
+                "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
+                self.sink_name, self.sample_rate, BRIDGE_CHANNELS, self.bit_depth
+            )
+            stream = await loop.run_in_executor(
+                None,
+                lambda: PASimpleStream(
+                    sink_name=self.sink_name,
+                    app_name="music-assistant",
+                    rate=self.sample_rate,
+                    channels=BRIDGE_CHANNELS,
+                    bit_depth=self.bit_depth,
+                ),
+            )
+            self.logger.debug("pa_simple stream opened for sink %s", self.sink_name)
+
+            while True:
+                data = await self._write_queue.get()
+                if data is None or not self._is_streaming:
+                    break
+                if not hasattr(self, '_logged_chunk'):
+                    import numpy as np
+                    samples_32 = np.frombuffer(data, dtype=np.int32)
+                    samples_16 = np.frombuffer(data, dtype=np.int16)
+                    self.logger.warning(
+                        "CHUNK DIAG: len=%d max32=%d max16=%d rate=%d depth=%d",
+                        len(data), int(samples_32.max()), int(samples_16.max()),
+                        self.sample_rate, self.bit_depth
+                    )
+                    self._logged_chunk = True
+                data = self._apply_software_volume(data)
+                write_future = loop.run_in_executor(None, stream.write, data)
+                await write_future
+                write_future = None
     
             except asyncio.CancelledError:
                 pass
