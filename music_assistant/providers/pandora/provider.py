@@ -234,7 +234,6 @@ class PandoraProvider(MusicProvider):
                     try:
                         error_body: dict[str, Any] = await response.json()
                     except (aiohttp.ContentTypeError, json.JSONDecodeError) as err:
-                        await self.close()
                         raise InvalidDataError(
                             "Unable to parse error 429 response body from Pandora"
                         ) from err
@@ -254,7 +253,6 @@ class PandoraProvider(MusicProvider):
                             )
                         raise StreamViolationError("STREAM_VIOLATION")
                     # This is some other, not concurrent streaming error kind of 429
-                    await self.close()
                     raise ProviderUnavailableError(f"Pandora rate-limited (HTTP 429): {error_body}")
                 if response.status >= 500:
                     await self.close()
