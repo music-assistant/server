@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -212,7 +213,13 @@ class PandoraProvider(MusicProvider):
                 if response.status == 429:
                     # Another device may already be streaming on this account.
                     # Parse the body to confirm it is a STREAM_VIOLATION.
-                    error_body: dict[str, Any] = await response.json()
+                    try:
+                        error_body: dict[str, Any] = await response.json()
+                    except (aiohttp.ContentTypeError, json.JSONDecodeError) as err:
+                        await self.close()
+                        raise InvalidDataError(
+                            "Unable to parse error 429 response body from Pandora"
+                        ) from err
                     if error_body.get("errorString") == "STREAM_VIOLATION":
                         if retry:
                             # If we are allowed to retry, takeover and re-attempt the request
@@ -220,7 +227,7 @@ class PandoraProvider(MusicProvider):
                                 "Pandora stream is already active on another device. "
                                 "Automatically taking over the stream and retrying the request."
                             )
-                            await self._takeover_stream()
+                            await self.takeover_stream()
                             return await self._api_request(method, url, data, retry=False)
                         await self.close()
                         raise InvalidDataError("STREAM_VIOLATION")
@@ -594,7 +601,7 @@ class PandoraProvider(MusicProvider):
         """
         return self._high_quality_available and self.config.get_value(CONF_QUALITY) == QUALITY_HIGH
 
-    async def _takeover_stream(self) -> None:
+    async def takeover_stream(self) -> None:
         """Force Pandora to end any other active session and resume here.
 
         This sends "forceActive=true" to the playbackResumed endpoint, which instructs Pandora to
@@ -606,4 +613,6 @@ class PandoraProvider(MusicProvider):
             "POST",
             PLAYBACK_RESUMED_ENDPOINT,
             data={"forceActive": True},
+            # Don't retry takeover attempts, otherwise we could get into an infinite loop
+            retry=False,
         )
