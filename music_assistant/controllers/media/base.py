@@ -81,8 +81,8 @@ SORT_KEYS = {
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
-    "artist_name": "artists.search_name ASC",
-    "artist_name_desc": "artists.search_name DESC",
+    "artist_name": "artists.search_name ASC, year DESC",
+    "artist_name_desc": "artists.search_name DESC, year DESC",
     "random": "RANDOM()",
     "random_play_count": "RANDOM(), play_count ASC",
 }

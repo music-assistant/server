@@ -116,11 +116,28 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
+        allow_dynamic_tracks: bool = False,
     ) -> AsyncGenerator[PlaylistPlayableItem, None]:
         """Return playlist tracks for the given provider playlist id."""
+        library_item: Playlist | None = None
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
+        elif not allow_dynamic_tracks:
+            library_item = await self.get_library_item_by_prov_id(
+                item_id, provider_instance_id_or_domain
+            )
+
+        # Dynamic playlists always need fresh tracks from the provider.
+        if allow_dynamic_tracks:
+            force_refresh = True
+
+        # Dynamic playlists should not expose a static track list in browse/refresh views.
+        # Only the playback queue may request tracks for dynamic refill.
+        if not allow_dynamic_tracks:
+            if library_item is not None and library_item.is_dynamic:
+                return
+
         # playlist tracks are not stored in the db,
         # we always fetched them (cached) from the provider
         page = 0
@@ -285,6 +302,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
                 "supported_mediatypes": serialize_to_json(item.supported_mediatypes),
+                "is_dynamic": item.is_dynamic,
             },
         )
         # update/set provider_mappings table
@@ -319,6 +337,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
                 "supported_mediatypes": serialize_to_json(update.supported_mediatypes),
+                "is_dynamic": update.is_dynamic,
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,

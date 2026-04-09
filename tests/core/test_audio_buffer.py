@@ -182,12 +182,35 @@ async def test_fill_sets_eof() -> None:
 
 @pytest.mark.asyncio
 async def test_fill_error_propagation() -> None:
-    """Errors from the source generator propagate to consumers."""
+    """When the source errors after producing data, valid chunks are still delivered."""
 
     async def _failing_source() -> AsyncGenerator[bytes, None]:
         yield ONE_SECOND_CHUNK
         msg = "test error"
         raise RuntimeError(msg)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf.fill(_failing_source(), source_name="test")
+    await asyncio.sleep(0.1)
+
+    assert buf.has_error
+
+    # consumer should receive the valid chunk and get a clean EOF
+    result: list[bytes] = []
+    async for chunk in buf.get_raw_stream():
+        result.append(chunk)
+    assert len(result) == 1
+    assert result[0] == ONE_SECOND_CHUNK
+
+
+@pytest.mark.asyncio
+async def test_fill_error_no_data() -> None:
+    """When the source errors without producing any data, the error propagates."""
+
+    async def _failing_source() -> AsyncGenerator[bytes, None]:
+        msg = "test error"
+        raise RuntimeError(msg)
+        yield  # type: ignore[unreachable]
 
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     buf.fill(_failing_source(), source_name="test")
@@ -286,10 +309,10 @@ async def test_seek_in_raw_stream() -> None:
 @pytest.mark.asyncio
 async def test_chunk_callback_receives_data() -> None:
     """Registered callbacks receive chunks with position."""
-    received: list[tuple[int, bytes]] = []
+    received: list[tuple[int, bytes, bool]] = []
 
-    def _callback(position: int, data: bytes) -> None:
-        received.append((position, data))
+    async def _callback(position: int, data: bytes, is_last_chunk: bool) -> None:
+        received.append((position, data, is_last_chunk))
 
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     buf.register_chunk_callback(_callback)
@@ -301,8 +324,11 @@ async def test_chunk_callback_receives_data() -> None:
     assert received[0][0] == 0
     assert received[1][0] == 1
     assert received[2][0] == 2
-    # EOF signal has empty bytes
+    # EOF signal has empty bytes and is_last_chunk=True
     assert received[3][1] == b""
+    assert received[3][2] is True
+    # Data chunks have is_last_chunk=False
+    assert received[0][2] is False
 
 
 @pytest.mark.asyncio
@@ -310,8 +336,8 @@ async def test_chunk_callback_eof_signal() -> None:
     """Callback receives empty bytes on EOF."""
     eof_positions: list[int] = []
 
-    def _callback(position: int, data: bytes) -> None:
-        if not data:
+    async def _callback(position: int, _data: bytes, is_last_chunk: bool) -> None:
+        if is_last_chunk:
             eof_positions.append(position)
 
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
@@ -328,7 +354,7 @@ async def test_callbacks_cleared_on_clear() -> None:
     """Callbacks are removed when buffer is cleared."""
     call_count = 0
 
-    def _callback(_position: int, _data: bytes) -> None:
+    async def _callback(_position: int, _data: bytes, _is_last_chunk: bool) -> None:
         nonlocal call_count
         call_count += 1
 
@@ -513,12 +539,12 @@ async def test_failing_callback_does_not_break_fill() -> None:
     """A failing chunk callback is removed without breaking the fill task."""
     good_chunks: list[int] = []
 
-    def _bad_callback(_position: int, _data: bytes) -> None:
+    async def _bad_callback(_position: int, _data: bytes, _is_last_chunk: bool) -> None:
         msg = "callback error"
         raise RuntimeError(msg)
 
-    def _good_callback(position: int, data: bytes) -> None:
-        if data:
+    async def _good_callback(position: int, data: bytes, is_last_chunk: bool) -> None:
+        if data and not is_last_chunk:
             good_chunks.append(position)
 
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
@@ -533,20 +559,28 @@ async def test_failing_callback_does_not_break_fill() -> None:
 
 
 @pytest.mark.asyncio
-async def test_clear_sends_eof_to_callbacks() -> None:
-    """clear() sends an EOF signal to callbacks before removing them."""
-    received: list[bytes] = []
+async def test_clear_fires_cancel_callbacks() -> None:
+    """clear() fires cancel callbacks (not chunk callbacks) before removing them."""
+    chunk_received: list[bytes] = []
+    cancel_called = False
 
-    def _callback(_position: int, data: bytes) -> None:
-        received.append(data)
+    async def _chunk_callback(_position: int, data: bytes, _is_last_chunk: bool) -> None:
+        chunk_received.append(data)
+
+    def _cancel_callback() -> None:
+        nonlocal cancel_called
+        cancel_called = True
 
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
-    buf.register_chunk_callback(_callback)
+    buf.register_chunk_callback(_chunk_callback)
+    buf.register_cancel_callback(_cancel_callback)
     await buf._put(ONE_SECOND_CHUNK)
-    assert len(received) == 1  # data chunk
+    assert len(chunk_received) == 1  # data chunk
 
     await buf.clear()
-    # should have received an EOF signal (empty bytes) during clear
-    assert len(received) == 2
-    assert received[-1] == b""
+    # chunk callback should NOT have received anything extra from clear()
+    assert len(chunk_received) == 1
+    # cancel callback should have been called
+    assert cancel_called is True
     assert len(buf._chunk_callbacks) == 0
+    assert len(buf._cancel_callbacks) == 0
