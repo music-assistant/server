@@ -49,3 +49,9 @@ PANDORA_ERROR_CODES = {
     1037: "Device already associated to account",
     1039: "Device not found",
 }
+
+CONF_QUALITY = "quality"
+QUALITY_HIGH = "high"
+QUALITY_STANDARD = "standard"
+
+ACCOUNT_FLAG_HIGH_QUALITY = "highQualityStreamingAvailable"
