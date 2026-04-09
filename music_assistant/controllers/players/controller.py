@@ -21,7 +21,6 @@ import contextlib
 import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
@@ -124,12 +123,6 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PLAYER_POWER = 1
 
-# ContextVar tracking which player locks the current async task holds.
-# Used by get_player_lock to allow re-entrant acquisition without deadlocking.
-_held_player_locks: ContextVar[frozenset[str]] = ContextVar(
-    "_held_player_locks", default=frozenset()
-)
-
 
 class PlayerController(ProtocolLinkingMixin, CoreController):
     """Controller holding all logic to control registered players."""
@@ -149,6 +142,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._poll_task: asyncio.Task[None] | None = None
         self._player_throttlers: dict[str, Throttler] = {}
         self._player_command_locks: dict[str, asyncio.Lock] = {}
+        # Track which lock keys each async task holds (keyed by task id).
+        # Used by get_player_lock for re-entrant detection.
+        self._task_held_locks: dict[int, set[str]] = {}
         # Lock to prevent race conditions during player registration
         self._register_lock = asyncio.Lock()
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
@@ -163,30 +159,33 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Acquire a purpose-scoped lock for a player, with re-entrant support.
 
-        Uses a ContextVar to track locks held by the current async task.
-        If the current task already holds this exact lock (same player + purpose),
-        yields immediately without re-acquiring to prevent deadlocks in nested calls
-        (e.g. queue -> player -> syncgroup -> player).
+        Tracks lock ownership per asyncio Task so that nested calls within the same
+        task skip re-acquisition (preventing deadlocks), while deferred callbacks
+        (call_later / create_task) correctly acquire a fresh lock.
 
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
             concurrently on the same player.
         """
         lock_key = f"{purpose.value}_{player_id}"
-        held = _held_player_locks.get()
+        task = asyncio.current_task()
+        task_id = id(task) if task else 0
 
-        if lock_key in held:
-            # Already holding this lock in the current call chain — re-entrant, skip
+        if lock_key in self._task_held_locks.get(task_id, set()):
             yield
             return
 
         lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
-            token = _held_player_locks.set(held | frozenset({lock_key}))
+            self._task_held_locks.setdefault(task_id, set()).add(lock_key)
             try:
                 yield
             finally:
-                _held_player_locks.reset(token)
+                held = self._task_held_locks.get(task_id)
+                if held is not None:
+                    held.discard(lock_key)
+                    if not held:
+                        del self._task_held_locks[task_id]
 
     async def get_config_entries(
         self,
@@ -540,7 +539,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume")
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
@@ -1507,7 +1506,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
         del self._players[player_id]
         self._player_throttlers.pop(player_id, None)
-        self._player_command_locks.pop(f"set_members_{player_id}", None)
+        # clean up all lock entries for this player
+        for prefix in [p.value for p in PlayerLockPurpose]:
+            self._player_command_locks.pop(f"{prefix}_{player_id}", None)
         if handle := self._pending_protocol_evaluations.pop(player_id, None):
             handle.cancel()
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
