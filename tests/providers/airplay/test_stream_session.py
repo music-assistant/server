@@ -202,6 +202,7 @@ async def test_late_join_no_buffer_returns_early() -> None:
     ):
         await session.add_client(player)
 
-        # Player should NOT have been started since there's no usable audio
+        # Player should NOT have been started or added since there's no usable audio
         mock_start.assert_not_called()
         mock_feed.assert_not_called()
+        assert player not in session.sync_clients
