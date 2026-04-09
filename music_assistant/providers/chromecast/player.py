@@ -297,11 +297,11 @@ class ChromecastPlayer(Player):
             return
         if self._attr_playback_state != PlaybackState.PLAYING:
             return
-        if not (current_media := self.current_media):
+        if not (current_media := self.state.current_media):
             return
         if not (
-            "/flow/" in current_media.uri
-            or self.current_media.media_type
+            (self._attr_current_media and "/flow/" in self._attr_current_media.uri)
+            or current_media.media_type
             in (
                 MediaType.RADIO,
                 MediaType.PLUGIN_SOURCE,
