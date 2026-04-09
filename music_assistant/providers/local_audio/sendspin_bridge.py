@@ -280,9 +280,9 @@ class SendspinLocalAudioBridge:
                 # Writer didn't stop in time - it may be stuck in a blocking write.
                 # Cancel it as a last resort but don't close the stream until it's done.
                 self._writer_task.cancel()
-                with suppress(asyncio.CancelledError, Exception):
+                with suppress(asyncio.CancelledError):
                     await self._writer_task
-            except (asyncio.CancelledError, Exception):  # noqa: S110
+            except asyncio.CancelledError:
                 pass
             self._writer_task = None
         # Drain any remaining items
