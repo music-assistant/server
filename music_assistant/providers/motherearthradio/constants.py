@@ -22,7 +22,6 @@ class MerChannel(TypedDict):
     shortcode: str
     stream_url: str
     content_type: ContentType
-    station_icon: str
 
 
 MER_CHANNELS: dict[str, MerChannel] = {
@@ -32,7 +31,6 @@ MER_CHANNELS: dict[str, MerChannel] = {
         "shortcode": "motherearth",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth/motherearth",
         "content_type": ContentType.FLAC,
-        "station_icon": STATION_ICON_URL,
     },
     "motherearth_instrumental": {
         "name": "Mother Earth Instrumental",
@@ -40,7 +38,6 @@ MER_CHANNELS: dict[str, MerChannel] = {
         "shortcode": "motherearth_instrumental",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_instrumental/motherearth.instrumental",
         "content_type": ContentType.FLAC,
-        "station_icon": STATION_ICON_URL,
     },
     "motherearth_klassik": {
         "name": "Mother Earth Klassik",
@@ -48,7 +45,6 @@ MER_CHANNELS: dict[str, MerChannel] = {
         "shortcode": "motherearth_klassik",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_klassik/motherearth.klassik",
         "content_type": ContentType.FLAC,
-        "station_icon": STATION_ICON_URL,
     },
     "motherearth_jazz": {
         "name": "Mother Earth Jazz",
@@ -56,6 +52,5 @@ MER_CHANNELS: dict[str, MerChannel] = {
         "shortcode": "motherearth_jazz",
         "stream_url": f"{AZURACAST_BASE_URL}/listen/motherearth_jazz/motherearth.jazz",
         "content_type": ContentType.FLAC,
-        "station_icon": STATION_ICON_URL,
     },
 }
