@@ -86,7 +86,7 @@ class SendspinPulseAudioBridge:
             client_id=self._bridge_client_id,
             name=self.display_name,
             version=1,
-            supported_roles=[BRIDGE_ROLE_ID, "player@v1"],
+            supported_roles=[BRIDGE_ROLE_ID],
             device_info=SendspinDeviceInfo(
                 product_name=self.display_name,
                 manufacturer="PulseAudio",
