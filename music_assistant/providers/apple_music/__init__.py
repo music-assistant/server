@@ -304,14 +304,22 @@ class AppleMusicProvider(MusicProvider):
         # create random session id to use for decryption keys
         # to invalidate cached keys on each provider initialization
         self._session_id = str(uuid())
-        async with aiofiles.open(
-            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
-        ) as _file:
-            self._decrypt_client_id = await _file.read()
-        async with aiofiles.open(
-            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
-        ) as _file:
-            self._decrypt_private_key = await _file.read()
+        try:
+            async with aiofiles.open(
+                os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
+            ) as _file:
+                self._decrypt_client_id = await _file.read()
+            async with aiofiles.open(
+                os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
+            ) as _file:
+                self._decrypt_private_key = await _file.read()
+        except FileNotFoundError:
+            self.logger.warning(
+                "Widevine CDM files not found at %s. "
+                "Streaming of encrypted catalog tracks will not work. "
+                "Radio stations and unencrypted library tracks are still available.",
+                WIDEVINE_BASE_PATH,
+            )
 
     @use_cache()
     async def search(
@@ -360,14 +368,102 @@ class AppleMusicProvider(MusicProvider):
         return searchresult
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Apple Music with support for playlist folders."""
-        if not path or "://" not in path:
-            return await super().browse(path)
-        sub_path = path.split("://", 1)[1]
+        """Browse Apple Music with support for playlist folders and radio stations."""
+        sub_path = path.split("://", 1)[1] if "://" in path else ""
         path_parts = [part for part in sub_path.split("/") if part]
-        if path_parts and path_parts[0] == "playlists":
+        if not path_parts:
+            # Top-level: add a "Radio Stations" folder alongside the default items
+            items = list(await super().browse(path))
+            items.append(
+                BrowseFolder(
+                    item_id="stations",
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://stations",
+                    name="Radio Stations",
+                )
+            )
+            return items
+        if path_parts[0] == "playlists":
             return await browse_playlists(self, path, path_parts)
+        if path_parts[0] == "stations":
+            return await self._browse_stations()
         return await super().browse(path)
+
+    async def _browse_stations(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Return recommended radio stations from personal recommendations."""
+        response = await self._get_data(
+            "me/recommendations?include[personal-recommendation]=contents"
+        )
+        seen: set[str] = set()
+        result: list[MediaItemType | ItemMapping | BrowseFolder] = []
+        for recommendation in response.get("data", []):
+            contents = recommendation.get("relationships", {}).get("contents", {})
+            for item in contents.get("data", []):
+                if item.get("type") != "stations":
+                    continue
+                station_id = item.get("id")
+                if not station_id or station_id in seen:
+                    continue
+                seen.add(station_id)
+                attributes = item.get("attributes", {})
+                if attributes.get("isLive", False):
+                    # Live broadcast stations (e.g. Apple Music 1) require Widevine DRM
+                    # which is not supported; skip them.
+                    continue
+                if attributes.get("name"):
+                    result.append(self._parse_station_as_playlist(item))
+                else:
+                    playlist = await self.get_playlist(station_id)
+                    if playlist.name != station_id:
+                        result.append(playlist)
+        return result
+
+    def _parse_station_as_playlist(self, station_obj: dict[str, Any]) -> Playlist:
+        """Parse a station object from recommendations into a Playlist."""
+        station_id = station_obj["id"]
+        attributes = station_obj.get("attributes", {})
+        name = attributes.get("name", station_id)
+        playlist = Playlist(
+            item_id=station_id,
+            provider=self.instance_id,
+            name=name,
+            is_dynamic=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=station_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        if artwork := attributes.get("artwork"):
+            url = artwork["url"]
+            if artwork.get("width") and artwork.get("height"):
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
+            playlist.metadata.add_image(
+                MediaItemImage(
+                    provider=self.instance_id,
+                    type=ImageType.THUMB,
+                    path=url,
+                    remotely_accessible=True,
+                )
+            )
+        return playlist
+
+    async def _get_station_playlist(self, station_id: str) -> Playlist:
+        """Fetch name and artwork for a ra. station and return it as a dynamic Playlist."""
+        try:
+            station_response = await self._get_data(
+                f"catalog/{self._storefront}/stations/{station_id}"
+            )
+            station_obj = station_response["data"][0]
+            station_obj["id"] = station_id
+            return self._parse_station_as_playlist(station_obj)
+        except (MediaNotFoundError, KeyError, IndexError):
+            return self._parse_station_as_playlist({"id": station_id})
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
@@ -485,9 +581,16 @@ class AppleMusicProvider(MusicProvider):
         is_favourite = rating_response.get(prov_track_id)
         return self._parse_track(response["data"][0], is_favourite)
 
-    @use_cache()
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
+        if prov_playlist_id.startswith("ra."):
+            # Station metadata is not cached so transient errors don't persist.
+            return await self._get_station_playlist(prov_playlist_id)
+        return await self._get_regular_playlist(prov_playlist_id, is_favourite)
+
+    @use_cache()
+    async def _get_regular_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
+        """Fetch and cache details for a regular (non-station) playlist."""
         if not self.is_library_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
@@ -513,9 +616,19 @@ class AppleMusicProvider(MusicProvider):
             tracks.append(track)
         return tracks
 
-    @use_cache(3600 * 3)  # cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
+        if prov_playlist_id.startswith("ra."):
+            # Radio stations don't support paging; each call to next-tracks yields a fresh batch.
+            # Must not be cached — every call should return the next set of tracks from Apple Music.
+            if page > 0:
+                return []
+            return await self._get_station_tracks(prov_playlist_id)
+        return await self._get_playlist_tracks_cached(prov_playlist_id, page)
+
+    @use_cache(3600 * 3)  # cache for 3 hours
+    async def _get_playlist_tracks_cached(self, prov_playlist_id, page: int = 0) -> list[Track]:
+        """Fetch and cache tracks for a regular (non-station) playlist."""
         if self._is_catalog_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}/tracks"
         else:
@@ -536,6 +649,21 @@ class AppleMusicProvider(MusicProvider):
                 parsed_track = self._parse_track(track, is_favourite)
                 parsed_track.position = offset + index + 1
                 result.append(parsed_track)
+        return result
+
+    async def _get_station_tracks(self, station_id: str) -> list[Track]:
+        """Fetch the next batch of tracks for a radio station."""
+        response = await self._post_data(f"me/stations/next-tracks/{station_id}", include="artists")
+        tracks = response.get("data", [])
+        if not tracks:
+            return []
+        track_ids = [t["id"] for t in tracks if t and t.get("id")]
+        rating_response = await self._get_ratings(track_ids, MediaType.TRACK)
+        result = []
+        for track_obj in tracks:
+            if track_obj and track_obj.get("id"):
+                parsed = self._parse_track(track_obj, rating_response.get(track_obj["id"]))
+                result.append(parsed)
         return result
 
     @use_cache(3600 * 24 * 7)  # cache for 7 days
@@ -644,6 +772,10 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        return await self._get_track_stream_details(item_id)
+
+    async def _get_track_stream_details(self, item_id: str) -> StreamDetails:
+        """Return StreamDetails for a single catalog or library track."""
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
         if self.is_library_id(item_id):
             # Library items are not encrypted and do not need decryption keys
@@ -662,7 +794,12 @@ class AppleMusicProvider(MusicProvider):
                 can_seek=True,
                 allow_seek=True,
             )
-        # Continue to obtain decryption keys for catalog items
+        # Catalog track: needs Widevine decryption keys
+        if not self._decrypt_client_id or not self._decrypt_private_key:
+            raise MediaNotFoundError(
+                "Widevine CDM files are not available. "
+                "Cannot stream encrypted catalog tracks without them."
+            )
         license_url = stream_metadata["hls-key-server-url"]
         stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
         if not stream_url or not uri:
