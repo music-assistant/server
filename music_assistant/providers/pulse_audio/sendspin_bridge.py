@@ -96,10 +96,8 @@ class SendspinPulseAudioBridge:
                     SupportedAudioFormat(
                         codec=AudioCodec.PCM,
                         channels=BRIDGE_CHANNELS,
-                        sample_rate=96000,   # instead of BRIDGE_SAMPLE_RATE
-                        bit_depth=24,        # instead of BRIDGE_BIT_DEPTH
-                        #rate=BRIDGE_SAMPLE_RATE,
-                        #bit_depth=BRIDGE_BIT_DEPTH
+                        sample_rate=BRIDGE_SAMPLE_RATE,
+                        bit_depth=BRIDGE_BIT_DEPTH
                     )
                 ],
                 buffer_capacity=1_000,
