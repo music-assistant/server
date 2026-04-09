@@ -916,13 +916,8 @@ class PlayerQueuesController(CoreController):
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
-            # Use internal handler to target the specific player directly.
-            # The public play_media API has redirect + extra decorator logic
-            # that is not needed here since the queue controller manages its own
-            # player targeting. We resolve the redirect ourselves.
-            player = self.mass.players._get_player_with_redirect(queue_id)
-            await self.mass.players._handle_play_media(
-                player.player_id,
+            await self.mass.players.play_media(
+                queue_id,
                 await self.player_media_from_queue_item(queue_item),
             )
             queue.current_index = index
