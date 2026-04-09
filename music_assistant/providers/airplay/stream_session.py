@@ -55,10 +55,10 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples
-        # Chunks from streams controller are ~1 second each (pcm_sample_size bytes)
-        # Keep ~10 seconds of buffer for late joiners (maxlen=12 for safety with variable sizes)
-        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=12)
+        # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples.
+        # Chunk sizes vary (~100ms-1s depending on the source), so use a generous
+        # maxlen to guarantee at least 10 seconds of audio history.
+        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=120)
 
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Initialize stream session for all players."""
