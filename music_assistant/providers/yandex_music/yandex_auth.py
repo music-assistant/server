@@ -89,7 +89,7 @@ class YandexQRAuth:
                     ) from err
         except LoginFailed:
             raise
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise LoginFailed(f"Network error during Yandex auth: {type(err).__name__}") from err
 
     async def get_qr(self) -> tuple[str, str, str]:
@@ -104,7 +104,7 @@ class YandexQRAuth:
                 if resp.status != 200:
                     raise LoginFailed(f"Yandex Passport returned HTTP {resp.status}")
                 html = await resp.text()
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise LoginFailed(
                 f"Network error reaching Yandex Passport: {type(err).__name__}"
             ) from err

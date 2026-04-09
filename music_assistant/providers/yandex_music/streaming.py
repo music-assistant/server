@@ -673,7 +673,10 @@ class YandexMusicStreamingManager:
             )
         data = streamdetails.data
         if "decryption_key" in data:
-            return bytes.fromhex(data["decryption_key"])
+            try:
+                return bytes.fromhex(data["decryption_key"])
+            except ValueError as err:
+                raise MediaNotFoundError(f"Invalid decryption key: {err}") from err
         return b""
 
     @staticmethod
@@ -685,7 +688,10 @@ class YandexMusicStreamingManager:
         """
         if "decryption_key" not in data:
             return False, None
-        key_bytes = bytes.fromhex(data["decryption_key"])
+        try:
+            key_bytes = bytes.fromhex(data["decryption_key"])
+        except ValueError as err:
+            raise MediaNotFoundError(f"Invalid decryption key: {err}") from err
         if len(key_bytes) not in (16, 24, 32):
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
         return True, key_bytes
