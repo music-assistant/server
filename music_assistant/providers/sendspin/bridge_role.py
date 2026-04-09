@@ -112,6 +112,10 @@ class BridgePlayerRole(Role):
     
     def get_audio_requirements(self) -> AudioRequirements | None:
         """Return audio requirements for PushStream."""
+        import logging
+        logging.getLogger("music_assistant").warning(
+            "get_audio_requirements: %s", self._audio_requirements
+        )
         return self._audio_requirements
 
     def get_player_volume(self) -> int | None:
@@ -172,6 +176,5 @@ class BridgePlayerRole(Role):
         LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
         if self._on_stream_end_cb:
             self._on_stream_end_cb()
-
-
+                   
 register_role(BRIDGE_ROLE_ID, lambda client: BridgePlayerRole(client=client))
