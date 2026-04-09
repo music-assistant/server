@@ -72,7 +72,7 @@ class DBNDownBeatTracker:
         num_beats: int,
         min_interval: int,
         max_interval: int,
-    ) -> tuple[NDArray[np.float64], NDArray[np.int32]]:
+    ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
         """Build a bar-pointer state space for the given tempo range.
 
         Each state represents a position within a bar at a specific tempo.
@@ -86,27 +86,25 @@ class DBNDownBeatTracker:
             state_positions: float64 array, position in bar [0, num_beats).
             state_intervals: int32 array, tempo interval for each state.
         """
-        all_positions: list[float] = []
-        all_intervals: list[int] = []
+        intervals_range = np.arange(min_interval, max_interval + 1)
+        counts = intervals_range
+        one_beat_intervals = np.repeat(intervals_range, counts)
+        offsets = np.concatenate([np.arange(i, dtype=np.float32) / i for i in intervals_range])
 
-        for beat in range(num_beats):
-            for interval in range(min_interval, max_interval + 1):
-                for pos in range(interval):
-                    all_positions.append(beat + pos / interval)
-                    all_intervals.append(interval)
-
-        return (
-            np.array(all_positions, dtype=np.float64),
-            np.array(all_intervals, dtype=np.int32),
+        all_positions = np.concatenate([beat + offsets for beat in range(num_beats)]).astype(
+            np.float32
         )
+        all_intervals = np.tile(one_beat_intervals, num_beats)
+
+        return all_positions, all_intervals.astype(np.int32)
 
     @staticmethod
     def _build_transition_model(
-        positions: NDArray[np.float64],
+        positions: NDArray[np.float32],
         intervals: NDArray[np.int32],
         num_beats: int,
         transition_lambda: float,
-    ) -> tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.float64]]:
+    ) -> tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.float32]]:
         """Build a sparse CSR transition model for the bar state space.
 
         Within a beat, each state transitions deterministically to the next
@@ -151,64 +149,69 @@ class DBNDownBeatTracker:
         # Normalize each row
         row_sums = trans_prob.sum(axis=1, keepdims=True)
         trans_prob = trans_prob / row_sums
-        trans_log_prob = np.log(trans_prob)
+        trans_log_prob = np.log(trans_prob).astype(np.float32)
 
-        # Build CSR: collect (dest, source, log_prob) triples
-        sources: list[int] = []
-        dests: list[int] = []
-        log_probs: list[float] = []
+        # Vectorized CSR construction: separate within-beat from boundary states
+        frac = positions - np.floor(positions)
+        within_mask = frac > 0
+        within_states = np.nonzero(within_mask)[0]
+        boundary_states = np.nonzero(~within_mask)[0]
 
-        for state in range(num_states):
+        # Within-beat: predecessor is state - 1, log_prob = 0
+        sources_w = within_states - 1
+        dests_w = within_states
+        logprobs_w = np.zeros(len(within_states), dtype=np.float32)
+
+        # Boundary states: predecessors from last states of previous beat
+        sources_b: list[int] = []
+        dests_b: list[int] = []
+        logprobs_b: list[float] = []
+        min_interval_val = int(intervals.min())
+
+        for state in boundary_states:
             beat = int(positions[state])
-            pos_in_beat = positions[state] - beat
+            prev_beat = (beat - 1) % num_beats
+            prev_lasts = last_states_per_beat[prev_beat]
+            cur_interval_idx = int(intervals[state]) - min_interval_val
 
-            if pos_in_beat > 0:
-                # Within-beat: predecessor is state - 1 (deterministic)
-                sources.append(state - 1)
-                dests.append(state)
-                log_probs.append(0.0)  # log(1) = 0
-            else:
-                # First state of a beat: predecessors are last states of previous beat
-                prev_beat = (beat - 1) % num_beats
-                prev_lasts = last_states_per_beat[prev_beat]
-                cur_interval_idx = int(intervals[state] - intervals.min())
+            for from_idx in range(num_intervals):
+                lp = trans_log_prob[from_idx, cur_interval_idx]
+                if lp > -50:
+                    sources_b.append(int(prev_lasts[from_idx]))
+                    dests_b.append(int(state))
+                    logprobs_b.append(float(lp))
 
-                for from_idx in range(num_intervals):
-                    lp = trans_log_prob[from_idx, cur_interval_idx]
-                    if lp > -50:  # prune negligible transitions
-                        sources.append(int(prev_lasts[from_idx]))
-                        dests.append(state)
-                        log_probs.append(float(lp))
+        sources_all = np.concatenate([sources_w, np.array(sources_b, dtype=np.int32)]).astype(
+            np.int32
+        )
+        dests_all = np.concatenate([dests_w, np.array(dests_b, dtype=np.int32)]).astype(np.int32)
+        logprobs_all = np.concatenate([logprobs_w, np.array(logprobs_b, dtype=np.float32)]).astype(
+            np.float32
+        )
 
-        return DBNDownBeatTracker._build_csr(sources, dests, log_probs, num_states)
+        return DBNDownBeatTracker._csr_from_arrays(sources_all, dests_all, logprobs_all, num_states)
 
     @staticmethod
-    def _build_csr(
-        sources: list[int],
-        dests: list[int],
-        log_probs: list[float],
+    def _csr_from_arrays(
+        sources_arr: NDArray[np.int32],
+        dests_arr: NDArray[np.int32],
+        log_probs_arr: NDArray[np.float32],
         num_states: int,
-    ) -> tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.float64]]:
-        """Convert transition triples to CSR format indexed by destination."""
-        sources_arr = np.array(sources, dtype=np.int32)
-        dests_arr = np.array(dests, dtype=np.int32)
-        log_probs_arr = np.array(log_probs, dtype=np.float64)
-
+    ) -> tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.float32]]:
+        """Convert transition arrays to CSR format indexed by destination."""
         order = np.argsort(dests_arr, kind="stable")
         sources_arr = sources_arr[order]
         dests_arr = dests_arr[order]
         log_probs_arr = log_probs_arr[order]
 
         tm_pointers = np.zeros(num_states + 1, dtype=np.int32)
-        for d in dests_arr:
-            tm_pointers[d + 1] += 1
-        np.cumsum(tm_pointers, out=tm_pointers)
+        tm_pointers[1:] = np.cumsum(np.bincount(dests_arr, minlength=num_states))
 
         return sources_arr, tm_pointers, log_probs_arr
 
     @staticmethod
     def _build_observation_model(
-        positions: NDArray[np.float64],
+        positions: NDArray[np.float32],
         observation_lambda: int = 16,
     ) -> NDArray[np.int32]:
         """Build observation model pointers mapping states to observation classes.
@@ -286,30 +289,31 @@ class DBNDownBeatTracker:
     def _compute_log_densities(
         activations: NDArray[np.float64],
         observation_lambda: int = 16,
-    ) -> NDArray[np.float64]:
+    ) -> NDArray[np.float32]:
         """Compute log observation densities from beat/downbeat activations.
 
         :param activations: Shape (T, 2), columns [beat_act, downbeat_act].
         :param observation_lambda: Beat subdivision granularity.
         :return: Shape (T, 3) log densities for [no-beat, beat, downbeat].
         """
-        beat_act = activations[:, 0]
-        downbeat_act = activations[:, 1]
-        no_beat_act = np.maximum(1.0 - beat_act - downbeat_act, 1e-10)
+        act = activations.astype(np.float32, copy=False)
+        beat_act = act[:, 0]
+        downbeat_act = act[:, 1]
+        no_beat_act = np.maximum(1.0 - beat_act - downbeat_act, 1e-7)
 
-        log_dens = np.empty((len(activations), 3), dtype=np.float64)
+        log_dens = np.empty((len(activations), 3), dtype=np.float32)
         log_dens[:, 0] = np.log(no_beat_act / (observation_lambda - 1))
-        log_dens[:, 1] = np.log(np.maximum(beat_act, 1e-10))
-        log_dens[:, 2] = np.log(np.maximum(downbeat_act, 1e-10))
+        log_dens[:, 1] = np.log(np.maximum(beat_act, 1e-7))
+        log_dens[:, 2] = np.log(np.maximum(downbeat_act, 1e-7))
         return log_dens
 
     @staticmethod
     def _viterbi(
-        log_densities: NDArray[np.float64],
+        log_densities: NDArray[np.float32],
         om_pointers: NDArray[np.int32],
         tm_states: NDArray[np.int32],
         tm_pointers: NDArray[np.int32],
-        tm_log_probs: NDArray[np.float64],
+        tm_log_probs: NDArray[np.float32],
     ) -> tuple[NDArray[np.int32], float]:
         """Run Viterbi decoding on the HMM.
 
@@ -340,7 +344,7 @@ class DBNDownBeatTracker:
         if len(multi_states) > 0:
             max_preds = num_preds[multi_states].max()
             multi_source_pad = np.zeros((len(multi_states), max_preds), dtype=np.int32)
-            multi_logprob_pad = np.full((len(multi_states), max_preds), -np.inf, dtype=np.float64)
+            multi_logprob_pad = np.full((len(multi_states), max_preds), -np.inf, dtype=np.float32)
             for i, s in enumerate(multi_states):
                 start = tm_pointers[s]
                 end = tm_pointers[s + 1]
@@ -348,37 +352,48 @@ class DBNDownBeatTracker:
                 multi_source_pad[i, :n] = tm_states[start:end]
                 multi_logprob_pad[i, :n] = tm_log_probs[start:end]
 
-        # Initialize: uniform over all states
-        prev_v = np.full(num_states, -np.log(num_states), dtype=np.float64)
+        # Initialize: uniform over all states, ping-pong buffers
+        buf_a = np.empty(num_states, dtype=np.float32)
+        buf_b = np.empty(num_states, dtype=np.float32)
+        prev_v = buf_a
+        prev_v[:] = np.float32(-np.log(num_states))
         bt = np.empty((num_frames, len(multi_states)), dtype=np.int32)
 
+        # Pre-compute constant index arrays used every frame
+        single_src_idx = single_sources[single_states]
+        has_multi = len(multi_states) > 0
+        if has_multi:
+            arange_multi = np.arange(len(multi_states))
+
         for t in range(num_frames):
-            cur_v = np.full(num_states, -np.inf, dtype=np.float64)
+            cur_v = buf_b if prev_v is buf_a else buf_a
+            cur_v[:] = -np.inf
             obs = log_densities[t, om_pointers]
 
             # Single-predecessor states: direct assignment (log_prob = 0)
-            cur_v[single_states] = prev_v[single_sources[single_states]] + obs[single_states]
+            cur_v[single_states] = prev_v[single_src_idx] + obs[single_states]
 
             # Multi-predecessor states: max over predecessors
-            if len(multi_states) > 0:
-                scores = prev_v[multi_source_pad] + multi_logprob_pad  # (M, max_preds)
+            if has_multi:
+                scores = prev_v[multi_source_pad] + multi_logprob_pad
                 best_idx = scores.argmax(axis=1)
-                cur_v[multi_states] = (
-                    scores[np.arange(len(multi_states)), best_idx] + obs[multi_states]
-                )
+                cur_v[multi_states] = scores[arange_multi, best_idx] + obs[multi_states]
                 bt[t] = best_idx
 
             prev_v = cur_v
 
-        # Backtrack
+        # Backtrack — O(1) lookup instead of searchsorted
+        multi_lookup = np.full(num_states, -1, dtype=np.int32)
+        multi_lookup[multi_states] = np.arange(len(multi_states), dtype=np.int32)
+
         path = np.empty(num_frames, dtype=np.int32)
         best_state = int(np.argmax(prev_v))
         log_prob = float(prev_v[best_state])
 
         for t in range(num_frames - 1, -1, -1):
             path[t] = best_state
-            mi = np.searchsorted(multi_states, best_state)
-            if mi < len(multi_states) and multi_states[mi] == best_state:
+            mi = multi_lookup[best_state]
+            if mi >= 0:
                 best_state = int(multi_source_pad[mi, bt[t, mi]])
             else:
                 best_state = int(single_sources[best_state])
