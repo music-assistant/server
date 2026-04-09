@@ -5,16 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from music_assistant.providers.smart_fades.dbn_postprocessor import (
-    DBNDownBeatTracker,
-    _build_bar_state_space,
-    _build_transition_model,
-)
+from music_assistant.providers.smart_fades.dbn_postprocessor import DBNDownBeatTracker
 
 
 def test_state_space_sizes() -> None:
     """Test that the bar state space has correct dimensions."""
-    positions, intervals = _build_bar_state_space(num_beats=4, min_interval=14, max_interval=55)
+    positions, intervals = DBNDownBeatTracker._build_bar_state_space(
+        num_beats=4, min_interval=14, max_interval=55
+    )
     # Each interval i contributes i states, repeated for each beat
     expected_states = sum(range(14, 56)) * 4
     assert len(positions) == expected_states
@@ -26,7 +24,9 @@ def test_state_space_sizes() -> None:
 
 def test_state_space_small() -> None:
     """Test state space with small interval range for easy verification."""
-    positions, _intervals = _build_bar_state_space(num_beats=2, min_interval=3, max_interval=4)
+    positions, _intervals = DBNDownBeatTracker._build_bar_state_space(
+        num_beats=2, min_interval=3, max_interval=4
+    )
     # interval=3: 3 states, interval=4: 4 states, x 2 beats = 14 states
     assert len(positions) == 14
     # Beat 0 positions: [0/3, 1/3, 2/3, 0/4, 1/4, 2/4, 3/4]
@@ -37,8 +37,10 @@ def test_state_space_small() -> None:
 
 def test_transition_model_structure() -> None:
     """Test that the transition model is a valid sparse matrix."""
-    positions, intervals = _build_bar_state_space(num_beats=4, min_interval=14, max_interval=55)
-    tm_states, tm_pointers, _tm_log_probs = _build_transition_model(
+    positions, intervals = DBNDownBeatTracker._build_bar_state_space(
+        num_beats=4, min_interval=14, max_interval=55
+    )
+    tm_states, tm_pointers, _tm_log_probs = DBNDownBeatTracker._build_transition_model(
         positions, intervals, num_beats=4, transition_lambda=100
     )
     num_states = len(positions)
