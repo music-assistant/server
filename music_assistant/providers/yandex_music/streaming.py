@@ -427,9 +427,9 @@ class YandexMusicStreamingManager:
             # 2 compression_id, 2 packet_size, 4 sample_rate (16.16 fixed-point)
             entry_start = mp4a_pos + 4  # after "mp4a"
             entry = header[entry_start:]
-            if len(entry) >= 24:
+            if len(entry) >= 28:
                 sample_size = int.from_bytes(entry[18:20], "big")
-                sr_fixed = int.from_bytes(entry[20:24], "big")
+                sr_fixed = int.from_bytes(entry[24:28], "big")
                 sample_rate = sr_fixed >> 16
                 bit_depth = max(0, sample_size)
                 if 8000 <= sample_rate <= 384000:
@@ -472,6 +472,8 @@ class YandexMusicStreamingManager:
                 result = parser(header_bytes)
                 self.logger.debug("Probe result: sample_rate=%d, bit_depth=%d", *result)
                 return result
+        except asyncio.CancelledError:
+            raise
         except Exception:
             self.logger.debug("Stream probe failed for codec=%s", codec)
             return 0, 0
