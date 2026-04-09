@@ -6,9 +6,16 @@ import os
 import threading
 from typing import Any, ClassVar, Final
 
-PA_SAMPLE_S16LE: Final = 3
 PA_STREAM_PLAYBACK: Final = 1
 
+PA_SAMPLE_S16LE: Final = 3
+PA_SAMPLE_S32LE: Final = 5
+
+def _pa_sample_format(bit_depth: int) -> int:
+    """Return PA sample format constant for given bit depth."""
+    if bit_depth == 32:
+        return PA_SAMPLE_S32LE
+    return PA_SAMPLE_S16LE  # default to 16-bit
 
 class _PASampleSpec(ctypes.Structure):
     _fields_: ClassVar = [
@@ -81,9 +88,13 @@ class PASimpleStream:
     same pa_simple connection, which causes assertion failures in libpulse.
     """
 
-    def __init__(self, sink_name: str, app_name: str, rate: int, channels: int) -> None:
+    def __init__(self, sink_name: str, app_name: str, rate: int, channels: int, bit_depth: int = 16) -> None:
         lib = _get_lib()
-        spec = _PASampleSpec(format=PA_SAMPLE_S16LE, rate=rate, channels=channels)
+        spec = _PASampleSpec(
+            format=_pa_sample_format(bit_depth),
+            rate=rate,
+            channels=channels,
+    )
         error = ctypes.c_int(0)
         self._lib = lib
         self._lock = threading.Lock()
