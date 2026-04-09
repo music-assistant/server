@@ -133,6 +133,14 @@ async def yandex_music_provider(
         mock_client.get_artist_albums = mock.AsyncMock(return_value=[album])
         mock_client.get_artist_tracks = mock.AsyncMock(return_value=[track])
         mock_client.get_playlist = mock.AsyncMock(return_value=playlist)
+        mock_client.get_track_file_info = mock.AsyncMock(
+            return_value={
+                "url": "https://example.com/yandex_track.mp3",
+                "codec": "mp3",
+                "bitrate_in_kbps": 320,
+                "needs_decryption": False,
+            }
+        )
         mock_client.get_track_download_info = mock.AsyncMock(return_value=[download_info])
         mock_client.get_track_lyrics = mock.AsyncMock(return_value=(None, False))
         mock_client.get_track_lyrics_from_track = mock.AsyncMock(return_value=(None, False))
@@ -207,8 +215,14 @@ async def yandex_music_provider_lossless(
         mock_client.get_artist_albums = mock.AsyncMock(return_value=[album])
         mock_client.get_artist_tracks = mock.AsyncMock(return_value=[track])
         mock_client.get_playlist = mock.AsyncMock(return_value=playlist)
-        # get-file-info lossless is tried first; mock returns None so we use download_info path
-        mock_client.get_track_file_info_lossless = mock.AsyncMock(return_value=None)
+        mock_client.get_track_file_info = mock.AsyncMock(
+            return_value={
+                "url": "https://example.com/yandex_track.flac",
+                "codec": "flac",
+                "bitrate_in_kbps": 0,
+                "needs_decryption": False,
+            }
+        )
         mock_client.get_track_download_info = mock.AsyncMock(return_value=download_infos)
         mock_client.get_track_lyrics = mock.AsyncMock(return_value=(None, False))
         mock_client.get_track_lyrics_from_track = mock.AsyncMock(return_value=(None, False))
