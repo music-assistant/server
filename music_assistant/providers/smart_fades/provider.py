@@ -315,18 +315,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
     def _compute_musical_key_features(self, pcm_22k: np.ndarray, data: SmartFadesData) -> None:
         """Extract VQT features for S-KEY key detection."""
         pcm_tensor = torch.from_numpy(pcm_22k)
-        start = time.perf_counter()
         with torch.inference_mode():
             vqt_input = pcm_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, samples)
             vqt_out = self._skey_vqt(vqt_input)  # (1, 1, n_bins, T)
             cropped = self._skey_crop(vqt_out, torch.zeros(1))  # (1, 1, 84, T)
             data.musical_key_feature_blocks.append(cropped.cpu())
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "VQT feature extraction: %.1fms (%d frames)",
-            (time.perf_counter() - start) * 1000,
-            cropped.shape[-1],
-        )
 
     def _infer_musical_key(
         self, vqt_features: torch.Tensor | None
