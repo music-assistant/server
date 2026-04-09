@@ -1149,7 +1149,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # by set_members. The lock is re-entrant via ContextVar so nested calls
         # (e.g. set_members -> protocol switch -> resume -> play_index -> form_syncgroup
         # -> set_members) won't deadlock.
-        async with self.get_player_lock(parent_player.player_id):
+        async with self.get_player_lock(parent_player.player_id, "playback"):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")

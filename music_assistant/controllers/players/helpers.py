@@ -139,7 +139,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 # so that queue commands and player commands serialize properly.
                 # Other lock categories (e.g. volume) use their own locks.
                 if lock_category == "play":
-                    async with self.get_player_lock(player.player_id):
+                    async with self.get_player_lock(player.player_id, "playback"):
                         await execute()
                 else:
                     lock_key = f"{lock_category}_{player.player_id}"
