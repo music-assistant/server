@@ -138,7 +138,7 @@ class RaopStream(AirPlayProtocol):
                     self._elapsed_time_offset = time.time() - self.session.start_time - elapsed_time
                 if self._elapsed_time_offset:
                     elapsed_time += self._elapsed_time_offset
-                player.set_state_from_stream(elapsed_time=elapsed_time)
+                player.set_state_from_stream(elapsed_time=elapsed_time, stream=self)
             elif "Password required, but none supplied." in line:
                 logger.error(
                     f"Player {self.player.name} requires a password. "
