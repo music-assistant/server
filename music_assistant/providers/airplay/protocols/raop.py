@@ -135,7 +135,9 @@ class RaopStream(AirPlayProtocol):
                 # this handles dynamic leader switching where a new cliraop process
                 # reports from 0 while the flow stream started much earlier.
                 if self._elapsed_time_offset is None and self.session:
-                    self._elapsed_time_offset = time.time() - self.session.start_time - elapsed_time
+                    self._elapsed_time_offset = max(
+                        0, time.time() - self.session.start_time - elapsed_time
+                    )
                 if self._elapsed_time_offset:
                     elapsed_time += self._elapsed_time_offset
                 player.set_state_from_stream(elapsed_time=elapsed_time, stream=self)

@@ -154,7 +154,7 @@ class AirPlay2Stream(AirPlayProtocol):
                 # session start_time and this process start to handle dynamic
                 # leader switching where a new process starts mid-session.
                 if self._elapsed_time_offset is None and self.session:
-                    self._elapsed_time_offset = time.time() - self.session.start_time
+                    self._elapsed_time_offset = max(0, time.time() - self.session.start_time)
                 elapsed_time = self._elapsed_time_offset or 0
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
