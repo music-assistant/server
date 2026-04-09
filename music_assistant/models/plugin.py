@@ -175,7 +175,7 @@ class PluginProvider(Provider):
         yield b""
         raise NotImplementedError
 
-    async def tts(self, message: str, language: str | None = None) -> str:
+    async def get_tts_message_url(self, message: str, language: str | None = None) -> str:
         """
         Convert text to speech audio.
 

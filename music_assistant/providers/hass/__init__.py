@@ -322,30 +322,28 @@ async def _get_ha_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry
             category="player_controls",
         ),
     ]
-    if tts_entities:
-        entries.append(
-            ConfigEntry(
-                key=CONF_TTS_ENTITY,
-                type=ConfigEntryType.STRING,
-                label="Text-to-Speech entity",
-                required=False,
-                options=tts_entities,
-                description="Select which Home Assistant TTS entity to use for text-to-speech.",
-                category="Features",
-            )
+    entries.append(
+        ConfigEntry(
+            key=CONF_TTS_ENTITY,
+            type=ConfigEntryType.STRING,
+            label="Text-to-Speech entity",
+            required=False,
+            options=tts_entities,
+            description="Select which Home Assistant TTS entity to use for text-to-speech.",
+            category="Features",
         )
-    if ai_task_entities:
-        entries.append(
-            ConfigEntry(
-                key=CONF_AI_TASK_ENTITY,
-                type=ConfigEntryType.STRING,
-                label="AI Task entity",
-                required=False,
-                options=ai_task_entities,
-                description="Select which Home Assistant AI Task entity to use for AI queries.",
-                category="Features",
-            )
+    )
+    entries.append(
+        ConfigEntry(
+            key=CONF_AI_TASK_ENTITY,
+            type=ConfigEntryType.STRING,
+            label="AI Task entity",
+            required=False,
+            options=ai_task_entities,
+            description="Select which Home Assistant AI Task entity to use for AI queries.",
+            category="Features",
         )
+    )
     return tuple(entries)
 
 
@@ -664,7 +662,7 @@ class HomeAssistantProvider(PluginProvider):
             raise MusicAssistantError(msg)
         return str(data)
 
-    async def tts(self, message: str, language: str | None = None) -> str:
+    async def get_tts_message_url(self, message: str, language: str | None = None) -> str:
         """Handle text-to-speech via Home Assistant's REST API."""
         entity_id = self.config.get_value(CONF_TTS_ENTITY)
         ha_url, headers, http_session = self._get_ha_http()
