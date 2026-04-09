@@ -122,21 +122,22 @@ class RaopStream(AirPlayProtocol):
             elif "Restarted at" in line or "restarting w/ pause" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
             elif "restarting w/o pause" in line:
-                # streaming has started - derive elapsed time from the stream
-                # session start_time to handle dynamic leader switching correctly
-                elapsed_time = (time.time() - self.session.start_time) if self.session else 0
+                # streaming has started
                 player.set_state_from_stream(
-                    state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
+                    state=PlaybackState.PLAYING, elapsed_time=0, stream=self
                 )
             elif "elapsed milliseconds:" in line:
-                # cliraop reports elapsed milliseconds from its own process start,
-                # but we need elapsed time relative to the stream session start
-                # to handle dynamic leader switching correctly.
-                if self.session:
-                    elapsed_time = time.time() - self.session.start_time
-                else:
-                    millis = int(line.split("elapsed milliseconds: ")[1])
-                    elapsed_time = millis / 1000
+                # this is received more or less every second while playing
+                millis = int(line.split("elapsed milliseconds: ")[1])
+                elapsed_time = millis / 1000
+                # on the first elapsed time report, compute a fixed offset between
+                # the session start_time and this cliraop process start.
+                # this handles dynamic leader switching where a new cliraop process
+                # reports from 0 while the flow stream started much earlier.
+                if self._elapsed_time_offset is None and self.session:
+                    self._elapsed_time_offset = time.time() - self.session.start_time - elapsed_time
+                if self._elapsed_time_offset:
+                    elapsed_time += self._elapsed_time_offset
                 player.set_state_from_stream(elapsed_time=elapsed_time)
             elif "Password required, but none supplied." in line:
                 logger.error(

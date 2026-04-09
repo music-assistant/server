@@ -150,9 +150,12 @@ class AirPlay2Stream(AirPlayProtocol):
             elif "Restarted at" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
             elif "Starting at" in line:
-                # streaming has started - derive elapsed time from the stream
-                # session start_time to handle dynamic leader switching correctly
-                elapsed_time = (time.time() - self.session.start_time) if self.session else 0
+                # streaming has started - compute a fixed offset between the
+                # session start_time and this process start to handle dynamic
+                # leader switching where a new process starts mid-session.
+                if self._elapsed_time_offset is None and self.session:
+                    self._elapsed_time_offset = time.time() - self.session.start_time
+                elapsed_time = self._elapsed_time_offset or 0
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
                 )
