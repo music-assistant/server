@@ -66,6 +66,7 @@ class LocalPulseAudioPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command."""
+        self.logger.warning("volume_set called: %s", volume_level)
         self._attr_volume_level = volume_level
         self.update_state()
 
@@ -76,32 +77,3 @@ class LocalPulseAudioPlayer(Player):
 
     async def apply_hardware_ceiling(self) -> None:
         """Set PA sink hardware volume ceiling via pactl.
-
-        Called on every startup to ensure the hardware output level is
-        attenuated to the configured ceiling. Software volume control
-        then operates within this ceiling for day-to-day use.
-        """
-        ceiling = int(
-            self._provider.config.get_value(CONF_HARDWARE_VOLUME_CEILING)
-            or DEFAULT_HARDWARE_VOLUME_CEILING
-        )
-        try:
-            rc, _ = await check_output(
-                find_pactl(),
-                "set-sink-volume",
-                self._pa_sink_name,
-                f"{ceiling}%",
-                env=pactl_env(),
-            )
-            if rc != 0:
-                self.logger.warning(
-                    "Failed to set hardware ceiling for sink %s", self._pa_sink_name
-                )
-            else:
-                self.logger.debug(
-                    "Hardware ceiling set to %d%% for sink %s",
-                    ceiling,
-                    self._pa_sink_name,
-                )
-        except FileNotFoundError as err:
-            self.logger.warning("pactl not found: %s", err)
