@@ -2778,11 +2778,14 @@ class PlayerQueuesController(CoreController):
             )
         ):
             streamdetails.stream_metadata_last_updated = time.time()
-            self.mass.create_task(
-                streamdetails.stream_metadata_update_callback(
+
+            async def _update_stream_metadata_and_signal() -> None:
+                await streamdetails.stream_metadata_update_callback(
                     streamdetails, int(queue.corrected_elapsed_time)
                 )
-            )
+                self.mass.players.trigger_player_update(queue_id)
+
+            self.mass.create_task(_update_stream_metadata_and_signal())
 
         # handle sending a playback progress report
         # we do this every 30 seconds or when the state changes
