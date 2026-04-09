@@ -1,6 +1,6 @@
 # Smart Fades Provider
 
-Audio analysis provider that detects **beats** and **downbeats** in real time using the [Beat This!](https://github.com/CPJKU/beat_this) neural network (CPJKU, ISMIR 2024). The detected timing information drives smart crossfade positioning in Music Assistant's playback queue.
+Audio analysis provider that detects **beats**, **downbeats**, **musical key**, **RMS energy**, and **spectral centroid** in real time using the [Beat This!](https://github.com/CPJKU/beat_this) neural network (CPJKU, ISMIR 2024) and the S-KEY key detection model. The detected timing and tonal information drives smart crossfade positioning in Music Assistant's playback queue.
 
 ## How it works
 
@@ -11,14 +11,20 @@ Beat This! is a transformer-based beat tracker that operates on log-mel spectrog
 ```
 PCM chunks (1s, any sample rate)
         │
-        ▼
-   Buffer accumulator (10s blocks)
-        │
-        ▼
-   soxr resampling → 22050 Hz mono
-        │
-        ▼
-   Log-mel feature extraction (streaming, with delayed frames)
+        ├──────────────────────────────────┐
+        ▼                                  ▼
+   Buffer accumulator (10s blocks)    VQT feature extraction (per chunk)
+        │                                  │
+        ▼                                  ▼
+   Streaming soxr resampling           [accumulate VQT features]
+   → 22050 Hz mono                         │
+        │                                  ▼
+        ├──────────────┐             ChromaNet key inference
+        ▼              ▼                   │
+   Log-mel         RMS energy +            ▼
+   extraction      spectral centroid   key + mode
+   (delayed        (parallel)
+    frames)
         │
         ▼
    [repeat for all blocks]
@@ -27,10 +33,10 @@ PCM chunks (1s, any sample rate)
    Concatenate all feature blocks
         │
         ▼
-   Spect2Frames model inference (single pass)
+   Spect2Frames model inference (quantized, single pass)
         │
         ▼
-   Postprocessor ("minimal" mode)
+   DBN postprocessor (pure-numpy Viterbi decoding)
         │
         ▼
    beats[] + downbeats[] (timestamps in seconds)
@@ -38,9 +44,9 @@ PCM chunks (1s, any sample rate)
 
 ### Key design decisions
 
-#### 1. Per-block resampling (10-second blocks)
+#### 1. Streaming resampling (10-second blocks)
 
-PCM arrives at the source sample rate (e.g. 44100 Hz) but Beat This! expects 22050 Hz. Resampling per 1-second chunk introduces edge artifacts because a stateless resampler pads each chunk independently. Instead, we accumulate 10 seconds of PCM and resample the entire block at once using [soxr](https://github.com/dofuuz/python-soxr), matching the resampling quality of the offline reference pipeline.
+PCM arrives at the source sample rate (e.g. 44100 Hz) but Beat This! expects 22050 Hz. Resampling per 1-second chunk with a stateless resampler introduces edge artifacts because it pads each chunk independently. Instead, we accumulate 10 seconds of PCM and resample using a stateful `soxr.ResampleStream` that maintains filter state across blocks, eliminating block-boundary artifacts while matching the resampling quality of the offline reference pipeline.
 
 #### 2. Delayed frame output in the feature extractor
 
@@ -54,4 +60,12 @@ The feature extractor aligns the start of each audio segment to a `hop_length` (
 
 #### 4. Single-pass model inference at finalize
 
-Unlike the feature extraction (which runs incrementally per block), model inference runs once on the concatenated features when the track ends. The Beat This! transformer (`Spect2Frames`) processes the full spectrogram in a single forward pass, and the postprocessor converts frame-level logits to beat/downbeat timestamps.
+Unlike the feature extraction (which runs incrementally per block), model inference runs once on the concatenated features when the track ends. The Beat This! transformer (`Spect2Frames`, `small0` checkpoint, dynamically quantized to qint8) processes the full spectrogram in a single forward pass. The DBN postprocessor — a pure-numpy reimplementation of madmom's `DBNDownBeatTrackingProcessor` using Viterbi decoding over a bar-pointer HMM — converts frame-level logits to beat/downbeat timestamps.
+
+#### 5. Musical key detection (S-KEY)
+
+Key detection runs in parallel with beat tracking. Each 1-second PCM chunk is independently resampled to 22050 Hz and passed through a Variable-Q Transform (VQT) to extract tonal features. At finalization, the accumulated VQT features are concatenated and fed into ChromaNet, which classifies the track into one of 24 keys (12 pitch classes x major/minor). Per-chunk VQT extraction uses stateless one-shot resampling because each chunk is processed independently — this cannot share the streaming resampler's session state.
+
+#### 6. RMS energy and spectral centroid
+
+Per-block RMS energy (100ms windows) and spectral centroid (per-hop-frame via torchaudio) are computed in parallel with mel spectrogram extraction. At finalization, both are interpolated to 1800 fixed bins spanning the track duration. RMS energy is peak-normalized, and spectral centroid is zeroed where energy is negligible to suppress noise-dominated regions.

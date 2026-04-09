@@ -72,7 +72,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        torch.set_num_threads(os.cpu_count() or 4)
+        torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         torch.backends.quantized.engine = "qnnpack"
         self._beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         self._beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
@@ -270,13 +270,15 @@ class SmartFadesProvider(AudioAnalysisProvider):
         data.total_pcm_samples += len(pcm_22k)
 
         start_time = time.perf_counter()
-        feats = await data.features.process_pcm(pcm_22k)
+        feats, _ = await asyncio.gather(
+            data.features.process_pcm(pcm_22k),
+            asyncio.to_thread(self._compute_energy_and_spectral_centroids, pcm_22k, data),
+        )
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         if feats.size:
             data.beats_feature_blocks.append(feats)
 
-        await asyncio.to_thread(self._compute_energy_and_spectral_centroids, pcm_22k, data)
         self.logger.log(VERBOSE_LOG_LEVEL, "Processed 10s of PCM chunks in %.1fms", elapsed_ms)
 
     def _compute_energy_and_spectral_centroids(
@@ -314,7 +316,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         """Extract VQT features for S-KEY key detection."""
         pcm_tensor = torch.from_numpy(pcm_22k)
         start = time.perf_counter()
-        with torch.no_grad():
+        with torch.inference_mode():
             vqt_input = pcm_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, samples)
             vqt_out = self._skey_vqt(vqt_input)  # (1, 1, n_bins, T)
             cropped = self._skey_crop(vqt_out, torch.zeros(1))  # (1, 1, 84, T)
@@ -361,8 +363,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         # Prepare activations for DBN: sigmoid + clamp + combine
         post_start = time.perf_counter()
-        beat_prob = torch.sigmoid(beat_logits).double().cpu().numpy()
-        downbeat_prob = torch.sigmoid(downbeat_logits).double().cpu().numpy()
+        beat_prob = torch.sigmoid(beat_logits).cpu().numpy()
+        downbeat_prob = torch.sigmoid(downbeat_logits).cpu().numpy()
         epsilon = 1e-5
         beat_prob = beat_prob * (1 - epsilon) + epsilon / 2
         downbeat_prob = downbeat_prob * (1 - epsilon) + epsilon / 2

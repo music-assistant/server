@@ -150,10 +150,10 @@ class AdvancedBeatFeatureExtractor:
 
             # Compute mel spectrogram
             tensor = torch.from_numpy(audio_segment).to(self._device)
-            with torch.no_grad():
+            with torch.inference_mode():
                 mel = self._mel_spec(tensor)
                 log_mel = torch.log1p(1000.0 * mel)
-            features = log_mel.T.cpu().numpy().astype(np.float32)
+            features = log_mel.T.cpu().numpy()
 
             # Extract frames for this chunk using integer arithmetic.
             # Since audio_start is hop-aligned, segment frames map exactly to global frames.
@@ -188,10 +188,10 @@ class AdvancedBeatFeatureExtractor:
                 return np.array([], dtype=np.float32).reshape(0, self._n_mels)
 
             tensor = torch.from_numpy(self._prev_samples).to(self._device)
-            with torch.no_grad():
+            with torch.inference_mode():
                 mel = self._mel_spec(tensor)
                 log_mel = torch.log1p(1000.0 * mel)
-            features = log_mel.T.cpu().numpy().astype(np.float32)
+            features = log_mel.T.cpu().numpy()
 
             return features[-extra_count:]
 
