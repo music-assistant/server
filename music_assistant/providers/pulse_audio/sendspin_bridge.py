@@ -115,9 +115,15 @@ class SendspinPulseAudioBridge:
             hello, on_stream_start=self._on_stream_start
         )
 
-        roles = self._sendspin_client.roles_by_family("player")
-        if roles:
-            self._bridge_role = cast("BridgePlayerRole", roles[0])
+        for role in self._sendspin_client.roles_by_family("player"):
+            self.logger.warning("Found player role: %s type=%s", role.role_id, type(role).__name__)
+            if isinstance(role, BridgePlayerRole):
+                self._bridge_role = role
+                break
+        
+        if self._bridge_role is None:
+            self.logger.error("No BridgePlayerRole found for sink %s", self.sink_name)
+            
             self._bridge_role.set_callbacks(
                 on_audio_chunk=self._on_audio_chunk,
                 on_volume_change=self._on_volume_change,
