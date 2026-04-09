@@ -74,7 +74,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Stream quality",
+            label="Audio quality",
             description=(
                 "Audio quality to request from Pandora. High quality is only available with an "
                 "active Pandora subscription. If your account is not eligible for high-quality "
