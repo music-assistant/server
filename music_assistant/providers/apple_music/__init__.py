@@ -447,9 +447,13 @@ class AppleMusicProvider(MusicProvider):
                 item_attributes = item.get("attributes", {})
                 if item_attributes.get("isLive", False):
                     continue
+                seen.add(station_id)
                 if item_attributes.get("name"):
-                    seen.add(station_id)
                     folder.items.append(self._parse_station_as_playlist(item))
+                else:
+                    playlist = await self.get_playlist(station_id)
+                    if playlist.name != station_id:
+                        folder.items.append(playlist)
             if folder.items:
                 folders.append(folder)
         return folders
