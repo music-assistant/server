@@ -5,6 +5,7 @@ API_BASE = "https://www.pandora.com/api/v1"
 LOGIN_ENDPOINT = f"{API_BASE}/auth/login"
 STATIONS_ENDPOINT = f"{API_BASE}/station/getStations"
 PLAYLIST_FRAGMENT_ENDPOINT = f"{API_BASE}/playlist/getFragment"
+PLAYBACK_RESUMED_ENDPOINT = f"{API_BASE}/station/playbackResumed"
 
 # Pandora Error Code Categories
 # Authentication and authorization failures
@@ -50,6 +51,7 @@ PANDORA_ERROR_CODES = {
     1039: "Device not found",
 }
 
+CONF_TAKEOVER_ACTION = "takeover_stream"
 CONF_QUALITY = "quality"
 QUALITY_HIGH = "high"
 QUALITY_STANDARD = "standard"
