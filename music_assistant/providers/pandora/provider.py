@@ -81,6 +81,10 @@ class PandoraStationSession:
         return int(tracks[track_idx].get("trackLength", 0))
 
 
+class StreamViolationError(InvalidDataError):
+    """Error raised when Pandora detects concurrent streaming on multiple devices."""
+
+
 class PandoraProvider(MusicProvider):
     """Pandora Music Provider."""
 
@@ -232,7 +236,7 @@ class PandoraProvider(MusicProvider):
                             await self.takeover_stream()
                             return await self._api_request(method, url, data, retry=False)
                         await self.close()
-                        raise InvalidDataError("STREAM_VIOLATION")
+                        raise StreamViolationError("STREAM_VIOLATION")
                     # This is some other, not concurrent streaming error kind of 429
                     await self.close()
                     raise ProviderUnavailableError(f"Pandora rate-limited (HTTP 429): {error_body}")
@@ -410,17 +414,16 @@ class PandoraProvider(MusicProvider):
         except MediaNotFoundError:
             await self.close()
             raise
+        except StreamViolationError:
+            self.logger.warning(
+                "Pandora stream is already active on another device. "
+                "To manually take over the stream on this device, use the "
+                "'Take over stream' button on the provider configuration page.",
+            )
+            await self.close()
+            raise
         except InvalidDataError as err:
-            if str(err) == "STREAM_VIOLATION":
-                self.logger.warning(
-                    "Pandora stream is already active on another device. "
-                    "To manually take over the stream on this device, use the "
-                    "'Take over stream' button on the provider configuration page.",
-                )
-            else:
-                self.logger.error(
-                    "Invalid fragment data for station %s: %s", session.station_id, err
-                )
+            self.logger.error("Invalid fragment data for station %s: %s", session.station_id, err)
             await self.close()
             raise
 
