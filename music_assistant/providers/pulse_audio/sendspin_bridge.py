@@ -191,12 +191,16 @@ class SendspinPulseAudioBridge:
         volume = self.player.volume_level
         if volume is None or volume >= 100:
             return pcm_data
-        dtype = np.int32 if self.bit_depth == 32 else np.int16
-        clip_max = 2147483647 if self.bit_depth == 32 else 32767
-        clip_min = -2147483648 if self.bit_depth == 32 else -32768
         scale = volume / 100.0
-        samples = np.frombuffer(pcm_data, dtype=dtype).copy()
-        samples = np.clip(samples * scale, clip_min, clip_max).astype(dtype)
+        if self.bit_depth == 32:
+            samples = np.frombuffer(pcm_data, dtype=np.int32).copy()
+            # Use float64 intermediate to avoid int32 overflow before clip
+            scaled = (samples.astype(np.float64) * scale)
+            samples = np.clip(scaled, -2147483648, 2147483647).astype(np.int32)
+        else:
+            samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
+            scaled = (samples.astype(np.float64) * scale)
+            samples = np.clip(scaled, -32768, 32767).astype(np.int16)
         return samples.tobytes()
 
     async def _audio_writer(self) -> None:
