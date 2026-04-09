@@ -402,10 +402,11 @@ class AppleMusicProvider(MusicProvider):
         seen: set[str] = set()
         folders: dict[str, RecommendationFolder] = {}
         for recommendation in response.get("data", []):
+            rec_id = recommendation.get("id", "")
             title = (
                 recommendation.get("attributes", {}).get("title", {}).get("stringForDisplay", "")
             )
-            if not title:
+            if not rec_id or not title:
                 continue
             contents = recommendation.get("relationships", {}).get("contents", {})
             for item in contents.get("data", []):
@@ -428,7 +429,7 @@ class AppleMusicProvider(MusicProvider):
                         continue
                 if title not in folders:
                     folders[title] = RecommendationFolder(
-                        item_id=f"recommendations_{title}",
+                        item_id=rec_id,
                         provider=self.instance_id,
                         name=title,
                     )
