@@ -112,6 +112,7 @@ async def get_config_entries(
                 "Pandora terminate any existing stream on other devices and allow streaming here. "
                 "You must manually restart playback after performing this action."
             ),
+            action=CONF_TAKEOVER_ACTION,
             required=False,
         ),
     )
