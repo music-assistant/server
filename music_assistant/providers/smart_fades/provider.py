@@ -20,7 +20,7 @@ from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
-from .helpers import calculate_overall_bpm, decode_pcm_chunk
+from .helpers import calculate_overall_bpm, decode_pcm_chunk_to_mono
 from .resources.skey_model import KEY_MAP as SKEY_KEY_MAP
 from .resources.skey_model import load_skey_components
 
@@ -100,7 +100,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if not data:
             return
 
-        pcm_mono = await asyncio.to_thread(decode_pcm_chunk, data.input_audio_format, pcm_chunk)
+        pcm_mono = await asyncio.to_thread(
+            decode_pcm_chunk_to_mono, data.input_audio_format, pcm_chunk
+        )
         if pcm_mono.size == 0:
             return
 
