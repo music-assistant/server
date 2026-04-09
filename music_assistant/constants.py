@@ -1034,9 +1034,3 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     # external (hass_players)
     "external",
 }
-
-# Metadata image provider priority (lower = more preferred)
-METADATA_IMAGE_PROVIDER_PRIORITY: Final[dict[str, int]] = {
-    "fanarttv": 10,
-    "theaudiodb": 20,
-}

@@ -54,6 +54,11 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
     Fetches album artwork from the Cover Art Archive using MusicBrainz release group IDs.
     """
 
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 40
+
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for an album.
 
