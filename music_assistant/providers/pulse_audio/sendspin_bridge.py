@@ -209,6 +209,10 @@ class SendspinPulseAudioBridge:
             stream: PASimpleStream | None = None
             write_future: asyncio.Future | None = None
             try:
+                self.logger.warning(
+                    "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
+                    self.sink_name, self.sample_rate, BRIDGE_CHANNELS, self.bit_depth
+                )
                 stream = await loop.run_in_executor(
                     None,
                     lambda: PASimpleStream(
