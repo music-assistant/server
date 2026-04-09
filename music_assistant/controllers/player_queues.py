@@ -188,7 +188,6 @@ class PlayerQueuesController(CoreController):
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, CompareState] = {}
         self._transitioning_players: set[str] = set()
-        self._play_action_locks: dict[str, asyncio.Lock] = {}
         self._play_action_refcount: dict[str, int] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
@@ -514,8 +513,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
+        async with self.mass.players.get_player_lock(queue_id, "playback"):
             await self._handle_play_media(queue_id, media, option, radio_mode, start_item, username)
 
     @api_command("player_queues/move_item")
@@ -653,7 +651,9 @@ class PlayerQueuesController(CoreController):
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-        # Use internal handler to avoid circular redirect deadlock
+        # Use internal handler to avoid circular redirect:
+        # public cmd_stop redirects to queue.stop when a queue is active,
+        # which would loop back here indefinitely.
         await self.mass.players._handle_cmd_stop(queue_id)
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
@@ -667,8 +667,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
+        async with self.mass.players.get_player_lock(queue_id, "playback"):
             await self._handle_play(queue_id)
 
     @api_command("player_queues/pause")
@@ -736,8 +735,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
+        async with self.mass.players.get_player_lock(queue_id, "playback"):
             await self._handle_next(queue_id)
 
     @api_command("player_queues/previous")
@@ -750,8 +748,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
+        async with self.mass.players.get_player_lock(queue_id, "playback"):
             await self._handle_previous(queue_id)
 
     @api_command("player_queues/skip")
@@ -918,11 +915,10 @@ class PlayerQueuesController(CoreController):
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
-            # Use _handle_play_media directly to bypass the play_media lock.
-            # The queue controller is an internal consumer and play_index is
-            # already serialized by _play_action_locks. Going through the public
-            # play_media would deadlock when called from within cmd_set_members
-            # (which holds the play_media lock during protocol switches).
+            # Use internal handler to target the specific player directly.
+            # The public play_media API has redirect + extra decorator logic
+            # that is not needed here since the queue controller manages its own
+            # player targeting. We resolve the redirect ourselves.
             player = self.mass.players._get_player_with_redirect(queue_id)
             await self.mass.players._handle_play_media(
                 player.player_id,
@@ -1134,7 +1130,6 @@ class PlayerQueuesController(CoreController):
         self._queue_items.pop(player_id, None)
         self._prev_states.pop(player_id, None)
         self._transitioning_players.discard(player_id)
-        self._play_action_locks.pop(player_id, None)
         self._play_action_refcount.pop(player_id, None)
 
     async def load_next_queue_item(

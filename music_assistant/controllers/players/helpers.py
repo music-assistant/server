@@ -135,11 +135,18 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 
             if lock:
                 lock_category = lock if isinstance(lock, str) else fn.__name__
-                lock_key = f"{lock_category}_{player.player_id}"
-                if lock_key not in self._player_command_locks:
-                    self._player_command_locks[lock_key] = asyncio.Lock()
-                async with self._player_command_locks[lock_key]:
-                    await execute()
+                # Use the shared re-entrant player lock for "playback" category
+                # so that queue commands and player commands serialize properly.
+                # Other lock categories (e.g. volume) use their own locks.
+                if lock_category == "play":
+                    async with self.get_player_lock(player.player_id):
+                        await execute()
+                else:
+                    lock_key = f"{lock_category}_{player.player_id}"
+                    if lock_key not in self._player_command_locks:
+                        self._player_command_locks[lock_key] = asyncio.Lock()
+                    async with self._player_command_locks[lock_key]:
+                        await execute()
             else:
                 await execute()
 

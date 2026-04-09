@@ -17,8 +17,11 @@ The playerstate is the object that is exposed to the outside world (via the API)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
+from collections.abc import AsyncIterator
 from contextlib import suppress
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
@@ -120,6 +123,12 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PLAYER_POWER = 1
 
+# ContextVar tracking which player locks the current async task holds.
+# Used by get_player_lock to allow re-entrant acquisition without deadlocking.
+_held_player_locks: ContextVar[frozenset[str]] = ContextVar(
+    "_held_player_locks", default=frozenset()
+)
+
 
 class PlayerController(ProtocolLinkingMixin, CoreController):
     """Controller holding all logic to control registered players."""
@@ -145,6 +154,38 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
+
+    @contextlib.asynccontextmanager
+    async def get_player_lock(
+        self, player_id: str, purpose: str = "playback"
+    ) -> AsyncIterator[None]:
+        """
+        Acquire a purpose-scoped lock for a player, with re-entrant support.
+
+        Uses a ContextVar to track locks held by the current async task.
+        If the current task already holds this exact lock (same player + purpose),
+        yields immediately without re-acquiring to prevent deadlocks in nested calls
+        (e.g. queue -> player -> syncgroup -> player).
+
+        :param player_id: The player to lock.
+        :param purpose: Lock category (e.g. "playback", "volume"). Commands with
+            different purposes can run concurrently on the same player.
+        """
+        lock_key = f"{purpose}_{player_id}"
+        held = _held_player_locks.get()
+
+        if lock_key in held:
+            # Already holding this lock in the current call chain — re-entrant, skip
+            yield
+            return
+
+        lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            token = _held_player_locks.set(held | frozenset({lock_key}))
+            try:
+                yield
+            finally:
+                _held_player_locks.reset(token)
 
     async def get_config_entries(
         self,
@@ -1102,15 +1143,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-        # Use the "play" lock category — same as play_media, play_announcement,
-        # enqueue_next_media — to prevent concurrent playback-related commands
-        # from racing with protocol switches triggered by set_members.
-        # Use resolved parent_player.player_id (not raw target_player) to match
-        # the lock key that handle_player_command produces after protocol resolution.
-        lock_key = f"play_{parent_player.player_id}"
-        if lock_key not in self._player_command_locks:
-            self._player_command_locks[lock_key] = asyncio.Lock()
-        async with self._player_command_locks[lock_key]:
+        # Use the shared playback lock — same lock used by play_media, play_announcement,
+        # enqueue_next_media, and queue play commands — to prevent concurrent
+        # playback-related commands from racing with protocol switches triggered
+        # by set_members. The lock is re-entrant via ContextVar so nested calls
+        # (e.g. set_members -> protocol switch -> resume -> play_index -> form_syncgroup
+        # -> set_members) won't deadlock.
+        async with self.get_player_lock(parent_player.player_id):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")
