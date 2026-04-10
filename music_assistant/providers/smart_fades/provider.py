@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -12,9 +11,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 import soxr
 import torch
-import torchaudio
 from beat_this.inference import Spect2Frames
 from music_assistant_models.enums import MediaType
+from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -74,7 +73,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        logging.getLogger("torio._extension.utils").setLevel(self.logger.level + 10)
         torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         self._beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # Select best available quantization engine (fbgemm is x86-only, qnnpack for ARM)
@@ -91,9 +89,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         self._skey_vqt, self._skey_chromanet, self._skey_crop = load_skey_components(
             device=self._device
         )
-        self._spectral_centroid = torchaudio.transforms.SpectralCentroid(
-            sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512
-        )
+        self._spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
 
     async def process_pcm_chunk(
         self,
