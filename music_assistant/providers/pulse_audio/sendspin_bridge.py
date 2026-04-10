@@ -206,7 +206,7 @@ class SendspinPulseAudioBridge:
         if not self._is_streaming:
             return
         if not hasattr(self, '_logged_chunk_fmt'):
-            self.logger.warning(
+            self.logger.debug(
                 "First chunk: len=%d  bridge sample_rate=%d bit_depth=%d",
                 len(chunk.data), self.sample_rate, self.bit_depth,
             )
@@ -227,17 +227,12 @@ class SendspinPulseAudioBridge:
             scaled = np.clip(samples.astype(np.float64) * scale, -2147483648, 2147483647)
             return scaled.astype(np.int32).tobytes()
         if self.bit_depth == 24:
-            # Packed 3-byte little-endian — pad to int32, scale, repack
-            raw = np.frombuffer(pcm_data, dtype=np.uint8).reshape(-1, 3)
-            # Sign-extend: pad a zero byte on the high end → int32
-            padded = np.concatenate(
-                [raw, np.zeros((len(raw), 1), dtype=np.uint8)], axis=1
-            ).view(np.int32).reshape(-1)
-            scaled = np.clip(padded.astype(np.float64) * scale, -8388608, 8388607)
-            result = scaled.astype(np.int32)
-            # Repack back to 3 bytes per sample
-            as_bytes = result.view(np.uint8).reshape(-1, 4)
-            return as_bytes[:, :3].tobytes()
+            # MA delivers 24-bit audio in 32-bit containers (s24-32le / left-justified).
+            # Treat as int32, scale, write back as int32 — PA stream is opened as
+            # PA_SAMPLE_S24_32LE so the container width matches.
+            samples = np.frombuffer(pcm_data, dtype=np.int32).copy()
+            scaled = np.clip(samples.astype(np.float64) * scale, -2147483648, 2147483647)
+            return scaled.astype(np.int32).tobytes()
         # 16-bit
         samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
         scaled = np.clip(samples.astype(np.float64) * scale, -32768, 32767)
