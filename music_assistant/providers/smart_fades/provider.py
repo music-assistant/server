@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -72,6 +73,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        logging.getLogger("torio._extension.utils").setLevel(self.logger.level + 10)
         torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         torch.backends.quantized.engine = "qnnpack"
         self._beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
@@ -133,8 +135,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
             data.features.reset()
         await super().cancel(session_id)
-
-    # --- private methods ---
 
     async def _start_analysis(
         self,
