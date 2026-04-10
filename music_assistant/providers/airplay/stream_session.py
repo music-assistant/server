@@ -137,20 +137,22 @@ class AirPlayStreamSession:
             return
 
         now = time.time()
-        # The next chunk the audio streamer writes is at seconds_streamed.
-        # NTP for that position = start_time + seconds_streamed.
-        start_at = self.start_time + self.seconds_streamed
-
-        self.prov.logger.debug(
-            "Late joiner %s: stream_pos=%.2fs, start_at is %.2fs from now",
-            airplay_player.player_id,
-            self.seconds_streamed,
-            start_at - now,
-        )
-
-        start_ntp = unix_time_to_ntp(start_at)
 
         async with self._lock:
+            # Read seconds_streamed under the lock so the value matches
+            # exactly the position where the audio streamer will next write
+            # to this player. Any mismatch causes the late joiner to be
+            # ahead or behind.
+            start_at = self.start_time + self.seconds_streamed
+            start_ntp = unix_time_to_ntp(start_at)
+
+            self.prov.logger.debug(
+                "Late joiner %s: stream_pos=%.2fs, start_at is %.2fs from now",
+                airplay_player.player_id,
+                self.seconds_streamed,
+                start_at - now,
+            )
+
             if airplay_player not in self.sync_clients:
                 self.sync_clients.append(airplay_player)
             await self._start_client(airplay_player, start_ntp)
