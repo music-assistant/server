@@ -53,17 +53,18 @@ def decode_pcm_chunk_to_mono(audio_format: AudioFormat, pcm_chunk: bytes) -> np.
     :param pcm_chunk: Raw PCM audio data.
     """
     content_type = audio_format.content_type
+    writable = bytearray(pcm_chunk)
 
     if content_type == ContentType.PCM_F32LE:
-        audio = torch.frombuffer(pcm_chunk, dtype=torch.float32).clone()
+        audio = torch.frombuffer(writable, dtype=torch.float32).clone()
     elif content_type == ContentType.PCM_F64LE:
-        audio = torch.frombuffer(pcm_chunk, dtype=torch.float64).clone().to(torch.float32)
+        audio = torch.frombuffer(writable, dtype=torch.float64).clone().to(torch.float32)
     elif content_type == ContentType.PCM_S32LE:
         audio = (
-            torch.frombuffer(pcm_chunk, dtype=torch.int32).clone().to(torch.float32) / 2147483648.0
+            torch.frombuffer(writable, dtype=torch.int32).clone().to(torch.float32) / 2147483648.0
         )
     else:
-        audio = torch.frombuffer(pcm_chunk, dtype=torch.int16).clone().to(torch.float32) / 32768.0
+        audio = torch.frombuffer(writable, dtype=torch.int16).clone().to(torch.float32) / 32768.0
 
     if audio_format.channels == 2:
         audio = audio.reshape(-1, 2).mean(dim=1)
