@@ -82,6 +82,7 @@ from music_assistant.helpers.audio import (
     get_normalization_mode,
     get_parts_from_position,
     is_grouping_preventing_dsp,
+    iter_pcm_slices,
     parse_extinf_metadata,
     resample_pcm_audio,
 )
@@ -1506,7 +1507,9 @@ class StreamsAudio:
                     yield _chunk
                     bytes_written += len(_chunk)
             else:
-                yield crossfade_data.data
+                for pcm_slice in iter_pcm_slices(crossfade_data.data, pcm_format, 1000):
+                    yield pcm_slice
+                    await asyncio.sleep(0)
                 bytes_written += len(crossfade_data.data)
             # skip past the audio already consumed by the crossfade
             fade_in_duration_seconds = (
@@ -1589,7 +1592,9 @@ class StreamsAudio:
         if not crossfade_allowed:
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
-            yield buffer
+            for pcm_slice in iter_pcm_slices(buffer, pcm_format, 1000):
+                yield pcm_slice
+                await asyncio.sleep(0)
         else:
             assert next_queue_item is not None
             # the remaining buffer is the fade-out tail of the current track
@@ -1666,7 +1671,9 @@ class StreamsAudio:
                     err,
                 )
                 next_queue_item = None
-                yield fade_out_data
+                for pcm_slice in iter_pcm_slices(fade_out_data, pcm_format, 1000):
+                    yield pcm_slice
+                    await asyncio.sleep(0)
                 bytes_written += len(fade_out_data)
                 del fade_out_data
         # make sure the buffer gets cleaned up
@@ -1857,7 +1864,9 @@ class StreamsAudio:
                             queue_track.name,
                             mix_err,
                         )
-                        yield last_fadeout_part
+                        for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
+                            yield pcm_slice
+                            await asyncio.sleep(0)
                         # full tail was pre-counted and is now yielded as-is
                         crossfade_bytes_written = 0
                         remaining_bytes = crossfade_buffer
@@ -1873,7 +1882,9 @@ class StreamsAudio:
                                 fadeout_share - len(last_fadeout_part)
                             ) / pcm_sample_size
                     if remaining_bytes:
-                        yield remaining_bytes
+                        for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
+                            yield pcm_slice
+                            await asyncio.sleep(0)
                         bytes_written += len(remaining_bytes)
                         del remaining_bytes
                     last_fadeout_part = b""
@@ -1901,7 +1912,9 @@ class StreamsAudio:
             if last_fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
                 # attribute these bytes to the previous track (they are its tail)
-                yield last_fadeout_part
+                for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
+                    yield pcm_slice
+                    await asyncio.sleep(0)
                 # full tail was pre-counted and is now yielded as-is
                 last_fadeout_part = b""
             if self.crossfade_allowed(
@@ -1915,12 +1928,16 @@ class StreamsAudio:
                 last_play_log_entry = play_log_entry
                 remaining_bytes = crossfade_buffer[:-crossfade_buffer_size]
                 if remaining_bytes:
-                    yield remaining_bytes
+                    for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
+                        yield pcm_slice
+                        await asyncio.sleep(0)
                     bytes_written += len(remaining_bytes)
                 del remaining_bytes
             elif smart_fades_mode != SmartFadesMode.DISABLED and crossfade_buffer:
                 bytes_written += len(crossfade_buffer)
-                yield crossfade_buffer
+                for pcm_slice in iter_pcm_slices(crossfade_buffer, pcm_format, 1000):
+                    yield pcm_slice
+                    await asyncio.sleep(0)
             crossfade_buffer = b""
 
             # update duration details based on the actual pcm data we sent
@@ -1947,7 +1964,9 @@ class StreamsAudio:
         #### HANDLE END OF QUEUE FLOW STREAM
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:
-            yield last_fadeout_part
+            for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
+                yield pcm_slice
+                await asyncio.sleep(0)
             # correct seconds streamed/duration
             last_part_seconds = len(last_fadeout_part) / pcm_sample_size
             streamdetails = queue_track.streamdetails
