@@ -221,17 +221,19 @@ class SmartCrossFade(SmartFade):
         # Store validated non-optional fields for type narrowing
         self.fade_out_bpm: float = fade_out_analysis.bpm
         self.fade_in_bpm: float = fade_in_analysis.bpm
-        self.fade_out_beats: npt.NDArray[np.float32] = fade_out_analysis.beats
         self.fade_in_beats: npt.NDArray[np.float32] = fade_in_analysis.beats
-        self.fade_out_downbeats: npt.NDArray[np.float32] = (
-            fade_out_analysis.downbeats
-            if fade_out_analysis.downbeats is not None
-            else fade_out_analysis.beats
-        )
         self.fade_in_downbeats: npt.NDArray[np.float32] = (
             fade_in_analysis.downbeats
             if fade_in_analysis.downbeats is not None
             else fade_in_analysis.beats
+        )
+        # Shift fade-out beats from full-track to buffer-local coordinates
+        buffer_offset = max(0.0, (fade_out_analysis.duration or 0.0) - SMART_CROSSFADE_DURATION)
+        self.fade_out_beats: npt.NDArray[np.float32] = fade_out_analysis.beats - buffer_offset
+        self.fade_out_downbeats: npt.NDArray[np.float32] = (
+            fade_out_analysis.downbeats - buffer_offset
+            if fade_out_analysis.downbeats is not None
+            else np.array([], dtype=np.float32)
         )
         super().__init__(logger)
 

@@ -76,8 +76,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
         """Handle async initialization of the provider."""
         logging.getLogger("torio._extension.utils").setLevel(self.logger.level + 10)
         torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
-        torch.backends.quantized.engine = "qnnpack"
         self._beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        # Select best available quantization engine (fbgemm is x86-only, qnnpack for ARM)
+        supported_engines = torch.backends.quantized.supported_engines
+        quantized_engine = next((e for e in ("fbgemm", "qnnpack") if e in supported_engines), None)
+        if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
+            torch.backends.quantized.engine = quantized_engine
         self._beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
             self._beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
         )

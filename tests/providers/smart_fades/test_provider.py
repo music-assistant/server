@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.smart_fades.provider import SmartFadesProvider
@@ -128,6 +128,7 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     stream_details.provider = "test"
     stream_details.queue_id = "test"
     stream_details.uri = "test://120bpm"
+    stream_details.media_type = MediaType.TRACK
 
     session_id = "test:test:test_120bpm"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -188,6 +189,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     stream_details.provider = "test"
     stream_details.queue_id = "test"
     stream_details.uri = "test://120bpm"
+    stream_details.media_type = MediaType.TRACK
 
     session_id = "test:test:test_120bpm_extended"
     await provider.start_analysis(session_id, stream_details, audio_format)
@@ -231,6 +233,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
         "A",
         "A#",
         "B",
+        "Bb",
     ]
     assert analysis.mode in ["major", "minor"]
 

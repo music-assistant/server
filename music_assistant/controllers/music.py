@@ -2564,7 +2564,8 @@ class MusicController(CoreController):
             # Smart fades analyses were previously computed on silence-stripped audio,
             # so beat timestamps are misaligned with the unstripped buffers now passed
             # to the crossfade mixer. Truncate the table so all analyses are re-computed.
-            await self._database.execute("DELETE FROM smart_fades_analysis")
+            with suppress(Exception):
+                await self._database.execute("DELETE FROM smart_fades_analysis")
 
         if prev_version <= 30:
             # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},

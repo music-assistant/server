@@ -124,8 +124,8 @@ def main() -> int:
         if package_name in pkg_suffixes:
             suffix = pkg_suffixes[package_name]
             final_requirements[package_name] = (
-                f"{req_str}{suffix}; platform_machine == 'x86_64'\n"
-                f"{req_str}; platform_machine != 'x86_64'"
+                f"{req_str}{suffix}; sys_platform == 'linux' and platform_machine == 'x86_64'\n"
+                f"{req_str}; sys_platform != 'linux' or platform_machine != 'x86_64'"
             )
         else:
             final_requirements[package_name] = req_str
