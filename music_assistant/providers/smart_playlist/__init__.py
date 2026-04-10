@@ -377,6 +377,16 @@ class SmartPlaylistProvider(MusicProvider):
                 and t.metadata.popularity >= rules.min_popularity
             ]
 
+        if rules.year_from is not None or rules.year_to is not None:
+            tracks = [
+                t
+                for t in tracks
+                if t.album is not None
+                and t.album.year is not None
+                and (rules.year_from is None or t.album.year >= rules.year_from)
+                and (rules.year_to is None or t.album.year <= rules.year_to)
+            ]
+
         if (
             has_seed_filter
             and not has_artist_filter

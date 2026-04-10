@@ -31,6 +31,8 @@ class SmartPlaylistRules:
     genre_names: dict[int, str] = field(default_factory=dict)
     artist_names: dict[int, str] = field(default_factory=dict)
     album_names: dict[int, str] = field(default_factory=dict)
+    year_from: int | None = None
+    year_to: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -47,6 +49,8 @@ class SmartPlaylistRules:
             "genre_names": {str(k): v for k, v in self.genre_names.items()},
             "artist_names": {str(k): v for k, v in self.artist_names.items()},
             "album_names": {str(k): v for k, v in self.album_names.items()},
+            "year_from": self.year_from,
+            "year_to": self.year_to,
         }
 
     @classmethod
@@ -68,6 +72,8 @@ class SmartPlaylistRules:
             genre_names={int(k): v for k, v in raw_genre_names.items()},
             artist_names={int(k): v for k, v in raw_artist_names.items()},
             album_names={int(k): v for k, v in raw_album_names.items()},
+            year_from=data.get("year_from"),
+            year_to=data.get("year_to"),
         )
 
     def human_readable(self) -> str:
@@ -87,6 +93,13 @@ class SmartPlaylistRules:
             parts.append(f"Similar to: {self.seed_track_uri}")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
+        if self.year_from is not None or self.year_to is not None:
+            if self.year_from is not None and self.year_to is not None:
+                parts.append(f"Year: {self.year_from}-{self.year_to}")
+            elif self.year_from is not None:
+                parts.append(f"Year: from {self.year_from}")
+            else:
+                parts.append(f"Year: to {self.year_to}")
         if not parts:
             return "No rules (all library tracks)"
         connector = f" {self.logic} "
