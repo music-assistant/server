@@ -10,7 +10,6 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
-from music_assistant.providers.sendspin.constants import DEFAULT_SENDSPIN_STATIC_DELAY
 
 MASS_APP_ID = "C35B0678"
 APP_MEDIA_RECEIVER = "CC1AD845"
@@ -80,6 +79,4 @@ def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
     """
     if (manufacturer, model) in CAST_MODEL_STATIC_DELAY:
         return CAST_MODEL_STATIC_DELAY[(manufacturer, model)]
-    if any(m == manufacturer for m, _ in CAST_MODEL_STATIC_DELAY):
-        return CAST_FALLBACK_STATIC_DELAY
-    return DEFAULT_SENDSPIN_STATIC_DELAY
+    return CAST_FALLBACK_STATIC_DELAY
