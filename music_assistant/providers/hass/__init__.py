@@ -231,8 +231,8 @@ async def get_config_entries(
     )
 
 
-async def _get_ha_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, ...]:
-    """Return config entries for player controls, TTS and AI task entity selection."""
+async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, ...]:
+    """Return the (entity based) config entries."""
     all_power_entities: list[ConfigValueOption] = []
     all_mute_entities: list[ConfigValueOption] = []
     all_volume_entities: list[ConfigValueOption] = []
@@ -660,7 +660,8 @@ class HomeAssistantProvider(PluginProvider):
 
     async def get_tts_message_url(self, message: str, language: str | None = None) -> str:
         """Handle text-to-speech via Home Assistant's REST API."""
-        entity_id = self.config.get_value(CONF_TTS_ENTITY)
+        if (entity_id := self.config.get_value(CONF_TTS_ENTITY)) is None:
+            raise UnsupportedFeature("TTS entity is not configured")
         ha_url, headers, http_session = self._get_ha_http()
         payload: dict[str, str] = {"engine_id": str(entity_id), "message": message}
         if language:
