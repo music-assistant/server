@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
@@ -129,7 +130,17 @@ class RaopStream(AirPlayProtocol):
                 # this is received more or less every second while playing
                 millis = int(line.split("elapsed milliseconds: ")[1])
                 elapsed_time = millis / 1000
-                player.set_state_from_stream(elapsed_time=elapsed_time)
+                # on the first elapsed time report, compute a fixed offset between
+                # the session start_time and this cliraop process start.
+                # this handles dynamic leader switching where a new cliraop process
+                # reports from 0 while the flow stream started much earlier.
+                if self._elapsed_time_offset is None and self.session:
+                    self._elapsed_time_offset = max(
+                        0, time.time() - self.session.start_time - elapsed_time
+                    )
+                if self._elapsed_time_offset:
+                    elapsed_time += self._elapsed_time_offset
+                player.set_state_from_stream(elapsed_time=elapsed_time, stream=self)
             elif "Password required, but none supplied." in line:
                 logger.error(
                     f"Player {self.player.name} requires a password. "

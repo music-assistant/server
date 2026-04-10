@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
 
+from .constants import CONF_QUALITY, QUALITY_HIGH, QUALITY_STANDARD
 from .provider import PandoraProvider
 
 if TYPE_CHECKING:
@@ -69,6 +70,22 @@ async def get_config_entries(
             label="Password",
             description="Your Pandora password",
             required=True,
+        ),
+        ConfigEntry(
+            key=CONF_QUALITY,
+            type=ConfigEntryType.STRING,
+            label="Audio quality",
+            description=(
+                "Audio quality to request from Pandora. High quality is only available with an "
+                "active Pandora subscription. If your account is not eligible for high-quality "
+                "streaming, standard quality will be used regardless of this setting."
+            ),
+            required=True,
+            default_value=QUALITY_STANDARD,
+            options=[
+                ConfigValueOption("Standard (64 kbps AAC+)", QUALITY_STANDARD),
+                ConfigValueOption("High (192 kbps MP3)", QUALITY_HIGH),
+            ],
         ),
         ConfigEntry(
             key=CONF_SOCKS_URL,

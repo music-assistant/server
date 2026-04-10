@@ -103,9 +103,12 @@ VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 YT_PLAYLIST_ID_DELIMITER = "🎵"
 PODCAST_EPISODE_SPLITTER = "|"
 YT_LIKED_SONGS_PLAYLIST_ID = "LM"
+YT_PERSONAL_PODCAST_PLAYLISTS = (
+    "SE",  # Episodes for later
+    "RDPN",  # New episodes
+)
 YT_PERSONAL_PLAYLISTS = (
     YT_LIKED_SONGS_PLAYLIST_ID,  # Liked songs
-    "SE",  # Episodes for Later
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
     "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
     "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
@@ -301,6 +304,9 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for playlist in playlists_obj:
+            playlist_id = playlist["id"]
+            if playlist_id in YT_PERSONAL_PODCAST_PLAYLISTS:
+                continue
             yield self._parse_playlist(playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -323,6 +329,9 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for podcast in podcasts_obj:
+            podcast_id = podcast.get("podcastId")
+            if podcast_id in YT_PERSONAL_PODCAST_PLAYLISTS:
+                continue
             yield self._parse_podcast(podcast)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
