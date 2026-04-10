@@ -40,7 +40,7 @@ def _make_session(
     session.start_ntp = 1  # dummy
     session.wait_start = 2.0
 
-    session._chunk_buffer = deque(maxlen=50)
+    session._chunk_buffer = deque(maxlen=150)
     for pos in chunk_positions:
         session._chunk_buffer.append((b"\x00" * PCM_SAMPLE_SIZE, pos))
 
