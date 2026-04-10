@@ -54,6 +54,12 @@ class AirPlayStreamSession:
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
+        # Raw PCM ring buffer for late joiners.  Capped at ~5 seconds.
+        # When a late joiner arrives we send this buffer to prime its
+        # pipeline so it starts playing quickly instead of waiting for
+        # the full pipeline to fill from scratch.
+        self._pcm_buffer = bytearray()
+        self._pcm_buffer_max = pcm_format.pcm_sample_size * 5  # 5 seconds
 
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Initialize stream session for all players."""
@@ -115,20 +121,16 @@ class AirPlayStreamSession:
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:
         """Add a sync client to the session as a late joiner.
 
-        Instead of feeding buffered audio from a ring buffer (which blocks
-        the audio streamer and existing players), we:
+        Uses the PCM ring buffer to prime the late joiner's pipeline so it
+        starts playing quickly.  All work happens under the lock to ensure
+        ``seconds_streamed`` and the buffer are consistent.
 
-        1. Calculate the NTP start time for the position ``seconds_streamed``
-           (the next chunk the audio streamer will write).
-        2. Start ffmpeg+CLI immediately with that NTP.
-        3. Add the player to sync_clients so the audio streamer starts
-           writing to it from the next chunk onwards.
-        4. The device takes ``wait_start`` ms to connect and buffer, during
-           which audio accumulates in the pipe — this is expected.
-
-        The trade-off: the late joiner takes longer to start playing
-        (it must wait for the pipeline to fill), but sync is guaranteed
-        because the NTP precisely matches the first byte written.
+        1. Snapshot the ring buffer and calculate how many seconds it holds.
+        2. NTP = ``start_time + (seconds_streamed - buffer_seconds)`` — the
+           first byte in the buffer maps to that stream position.
+        3. Start ffmpeg+CLI, write the buffer into ffmpeg (primes the pipe
+           while cliraop is still connecting), then add to sync_clients so
+           the audio streamer continues seamlessly from where the buffer ends.
         """
         if not self.sync_clients:
             return
@@ -139,23 +141,36 @@ class AirPlayStreamSession:
         now = time.time()
 
         async with self._lock:
-            # Read seconds_streamed under the lock so the value matches
-            # exactly the position where the audio streamer will next write
-            # to this player. Any mismatch causes the late joiner to be
-            # ahead or behind.
-            start_at = self.start_time + self.seconds_streamed
+            pcm_sample_size = self.pcm_format.pcm_sample_size
+            # Snapshot the buffer and calculate its duration
+            buffered_pcm = bytes(self._pcm_buffer)
+            buffer_seconds = len(buffered_pcm) / pcm_sample_size
+            # The first byte in the buffer corresponds to this stream position
+            first_byte_pos = self.seconds_streamed - buffer_seconds
+            start_at = self.start_time + first_byte_pos
             start_ntp = unix_time_to_ntp(start_at)
 
             self.prov.logger.debug(
-                "Late joiner %s: stream_pos=%.2fs, start_at is %.2fs from now",
+                "Late joiner %s: sending %.2fs of buffered audio, "
+                "stream_pos=%.2fs, first_byte_pos=%.2fs, start_at is %.2fs from now",
                 airplay_player.player_id,
+                buffer_seconds,
                 self.seconds_streamed,
+                first_byte_pos,
                 start_at - now,
             )
 
+            # Start ffmpeg+CLI and immediately write the buffered PCM.
+            # ffmpeg accepts data on stdin right away; it queues in the pipe
+            # while cliraop is still connecting to the device.
+            await self._start_client(airplay_player, start_ntp)
+            if buffered_pcm:
+                await self._write_chunk_to_player(airplay_player, buffered_pcm)
+
+            # Now add to sync_clients — the audio streamer's next chunk
+            # continues exactly from seconds_streamed where the buffer ended.
             if airplay_player not in self.sync_clients:
                 self.sync_clients.append(airplay_player)
-            await self._start_client(airplay_player, start_ntp)
 
         # Wait for device connection outside the lock.
         if airplay_player.stream:
@@ -242,9 +257,13 @@ class AirPlayStreamSession:
             if not sync_clients:
                 return False
 
-            # Update seconds_streamed under the lock so add_client always
-            # reads a value consistent with what has been written.
+            # Update seconds_streamed and ring buffer under the lock so
+            # add_client always reads consistent values.
             self.seconds_streamed += len(chunk) / self.pcm_format.pcm_sample_size
+            self._pcm_buffer.extend(chunk)
+            overflow = len(self._pcm_buffer) - self._pcm_buffer_max
+            if overflow > 0:
+                del self._pcm_buffer[:overflow]
 
             # Write chunk to all players
             write_tasks = [self._write_chunk_to_player(x, chunk) for x in sync_clients if x.stream]
