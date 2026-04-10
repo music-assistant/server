@@ -12,7 +12,6 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
-from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import StreamingProtocol
@@ -198,36 +197,16 @@ class AirPlayStreamSession:
 
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Stream audio to all players."""
-        pcm_sample_size = self.pcm_format.pcm_sample_size
-        seconds_since_yield = 0.0
         stream_error: BaseException | None = None
         try:
             async for chunk in audio_source:
                 if not self.sync_clients:
                     break
 
-                # Cap chunks at ~1 second to prevent write timeouts on large
-                # segments (e.g. crossfades). Smaller source chunks pass through as-is.
-                for sub_chunk in iter_pcm_slices(chunk, self.pcm_format, target_duration_ms=1000):
-                    if not self.sync_clients:
-                        break
-                    has_running_clients = await self._write_chunk_to_all_players(sub_chunk)
-                    if not has_running_clients:
-                        self.prov.logger.debug(
-                            "No running clients remaining, stopping audio streamer"
-                        )
-                        break
-                    # seconds_streamed is updated inside _write_chunk_to_all_players
-                    # under the lock, so add_client reads a consistent value.
-                    seconds_since_yield += len(sub_chunk) / pcm_sample_size
-                    # Yield periodically (~every 0.5s of audio) so the event loop
-                    # can process other tasks without starving the audio pipeline.
-                    if seconds_since_yield >= 0.5:
-                        seconds_since_yield = 0.0
-                        await asyncio.sleep(0)
-                else:
-                    continue
-                break
+                has_running_clients = await self._write_chunk_to_all_players(chunk)
+                if not has_running_clients:
+                    self.prov.logger.debug("No running clients remaining, stopping audio streamer")
+                    break
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
