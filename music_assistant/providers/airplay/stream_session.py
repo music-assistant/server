@@ -161,9 +161,18 @@ class AirPlayStreamSession:
             # Start ffmpeg+CLI and immediately write the buffered PCM.
             # ffmpeg accepts data on stdin right away; it queues in the pipe
             # while cliraop is still connecting to the device.
-            await self._start_client(airplay_player, start_ntp)
-            if buffered_pcm:
-                await self._write_chunk_to_player(airplay_player, buffered_pcm)
+            try:
+                await self._start_client(airplay_player, start_ntp)
+                if buffered_pcm:
+                    await self._write_chunk_to_player(airplay_player, buffered_pcm)
+            except Exception as err:
+                self.prov.logger.warning(
+                    "Late joiner %s: failed to start/prime pipeline: %s",
+                    airplay_player.player_id,
+                    err,
+                )
+                await self.stop_client(airplay_player)
+                return
 
             # Now add to sync_clients — the audio streamer's next chunk
             # continues exactly from seconds_streamed where the buffer ended.
