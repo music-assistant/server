@@ -86,6 +86,8 @@ class AirPlayProtocol(ABC):
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         # we also need to send the metadata after connection, because some players (e.g. Sonos)
         # simply won't start playback until they receive the metadata ?!
+        # reset checksum so the resend isn't blocked by deduplication
+        self._metadata_checksum = ""
         self.mass.call_later(2, self.player._on_player_media_updated)
 
     async def stop(self, force: bool = False) -> None:

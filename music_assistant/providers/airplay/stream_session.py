@@ -139,13 +139,13 @@ class AirPlayStreamSession:
         2. Collect matching ring buffer audio to prime the pipeline.
         3. The NTP start time is derived from the first byte's stream position
            via the reference clock: ``start_ntp = start_time + first_byte_pos``.
-        4. Start ffmpeg+CLI immediately inside the lock, then release it.
-        5. Feed buffered audio OUTSIDE the lock — the audio streamer is not
-           blocked because the player is not yet in sync_clients.
-        6. After feeding completes, add the player to sync_clients so the
-           audio streamer includes it in real-time writes going forward.
-           The first real-time chunk continues seamlessly from where the
-           buffered data ended (both are at ``seconds_streamed``).
+        4. While holding the session lock, start ffmpeg+CLI, add the player
+           to sync_clients, and feed the buffered chunks. Keeping this under
+           the lock prevents the audio streamer from interleaving writes with
+           the buffered catch-up, so the late joiner transitions to live
+           playback at a consistent stream position.
+        5. Release the lock so the audio streamer includes the new player in
+           real-time writes going forward.
         """
         if not self.sync_clients:
             return
@@ -396,10 +396,9 @@ class AirPlayStreamSession:
         Chunks before that position are discarded; a straddling chunk is
         trimmed so byte 0 aligns exactly with the target position.
 
-        The result is capped to ``_MAX_LATE_JOIN_BUFFER_S`` from the most
-        recent end.  This keeps pipe-blocking short (the data is fed through
-        ffmpeg→CLI inside the lock) while pushing ``start_at`` further into
-        the future — giving the device more headroom to connect and buffer.
+        Returns all eligible chunks from the ring buffer. The buffer is sized
+        to cover the full pipeline depth (~15s), which is needed for the NTP
+        start time to land close to ``now + wait_start``.
 
         :param airplay_player: The late joiner player.
         :param now: Current wall-clock time. If None, uses time.time().
