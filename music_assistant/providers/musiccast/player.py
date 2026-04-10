@@ -80,12 +80,12 @@ def get_player_option_translation_key(mc_key: str) -> str:
     """
     mc_key = mc_key.lower().replace("zone_", "")
     if mc_key == "tone_control_bass":
-        return "player_options.bass"
+        return "bass"
     if mc_key == "tone_control_treble":
-        return "player_options.treble"
+        return "treble"
     if mc_key == "surr_decoder_type":
-        return "player_options.surround_decoder_type"
-    return f"player_options.{mc_key}"
+        return "surround_decoder_type"
+    return mc_key
 
 
 @dataclass
