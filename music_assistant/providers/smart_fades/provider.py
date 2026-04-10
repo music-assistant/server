@@ -14,6 +14,7 @@ import soxr
 import torch
 import torchaudio
 from beat_this.inference import Spect2Frames
+from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -143,6 +144,10 @@ class SmartFadesProvider(AudioAnalysisProvider):
         audio_format: AudioFormat,
     ) -> bool:
         """Start beat tracking analysis for a new track."""
+        if streamdetails.media_type != MediaType.TRACK:
+            # We only want to analyze tracks
+            return False
+
         block_seconds = 10.0
 
         needs_resample = audio_format.sample_rate != ANALYSIS_SAMPLE_RATE
@@ -245,6 +250,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             self.domain,
             analysis,
             analysis_version=self.analysis_version,
+            media_type=MediaType.TRACK,
         )
 
         self.logger.debug(
