@@ -804,7 +804,7 @@ class SendspinPlayer(Player):
                     label="Sync delay (ms)",
                     description=(
                         "Delay in milliseconds to compensate for "
-                        "device-specific audio latency (e.g., AV receiver)."
+                        "device-specific audio latency (e.g., amplifiers, system delay)."
                     ),
                     required=False,
                     default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
