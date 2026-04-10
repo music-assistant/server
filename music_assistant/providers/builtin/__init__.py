@@ -651,7 +651,7 @@ class BuiltinProvider(MusicProvider):
             parsed_items,
             playlist_image_url,
         )
-        return playlist
+        return await self.get_playlist(playlist.item_id)
 
     async def import_radios(self, m3u_data: str) -> int:
         """Import radio stations from M3U8 format.

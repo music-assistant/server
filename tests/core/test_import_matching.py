@@ -320,6 +320,9 @@ async def test_import_playlist_preserves_playlist_image() -> None:
     prov = _make_provider()
     prov_any = cast("Any", prov)
     prov_any.create_playlist = AsyncMock(return_value=_make_playlist("Imported Playlist"))
+    prov_any.get_playlist = AsyncMock(
+        return_value=_make_playlist("Imported Playlist", "https://img.example.com/cover.jpg")
+    )
     prov_any._write_m3u_file = AsyncMock()
 
     m3u_data = generate_m3u(
@@ -328,13 +331,15 @@ async def test_import_playlist_preserves_playlist_image() -> None:
         "https://img.example.com/cover.jpg",
     )
 
-    await prov.import_playlist(m3u_data)
+    result = await prov.import_playlist(m3u_data)
 
     assert prov_any._write_m3u_file.await_args is not None
     args = prov_any._write_m3u_file.await_args.args
     assert args[0] == "playlist_1"
     assert args[1] == "Imported Playlist"
     assert args[3] == "https://img.example.com/cover.jpg"
+    assert result.image is not None
+    assert result.image.path == "https://img.example.com/cover.jpg"
 
 
 async def test_remove_playlist_tracks_preserves_playlist_image() -> None:

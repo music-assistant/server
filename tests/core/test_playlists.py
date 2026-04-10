@@ -323,9 +323,7 @@ def test_generate_m3u_with_playlist_image() -> None:
     """Test M3U generation with a playlist-level cover image."""
     items = [PlaylistItem(path="spotify://track/abc123", title="Test", length="120")]
     result = generate_m3u("Test", items, "https://img.example.com/cover.jpg")
-    assert result.startswith(
-        "#EXTM3U\n#EXTIMG:https://img.example.com/cover.jpg\n#PLAYLIST:Test\n"
-    )
+    assert result.startswith("#EXTM3U\n#EXTIMG:https://img.example.com/cover.jpg\n#PLAYLIST:Test\n")
 
 
 def test_generate_m3u_empty() -> None:
