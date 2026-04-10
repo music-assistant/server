@@ -1748,6 +1748,19 @@ class StreamsAudio:
                 except QueueEmpty:
                     break
 
+            if queue_track.media_type == MediaType.RADIO:
+                # radio streams should not be played in flow mode
+                # break out of the flow stream and let the queue controller
+                # restart playback using the single item stream
+                self.logger.info(
+                    "Radio item %s (%s) encountered in flow stream for queue %s "
+                    "- breaking out to single item stream",
+                    queue_track.queue_item_id,
+                    queue_track.name,
+                    queue.display_name,
+                )
+                break
+
             if queue_track.streamdetails is None:
                 self.logger.error(
                     "No StreamDetails for queue item %s (%s) on queue %s - skipping track",
