@@ -158,17 +158,16 @@ def _clear_qr_route(route_path: str | None) -> None:
 
 def _get_qr_route_path(values: dict[str, ConfigValueType]) -> str | None:
     """Resolve current session QR route path from config values."""
+    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
+    if qr_page_url:
+        parsed = urlparse(qr_page_url)
+        path = parsed.path or qr_page_url
+        if path and not path.startswith("/"):
+            path = f"/{path}"
+        if path.startswith("/auth/qqmusic/qr/"):
+            return path
     if session_id := values.get("session_id"):
         return f"/auth/qqmusic/qr/{session_id}"
-    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
-    if not qr_page_url:
-        return None
-    parsed = urlparse(qr_page_url)
-    path = parsed.path or qr_page_url
-    if path and not path.startswith("/"):
-        path = f"/{path}"
-    if path.startswith("/auth/qqmusic/qr/"):
-        return path
     return None
 
 
