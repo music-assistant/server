@@ -75,6 +75,4 @@ def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
     :param manufacturer: Device manufacturer (e.g., "Google Inc.").
     :param model: Device model name (e.g., "Google Nest Mini").
     """
-    if (manufacturer, model) in CAST_MODEL_STATIC_DELAY:
-        return CAST_MODEL_STATIC_DELAY[(manufacturer, model)]
-    return CAST_FALLBACK_STATIC_DELAY
+    return CAST_MODEL_STATIC_DELAY.get((manufacturer, model), CAST_FALLBACK_STATIC_DELAY)
