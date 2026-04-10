@@ -107,7 +107,8 @@ class MPDPlayer(Player):
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
-        """Return player-level config entries.
+        """
+        Return player-level config entries.
 
         :param action: Optional action key from the config UI.
         :param values: Optional intermediate config values from the UI.
