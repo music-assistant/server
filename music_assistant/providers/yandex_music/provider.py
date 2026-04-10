@@ -33,6 +33,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from PIL import Image as PilImage
+from ya_passport_auth import SecretStr
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
@@ -168,7 +169,7 @@ class YandexMusicProvider(MusicProvider):
         # Try existing music token first (fast path)
         if token:
             try:
-                self._client = YandexMusicClient(str(token), base_url=str(base_url))
+                self._client = YandexMusicClient(SecretStr(str(token)), base_url=str(base_url))
                 await self._client.connect()
             except LoginFailed:
                 self.logger.warning("Music token is invalid or expired")
@@ -184,8 +185,8 @@ class YandexMusicProvider(MusicProvider):
         # Refresh from x_token if music token absent or failed
         if not token and x_token:
             try:
-                new_music_token = await refresh_music_token(str(x_token))
-                self._update_config_value(CONF_TOKEN, new_music_token, encrypted=True)
+                new_music_token = await refresh_music_token(SecretStr(str(x_token)))
+                self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
                 self._client = YandexMusicClient(new_music_token, base_url=str(base_url))
                 await self._client.connect()
                 self.logger.info("Refreshed music token from session token")

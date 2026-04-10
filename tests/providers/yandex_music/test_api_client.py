@@ -10,6 +10,7 @@ from unittest import mock
 
 import pytest
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from ya_passport_auth import SecretStr
 from yandex_music.exceptions import NetworkError
 from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
@@ -29,7 +30,7 @@ def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
 
     :return: Tuple of (YandexMusicClient, mock_underlying_client).
     """
-    client = YandexMusicClient(token="fake_token")
+    client = YandexMusicClient(token=SecretStr("fake_token"))
     mock_underlying = mock.AsyncMock()
     client._client = mock_underlying
     client._user_id = 12345

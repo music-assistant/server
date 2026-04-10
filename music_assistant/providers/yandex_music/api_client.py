@@ -29,6 +29,7 @@ from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
 
 if TYPE_CHECKING:
+    from ya_passport_auth import SecretStr
     from yandex_music import DownloadInfo
     from yandex_music.feed.feed import Feed
     from yandex_music.landing.chart_info import ChartInfo
@@ -51,10 +52,10 @@ _T = TypeVar("_T")
 class YandexMusicClient:
     """Wrapper around yandex-music-api ClientAsync."""
 
-    def __init__(self, token: str, base_url: str | None = None) -> None:
+    def __init__(self, token: SecretStr, base_url: str | None = None) -> None:
         """Initialize the Yandex Music client.
 
-        :param token: Yandex Music OAuth token.
+        :param token: Yandex Music OAuth token (wrapped in SecretStr).
         :param base_url: Optional API base URL (defaults to Yandex Music API).
         """
         self._token = token
@@ -79,7 +80,9 @@ class YandexMusicClient:
         :raises LoginFailed: If the token is invalid.
         """
         try:
-            self._client = await ClientAsync(self._token, base_url=self._base_url).init()
+            self._client = await ClientAsync(
+                self._token.get_secret(), base_url=self._base_url
+            ).init()
             if self._client.me is None or self._client.me.account is None:
                 raise LoginFailed("Failed to get account info")
             self._user_id = self._client.me.account.uid

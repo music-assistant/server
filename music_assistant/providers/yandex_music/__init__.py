@@ -6,27 +6,23 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import LoginFailed
 
 from .constants import (
     CONF_ACTION_AUTH_QR,
     CONF_ACTION_CLEAR_AUTH,
     CONF_BASE_URL,
-    CONF_CODECS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_REMEMBER_SESSION,
     CONF_TOKEN,
-    CONF_TRANSPORT,
     CONF_X_TOKEN,
     DEFAULT_BASE_URL,
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_SUPERB,
-    TRANSPORT_ENCRAW,
-    TRANSPORT_RAW,
 )
 from .provider import YandexMusicProvider
 from .yandex_auth import perform_qr_auth
@@ -77,7 +73,7 @@ async def get_config_entries(
     if action == CONF_ACTION_AUTH_QR:
         session_id = values.get("session_id")
         if not session_id:
-            raise InvalidDataError("Missing session_id for QR authentication")
+            raise LoginFailed("Missing session_id for QR authentication")
         x_token, music_token = await perform_qr_auth(mass, str(session_id))
         values[CONF_TOKEN] = music_token
         if values.get(CONF_REMEMBER_SESSION, True):
@@ -146,11 +142,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Yandex Music Token",
-            description="Music token — populated automatically by QR login, "
-            "or enter manually. See the documentation for how to obtain it.",
-            required=True,
+            label="Yandex Music Token (manual)",
+            description="Advanced: manually enter a music token. "
+            "See the documentation for how to obtain it.",
+            required=False,
             hidden=is_authenticated,
+            advanced=True,
             value=cast("str", values.get(CONF_TOKEN)) if values else None,
         ),
         # x_token (internal storage, always hidden)
@@ -175,34 +172,6 @@ async def get_config_entries(
                 ConfigValueOption("Superb (FLAC Lossless)", QUALITY_SUPERB),
             ],
             default_value=QUALITY_BALANCED,
-        ),
-        # Stream transport (advanced)
-        ConfigEntry(
-            key=CONF_TRANSPORT,
-            type=ConfigEntryType.STRING,
-            label="Stream transport",
-            description="Raw streams directly (recommended). "
-            "Encrypted (encraw) adds AES decryption layer. "
-            "Both use windowed downloads to prevent CDN drops.",
-            options=[
-                ConfigValueOption("Raw (recommended)", TRANSPORT_RAW),
-                ConfigValueOption("Encrypted (encraw)", TRANSPORT_ENCRAW),
-            ],
-            default_value=TRANSPORT_RAW,
-            required=False,
-            advanced=True,
-        ),
-        # Codecs override (advanced)
-        ConfigEntry(
-            key=CONF_CODECS,
-            type=ConfigEntryType.STRING,
-            label="Codecs override",
-            description="Comma-separated codec priority for get-file-info API. "
-            "Leave empty to use the default for your quality setting. "
-            "Example: flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4",
-            default_value="",
-            required=False,
-            advanced=True,
         ),
         # My Wave maximum tracks (advanced)
         ConfigEntry(
