@@ -62,12 +62,8 @@ def _setup_stream(player: MagicMock) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_late_join_start_at_matches_seconds_streamed() -> None:
-    """Test that start_at = start_time + seconds_streamed.
-
-    The late joiner starts from the current stream position. The NTP
-    tells the device to play byte 0 at start_time + seconds_streamed.
-    """
+async def test_late_join_empty_buffer() -> None:
+    """Test that with an empty buffer, start_at = start_time + seconds_streamed."""
     now = time.time()
     start_time = now - 10
     seconds_streamed = 12.5
@@ -92,9 +88,42 @@ async def test_late_join_start_at_matches_seconds_streamed() -> None:
 
     assert captured_start_at, "unix_time_to_ntp was never called"
     expected = start_time + seconds_streamed
+    assert abs(captured_start_at[0] - expected) < 0.1
+
+
+@pytest.mark.asyncio
+async def test_late_join_with_buffered_pcm() -> None:
+    """Test that with a non-empty buffer, start_at accounts for buffer duration."""
+    now = time.time()
+    start_time = now - 10
+    seconds_streamed = 12.5
+    session = _make_session(start_time, seconds_streamed)
+    # Fill the ring buffer with 3 seconds of PCM
+    session._pcm_buffer = bytearray(b"\x00" * PCM_SAMPLE_SIZE * 3)
+    player = _make_late_joiner(wait_start_ms=2000)
+
+    captured_start_at: list[float] = []
+
+    def capture_ntp(unix_ts: float) -> int:
+        captured_start_at.append(unix_ts)
+        return 1
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            side_effect=capture_ntp,
+        ),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+    assert captured_start_at, "unix_time_to_ntp was never called"
+    # NTP should be start_time + (seconds_streamed - 3.0)
+    expected = start_time + (seconds_streamed - 3.0)
     assert abs(captured_start_at[0] - expected) < 0.1, (
-        f"start_at should be start_time + seconds_streamed, "
-        f"got diff={captured_start_at[0] - expected:.4f}s"
+        f"start_at should account for buffer, expected {expected}, got {captured_start_at[0]}"
     )
 
 

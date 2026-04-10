@@ -132,15 +132,14 @@ class AirPlayStreamSession:
            while cliraop is still connecting), then add to sync_clients so
            the audio streamer continues seamlessly from where the buffer ends.
         """
-        if not self.sync_clients:
-            return
-        first_client = self.sync_clients[0]
-        if not first_client.stream or not first_client.stream.running:
-            return
-
         now = time.time()
 
         async with self._lock:
+            if not self.sync_clients:
+                return
+            first_client = self.sync_clients[0]
+            if not first_client.stream or not first_client.stream.running:
+                return
             pcm_sample_size = self.pcm_format.pcm_sample_size
             # Snapshot the buffer and calculate its duration
             buffered_pcm = bytes(self._pcm_buffer)
