@@ -219,13 +219,13 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TTS_ENTITY,
             type=ConfigEntryType.STRING,
-            label="Text-to-Speech entity",
+            label=CONF_TTS_ENTITY,
             required=False,
         ),
         ConfigEntry(
             key=CONF_AI_TASK_ENTITY,
             type=ConfigEntryType.STRING,
-            label="AI Task entity",
+            label=CONF_AI_TASK_ENTITY,
             required=False,
         ),
     )
@@ -321,29 +321,25 @@ async def _get_ha_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry
             "like to import as player Mute controls in Music Assistant.",
             category="player_controls",
         ),
-    ]
-    entries.append(
         ConfigEntry(
             key=CONF_TTS_ENTITY,
             type=ConfigEntryType.STRING,
             label="Text-to-Speech entity",
             required=False,
             options=tts_entities,
-            description="Select which Home Assistant TTS entity to use for text-to-speech.",
+            description="Select which Home Assistant TTS entity you like to use for text-to-speech capabilities inside Music Assistant.",
             category="Features",
-        )
-    )
-    entries.append(
+        ),
         ConfigEntry(
             key=CONF_AI_TASK_ENTITY,
             type=ConfigEntryType.STRING,
             label="AI Task entity",
             required=False,
             options=ai_task_entities,
-            description="Select which Home Assistant AI Task entity to use for AI queries.",
+            description="Select which Home Assistant AI Task entity you like to use for AI queries inside Music Assistant.",
             category="Features",
-        )
-    )
+        ),
+    ]
     return tuple(entries)
 
 
