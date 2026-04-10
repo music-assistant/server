@@ -59,9 +59,7 @@ CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(
     safe_max_bit_depth=16,
 )
 
-# Measured defaults for known Cast device models.
-# Values are static_delay_ms (positive = compensate by playing earlier).
-# Source: https://github.com/music-assistant/server/pull/2858
+# Measured defaults for known Cast models.
 CAST_MODEL_STATIC_DELAY: dict[tuple[str, str], int] = {
     ("Google Inc.", "Google Home Mini"): 330,
     ("Google Inc.", "Google Nest Mini"): 427,

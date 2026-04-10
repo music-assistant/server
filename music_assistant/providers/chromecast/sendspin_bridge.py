@@ -483,7 +483,7 @@ class SendspinBridgeManager:
                     bridge_client_id,
                     {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)},
                 )
-                # Write model-based delay default if no saved value exists.
+                # Write default value if no (user) saved delay exists.
                 raw_delay = self.mass.config.get_raw_player_config_value(
                     bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
                 )
