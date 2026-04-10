@@ -82,6 +82,25 @@ class SendspinPulseAudioBridge:
                 {IdentifierType.UUID: device_uuid},
             )
 
+        # Advertise the sink's actual native format so MA transcodes to the
+        # correct rate/depth before sending chunks.  We list PCM at every
+        # standard bit-depth the sink's rate supports so MA can pick the
+        # best match for each track (bit-perfect where possible).
+        sink_rate = self.sample_rate
+        sink_depth = self.bit_depth
+        # Build format list: prefer sink-native depth first, then fall back
+        # to the bridge default so at least something is always supported.
+        _depths = sorted({sink_depth, BRIDGE_BIT_DEPTH}, reverse=True)
+        supported_formats = [
+            SupportedAudioFormat(
+                codec=AudioCodec.PCM,
+                channels=BRIDGE_CHANNELS,
+                sample_rate=sink_rate,
+                bit_depth=d,
+            )
+            for d in _depths
+        ]
+
         hello = ClientHelloPayload(
             client_id=self._bridge_client_id,
             name=self.display_name,
@@ -92,14 +111,7 @@ class SendspinPulseAudioBridge:
                 manufacturer="PulseAudio",
             ),
             player_support=ClientHelloPlayerSupport(
-                supported_formats=[
-                    SupportedAudioFormat(
-                        codec=AudioCodec.PCM,
-                        channels=BRIDGE_CHANNELS,
-                        sample_rate=BRIDGE_SAMPLE_RATE,
-                        bit_depth=BRIDGE_BIT_DEPTH,
-                    )
-                ],
+                supported_formats=supported_formats,
                 buffer_capacity=1_000,
                 supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
             ),
@@ -183,14 +195,22 @@ class SendspinPulseAudioBridge:
         self.mass.create_task(self._stop_streaming_locked())
 
     def _on_volume_change(self, volume: int) -> None:
+        self.logger.debug("Volume change received: %d", volume)
         self.mass.create_task(self.player.volume_set(volume))
 
     def _on_mute_change(self, muted: bool) -> None:
+        self.logger.debug("Mute change received: %s", muted)
         self.mass.create_task(self.player.volume_mute(muted))
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         if not self._is_streaming:
             return
+        if not hasattr(self, '_logged_chunk_fmt'):
+            self.logger.warning(
+                "First chunk: len=%d  bridge sample_rate=%d bit_depth=%d",
+                len(chunk.data), self.sample_rate, self.bit_depth,
+            )
+            self._logged_chunk_fmt = True
         self._write_queue.put_nowait(chunk.data)
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
