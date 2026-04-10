@@ -195,9 +195,9 @@ class AirPlayStreamSession:
                             "No running clients remaining, stopping audio streamer"
                         )
                         break
-                    sub_duration = len(sub_chunk) / pcm_sample_size
-                    self.seconds_streamed += sub_duration
-                    seconds_since_yield += sub_duration
+                    # seconds_streamed is updated inside _write_chunk_to_all_players
+                    # under the lock, so add_client reads a consistent value.
+                    seconds_since_yield += len(sub_chunk) / pcm_sample_size
                     # Yield periodically (~every 0.5s of audio) so the event loop
                     # can process other tasks without starving the audio pipeline.
                     if seconds_since_yield >= 0.5:
@@ -241,6 +241,10 @@ class AirPlayStreamSession:
             sync_clients = [x for x in self.sync_clients if x.stream and x.stream.running]
             if not sync_clients:
                 return False
+
+            # Update seconds_streamed under the lock so add_client always
+            # reads a value consistent with what has been written.
+            self.seconds_streamed += len(chunk) / self.pcm_format.pcm_sample_size
 
             # Write chunk to all players
             write_tasks = [self._write_chunk_to_player(x, chunk) for x in sync_clients if x.stream]
