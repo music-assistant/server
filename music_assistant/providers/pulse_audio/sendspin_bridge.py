@@ -116,7 +116,7 @@ class SendspinPulseAudioBridge:
         )
 
         for role in self._sendspin_client.roles_by_family("player"):
-            self.logger.warning(
+            self.logger.debug(
                 "Found player role: %s type=%s", role.role_id, type(role).__name__
             )
             if isinstance(role, BridgePlayerRole):
@@ -198,11 +198,7 @@ class SendspinPulseAudioBridge:
         if self.player.volume_muted:
             return b"\x00" * len(pcm_data)
         volume = self.player.volume_level
-        if not hasattr(self, '_logged_vol'):
-            self.logger.warning(
-                "VOL CHECK: level=%s muted=%s", volume, self.player.volume_muted
-            )
-            self._logged_vol = True
+        self.logger.debug("Applying software volume: level=%s", volume)
         if volume is None or volume >= 100:
             return pcm_data
         scale = volume / 100.0
@@ -222,7 +218,7 @@ class SendspinPulseAudioBridge:
         stream: PASimpleStream | None = None
         write_future: asyncio.Future | None = None
         try:
-            self.logger.warning(
+            self.logger.debug(
                 "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
                 self.sink_name, self.sample_rate, BRIDGE_CHANNELS, self.bit_depth
             )
@@ -242,15 +238,7 @@ class SendspinPulseAudioBridge:
                 data = await self._write_queue.get()
                 if data is None or not self._is_streaming:
                     break
-                if not hasattr(self, '_logged_chunk'):
-                    samples_32 = np.frombuffer(data, dtype=np.int32)
-                    samples_16 = np.frombuffer(data, dtype=np.int16)
-                    self.logger.warning(
-                        "CHUNK DIAG: len=%d max32=%d max16=%d rate=%d depth=%d",
-                        len(data), int(samples_32.max()), int(samples_16.max()),
-                        self.sample_rate, self.bit_depth
-                    )
-                    self._logged_chunk = True
+                self.logger.debug("Audio chunk received: len=%d", len(data))
                 data = self._apply_software_volume(data)
                 write_future = loop.run_in_executor(None, stream.write, data)
                 await write_future
