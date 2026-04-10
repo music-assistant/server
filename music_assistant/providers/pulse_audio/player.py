@@ -52,6 +52,7 @@ class LocalPulseAudioPlayer(Player):
         self._attr_device_info.add_identifier(IdentifierType.UUID, player_id)
         self._attr_can_group_with = set()
         self._attr_volume_level = 25
+        self._attr_volume_muted = False
         self._pa_sink_name = pa_sink_name
 
     @property
@@ -66,7 +67,7 @@ class LocalPulseAudioPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command."""
-        self.logger.warning("volume_set called: %s", volume_level)
+        self.logger.debug("volume_set called: %s", volume_level)
         self._attr_volume_level = volume_level
         self.update_state()
 
