@@ -231,11 +231,30 @@ def get_absolute_path(base_path: str, path: str) -> str:
     return os.path.join(base_path, path)
 
 
+# Errors that are user/folder-specific and should not be treated as a signal that
+# the whole provider is unavailable. Everything else (connection loss, I/O error,
+# "no such file or directory" etc.) is assumed to indicate that the underlying
+# filesystem became unreachable and is propagated to the caller.
+_NON_FATAL_SCAN_ERRNOS = frozenset(
+    {
+        errno.EINVAL,  # unsupported characters in a name
+        errno.EACCES,  # permission denied on a single folder/file
+        errno.EPERM,  # operation not permitted on a single folder/file
+    }
+)
+
+
+def _is_fatal_scan_error(err: OSError) -> bool:
+    """Return whether an OSError should abort a sync to prevent data loss."""
+    return err.errno not in _NON_FATAL_SCAN_ERRNOS
+
+
 def recursive_iter(
     path: str,
     base_path: str,
     supported_extensions: set[str],
     log: logging.Logger,
+    scan_errors: list[OSError] | None = None,
 ) -> Iterator[FileSystemItem]:
     """Recursively traverse directory entries yielding supported files.
 
@@ -243,7 +262,13 @@ def recursive_iter(
     :param base_path: The root base path for constructing relative paths.
     :param supported_extensions: Set of file extensions to include (lowercase, no dot).
     :param log: Logger instance to use for warnings/debug messages.
+    :param scan_errors: Optional list that will be populated with any critical OSErrors
+        encountered while scanning directories. Callers can inspect this to detect a
+        partially-failed scan (e.g. a NAS share becoming unavailable mid-sync) and
+        avoid taking destructive actions on the result. Per-folder permission issues
+        and other non-fatal errors are logged but are not recorded here.
     """
+    is_root = path == base_path
     try:
         scan_iter = os.scandir(path)
     except OSError as err:
@@ -254,9 +279,25 @@ def recursive_iter(
             )
         else:
             log.warning("Unable to scan directory %s: %s", path, err)
+            # Always treat a failure to scan the root base path as fatal — it
+            # means the whole provider is unreachable.
+            if scan_errors is not None and (is_root or _is_fatal_scan_error(err)):
+                scan_errors.append(err)
         return
     with scan_iter:
-        for item in scan_iter:
+        while True:
+            try:
+                item = next(scan_iter)
+            except StopIteration:
+                break
+            except OSError as err:
+                # The directory became unreadable mid-iteration (e.g. the NAS share
+                # went away). Record the error so the caller can abort destructive
+                # follow-up work and stop walking this directory.
+                log.warning("Error while scanning directory %s: %s", path, err)
+                if scan_errors is not None and (is_root or _is_fatal_scan_error(err)):
+                    scan_errors.append(err)
+                return
             if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                 continue
             try:
@@ -268,9 +309,15 @@ def recursive_iter(
                         "Skipping '%s' - unsupported characters in name",
                         item.name,
                     )
+                else:
+                    log.warning("Unable to stat '%s': %s", item.path, err)
+                    if scan_errors is not None and _is_fatal_scan_error(err):
+                        scan_errors.append(err)
                 continue
             if is_dir:
-                yield from recursive_iter(item.path, base_path, supported_extensions, log)
+                yield from recursive_iter(
+                    item.path, base_path, supported_extensions, log, scan_errors
+                )
             elif is_file:
                 if "." not in item.name:
                     continue

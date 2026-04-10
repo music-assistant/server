@@ -376,12 +376,21 @@ class LocalFileSystemProvider(MusicProvider):
         ignore_album_playlists = self.media_content_type == "music" and self.config.get_value(
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key
         )
+        # Track critical errors that occur while walking the filesystem. If any
+        # directory fails to scan (e.g. a NAS share going offline), we must not
+        # run the deletion phase — otherwise we would wipe the library for items
+        # we simply couldn't see this time.
+        scan_errors: list[OSError] = []
 
         def enumerate_files() -> None:
             """Enumerate all files, collecting changed items for processing."""
             scanned = 0
             for item in recursive_iter(
-                self.base_path, self.base_path, SUPPORTED_EXTENSIONS, self.logger
+                self.base_path,
+                self.base_path,
+                SUPPORTED_EXTENSIONS,
+                self.logger,
+                scan_errors,
             ):
                 scanned += 1
                 if scanned % 500 == 0:
@@ -433,12 +442,51 @@ class LocalFileSystemProvider(MusicProvider):
         finally:
             self.sync_running = False
 
+        # Safeguard: verify the base path is still reachable before running any
+        # deletions. If it's not (e.g. NAS powered off), abort the sync to avoid
+        # wiping the entire library.
+        base_path_reachable = await self._check_base_path_reachable()
+        if scan_errors or not base_path_reachable:
+            self.logger.error(
+                "Aborting sync for %s before the deletion phase to prevent data loss: "
+                "%d scan error(s) encountered, base path reachable=%s. "
+                "The previously indexed library items will be kept untouched.",
+                self.name,
+                len(scan_errors),
+                base_path_reachable,
+            )
+            report_current_task_failure(
+                "Sync aborted: filesystem became unavailable during the scan. "
+                "Library items were preserved."
+            )
+            return
+
         # work out deletions
         deleted_files = prev_filenames - cur_filenames
         await self._process_deletions(deleted_files)
 
         # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
+
+    async def _check_base_path_reachable(self) -> bool:
+        """Return whether the provider's base path is currently reachable."""
+
+        def _probe() -> bool:
+            try:
+                with os.scandir(self.base_path) as it:
+                    # force the directory handle to actually open by advancing
+                    # the iterator once; an empty directory is fine
+                    next(it, None)
+            except StopIteration:
+                return True
+            except OSError:
+                return False
+            return True
+
+        try:
+            return await asyncio.to_thread(_probe)
+        except OSError:
+            return False
 
     async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item asynchronously.
