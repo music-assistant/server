@@ -761,7 +761,6 @@ class SendspinPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
-
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
         if player_role is not None:
