@@ -98,25 +98,26 @@ class BridgePlayerRole(Role):
         bit_depth: int = BRIDGE_BIT_DEPTH,
         channels: int = BRIDGE_CHANNELS,
     ) -> None:
-        """Set up audio requirements for bridge PCM format."""
+        """Set up audio requirements for bridge PCM format.
+
+        Call with the sink's native rate/depth so MA transcodes to the
+        correct format before delivering chunks. Defaults to the bridge
+        constants for callers that don't need format negotiation.
+        """
         self._audio_requirements = AudioRequirements(
             sample_rate=sample_rate,
             bit_depth=bit_depth,
             channels=channels,
             transformer=None,
         )
+
     @property
     def preferred_format(self) -> AudioRequirements | None:
         """Return the audio format declared via setup_audio_requirements."""
         return self._audio_requirements
-    
+
     def get_audio_requirements(self) -> AudioRequirements | None:
         """Return audio requirements for PushStream."""
-        import logging
-        if self._audio_requirements is not None:
-            logging.getLogger("music_assistant").warning(
-                "get_audio_requirements: %s", self._audio_requirements
-            )
         return self._audio_requirements
 
     def get_player_volume(self) -> int | None:
@@ -177,5 +178,6 @@ class BridgePlayerRole(Role):
         LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
         if self._on_stream_end_cb:
             self._on_stream_end_cb()
-                   
+
+
 register_role(BRIDGE_ROLE_ID, lambda client: BridgePlayerRole(client=client))
