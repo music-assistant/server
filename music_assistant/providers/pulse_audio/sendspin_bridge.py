@@ -214,30 +214,38 @@ class SendspinPulseAudioBridge:
         self._write_queue.put_nowait(chunk.data)
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
-        """Apply software volume scaling."""
+        """Apply software volume scaling and format conversion."""
         if self.player.volume_muted:
+            if self.bit_depth == 24:
+                # PA expects packed s24le: 3 bytes/sample, not 4
+                return b"\x00" * (len(pcm_data) * 3 // 4)
             return b"\x00" * len(pcm_data)
         volume = self.player.volume_level
         self.logger.debug("Applying software volume: level=%s", volume)
-        if volume is None or volume >= 100:
-            return pcm_data
-        scale = volume / 100.0
+        scale = volume / 100.0 if (volume is not None and volume < 100) else None
+
         if self.bit_depth == 32:
+            if scale is None:
+                return pcm_data
             samples = np.frombuffer(pcm_data, dtype=np.int32).copy()
             scaled = np.clip(samples.astype(np.float64) * scale, -2147483648, 2147483647)
             return scaled.astype(np.int32).tobytes()
+
         if self.bit_depth == 24:
-            # MA delivers 24-bit audio in 32-bit containers (4 bytes/sample, low 24
-            # bits used). Unpack as int32, scale, then repack to packed 3-byte
-            # little-endian (s24le) which is what the PA sink expects.
+            # MA delivers 24-bit audio left-justified in 32-bit containers
+            # (significant bits in the upper 24, low 8 bits zero).
+            # Always repack to packed s24le (bytes 1-3 of each int32) since
+            # the PA sink expects packed 3-byte LE regardless of volume.
             samples = np.frombuffer(pcm_data, dtype=np.int32).copy()
-            scaled = np.clip(
-                samples.astype(np.float64) * scale, -8388608, 8388607
-            ).astype(np.int32)
-            # Repack: view as uint8, take the 3 low bytes of each 4-byte sample
-            as_bytes = scaled.view(np.uint8).reshape(-1, 4)
-            return as_bytes[:, :3].tobytes()
+            if scale is not None:
+                samples = np.clip(
+                    samples.astype(np.float64) * scale, -2147483648, 2147483647
+                ).astype(np.int32)
+            return samples.view(np.uint8).reshape(-1, 4)[:, 1:].tobytes()
+
         # 16-bit
+        if scale is None:
+            return pcm_data
         samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
         scaled = np.clip(samples.astype(np.float64) * scale, -32768, 32767)
         return scaled.astype(np.int16).tobytes()
