@@ -83,19 +83,17 @@ class HeosPlayerProvider(PlayerProvider):
                     return await self._setup_controller(preferred_ips[0], connect_preferred=False)
 
                 # Just log a warning, it still works but might be less reliable
-                self.logger.warning(f"Configured IP {controller_ip} is not a preferred HEOS host")
-        except HeosError as e:
-            self.logger.error(f"Failed to connect to HEOS controller: {e}")
-            raise SetupFailedError("Failed to connect to HEOS controller") from e
+                self.logger.warning("Configured IP %s is not a preferred HEOS host", controller_ip)
+        except HeosError as err:
+            self.logger.error("Failed to verify HEOS controller health: %s", err)
+            raise SetupFailedError("Failed to verify HEOS controller health") from err
 
-        # Initialize library values
         try:
             self._heos.add_on_controller_event(self._handle_controller_event)
             await self._populate_sources()
-
-        except HeosError as e:
-            self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
-            raise SetupFailedError("Unexpected error setting up HEOS controller") from e
+        except HeosError as err:
+            self.logger.error("Unexpected error setting up HEOS controller: %s", err)
+            raise SetupFailedError("Unexpected error setting up HEOS controller") from err
 
     async def _connect_controller(self, controller_ip: str) -> None:
         """Connect to the HEOS controller with a few retries for early mDNS announcements."""
