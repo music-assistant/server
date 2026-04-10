@@ -391,6 +391,7 @@ class AppleMusicProvider(MusicProvider):
             return await self._browse_stations()
         return await super().browse(path)
 
+    @use_cache(3600)
     async def _get_personal_recommendations(self) -> list[RecommendationFolder]:
         """Fetch personal recommendations grouped into folders by section title.
 
