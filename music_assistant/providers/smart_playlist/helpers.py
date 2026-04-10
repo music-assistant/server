@@ -24,6 +24,7 @@ class SmartPlaylistRules:
     album_ids: list[int] = field(default_factory=list)
     favorites_only: bool = False
     seed_track_uri: str | None = None
+    seed_track_name: str | None = None
     min_popularity: int | None = None
     logic: str = LOGIC_AND
     limit: int = DEFAULT_TRACK_LIMIT
@@ -42,6 +43,7 @@ class SmartPlaylistRules:
             "album_ids": self.album_ids,
             "favorites_only": self.favorites_only,
             "seed_track_uri": self.seed_track_uri,
+            "seed_track_name": self.seed_track_name,
             "min_popularity": self.min_popularity,
             "logic": self.logic,
             "limit": self.limit,
@@ -65,6 +67,7 @@ class SmartPlaylistRules:
             album_ids=data.get("album_ids", []),
             favorites_only=data.get("favorites_only", False),
             seed_track_uri=data.get("seed_track_uri"),
+            seed_track_name=data.get("seed_track_name"),
             min_popularity=data.get("min_popularity"),
             logic=data.get("logic", LOGIC_AND),
             limit=data.get("limit", DEFAULT_TRACK_LIMIT),
@@ -90,7 +93,9 @@ class SmartPlaylistRules:
         if self.album_ids:
             names = [self.album_names.get(aid, str(aid)) for aid in self.album_ids]
             parts.append(f"Albums: {', '.join(names)}")
-            parts.append(f"Similar to: {self.seed_track_uri}")
+        if self.seed_track_uri:
+            label = self.seed_track_name or self.seed_track_uri
+            parts.append(f"Similar to: {label}")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
         if self.year_from is not None or self.year_to is not None:

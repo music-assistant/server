@@ -377,16 +377,6 @@ class SmartPlaylistProvider(MusicProvider):
                 and t.metadata.popularity >= rules.min_popularity
             ]
 
-        if rules.year_from is not None or rules.year_to is not None:
-            tracks = [
-                t
-                for t in tracks
-                if t.album is not None
-                and t.album.year is not None
-                and (rules.year_from is None or t.album.year >= rules.year_from)
-                and (rules.year_to is None or t.album.year <= rules.year_to)
-            ]
-
         if (
             has_seed_filter
             and not has_artist_filter
@@ -405,12 +395,32 @@ class SmartPlaylistProvider(MusicProvider):
             if rules.favorites_only:
                 seed_tracks = [t for t in seed_tracks if t.favorite]
             if has_genre_filter and rules.logic == LOGIC_AND:
-                seed_tracks = list(seed_tracks)
+                # Best-effort: filter seed tracks by genre name if the track has genre metadata.
+                # If a track has no genre metadata, keep it (don't exclude due to missing data).
+                allowed_genre_names = {g.lower() for g in rules.genre_names.values()}
+                seed_tracks = [
+                    t
+                    for t in seed_tracks
+                    if not t.metadata.genres
+                    or any(g.lower() in allowed_genre_names for g in t.metadata.genres)
+                ]
             existing_uris = {t.uri for t in tracks}
             for st in seed_tracks:
                 if st.uri not in existing_uris:
                     tracks.append(st)
                     existing_uris.add(st.uri)
+
+        if rules.year_from is not None or rules.year_to is not None:
+            tracks = [
+                t
+                for t in tracks
+                if t.album is None
+                or t.album.year is None
+                or (
+                    (rules.year_from is None or t.album.year >= rules.year_from)
+                    and (rules.year_to is None or t.album.year <= rules.year_to)
+                )
+            ]
 
         random.shuffle(tracks)
         return tracks[: rules.limit]
@@ -423,10 +433,12 @@ class SmartPlaylistProvider(MusicProvider):
         has_seed = bool(rules.seed_track_uri)
 
         no_structural_filter = not has_genre and not has_artist and not has_album
-        if has_seed and no_structural_filter and not rules.favorites_only:
-            return await self._get_library_tracks(
-                favorite=None, genre_ids=None, limit=rules.limit * 3
-            )
+
+        # When seed is active without genre/artist/album, the similar-tracks pool is the
+        # primary result. Returning library tracks here would pollute it with unrelated content.
+        if has_seed and not has_genre and not has_artist and not has_album:
+            return []
+
         if no_structural_filter and not rules.favorites_only and not has_seed:
             return await self._get_library_tracks(
                 favorite=None, genre_ids=None, limit=rules.limit * 3
@@ -521,7 +533,7 @@ class SmartPlaylistProvider(MusicProvider):
     async def _get_similar_tracks(self, seed_track_uri: str, limit: int) -> list[Track]:
         """Get similar tracks for the given seed track URI."""
         try:
-            _media_type, item_id, provider = await parse_uri(seed_track_uri)
+            _media_type, provider, item_id = await parse_uri(seed_track_uri)
         except Exception:
             self.logger.warning("Cannot parse seed_track_uri: %s", seed_track_uri)
             return []
