@@ -54,6 +54,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -90,6 +91,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+    ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
@@ -389,14 +391,24 @@ class AppleMusicProvider(MusicProvider):
             return await self._browse_stations()
         return await super().browse(path)
 
-    async def _browse_stations(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Return recommended radio stations from personal recommendations."""
+    @use_cache(3600)
+    async def _get_personal_recommendations(self) -> list[RecommendationFolder]:
+        """Fetch personal recommendations grouped into folders by section title.
+
+        :return: Deduplicated, live-filtered list of RecommendationFolders.
+        """
         response = await self._get_data(
             "me/recommendations?include[personal-recommendation]=contents"
         )
         seen: set[str] = set()
-        result: list[MediaItemType | ItemMapping | BrowseFolder] = []
+        folders: dict[str, RecommendationFolder] = {}
         for recommendation in response.get("data", []):
+            rec_id = recommendation.get("id", "")
+            title = (
+                recommendation.get("attributes", {}).get("title", {}).get("stringForDisplay", "")
+            )
+            if not rec_id or not title:
+                continue
             contents = recommendation.get("relationships", {}).get("contents", {})
             for item in contents.get("data", []):
                 if item.get("type") != "stations":
@@ -404,19 +416,36 @@ class AppleMusicProvider(MusicProvider):
                 station_id = item.get("id")
                 if not station_id or station_id in seen:
                     continue
-                seen.add(station_id)
                 attributes = item.get("attributes", {})
                 if attributes.get("isLive", False):
                     # Live broadcast stations (e.g. Apple Music 1) require Widevine DRM
                     # which is not supported; skip them.
                     continue
+                seen.add(station_id)
                 if attributes.get("name"):
-                    result.append(self._parse_station_as_playlist(item))
+                    playlist = self._parse_station_as_playlist(item)
                 else:
                     playlist = await self.get_playlist(station_id)
-                    if playlist.name != station_id:
-                        result.append(playlist)
-        return result
+                    if playlist.name == station_id:
+                        continue
+                if title not in folders:
+                    folders[title] = RecommendationFolder(
+                        item_id=rec_id,
+                        provider=self.instance_id,
+                        name=title,
+                    )
+                folders[title].items.append(playlist)
+        return list(folders.values())
+
+    async def _browse_stations(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Return recommended radio stations from personal recommendations."""
+        return [
+            item for folder in await self._get_personal_recommendations() for item in folder.items
+        ]
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get personalized station recommendations for the Discover page."""
+        return await self._get_personal_recommendations()
 
     def _parse_station_as_playlist(self, station_obj: dict[str, Any]) -> Playlist:
         """Parse a station object from recommendations into a Playlist."""
