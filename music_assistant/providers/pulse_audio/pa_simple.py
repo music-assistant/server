@@ -9,8 +9,8 @@ from typing import Any, ClassVar, Final
 PA_STREAM_PLAYBACK: Final = 1
 
 PA_SAMPLE_S16LE:  Final = 3
-PA_SAMPLE_S32LE:  Final = 7   # was wrongly 5 (float32le) — verified via pa_sample_format_to_string
-PA_SAMPLE_S24LE:  Final = 9   # packed 3-byte little-endian
+PA_SAMPLE_S32LE:  Final = 7   # verified via pa_sample_format_to_string
+PA_SAMPLE_S24_32LE: Final = 11  # 24-bit in 32-bit container (matches MA's delivery format)
 
 
 def _pa_sample_format(bit_depth: int) -> int:
@@ -18,7 +18,7 @@ def _pa_sample_format(bit_depth: int) -> int:
     if bit_depth == 32:
         return PA_SAMPLE_S32LE
     if bit_depth == 24:
-        return PA_SAMPLE_S24LE
+        return PA_SAMPLE_S24_32LE  # MA sends 24-bit in 32-bit containers
     return PA_SAMPLE_S16LE
 
 class _PASampleSpec(ctypes.Structure):
