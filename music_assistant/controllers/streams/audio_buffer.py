@@ -437,7 +437,7 @@ class AudioBuffer:
             # smart fades analysis only when enabled and only for music tracks
             if (
                 streamdetails.media_type == MediaType.TRACK
-                and smart_fades_mode != SmartFadesMode.DISABLED
+                and smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
             ):
                 mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
             # audio analysis providers (beat tracking, key detection, etc.)
