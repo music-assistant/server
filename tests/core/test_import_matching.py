@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import ExternalID, ImageType, MediaType
@@ -317,8 +318,9 @@ def test_export_radios_round_trip() -> None:
 async def test_import_playlist_preserves_playlist_image() -> None:
     """Test that importing an M3U keeps the playlist-level image."""
     prov = _make_provider()
-    prov.create_playlist = AsyncMock(return_value=_make_playlist("Imported Playlist"))
-    prov._write_m3u_file = AsyncMock()
+    prov_any = cast(Any, prov)
+    prov_any.create_playlist = AsyncMock(return_value=_make_playlist("Imported Playlist"))
+    prov_any._write_m3u_file = AsyncMock()
 
     m3u_data = generate_m3u(
         "Imported Playlist",
@@ -328,7 +330,8 @@ async def test_import_playlist_preserves_playlist_image() -> None:
 
     await prov.import_playlist(m3u_data)
 
-    args = prov._write_m3u_file.await_args.args
+    assert prov_any._write_m3u_file.await_args is not None
+    args = prov_any._write_m3u_file.await_args.args
     assert args[0] == "playlist_1"
     assert args[1] == "Imported Playlist"
     assert args[3] == "https://img.example.com/cover.jpg"
@@ -338,7 +341,8 @@ async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
     """Test that rewriting a playlist after track removal keeps the playlist image."""
     prov = _make_provider()
     prov._playlist_locks = {}
-    prov._read_m3u_file = AsyncMock(
+    prov_any = cast(Any, prov)
+    prov_any._read_m3u_file = AsyncMock(
         return_value=generate_m3u(
             "My Playlist",
             [
@@ -348,14 +352,15 @@ async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
             "https://img.example.com/cover.jpg",
         )
     )
-    prov.get_playlist = AsyncMock(
+    prov_any.get_playlist = AsyncMock(
         return_value=_make_playlist("My Playlist", "https://img.example.com/cover.jpg")
     )
-    prov._write_m3u_file = AsyncMock()
+    prov_any._write_m3u_file = AsyncMock()
 
     await prov.remove_playlist_tracks("playlist_1", (1,))
 
-    args = prov._write_m3u_file.await_args.args
+    assert prov_any._write_m3u_file.await_args is not None
+    args = prov_any._write_m3u_file.await_args.args
     assert args[0] == "playlist_1"
     assert args[1] == "My Playlist"
     assert len(args[2]) == 1
