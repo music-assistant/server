@@ -57,10 +57,10 @@ class AirPlayStreamSession:
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
         # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples.
-        # Audio is sliced into ~100ms chunks.  The buffer must cover the full
-        # pipeline depth (ffmpeg + CLI internal buffering) which can be up to
-        # ~10s for AP2.  150 entries ≈ 15s — enough headroom for any protocol.
-        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=150)
+        # Chunks are at most ~1s each. 5 entries = ~5s of history.
+        # If this isn't enough to reach the ideal start position, we simply
+        # start from the oldest available chunk (postponing the start time).
+        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=5)
 
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Initialize stream session for all players."""
@@ -258,9 +258,9 @@ class AirPlayStreamSession:
                 if not self.sync_clients:
                     break
 
-                # Split into ~100ms sub-chunks for predictable ring-buffer
-                # granularity and to prevent write timeouts on large segments.
-                for sub_chunk in iter_pcm_slices(chunk, self.pcm_format, target_duration_ms=100):
+                # Cap chunks at ~1 second to prevent write timeouts on large
+                # segments (e.g. crossfades). Smaller source chunks pass through as-is.
+                for sub_chunk in iter_pcm_slices(chunk, self.pcm_format, target_duration_ms=1000):
                     if not self.sync_clients:
                         break
                     has_running_clients = await self._write_chunk_to_all_players(sub_chunk)
