@@ -258,3 +258,5 @@ class HeosPlayerProvider(PlayerProvider):
                 self._heos = None
         finally:
             self._controller_discovery_running = False
+
+        await self.discover_players()
