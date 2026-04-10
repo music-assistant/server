@@ -109,6 +109,7 @@ class RaopStream(AirPlayProtocol):
         player = self.player
         logger = player.logger
         lost_packets = 0
+        expected_eof = False
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
@@ -156,6 +157,7 @@ class RaopStream(AirPlayProtocol):
                     logger.warning("Packet loss detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
+                expected_eof = True
                 break
             logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)  # Yield to event loop
@@ -163,4 +165,7 @@ class RaopStream(AirPlayProtocol):
         logger.debug("CLIRaop stderr reader ended")
         if not self._stopped:
             self._stopped = True
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            if not expected_eof:
+                logger.warning("CLIRaop process stopped unexpectedly for %s", player.display_name)
+                self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
