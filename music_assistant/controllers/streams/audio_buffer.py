@@ -32,7 +32,6 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
-from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.smart_fades import SmartFadesMode
 
@@ -400,9 +399,7 @@ class AudioBuffer:
             if streamdetails.queue_id and streamdetails.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
         )
-        if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE:
-            ready_threshold = SMART_CROSSFADE_DURATION
-        elif smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE:
+        if smart_fades_mode != SmartFadesMode.DISABLED:
             ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             ready_threshold = 5
@@ -454,8 +451,7 @@ class AudioBuffer:
 
         if wait_ready:
             try:
-                wait_timeout = max(15, ready_threshold)
-                await asyncio.wait_for(audio_buffer.ready.wait(), timeout=wait_timeout)
+                await asyncio.wait_for(audio_buffer.ready.wait(), timeout=15)
             except TimeoutError:
                 raise AudioError("Timeout waiting for audio data") from audio_buffer._producer_error
             # ready was signaled but check if it was due to a producer error

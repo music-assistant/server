@@ -1488,6 +1488,9 @@ class StreamsAudio:
             if streamdetails.duration
             else crossfade_buffer_duration,
         )
+        # skip crossfade if buffer would be too small to be meaningful
+        if crossfade_buffer_duration < 5:
+            crossfade_buffer_duration = 0
         # Ensure crossfade buffer size is aligned to frame boundaries
         # Frame size = bytes_per_sample * channels
         bytes_per_sample = pcm_format.bit_depth // 8
@@ -1525,6 +1528,10 @@ class StreamsAudio:
             discard_seconds = streamdetails.seek_position
             discard_leftover = 0
 
+        # Yield the first crossfade_buffer_size worth of audio immediately
+        # so playback starts right away. Only after that, start accumulating
+        # the crossfade holdback buffer for the end-of-track crossfade.
+        warmup_bytes = 0
         total_chunks_received = 0
         async for chunk in self.get_queue_item_stream(
             queue_item,
@@ -1537,11 +1544,16 @@ class StreamsAudio:
                 chunk = chunk[discard_leftover:]  # noqa: PLW2901
                 discard_leftover = 0
 
-            buffer += chunk
-            del chunk
-            if len(buffer) < crossfade_buffer_size:
+            if warmup_bytes < crossfade_buffer_size:
+                # warmup: yield directly, don't buffer
+                yield chunk
+                warmup_bytes += len(chunk)
+                bytes_written += len(chunk)
+                del chunk
                 continue
 
+            buffer += chunk
+            del chunk
             # yield everything above the crossfade buffer
             while len(buffer) > crossfade_buffer_size:
                 yield buffer[: pcm_format.pcm_sample_size]
@@ -1798,6 +1810,9 @@ class StreamsAudio:
                 if queue_track.streamdetails.duration
                 else crossfade_buffer_duration,
             )
+            # skip crossfade if buffer would be too small to be meaningful
+            if crossfade_buffer_duration < 5:
+                crossfade_buffer_duration = 0
             # Ensure crossfade buffer size is aligned to frame boundaries
             # Frame size = bytes_per_sample * channels
             bytes_per_sample = pcm_format.bit_depth // 8
@@ -1808,6 +1823,7 @@ class StreamsAudio:
 
             bytes_written = 0
             crossfade_buffer = b""
+            warmup_bytes = 0
             first_chunk_received = False
 
             async for chunk in self.get_queue_item_stream(
@@ -1831,6 +1847,18 @@ class StreamsAudio:
                 if smart_fades_mode == SmartFadesMode.DISABLED:
                     # no cross/smart fade: yield chunks directly without intermediate buffer
                     yield chunk
+                    bytes_written += len(chunk)
+                    del chunk
+                    continue
+
+                # Warmup: yield chunks directly until we have streamed
+                # crossfade_buffer_size worth of audio, so playback starts
+                # immediately instead of waiting for the full buffer to fill.
+                # Skip warmup when crossfade data from the previous track
+                # is pending, as we need a full buffer for the mix.
+                if warmup_bytes < crossfade_buffer_size and not last_fadeout_part:
+                    yield chunk
+                    warmup_bytes += len(chunk)
                     bytes_written += len(chunk)
                     del chunk
                     continue
@@ -1890,6 +1918,7 @@ class StreamsAudio:
                     last_fadeout_part = b""
                     last_streamdetails = None
                     crossfade_buffer = b""
+                    warmup_bytes = 0
 
                 # yield everything above the crossfade buffer size
                 while len(crossfade_buffer) > crossfade_buffer_size:
