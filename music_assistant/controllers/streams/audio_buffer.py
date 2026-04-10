@@ -399,8 +399,10 @@ class AudioBuffer:
             if streamdetails.queue_id and streamdetails.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
         )
-        if smart_fades_mode != SmartFadesMode.DISABLED:
-            ready_threshold = 10
+        if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE:
+            ready_threshold = 30
+        elif smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE:
+            ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             ready_threshold = 5
         else:
