@@ -13,7 +13,8 @@ CONF_MANUAL_IPS = CONF_ENTRY_MANUAL_DISCOVERY_IPS.key
 
 
 def _parse_host_entry(entry: str) -> tuple[str, int]:
-    """Parse a single host entry into a (host, port) tuple.
+    """
+    Parse a single host entry into a (host, port) tuple.
 
     Accepted formats:
       - host
@@ -35,7 +36,8 @@ def _parse_host_entry(entry: str) -> tuple[str, int]:
 
 
 class MPDPlayerProvider(PlayerProvider):
-    """MPD Player provider.
+    """
+    MPD Player provider.
 
     One provider instance manages one or more MPD servers. Each server
     is registered as a separate MA player. Servers are specified as a
