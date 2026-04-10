@@ -318,7 +318,7 @@ def test_export_radios_round_trip() -> None:
 async def test_import_playlist_preserves_playlist_image() -> None:
     """Test that importing an M3U keeps the playlist-level image."""
     prov = _make_provider()
-    prov_any = cast(Any, prov)
+    prov_any = cast("Any", prov)
     prov_any.create_playlist = AsyncMock(return_value=_make_playlist("Imported Playlist"))
     prov_any._write_m3u_file = AsyncMock()
 
@@ -341,7 +341,7 @@ async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
     """Test that rewriting a playlist after track removal keeps the playlist image."""
     prov = _make_provider()
     prov._playlist_locks = {}
-    prov_any = cast(Any, prov)
+    prov_any = cast("Any", prov)
     prov_any._read_m3u_file = AsyncMock(
         return_value=generate_m3u(
             "My Playlist",
