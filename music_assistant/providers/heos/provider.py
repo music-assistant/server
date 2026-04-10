@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.errors import SetupFailedError
@@ -248,6 +249,12 @@ class HeosPlayerProvider(PlayerProvider):
         try:
             await self._setup_controller(device_ip, True)
         except SetupFailedError:
-            self.logger.error("Failed to set up HEOS controller at %s discovered via mDNS")
+            self.logger.error(
+                "Failed to set up HEOS controller at %s discovered via mDNS", device_ip
+            )
+            if self._heos:
+                with suppress(Exception):
+                    await self._heos.disconnect()
+                self._heos = None
         finally:
             self._controller_discovery_running = False
