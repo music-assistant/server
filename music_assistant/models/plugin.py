@@ -15,7 +15,7 @@ from music_assistant.models.player import PlayerSource
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.streamdetails import StreamMetadata
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 
 @dataclass
@@ -175,7 +175,7 @@ class PluginProvider(Provider):
         yield b""
         raise NotImplementedError
 
-    async def get_tts_message_url(self, message: str, language: str | None = None) -> str:
+    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
         """
         Convert text to speech audio.
 
@@ -183,7 +183,7 @@ class PluginProvider(Provider):
 
         :param message: The text to convert to speech.
         :param language: Optional language code.
-        :return: URL to the generated audio.
+        :return: StreamDetails for the generated audio.
         """
         raise NotImplementedError
 

@@ -26,9 +26,22 @@ from hass_client.utils import (
     get_websocket_url,
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MusicAssistantError, SetupFailedError
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
+from music_assistant_models.errors import (
+    LoginFailed,
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
+from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.player_control import PlayerControl
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.auth import AuthenticationHelper
@@ -190,7 +203,7 @@ async def get_config_entries(
         hass_prov = cast("HomeAssistantProvider", hass_prov)
         return (
             *base_entries,
-            *(await _get_ha_config_entries(hass_prov.hass)),
+            *(await _get_config_entries(hass_prov.hass)),
         )
 
     return (
@@ -327,6 +340,7 @@ async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, .
             label="Text-to-Speech entity",
             required=False,
             options=tts_entities,
+            default_value=tts_entities[0].value if tts_entities else None,
             description="Select which Home Assistant TTS entity you like to use for text-to-speech capabilities inside Music Assistant.",
             category="Features",
         ),
@@ -336,6 +350,7 @@ async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, .
             label="AI Task entity",
             required=False,
             options=ai_task_entities,
+            default_value=ai_task_entities[0].value if ai_task_entities else None,
             description="Select which Home Assistant AI Task entity you like to use for AI queries inside Music Assistant.",
             category="Features",
         ),
@@ -658,10 +673,10 @@ class HomeAssistantProvider(PluginProvider):
             raise MusicAssistantError(msg)
         return str(data)
 
-    async def get_tts_message_url(self, message: str, language: str | None = None) -> str:
+    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
         """Handle text-to-speech via Home Assistant's REST API."""
         if (entity_id := self.config.get_value(CONF_TTS_ENTITY)) is None:
-            raise UnsupportedFeature("TTS entity is not configured")
+            raise UnsupportedFeaturedException("TTS entity is not configured")
         ha_url, headers, http_session = self._get_ha_http()
         payload: dict[str, str] = {"engine_id": str(entity_id), "message": message}
         if language:
@@ -671,7 +686,15 @@ class HomeAssistantProvider(PluginProvider):
         ) as response:
             response.raise_for_status()
             data = await response.json()
-        return str(data["url"])
+        url = str(data["url"])
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=url,
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.SOUND_EFFECT,
+            stream_type=StreamType.HTTP,
+            path=url,
+        )
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
