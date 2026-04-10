@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientConnectorError
-from aiosonos.api.models import ContainerType, MusicService, SonosCapability
+from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
@@ -352,18 +352,23 @@ class SonosPlayer(Player):
             object_id = f"mass:{media.source_id}:{media.queue_item_id}"
         else:
             object_id = stream_url
-        await self.client.player.group.play_stream_url(
-            stream_url,
-            {
-                "name": media.title,
-                "type": "track",
-                "imageUrl": media.image_url,
-                "id": {
-                    "objectId": object_id,
-                },
-                "service": {"name": "Music Assistant", "id": "mass"},
+        container: Container = {
+            "_objectType": "container",
+            "name": media.title or "",
+            "type": "track",
+            "id": {
+                "_objectType": "id",
+                "objectId": object_id,
             },
-        )
+            "service": {
+                "_objectType": "service",
+                "name": "Music Assistant",
+                "id": "mass",
+            },
+        }
+        if media.image_url:
+            container["imageUrl"] = media.image_url
+        await self.group_controller.play_stream_url(stream_url, container)
 
     async def select_source(self, source: str) -> None:
         """
