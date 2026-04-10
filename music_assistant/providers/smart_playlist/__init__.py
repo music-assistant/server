@@ -93,6 +93,7 @@ class SmartPlaylistProvider(MusicProvider):
         )
         self.mass.register_api_command("smart_playlists/list", self.list_smart_playlists)
         self.mass.register_api_command("smart_playlists/preview_tracks", self.preview_tracks)
+        self.mass.register_api_command("smart_playlists/count_tracks", self.count_tracks)
         self.logger.info(
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
         )
@@ -174,7 +175,9 @@ class SmartPlaylistProvider(MusicProvider):
         await self._save_rules(playlist_id, parsed_rules)
 
         playlist = self._build_playlist(playlist_id, parsed_rules)
-        return await self.mass.music.playlists.add_item_to_library(playlist)
+        library_playlist = await self.mass.music.playlists.add_item_to_library(playlist)
+        self.mass.metadata.schedule_update_metadata(library_playlist)
+        return library_playlist
 
     async def generate_playlist(
         self,
@@ -268,12 +271,24 @@ class SmartPlaylistProvider(MusicProvider):
             for playlist_id, rules in self._rules_store.items()
         ]
 
+    async def count_tracks(self, rules: dict[str, Any]) -> int:
+        """Return the total number of tracks matching the given rules.
+
+        :param rules: SmartPlaylistRules fields as dict.
+        :return: Number of matching tracks.
+        """
+        parsed_rules = SmartPlaylistRules.from_dict(rules)
+        self._validate_rules(parsed_rules)
+        parsed_rules.limit = 99999
+        tracks = await self._evaluate_rules(parsed_rules)
+        return len(tracks)
+
     async def preview_tracks(
         self,
         rules: dict[str, Any],
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Preview which tracks would be selected by the given rules.
+        """Return a preview of tracks matching the given rules.
 
         :param rules: SmartPlaylistRules fields as dict.
         :param limit: Maximum number of preview tracks to return.
@@ -320,7 +335,7 @@ class SmartPlaylistProvider(MusicProvider):
             item_id=playlist_id,
             provider=self.instance_id,
             name=name,
-            owner="smart_playlist",
+            owner="Smart Playlist",
             is_editable=True,
             provider_mappings={
                 ProviderMapping(
@@ -328,6 +343,7 @@ class SmartPlaylistProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     is_unique=True,
+                    in_library=True,
                 )
             },
         )
@@ -517,7 +533,9 @@ class SmartPlaylistProvider(MusicProvider):
             playlist = await self.mass.music.playlists.get_library_item(library_item_id)
             updated = Playlist.from_dict(playlist.to_dict())
             updated.metadata.description = f"[Smart Playlist] {rules.human_readable()}"
-            await self.mass.music.playlists.update_item_in_library(library_item_id, updated)
+            await self.mass.music.playlists.update_item_in_library(
+                library_item_id, updated, overwrite=True
+            )
         except Exception as exc:
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
 

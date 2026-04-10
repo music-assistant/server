@@ -29,6 +29,8 @@ class SmartPlaylistRules:
     limit: int = DEFAULT_TRACK_LIMIT
     is_dynamic: bool = True
     genre_names: dict[int, str] = field(default_factory=dict)
+    artist_names: dict[int, str] = field(default_factory=dict)
+    album_names: dict[int, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -43,12 +45,16 @@ class SmartPlaylistRules:
             "limit": self.limit,
             "is_dynamic": self.is_dynamic,
             "genre_names": {str(k): v for k, v in self.genre_names.items()},
+            "artist_names": {str(k): v for k, v in self.artist_names.items()},
+            "album_names": {str(k): v for k, v in self.album_names.items()},
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SmartPlaylistRules:
         """Deserialize from dictionary."""
         raw_genre_names: dict[str, str] = data.get("genre_names", {})
+        raw_artist_names: dict[str, str] = data.get("artist_names", {})
+        raw_album_names: dict[str, str] = data.get("album_names", {})
         return cls(
             genre_ids=data.get("genre_ids", []),
             artist_ids=data.get("artist_ids", []),
@@ -60,6 +66,8 @@ class SmartPlaylistRules:
             limit=data.get("limit", DEFAULT_TRACK_LIMIT),
             is_dynamic=data.get("is_dynamic", True),
             genre_names={int(k): v for k, v in raw_genre_names.items()},
+            artist_names={int(k): v for k, v in raw_artist_names.items()},
+            album_names={int(k): v for k, v in raw_album_names.items()},
         )
 
     def human_readable(self) -> str:
@@ -71,10 +79,11 @@ class SmartPlaylistRules:
             names = [self.genre_names.get(gid, str(gid)) for gid in self.genre_ids]
             parts.append(f"Genres: {', '.join(names)}")
         if self.artist_ids:
-            parts.append(f"Artists: {', '.join(str(a) for a in self.artist_ids)}")
+            names = [self.artist_names.get(aid, str(aid)) for aid in self.artist_ids]
+            parts.append(f"Artists: {', '.join(names)}")
         if self.album_ids:
-            parts.append(f"Albums: {', '.join(str(a) for a in self.album_ids)}")
-        if self.seed_track_uri:
+            names = [self.album_names.get(aid, str(aid)) for aid in self.album_ids]
+            parts.append(f"Albums: {', '.join(names)}")
             parts.append(f"Similar to: {self.seed_track_uri}")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
