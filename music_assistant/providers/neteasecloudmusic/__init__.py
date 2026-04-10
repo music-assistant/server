@@ -1135,21 +1135,36 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get all albums for an artist."""
-        payload = await self._client.get(
-            "/artist/album",
-            params={"id": prov_artist_id, "limit": 100, "offset": 0},
-            cookie=self._cookie,
-        )
-        data = _extract_data(payload)
-        raw_albums = data.get("hotAlbums") or data.get("albums")
-        if not isinstance(raw_albums, list):
-            return []
+        limit = 100
+        offset = 0
+        seen_album_ids: set[str] = set()
         albums: list[Album] = []
-        for album_obj in raw_albums:
-            if not isinstance(album_obj, dict):
-                continue
-            with suppress(InvalidDataError):
-                albums.append(self._parse_album(album_obj))
+        for _ in range(50):
+            payload = await self._client.get(
+                "/artist/album",
+                params={"id": prov_artist_id, "limit": limit, "offset": offset},
+                cookie=self._cookie,
+            )
+            data = _extract_data(payload)
+            raw_albums = data.get("hotAlbums") or data.get("albums")
+            if not isinstance(raw_albums, list) or not raw_albums:
+                break
+
+            for album_obj in raw_albums:
+                if not isinstance(album_obj, dict):
+                    continue
+                album_id = str(album_obj.get("id") or album_obj.get("albumId") or "").strip()
+                if album_id and album_id in seen_album_ids:
+                    continue
+                with suppress(InvalidDataError):
+                    album = self._parse_album(album_obj)
+                    albums.append(album)
+                    seen_album_ids.add(album.item_id)
+
+            has_more = bool(data.get("more") or data.get("hasMore"))
+            offset += limit
+            if not has_more and len(raw_albums) < limit:
+                break
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
