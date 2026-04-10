@@ -810,7 +810,9 @@ class SendspinPlayer(Player):
                     default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
                     range=(0, 5000),
                     immediate_apply=True,
-                    advanced=True,
+                    # Not a advanced option since this will only show up for players where it is likely
+                    # necessary to adjust the delay.
+                    advanced=False,
                 )
             )
 
