@@ -60,6 +60,7 @@ class AirPlayProtocol(ABC):
         self._connected = asyncio.Event()
         self._metadata_checksum = ""
         self._last_metadata_sent: float = 0.0
+        self._elapsed_time_offset: float | None = None
 
     @property
     def running(self) -> bool:
