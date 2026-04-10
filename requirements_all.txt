@@ -35,7 +35,7 @@ defusedxml==0.7.1
 deno==2.7.4
 duration-parser==1.0.1
 getmac==0.9.5
-git+https://github.com/CPJKU/beat_this
+git+https://github.com/CPJKU/beat_this@c8c320e84f1a4e5b291327debe754734ea802afc
 gql[all]==4.0.0
 hass-client==1.2.3
 ibroadcastaio==0.4.0
