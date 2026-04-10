@@ -17,7 +17,9 @@ The playerstate is the object that is exposed to the outside world (via the API)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
+from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
@@ -101,6 +103,7 @@ from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
+from .constants import PlayerLockPurpose
 from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
@@ -139,12 +142,50 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._poll_task: asyncio.Task[None] | None = None
         self._player_throttlers: dict[str, Throttler] = {}
         self._player_command_locks: dict[str, asyncio.Lock] = {}
+        # Track which lock keys each async task holds (keyed by task id).
+        # Used by get_player_lock for re-entrant detection.
+        self._task_held_locks: dict[int, set[str]] = {}
         # Lock to prevent race conditions during player registration
         self._register_lock = asyncio.Lock()
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
+
+    @contextlib.asynccontextmanager
+    async def get_player_lock(
+        self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+    ) -> AsyncIterator[None]:
+        """
+        Acquire a purpose-scoped lock for a player, with re-entrant support.
+
+        Tracks lock ownership per asyncio Task so that nested calls within the same
+        task skip re-acquisition (preventing deadlocks), while deferred callbacks
+        (call_later / create_task) correctly acquire a fresh lock.
+
+        :param player_id: The player to lock.
+        :param purpose: Lock category. Commands with different purposes can run
+            concurrently on the same player.
+        """
+        lock_key = f"{purpose.value}_{player_id}"
+        task = asyncio.current_task()
+        task_id = id(task) if task else 0
+
+        if lock_key in self._task_held_locks.get(task_id, set()):
+            yield
+            return
+
+        lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            self._task_held_locks.setdefault(task_id, set()).add(lock_key)
+            try:
+                yield
+            finally:
+                held = self._task_held_locks.get(task_id)
+                if held is not None:
+                    held.discard(lock_key)
+                    if not held:
+                        del self._task_held_locks[task_id]
 
     async def get_config_entries(
         self,
@@ -433,7 +474,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     # Player commands
 
     @api_command("players/cmd/stop")
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
 
@@ -498,7 +539,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume")
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
@@ -613,7 +654,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set")
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
@@ -761,7 +802,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await asyncio.gather(*coros)
 
     @api_command("players/cmd/volume_mute")
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME_MUTE command to given player.
 
@@ -827,7 +868,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
     @api_command("players/cmd/play_announcement")
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def play_announcement(
         self,
         player_id: str,
@@ -937,7 +978,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         finally:
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
 
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
@@ -1058,7 +1099,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
-    @handle_player_command(lock="play")
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
         Handle enqueuing of a next media item on the player.
@@ -1102,15 +1143,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-        # Use the "play" lock category — same as play_media, play_announcement,
-        # enqueue_next_media — to prevent concurrent playback-related commands
-        # from racing with protocol switches triggered by set_members.
-        # Use resolved parent_player.player_id (not raw target_player) to match
-        # the lock key that handle_player_command produces after protocol resolution.
-        lock_key = f"play_{parent_player.player_id}"
-        if lock_key not in self._player_command_locks:
-            self._player_command_locks[lock_key] = asyncio.Lock()
-        async with self._player_command_locks[lock_key]:
+        # Serialize with playback commands to prevent protocol switches from
+        # racing with concurrent play_media / play_index / resume calls.
+        async with self.get_player_lock(parent_player.player_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     @api_command("players/cmd/group")
@@ -1471,7 +1506,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
         del self._players[player_id]
         self._player_throttlers.pop(player_id, None)
-        self._player_command_locks.pop(f"set_members_{player_id}", None)
+        # clean up all lock entries for this player
+        for prefix in [p.value for p in PlayerLockPurpose]:
+            self._player_command_locks.pop(f"{prefix}_{player_id}", None)
         if handle := self._pending_protocol_evaluations.pop(player_id, None):
             handle.cancel()
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
