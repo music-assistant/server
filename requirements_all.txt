@@ -76,8 +76,10 @@ soco==0.30.14
 soundcloudpy==0.1.4
 srptools>=1.0.0
 sxm==0.2.8
-torch==2.7.1+cpu
-torchaudio==2.7.1+cpu
+torch==2.7.1+cpu; platform_machine == 'x86_64'
+torch==2.7.1; platform_machine != 'x86_64'
+torchaudio==2.7.1+cpu; platform_machine == 'x86_64'
+torchaudio==2.7.1; platform_machine != 'x86_64'
 unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0
