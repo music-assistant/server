@@ -13,9 +13,12 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
+
+if TYPE_CHECKING:
+    from ya_passport_auth import SecretStr
 
 from .constants import (
     CLOUD_BASE_URL,
@@ -36,7 +39,7 @@ class CloudManager:
     def __init__(
         self,
         session: aiohttp.ClientSession,
-        connection_token: str,
+        connection_token: SecretStr,
         on_request: Callable[[CloudRequest], Awaitable[dict[str, Any]]],
         logger: logging.Logger | None = None,
     ) -> None:
@@ -73,7 +76,7 @@ class CloudManager:
 
     async def _connect_once(self) -> None:
         """Single WebSocket connection attempt + message loop."""
-        headers = {"Authorization": f"Bearer {self._token}"}
+        headers = {"Authorization": f"Bearer {self._token.get_secret()}"}
         async with self._session.ws_connect(
             CLOUD_WS_URL,
             headers=headers,
@@ -160,7 +163,7 @@ async def register_cloud_instance(
 async def get_cloud_otp(
     session: aiohttp.ClientSession,
     instance_id: str,
-    token: str,
+    token: SecretStr,
 ) -> str:
     """Get a one-time password for linking the instance in the Yandex app.
 
@@ -168,7 +171,7 @@ async def get_cloud_otp(
     The token parameter is the connection_token from registration.
     """
     url = f"{CLOUD_BASE_URL}/api/home_assistant/v1/instance/{instance_id}/otp"
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token.get_secret()}"}
     async with session.post(url, headers=headers) as resp:
         resp.raise_for_status()
         # yaha-cloud.ru may return text/plain content-type for JSON

@@ -7,7 +7,7 @@
   "credits": [
     "[dext0r/yandex_smart_home](https://github.com/dext0r/yandex_smart_home)"
   ],
-  "requirements": [],
+  "requirements": ["ya-passport-auth>=1.0.0"],
   "documentation": "https://github.com/trudenboy/ma-provider-yandex-smarthome",
   "stage": "alpha",
   "multi_instance": false,

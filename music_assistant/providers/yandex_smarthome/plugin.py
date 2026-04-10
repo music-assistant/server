@@ -12,13 +12,16 @@ The plugin:
 
 Connection modes:
 - Cloud: WebSocket relay through yaha-cloud.ru (no public URL needed)
-- Direct: HTTP webhook endpoint that Yandex calls directly (requires public URL) [v0.2]
+- Cloud Plus: Private skill via yaha-cloud.ru relay (custom Yandex.Dialogs skill)
+- Direct: HTTP endpoints on MA webserver that Yandex calls directly (requires public URL)
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any
+
+from ya_passport_auth import SecretStr
 
 from music_assistant.models.plugin import PluginProvider
 
@@ -29,14 +32,18 @@ from .constants import (
     CONF_CLOUD_INSTANCE_ID,
     CONF_CLOUD_INSTANCE_PASSWORD,
     CONF_CONNECTION_TYPE,
+    CONF_DIRECT_ACCESS_TOKEN,
+    CONF_DIRECT_CLIENT_SECRET,
     CONF_EXPOSED_PLAYERS,
     CONF_INSTANCE_NAME,
     CONF_SKILL_ID,
     CONF_SKILL_TOKEN,
     CONNECTION_TYPE_CLOUD,
     CONNECTION_TYPE_CLOUD_PLUS,
+    CONNECTION_TYPE_DIRECT,
     YANDEX_DIALOGS_CALLBACK_BASE,
 )
+from .direct import DirectConnectionHandler
 from .handlers import (
     build_response,
     handle_device_list,
@@ -59,6 +66,7 @@ class YandexSmartHomePlugin(PluginProvider):
 
     _cloud_manager: CloudManager | None = None
     _state_notifier: StateNotifier | None = None
+    _direct_handler: DirectConnectionHandler | None = None
     _cloud_task: Any = None
     _user_id: str = ""
 
@@ -68,11 +76,22 @@ class YandexSmartHomePlugin(PluginProvider):
             self.config.get_value(CONF_CONNECTION_TYPE) or CONNECTION_TYPE_CLOUD
         )
         self._instance_name = str(self.config.get_value(CONF_INSTANCE_NAME) or "Music Assistant")
-        self._cloud_token = str(self.config.get_value(CONF_CLOUD_INSTANCE_PASSWORD) or "")
-        self._connection_token = str(self.config.get_value(CONF_CLOUD_CONNECTION_TOKEN) or "")
+        cloud_token_raw = str(self.config.get_value(CONF_CLOUD_INSTANCE_PASSWORD) or "")
+        self._cloud_token: SecretStr | None = (
+            SecretStr(cloud_token_raw) if cloud_token_raw else None
+        )
+        conn_token_raw = str(self.config.get_value(CONF_CLOUD_CONNECTION_TOKEN) or "")
+        self._connection_token: SecretStr | None = (
+            SecretStr(conn_token_raw) if conn_token_raw else None
+        )
         self._cloud_instance_id = str(self.config.get_value(CONF_CLOUD_INSTANCE_ID) or "")
         self._skill_id = str(self.config.get_value(CONF_SKILL_ID) or "")
-        self._skill_token = str(self.config.get_value(CONF_SKILL_TOKEN) or "")
+        skill_token_raw = str(self.config.get_value(CONF_SKILL_TOKEN) or "")
+        self._skill_token: SecretStr | None = (
+            SecretStr(skill_token_raw) if skill_token_raw else None
+        )
+        self._direct_access_token = str(self.config.get_value(CONF_DIRECT_ACCESS_TOKEN) or "")
+        self._direct_client_secret = str(self.config.get_value(CONF_DIRECT_CLIENT_SECRET) or "")
 
         # Parse exposed players filter
         exposed_raw = self.config.get_value(CONF_EXPOSED_PLAYERS) or []
@@ -99,12 +118,14 @@ class YandexSmartHomePlugin(PluginProvider):
 
         if self._connection_type in (CONNECTION_TYPE_CLOUD, CONNECTION_TYPE_CLOUD_PLUS):
             await self._start_cloud_mode()
+        elif self._connection_type == CONNECTION_TYPE_DIRECT:
+            await self._start_direct_mode()
         else:
-            self.logger.warning("Direct mode not yet implemented — use cloud mode")
+            self.logger.error("Unknown connection type: %s", self._connection_type)
 
     async def _start_cloud_mode(self) -> None:
         """Initialize and start cloud relay connection + state notifier."""
-        if not self._connection_token:
+        if not self._connection_token or not self._connection_token.get_secret():
             self.logger.error(
                 "Cloud connection token not configured — "
                 "register an instance at yaha-cloud.ru and set the connection token"
@@ -113,12 +134,14 @@ class YandexSmartHomePlugin(PluginProvider):
 
         # Validate Cloud Plus credentials before starting any tasks
         if self._connection_type == CONNECTION_TYPE_CLOUD_PLUS:
-            if not self._skill_id or not self._skill_token:
+            if not self._skill_id or not self._skill_token or not self._skill_token.get_secret():
                 self.logger.error("Cloud Plus mode requires skill_id and skill_token")
                 return
 
         # Validate cloud password (used for callback auth in basic cloud mode)
-        if self._connection_type == CONNECTION_TYPE_CLOUD and not self._cloud_token:
+        if self._connection_type == CONNECTION_TYPE_CLOUD and (
+            not self._cloud_token or not self._cloud_token.get_secret()
+        ):
             self.logger.error(
                 "Cloud instance password not configured — "
                 "set the password from yaha-cloud.ru instance settings"
@@ -144,11 +167,13 @@ class YandexSmartHomePlugin(PluginProvider):
 
         # State notifier — different callback URL/auth for cloud_plus
         if self._connection_type == CONNECTION_TYPE_CLOUD_PLUS:
+            assert self._skill_token is not None  # validated above
             callback_url = f"{YANDEX_DIALOGS_CALLBACK_BASE}/{self._skill_id}/callback/state"
-            auth_header = {"Authorization": f"OAuth {self._skill_token}"}
+            auth_header = {"Authorization": f"OAuth {self._skill_token.get_secret()}"}
         else:
+            assert self._cloud_token is not None  # validated above
             callback_url = f"{CLOUD_CALLBACK_URL}/state"
-            auth_header = {"Authorization": f"Bearer {self._cloud_token}"}
+            auth_header = {"Authorization": f"Bearer {self._cloud_token.get_secret()}"}
 
         self._state_notifier = StateNotifier(
             mass=self.mass,
@@ -160,6 +185,51 @@ class YandexSmartHomePlugin(PluginProvider):
             exposed_ids=self._exposed_ids,
         )
         await self._state_notifier.start()
+
+    async def _start_direct_mode(self) -> None:
+        """Initialize direct connection mode — HTTP endpoints + state notifier."""
+        if not self._skill_id or not self._skill_token or not self._skill_token.get_secret():
+            self.logger.error(
+                "Direct mode requires skill_id and skill_token — "
+                "create a private skill in Yandex.Dialogs and configure the tokens"
+            )
+            return
+
+        self._user_id = self._instance_name
+
+        def _on_token_created(token: str) -> None:
+            """Persist new access token generated during OAuth flow."""
+            self._direct_access_token = token
+            self._update_config_value(CONF_DIRECT_ACCESS_TOKEN, token, encrypted=True)
+
+        self._direct_handler = DirectConnectionHandler(
+            mass=self.mass,
+            user_id=self._user_id,
+            access_token=self._direct_access_token,
+            client_secret=self._direct_client_secret,
+            exposed_ids=self._exposed_ids,
+            logger=self.logger,
+            on_token_created=_on_token_created,
+        )
+        self._direct_handler.register_routes()
+
+        # State notifier — callback to Yandex Dialogs (same as Cloud Plus)
+        session = self.mass.http_session
+        callback_url = f"{YANDEX_DIALOGS_CALLBACK_BASE}/{self._skill_id}/callback/state"
+        auth_header = {"Authorization": f"OAuth {self._skill_token.get_secret()}"}
+
+        self._state_notifier = StateNotifier(
+            mass=self.mass,
+            session=session,
+            user_id=self._user_id,
+            callback_url=callback_url,
+            auth_header=auth_header,
+            logger=self.logger,
+            exposed_ids=self._exposed_ids,
+        )
+        await self._state_notifier.start()
+
+        self.logger.info("Direct connection mode started")
 
     async def _handle_cloud_request(self, request: CloudRequest) -> dict[str, Any]:
         """Route incoming cloud WS request to the appropriate handler."""
@@ -221,6 +291,10 @@ class YandexSmartHomePlugin(PluginProvider):
         if self._state_notifier:
             await self._state_notifier.stop()
             self._state_notifier = None
+
+        if self._direct_handler:
+            self._direct_handler.unregister_routes()
+            self._direct_handler = None
 
         if self._cloud_manager:
             await self._cloud_manager.disconnect()

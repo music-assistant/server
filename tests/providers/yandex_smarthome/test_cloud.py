@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
+from ya_passport_auth import SecretStr
 
 from music_assistant.providers.yandex_smarthome.cloud import (
     CloudManager,
@@ -30,7 +31,7 @@ class TestCloudManager:
             on_request = AsyncMock(return_value={"request_id": "r1", "payload": {}})
         return CloudManager(
             session=session,
-            connection_token="test-token",
+            connection_token=SecretStr("test-token"),
             on_request=on_request,
         )
 
@@ -201,7 +202,7 @@ class TestGetCloudOtp:
         ctx.__aexit__ = AsyncMock(return_value=False)
         session.post.return_value = ctx
 
-        otp = await get_cloud_otp(session, "inst-123", "tok-abc")
+        otp = await get_cloud_otp(session, "inst-123", SecretStr("tok-abc"))
         assert otp == "123456"
 
     @pytest.mark.asyncio
@@ -218,6 +219,6 @@ class TestGetCloudOtp:
         ctx.__aexit__ = AsyncMock(return_value=False)
         session.post.return_value = ctx
 
-        await get_cloud_otp(session, "inst-1", "tok-1")
+        await get_cloud_otp(session, "inst-1", SecretStr("tok-1"))
         session.post.assert_called_once()
         assert "inst-1" in str(session.post.call_args)
