@@ -40,7 +40,7 @@ def _make_session(
     session.start_ntp = 1  # dummy
     session.wait_start = 2.0
 
-    session._chunk_buffer = deque(maxlen=12)
+    session._chunk_buffer = deque(maxlen=50)
     for pos in chunk_positions:
         session._chunk_buffer.append((b"\x00" * PCM_SAMPLE_SIZE, pos))
 
@@ -180,6 +180,42 @@ async def test_late_join_trims_first_chunk() -> None:
     # if no full chunks are >= min_position)
     assert len(first_data) <= PCM_SAMPLE_SIZE
     assert len(first_data) % BYTES_PER_SAMPLE == 0
+
+
+@pytest.mark.asyncio
+async def test_late_join_always_trims_straddling_chunk() -> None:
+    """Test that a chunk straddling min_position is included even when later chunks pass the filter.
+
+    Previously, trimming only happened when no full chunks passed the >= filter.
+    With 1-second chunks this meant we always snapped to the next boundary, losing
+    up to 1 second of usable buffered audio. The improved logic always includes
+    the partial straddling chunk, giving the late joiner more buffer and a more
+    precise start time.
+    """
+    now = time.time()
+    # start_time = now - 50, wait_start = 2s, min_position = 52.0
+    # But let's make min_position fall mid-chunk by adjusting start_time slightly.
+    # With start_time = now - 50.5, min_position = (now+2) - (now-50.5) = 52.5
+    start_time = now - 50.5
+    session = _make_session(start_time, 54.0, [52.0, 53.0])
+    player = _make_late_joiner(wait_start_ms=2000)
+
+    start_at, fed_chunks = await _run_add_client(session, player)
+
+    assert fed_chunks, "Expected buffered chunks to be fed"
+    first_data, first_pos = fed_chunks[0]
+
+    # The chunk at position 52.0 straddles min_position (52.5).
+    # It should be trimmed so first_pos is ~52.5, NOT skipped in favour of 53.0.
+    assert first_pos < 53.0, f"First chunk should be trimmed from 52.0, not 53.0 (got {first_pos})"
+    assert first_pos >= 52.5 - 0.1
+    # Trimmed chunk should be smaller than a full 1-second chunk
+    assert len(first_data) < PCM_SAMPLE_SIZE
+    assert len(first_data) % BYTES_PER_SAMPLE == 0
+    # start_at should match first byte position
+    assert abs(start_at - (session.start_time + first_pos)) < 0.01
+    # We should have 2 chunks (trimmed + the one at 53.0)
+    assert len(fed_chunks) == 2
 
 
 @pytest.mark.asyncio

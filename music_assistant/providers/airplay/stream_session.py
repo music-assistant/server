@@ -13,6 +13,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import StreamingProtocol
@@ -56,9 +57,8 @@ class AirPlayStreamSession:
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
         # Ring buffer for late joiners: stores (chunk_data, seconds_offset) tuples.
-        # Chunk sizes vary (~100ms-1s depending on the source), so use a generous
-        # maxlen to keep enough audio history for late joiners.
-        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=100)
+        # Audio is sliced into ~100ms chunks, so 50 entries ≈ 5 seconds of history.
+        self._chunk_buffer: deque[tuple[bytes, float]] = deque(maxlen=50)
 
     async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Initialize stream session for all players."""
@@ -134,7 +134,8 @@ class AirPlayStreamSession:
             return
 
         async with self._chunk_available:
-            buffered_chunks = self._collect_buffered_chunks(airplay_player)
+            now = time.time()
+            buffered_chunks = self._collect_buffered_chunks(airplay_player, now)
 
             # If no usable chunks at the target position (stream just started or
             # buffer too short), wait for the audio streamer to produce enough data.
@@ -152,7 +153,7 @@ class AirPlayStreamSession:
                     "(stream position=%.2fs, need position >= %.2fs)",
                     airplay_player.player_id,
                     self.seconds_streamed,
-                    (time.time() + wait_start_seconds) - self.start_time,
+                    (now + wait_start_seconds) - self.start_time,
                 )
                 try:
                     await asyncio.wait_for(
@@ -161,8 +162,9 @@ class AirPlayStreamSession:
                         ),
                         timeout=wait_start_seconds + 5.0,
                     )
-                    # Re-collect with updated buffer and timing
-                    buffered_chunks = self._collect_buffered_chunks(airplay_player)
+                    # Re-collect with updated time after waiting
+                    now = time.time()
+                    buffered_chunks = self._collect_buffered_chunks(airplay_player, now)
                 except TimeoutError:
                     self.prov.logger.warning(
                         "Late joiner %s: timed out waiting for audio data (stream position=%.2fs)",
@@ -180,13 +182,11 @@ class AirPlayStreamSession:
                 )
                 return
 
-            now = time.time()
+            # The NTP start time must match the stream position of the first byte
+            # we feed to the pipeline. Use the same `now` for both the chunk
+            # collection and the start_at calculation to avoid timing drift.
             first_chunk_position = buffered_chunks[0][1]
             start_at = self.start_time + first_chunk_position
-            # Sanity check: start_at must not be in the past for the device
-            wait_start_seconds = airplay_player.wait_start / 1000
-            min_start_at = now + wait_start_seconds
-            start_at = max(start_at, min_start_at)
             buffer_duration = self.seconds_streamed - first_chunk_position
             buffered_bytes = sum(len(chunk) for chunk, _ in buffered_chunks)
 
@@ -240,10 +240,9 @@ class AirPlayStreamSession:
                 if not self.sync_clients:
                     break
 
-                # Split large chunks (e.g. crossfade segments) into 1-second sub-chunks
-                # to prevent write timeouts and keep the late-joiner buffer accurate.
-                for offset in range(0, len(chunk), pcm_sample_size):
-                    sub_chunk = chunk[offset : offset + pcm_sample_size]
+                # Split into ~100ms sub-chunks for predictable ring-buffer
+                # granularity and to prevent write timeouts on large segments.
+                for sub_chunk in iter_pcm_slices(chunk, self.pcm_format, target_duration_ms=100):
                     if not self.sync_clients:
                         break
                     has_running_clients = await self._write_chunk_to_all_players(sub_chunk)
@@ -363,41 +362,53 @@ class AirPlayStreamSession:
             # Remove the client if feeding buffered chunks fails
             self.mass.create_task(self.remove_client(airplay_player))
 
-    def _collect_buffered_chunks(self, airplay_player: AirPlayPlayer) -> list[tuple[bytes, float]]:
+    def _collect_buffered_chunks(
+        self,
+        airplay_player: AirPlayPlayer,
+        now: float | None = None,
+    ) -> list[tuple[bytes, float]]:
         """Collect usable buffered chunks for a late joiner.
 
-        Filters the ring buffer to chunks whose wall-clock time satisfies
-        the device's minimum start constraint, trimming the first chunk
-        if needed for sample-accurate alignment.
+        Scans the ring buffer and returns all chunks (or partial chunks) whose
+        audio falls at or after the minimum playback position for this device.
+        The first chunk is trimmed to start exactly at min_position so byte 0
+        aligns with the NTP start time, maximizing the amount of buffered audio.
 
         :param airplay_player: The late joiner player.
+        :param now: Current wall-clock time. If None, uses time.time().
         :return: List of (chunk_data, position) tuples to send.
         """
-        now = time.time()
+        if now is None:
+            now = time.time()
         wait_start_seconds = airplay_player.wait_start / 1000
-        min_start_at = now + wait_start_seconds
-        min_position = min_start_at - self.start_time
+        min_position = (now + wait_start_seconds) - self.start_time
 
-        all_buffered = list(self._chunk_buffer)
-        buffered_chunks = [(chunk, pos) for chunk, pos in all_buffered if pos >= min_position]
+        pcm_sample_size = self.pcm_format.pcm_sample_size
+        bytes_per_sample = pcm_sample_size // self.pcm_format.sample_rate
+        result: list[tuple[bytes, float]] = []
 
-        # Trim the first chunk so byte 0 aligns exactly with min_position.
-        if not buffered_chunks and all_buffered:
-            pcm_sample_size = self.pcm_format.pcm_sample_size
-            bytes_per_sample = pcm_sample_size // self.pcm_format.sample_rate
-            for i, (chunk, pos) in enumerate(all_buffered):
-                chunk_duration = len(chunk) / pcm_sample_size
-                if pos < min_position < pos + chunk_duration:
-                    trim_seconds = min_position - pos
-                    trim_bytes = int(trim_seconds * pcm_sample_size)
-                    trim_bytes = (trim_bytes // bytes_per_sample) * bytes_per_sample
-                    trimmed = chunk[trim_bytes:]
-                    if trimmed:
-                        buffered_chunks.append((trimmed, min_position))
-                    buffered_chunks.extend(all_buffered[i + 1 :])
-                    break
+        for chunk, pos in self._chunk_buffer:
+            chunk_duration = len(chunk) / pcm_sample_size
+            chunk_end = pos + chunk_duration
 
-        return buffered_chunks
+            if chunk_end <= min_position:
+                # entirely before the target window
+                continue
+
+            if pos >= min_position:
+                # starts at or after the target — include as-is
+                result.append((chunk, pos))
+            else:
+                # straddles min_position — trim the front so byte 0
+                # aligns with min_position (sample-boundary aligned)
+                trim_seconds = min_position - pos
+                trim_bytes = int(trim_seconds * pcm_sample_size)
+                trim_bytes = (trim_bytes // bytes_per_sample) * bytes_per_sample
+                trimmed = chunk[trim_bytes:]
+                if trimmed:
+                    result.append((trimmed, pos + trim_bytes / pcm_sample_size))
+
+        return result
 
     async def _write_eof_to_player(self, airplay_player: AirPlayPlayer) -> None:
         """Write EOF to a specific player."""
