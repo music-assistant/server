@@ -7,6 +7,7 @@ capability states, and action execution.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import PlaybackState
@@ -116,6 +117,26 @@ def _volume_range_params() -> CapabilityParameters:
     )
 
 
+# Yandex Smart Home allows only Russian/English letters, digits, and spaces.
+_RE_DISALLOWED = re.compile(r"[^a-zA-Zа-яА-ЯёЁ0-9 ]")  # noqa: RUF001
+_RE_LETTER_DIGIT = re.compile(r"([a-zA-Zа-яА-ЯёЁ])(\d)")  # noqa: RUF001
+_RE_DIGIT_LETTER = re.compile(r"(\d)([a-zA-Zа-яА-ЯёЁ])")  # noqa: RUF001
+_RE_MULTI_SPACE = re.compile(r" {2,}")
+
+
+def normalize_device_name(name: str) -> str:
+    """Normalize player name for Yandex Smart Home.
+
+    Rules: only Russian/English letters, digits, and spaces;
+    mandatory space between letters and digits.
+    """
+    result = _RE_DISALLOWED.sub(" ", name)
+    result = _RE_LETTER_DIGIT.sub(r"\1 \2", result)
+    result = _RE_DIGIT_LETTER.sub(r"\1 \2", result)
+    result = _RE_MULTI_SPACE.sub(" ", result).strip()
+    return result or name
+
+
 def get_device_description(player: Player) -> DeviceDescription:
     """Build a Yandex Smart Home device description from an MA player."""
     capabilities = [
@@ -163,7 +184,7 @@ def get_device_description(player: Player) -> DeviceDescription:
 
     return DeviceDescription(
         id=player.player_id,
-        name=player.name,
+        name=normalize_device_name(player.name),
         type=YANDEX_DEVICE_TYPE_MEDIA,
         capabilities=capabilities,
         device_info=YandexDeviceInfo(model=model),

@@ -26,6 +26,7 @@ from music_assistant.providers.yandex_smarthome.device import (
     is_player_exposable,
     make_error_action_result,
     make_error_device_state,
+    normalize_device_name,
 )
 from music_assistant.providers.yandex_smarthome.schema import (
     CapabilityAction,
@@ -148,10 +149,57 @@ class TestGetDeviceDescription:
         assert desc.device_info is not None
         assert desc.device_info.model == "MA Player"
 
+    def test_name_normalized(self) -> None:
+        """Test that device name is normalized for Yandex."""
+        player = MockPlayer(name="KEF-LS50 (Kitchen)")
+        desc = get_device_description(player)  # type: ignore[arg-type]
+        assert desc.name == "KEF LS 50 Kitchen"
+
 
 # ---------------------------------------------------------------------------
-# Tests: get_device_state
+# Tests: normalize_device_name
 # ---------------------------------------------------------------------------
+
+
+class TestNormalizeDeviceName:
+    """Tests for normalize_device_name."""
+
+    def test_passthrough_clean_name(self) -> None:
+        """Clean names pass through unchanged."""
+        assert normalize_device_name("Living Room Speaker") == "Living Room Speaker"
+
+    def test_russian_name(self) -> None:
+        """Russian names pass through."""
+        assert normalize_device_name("Колонка в гостиной") == "Колонка в гостиной"
+
+    def test_strip_special_chars(self) -> None:
+        """Special characters replaced with spaces."""
+        assert normalize_device_name("KEF-LS50 (Kitchen)") == "KEF LS 50 Kitchen"
+
+    def test_space_between_letters_and_digits(self) -> None:
+        """Mandatory space between letters and digits."""
+        assert normalize_device_name("Sonos5") == "Sonos 5"
+        assert normalize_device_name("3колонка") == "3 колонка"  # noqa: RUF001
+
+    def test_collapse_multiple_spaces(self) -> None:
+        """Multiple spaces collapsed to one."""
+        assert normalize_device_name("KEF   LS50") == "KEF LS 50"
+
+    def test_strip_edges(self) -> None:
+        """Leading/trailing spaces stripped."""
+        assert normalize_device_name("  Speaker  ") == "Speaker"
+
+    def test_mixed_russian_english(self) -> None:
+        """Mixed Russian and English."""
+        assert normalize_device_name("Колонка JBL5") == "Колонка JBL 5"
+
+    def test_empty_fallback(self) -> None:
+        """If normalization produces empty string, return original."""
+        assert normalize_device_name("---") == "---"
+
+    def test_digits_only(self) -> None:
+        """Digit-only names preserved."""
+        assert normalize_device_name("123") == "123"
 
 
 class TestGetDeviceState:
