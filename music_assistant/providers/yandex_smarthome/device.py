@@ -209,7 +209,7 @@ def get_device_description(player: Player) -> DeviceDescription:
 def get_device_state(player: Player) -> DeviceState:
     """Read current MA player state and convert to Yandex capability states."""
     is_on = player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-    is_paused = player.playback_state == PlaybackState.PAUSED
+    is_paused = player.playback_state != PlaybackState.PLAYING
     is_group = _is_group_player(player)
 
     # For groups use group_volume/group_volume_muted which aggregate children

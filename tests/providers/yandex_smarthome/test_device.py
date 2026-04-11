@@ -238,7 +238,7 @@ class TestGetDeviceState:
         assert by_instance[INSTANCE_ON] is False  # idle means "off"
         assert by_instance[INSTANCE_VOLUME] == 30
         assert INSTANCE_MUTE not in by_instance
-        assert by_instance[INSTANCE_PAUSE] is False
+        assert by_instance[INSTANCE_PAUSE] is True
 
     def test_idle_state_with_mute(self) -> None:
         """Test idle state with mute support."""
