@@ -99,6 +99,9 @@ _RECOMMEND_PLAYLIST_TTL = 60 * 60
 _RECOMMEND_DAILY_TTL = 60 * 30
 _RECOMMEND_PERSONAL_FM_TTL = 60 * 5
 _RECOMMEND_HEART_MODE_TTL = 60 * 60
+# NetEase song-detail payload uses this bit in `hr`/`h` mark metadata to indicate
+# that the track has a Hi-Res tier in catalog metadata.
+# Value observed from NeteaseCloudMusicApi-compatible responses.
 _HIRES_MARK_FLAG = 17179869184
 _PLAYLIST_PERSONAL_FM_ID = "personal_fm_dynamic"
 _PLAYLIST_HEART_MODE_PREFIX = "heart_mode_dynamic"
@@ -233,7 +236,13 @@ def _extract_cookie(payload: dict[str, Any]) -> str:
 
 
 def _with_pc_os_cookie(cookie: str) -> str:
-    """Return cookie string with os=pc enforced (required for correct song/url quality)."""
+    """Return cookie string with os=pc for quality URL consistency.
+
+    Netease API may return lower-tier URLs for non-pc `os` cookies even for
+    entitled accounts. This hint only stabilizes server-side format selection;
+    entitlement still comes from upstream account/song permission checks and we
+    do not bypass locked content.
+    """
     if not cookie.strip():
         return cookie
     parts = [part.strip() for part in cookie.split(";") if part.strip()]
@@ -475,7 +484,10 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
             required=True,
             default_value=DEFAULT_API_BASE_URL,
             value=str(values.get(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL),
-            description="Base URL of your NeteaseCloudMusicApi-compatible service.",
+            description=(
+                "Base URL of your local NeteaseCloudMusicApi-compatible service "
+                "(for Home Assistant users, see companion add-on PR #16)."
+            ),
         ),
         ConfigEntry(
             key=CONF_QR_PAGE_URL,
