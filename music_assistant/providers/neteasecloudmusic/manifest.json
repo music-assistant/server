@@ -6,5 +6,6 @@
   "description": "Stream NetEase Cloud Music catalog, playlists, lyrics, and recommendations.",
   "codeowners": ["@xiasi0"],
   "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/netease-cloud-music",
   "multi_instance": true
 }

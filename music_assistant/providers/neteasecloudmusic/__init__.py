@@ -99,6 +99,7 @@ _RECOMMEND_PLAYLIST_TTL = 60 * 60
 _RECOMMEND_DAILY_TTL = 60 * 30
 _RECOMMEND_PERSONAL_FM_TTL = 60 * 5
 _RECOMMEND_HEART_MODE_TTL = 60 * 60
+CACHE_CATEGORY_RECOMMENDATIONS = 1
 # NetEase song-detail payload uses this bit in `hr`/`h` mark metadata to indicate
 # that the track has a Hi-Res tier in catalog metadata.
 # Value observed from NeteaseCloudMusicApi-compatible responses.
@@ -268,8 +269,9 @@ def _clear_qr_route(route_path: str | None) -> None:
     if not route_path:
         return
     if unregister := _QR_ROUTE_UNREGISTER.pop(route_path, None):
-        with suppress(Exception):
-            unregister()
+        if callable(unregister):
+            with suppress(RuntimeError):
+                unregister()
 
 
 def _get_qr_route_path(values: dict[str, ConfigValueType]) -> str | None:
@@ -597,7 +599,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
     _client: NcmApiClient
     _cookie: str
     _uid: str
-    _recommend_payload_cache: dict[str, tuple[float, dict[str, Any]]]
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of provider."""
@@ -608,10 +609,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         api_base_url = str(self.config.get_value(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL).strip()
         self._client = NcmApiClient(self.mass.http_session, api_base_url)
-        resolved_uid = await _resolve_uid(self._client, self._cookie)
         if not self._uid:
-            self._uid = resolved_uid
-        self._recommend_payload_cache = {}
+            self._uid = await _resolve_uid(self._client, self._cookie)
         self.logger.info("NetEase Cloud Music authenticated for uid %s", self._uid)
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -621,7 +620,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 {CONF_QR_PAGE_URL: str(self.config.get_value(CONF_QR_PAGE_URL) or "")}
             )
             _clear_qr_route(route_path)
-        self._recommend_payload_cache = {}
         await super().unload(is_removed)
 
     def _get_item_mapping(self, media_type: MediaType, item_id: str, name: str) -> ItemMapping:
@@ -850,7 +848,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             album.metadata.images = self._make_image_list(image_url)
         publish_time = album_obj.get("publishTime")
         if isinstance(publish_time, int) and publish_time > 0:
-            with suppress(Exception):
+            with suppress(OSError, OverflowError, ValueError):
                 album.year = datetime.fromtimestamp(publish_time / 1000, tz=UTC).year
         return album
 
@@ -975,13 +973,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
             return None
         return seed_song_id, source_playlist_id
 
-    def _mark_track_source(self, track: Track, source_label: str) -> Track:
-        """Mark track title so users can identify current dynamic radio source."""
-        prefix = f"[{source_label}] "
-        if not track.name.startswith(prefix):
-            track.name = f"{prefix}{track.name}"
-        return track
-
     async def _get_song_detail(self, ids: str) -> list[dict[str, Any]]:
         """Fetch song details for one or many ids."""
         payload = await self._client.get("/song/detail", params={"ids": ids}, cookie=self._cookie)
@@ -1021,7 +1012,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         chunk_size = 200
         for idx in range(0, len(track_ids), chunk_size):
             chunk = track_ids[idx : idx + chunk_size]
-            with suppress(Exception):
+            with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
                 detail_rows = await self._get_song_detail(",".join(chunk))
                 for row in detail_rows:
                     row_id = str(row.get("id") or "").strip()
@@ -1032,7 +1023,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             detail_obj = details_by_id.get(track.item_id)
             if not isinstance(detail_obj, dict):
                 continue
-            with suppress(Exception):
+            with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
                 quality_obj = await self._get_song_music_detail(track.item_id)
                 if isinstance(quality_obj, dict):
                     detail_obj = self._merge_quality_objects(detail_obj, quality_obj)
@@ -1050,7 +1041,82 @@ class NeteaseCloudMusicProvider(MusicProvider):
                         track.metadata.images = self._make_image_list(image_url)
             self._apply_track_quality_from_song_detail(track, detail_obj)
 
-    async def search(  # noqa: PLR0915
+    def _search_plan(self, media_types: list[MediaType]) -> list[tuple[MediaType, int]]:
+        """Build NCM search type plan from requested media types."""
+        plan: list[tuple[MediaType, int]] = []
+        if MediaType.TRACK in media_types:
+            plan.append((MediaType.TRACK, 1))
+        if MediaType.ARTIST in media_types:
+            plan.append((MediaType.ARTIST, 100))
+        if MediaType.ALBUM in media_types:
+            plan.append((MediaType.ALBUM, 10))
+        if MediaType.PLAYLIST in media_types:
+            plan.append((MediaType.PLAYLIST, 1000))
+        return plan
+
+    async def _search_single(
+        self, search_query: str, *, type_code: int, limit: int
+    ) -> dict[str, Any]:
+        """Run one NCM search request by type code."""
+        return await self._client.get(
+            "/search",
+            params={"keywords": search_query, "type": type_code, "limit": limit},
+            cookie=self._cookie,
+        )
+
+    def _parse_search_tracks(self, search_result: dict[str, Any], limit: int) -> list[Track]:
+        """Parse track search result items."""
+        tracks: list[Track] = []
+        songs = search_result.get("songs")
+        if not isinstance(songs, list):
+            return tracks
+        for song in songs[:limit]:
+            if not isinstance(song, dict):
+                continue
+            with suppress(InvalidDataError):
+                tracks.append(self._parse_track(song))
+        return tracks
+
+    def _parse_search_artists(self, search_result: dict[str, Any], limit: int) -> list[Artist]:
+        """Parse artist search result items."""
+        artists_result: list[Artist] = []
+        artists = search_result.get("artists")
+        if not isinstance(artists, list):
+            return artists_result
+        for artist in artists[:limit]:
+            if not isinstance(artist, dict):
+                continue
+            with suppress(InvalidDataError):
+                artists_result.append(self._parse_artist(artist))
+        return artists_result
+
+    def _parse_search_albums(self, search_result: dict[str, Any], limit: int) -> list[Album]:
+        """Parse album search result items."""
+        albums_result: list[Album] = []
+        albums = search_result.get("albums")
+        if not isinstance(albums, list):
+            return albums_result
+        for album in albums[:limit]:
+            if not isinstance(album, dict):
+                continue
+            with suppress(InvalidDataError):
+                albums_result.append(self._parse_album(album))
+        return albums_result
+
+    def _parse_search_playlists(self, search_result: dict[str, Any], limit: int) -> list[Playlist]:
+        """Parse playlist search result items."""
+        playlists_result: list[Playlist] = []
+        playlists = search_result.get("playlists")
+        if not isinstance(playlists, list):
+            return playlists_result
+        for playlist in playlists[:limit]:
+            if not isinstance(playlist, dict):
+                continue
+            with suppress(InvalidDataError):
+                playlists_result.append(self._parse_playlist(playlist))
+        return playlists_result
+
+    async def search(
         self,
         search_query: str,
         media_types: list[MediaType],
@@ -1062,25 +1128,12 @@ class NeteaseCloudMusicProvider(MusicProvider):
         artist_results: list[Artist] = []
         album_results: list[Album] = []
         playlist_results: list[Playlist] = []
-        search_plan: list[tuple[MediaType, int]] = []
-        if MediaType.TRACK in media_types:
-            search_plan.append((MediaType.TRACK, 1))
-        if MediaType.ARTIST in media_types:
-            search_plan.append((MediaType.ARTIST, 100))
-        if MediaType.ALBUM in media_types:
-            search_plan.append((MediaType.ALBUM, 10))
-        if MediaType.PLAYLIST in media_types:
-            search_plan.append((MediaType.PLAYLIST, 1000))
-
-        async def _search_single(type_code: int) -> dict[str, Any]:
-            return await self._client.get(
-                "/search",
-                params={"keywords": search_query, "type": type_code, "limit": limit},
-                cookie=self._cookie,
-            )
-
+        search_plan = self._search_plan(media_types)
         responses = await asyncio.gather(
-            *[_search_single(type_code) for _, type_code in search_plan],
+            *[
+                self._search_single(search_query, type_code=type_code, limit=limit)
+                for _, type_code in search_plan
+            ],
             return_exceptions=True,
         )
         for idx, (media_type, _) in enumerate(search_plan):
@@ -1093,37 +1146,13 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if not isinstance(search_result, dict):
                 continue
             if media_type == MediaType.TRACK:
-                songs = search_result.get("songs")
-                if isinstance(songs, list):
-                    for song in songs[:limit]:
-                        if not isinstance(song, dict):
-                            continue
-                        with suppress(InvalidDataError):
-                            track_results.append(self._parse_track(song))
+                track_results.extend(self._parse_search_tracks(search_result, limit))
             elif media_type == MediaType.ARTIST:
-                artists = search_result.get("artists")
-                if isinstance(artists, list):
-                    for artist in artists[:limit]:
-                        if not isinstance(artist, dict):
-                            continue
-                        with suppress(InvalidDataError):
-                            artist_results.append(self._parse_artist(artist))
+                artist_results.extend(self._parse_search_artists(search_result, limit))
             elif media_type == MediaType.ALBUM:
-                albums = search_result.get("albums")
-                if isinstance(albums, list):
-                    for album in albums[:limit]:
-                        if not isinstance(album, dict):
-                            continue
-                        with suppress(InvalidDataError):
-                            album_results.append(self._parse_album(album))
+                album_results.extend(self._parse_search_albums(search_result, limit))
             elif media_type == MediaType.PLAYLIST:
-                playlists = search_result.get("playlists")
-                if isinstance(playlists, list):
-                    for playlist in playlists[:limit]:
-                        if not isinstance(playlist, dict):
-                            continue
-                        with suppress(InvalidDataError):
-                            playlist_results.append(self._parse_playlist(playlist))
+                playlist_results.extend(self._parse_search_playlists(search_result, limit))
         result.tracks = track_results
         await self._enrich_tracks_with_cover(track_results)
         result.artists = artist_results
@@ -1239,12 +1268,12 @@ class NeteaseCloudMusicProvider(MusicProvider):
         if not songs:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
         song_obj = songs[0]
-        with suppress(Exception):
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             quality_obj = await self._get_song_music_detail(prov_track_id)
             if isinstance(quality_obj, dict):
                 song_obj = self._merge_quality_objects(song_obj, quality_obj)
         track = self._parse_track(song_obj)
-        with suppress(Exception):
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             lyric_payload = await self._client.get(
                 "/lyric/new",
                 params={"id": prov_track_id},
@@ -1294,7 +1323,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         if prov_playlist_id == _PLAYLIST_HEART_MODE_PREFIX:
             if playlist := await self._build_heart_mode_dynamic_playlist():
                 return playlist
-            raise MediaNotFoundError("心动模式不可用, 请稍后重试")
+            raise MediaNotFoundError("Heart mode is currently unavailable, please try again later")
 
         payload = await self._client.get(
             "/playlist/detail",
@@ -1318,7 +1347,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 return []
             tracks = await self._pick_personal_fm_tracks(fresh=True, target_count=12)
             for idx, track in enumerate(tracks, start=1):
-                self._mark_track_source(track, "私人FM")
                 track.position = idx
             return tracks
         if heart_parts := self._parse_heart_mode_playlist_id(prov_playlist_id):
@@ -1331,7 +1359,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 count=20,
             )
             for idx, track in enumerate(tracks, start=1):
-                self._mark_track_source(track, "心动模式")
                 track.position = idx
             return tracks
         if prov_playlist_id == _PLAYLIST_HEART_MODE_PREFIX:
@@ -1347,7 +1374,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
                         count=20,
                     )
                     for idx, track in enumerate(tracks, start=1):
-                        self._mark_track_source(track, "心动模式")
                         track.position = idx
                     return tracks
             return []
@@ -1451,14 +1477,27 @@ class NeteaseCloudMusicProvider(MusicProvider):
         path: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Return recommendation payload from in-memory TTL cache or fetch fresh."""
-        if cached := self._recommend_payload_cache.get(key):
-            timestamp, payload = cached
-            if (time.time() - timestamp) < ttl:
+        """Return recommendation payload from MA cache or fetch fresh."""
+        params_key = json.dumps(params or {}, sort_keys=True, separators=(",", ":"))
+        cache_key = f"{key}:{params_key}"
+        cached = await self.mass.cache.get(
+            key=cache_key,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            default=None,
+        )
+        if cached is not None:
+            if isinstance(cached, dict):
                 self.logger.debug("NCM recommendations %s payload cache hit", key)
-                return payload
+                return cached
         payload = await self._client.get(path, params=params, cookie=self._cookie)
-        self._recommend_payload_cache[key] = (time.time(), payload)
+        await self.mass.cache.set(
+            key=cache_key,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            data=payload,
+            expiration=ttl,
+        )
         return payload
 
     async def _pick_personal_fm_tracks(
@@ -1526,11 +1565,6 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if no_new_rounds >= 2:
                 break
         return result
-
-    async def _pick_personal_fm_track(self) -> Track | None:
-        """Pick one track from personal FM payload."""
-        tracks = await self._pick_personal_fm_tracks(target_count=1)
-        return tracks[0] if tracks else None
 
     async def _get_heart_mode_seed(self) -> tuple[str, str] | None:
         """Resolve heart mode seed ids as (seed_song_id, playlist_id)."""
@@ -1820,7 +1854,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """Resolve stream details for a concrete track id."""
         detail_obj: dict[str, Any] | None = None
         track_duration_ms: int | None = None
-        with suppress(Exception):
+        with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
             detail_rows = await self._get_song_detail(track_id)
             if detail_rows:
                 detail_obj = detail_rows[0]
@@ -1877,7 +1911,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             ):
                 audio_format.sample_rate = stream_sr
             expiration = 3600
-            with suppress(Exception):
+            with suppress(TypeError, ValueError):
                 parsed = parse_qs(urlparse(stream_url).query)
                 if expire_raw := parsed.get("expire", [None])[0]:
                     expiration = max(60, int(expire_raw) - int(time.time()))
@@ -1913,6 +1947,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 return details
             if preview_fallback is None:
                 preview_fallback = details
+        # If account/song entitlement only allows trial playback, return preview stream.
         if preview_fallback is not None:
             return preview_fallback
         raise UnplayableMediaError(f"No playable stream URL returned for track {track_id}")
