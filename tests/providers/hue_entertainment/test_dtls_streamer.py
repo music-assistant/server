@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import struct
 import uuid
 
 import pytest
@@ -15,15 +14,34 @@ from music_assistant.providers.hue_entertainment.hue_sendspin_bridge.constants i
 from music_assistant.providers.hue_entertainment.hue_sendspin_bridge.dtls import HueDtlsStreamer
 from music_assistant.providers.hue_entertainment.hue_sendspin_bridge.models import LightColorCommand
 
+# Header layout:
+#   [0:9]   "HueStream"  (9 bytes)
+#   [9:11]  version 2.0  (2 bytes)
+#   [11]    sequence      (1 byte)
+#   [12:14] reserved      (2 bytes)
+#   [14]    color space   (1 byte)
+#   [15]    reserved      (1 byte)
+#   [16:52] area UUID     (36-byte ASCII with dashes)
+# Total header = 52 bytes
+#
+# Per channel (7 bytes): channel_id(1) + R(1)R(1) + G(1)G(1) + B(1)B(1)
+# Color bytes are 0-255, duplicated per Q42.HueApi convention.
+
+HEADER_SIZE = 16
+UUID_SIZE = 36
+FULL_HEADER_SIZE = HEADER_SIZE + UUID_SIZE  # 52
+CHANNEL_SIZE = 7
+
 
 class TestHueStreamMessage:
     """Tests for HueStream v2.0 message building."""
 
     @pytest.fixture
     def streamer(self) -> HueDtlsStreamer:
-        """Return a streamer with a known area UUID."""
+        """Return a streamer with a known area UUID (36-byte ASCII)."""
         s = HueDtlsStreamer()
-        s._area_uuid_bytes = uuid.UUID("12345678-1234-5678-1234-567812345678").bytes
+        area_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        s._area_uuid_bytes = str(area_uuid).encode("ascii")
         return s
 
     def test_message_header(self, streamer: HueDtlsStreamer) -> None:
@@ -34,10 +52,10 @@ class TestHueStreamMessage:
         assert msg[14] == COLOR_SPACE_RGB
 
     def test_message_area_uuid(self, streamer: HueDtlsStreamer) -> None:
-        """Test that the area UUID is correctly encoded."""
+        """Test that the area UUID is correctly encoded as 36-byte ASCII."""
         msg = streamer._build_huestream_message([])
-        expected_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678").bytes
-        assert msg[16:32] == expected_uuid
+        expected = b"12345678-1234-5678-1234-567812345678"
+        assert msg[16:52] == expected
 
     def test_message_sequence_increments(self, streamer: HueDtlsStreamer) -> None:
         """Test that sequence number increments per message."""
@@ -57,23 +75,23 @@ class TestHueStreamMessage:
     def test_empty_commands_header_only(self, streamer: HueDtlsStreamer) -> None:
         """Test that empty commands produce a header-only message."""
         msg = streamer._build_huestream_message([])
-        # Header (16 bytes) + UUID (16 bytes) = 32 bytes
-        assert len(msg) == 32
+        assert len(msg) == FULL_HEADER_SIZE
 
     def test_single_channel_message(self, streamer: HueDtlsStreamer) -> None:
-        """Test message with a single light channel."""
+        """Test message with a single light channel (duplicated-byte color format)."""
+        # 65535 >> 8 = 255, 32768 >> 8 = 128, 0 stays 0
         cmd = LightColorCommand(channel_id=0, red=65535, green=32768, blue=0)
         msg = streamer._build_huestream_message([cmd])
-        # 32 header + 7 per channel = 39
-        assert len(msg) == 39
+        assert len(msg) == FULL_HEADER_SIZE + CHANNEL_SIZE
 
-        # Parse channel data
-        channel_data = msg[32:]
-        ch_id, r, g, b = struct.unpack(">BHHH", channel_data)
-        assert ch_id == 0
-        assert r == 65535
-        assert g == 32768
-        assert b == 0
+        channel_data = msg[FULL_HEADER_SIZE:]
+        assert channel_data[0] == 0  # channel_id
+        assert channel_data[1] == 255  # R
+        assert channel_data[2] == 255  # R (duplicated)
+        assert channel_data[3] == 128  # G
+        assert channel_data[4] == 128  # G (duplicated)
+        assert channel_data[5] == 0  # B
+        assert channel_data[6] == 0  # B (duplicated)
 
     def test_multiple_channels_message(self, streamer: HueDtlsStreamer) -> None:
         """Test message with multiple light channels."""
@@ -83,31 +101,42 @@ class TestHueStreamMessage:
             LightColorCommand(channel_id=2, red=0, green=0, blue=65535),
         ]
         msg = streamer._build_huestream_message(commands)
-        # 32 header + 3 * 7 = 53
-        assert len(msg) == 53
+        assert len(msg) == FULL_HEADER_SIZE + 3 * CHANNEL_SIZE
 
-        # Verify each channel
         for i, cmd in enumerate(commands):
-            offset = 32 + i * 7
-            ch_id, r, g, b = struct.unpack(">BHHH", msg[offset : offset + 7])
-            assert ch_id == cmd.channel_id
-            assert r == cmd.red
-            assert g == cmd.green
-            assert b == cmd.blue
+            offset = FULL_HEADER_SIZE + i * CHANNEL_SIZE
+            assert msg[offset] == cmd.channel_id
+            expected_r = min(255, cmd.red >> 8) if cmd.red > 255 else cmd.red
+            expected_g = min(255, cmd.green >> 8) if cmd.green > 255 else cmd.green
+            expected_b = min(255, cmd.blue >> 8) if cmd.blue > 255 else cmd.blue
+            assert msg[offset + 1] == expected_r
+            assert msg[offset + 2] == expected_r  # duplicated
+            assert msg[offset + 3] == expected_g
+            assert msg[offset + 4] == expected_g  # duplicated
+            assert msg[offset + 5] == expected_b
+            assert msg[offset + 6] == expected_b  # duplicated
 
     def test_channel_id_byte_mask(self, streamer: HueDtlsStreamer) -> None:
         """Test that channel ID is masked to single byte."""
         cmd = LightColorCommand(channel_id=256, red=0, green=0, blue=0)
         msg = streamer._build_huestream_message([cmd])
-        ch_id = msg[32]
-        assert ch_id == 0  # 256 & 0xFF == 0
+        assert msg[FULL_HEADER_SIZE] == 0  # 256 & 0xFF == 0
 
     def test_color_value_clamping(self, streamer: HueDtlsStreamer) -> None:
-        """Test that color values are masked to 16 bits."""
+        """Test that color values >255 are right-shifted and clamped to 8-bit."""
+        # 70000 >> 8 = 273, clamped to min(255, 273) = 255
         cmd = LightColorCommand(channel_id=1, red=70000, green=0, blue=0)
         msg = streamer._build_huestream_message([cmd])
-        _, r, _, _ = struct.unpack(">BHHH", msg[32:39])
-        assert r == 70000 & 0xFFFF
+        r = msg[FULL_HEADER_SIZE + 1]
+        assert r == 255
+
+    def test_small_color_values_not_shifted(self, streamer: HueDtlsStreamer) -> None:
+        """Test that color values <=255 are used directly (not shifted)."""
+        cmd = LightColorCommand(channel_id=0, red=100, green=200, blue=50)
+        msg = streamer._build_huestream_message([cmd])
+        assert msg[FULL_HEADER_SIZE + 1] == 100  # R
+        assert msg[FULL_HEADER_SIZE + 3] == 200  # G
+        assert msg[FULL_HEADER_SIZE + 5] == 50  # B
 
 
 class TestHueDtlsStreamerState:
@@ -122,14 +151,13 @@ class TestHueDtlsStreamerState:
         """Test that send_colors does nothing when not connected."""
         streamer = HueDtlsStreamer()
         cmd = LightColorCommand(channel_id=0, red=65535, green=0, blue=0)
-        # Should not raise
         streamer.send_colors([cmd])
 
     def test_send_queues_message_when_connected(self) -> None:
         """Test that send_colors queues messages when connected."""
         streamer = HueDtlsStreamer()
         streamer._connected = True
-        streamer._area_uuid_bytes = b"\x00" * 16
+        streamer._area_uuid_bytes = str(uuid.UUID(int=0)).encode("ascii")
         cmd = LightColorCommand(channel_id=0, red=100, green=200, blue=300)
         streamer.send_colors([cmd])
         assert not streamer._send_queue.empty()
@@ -140,4 +168,4 @@ class TestHueDtlsStreamerState:
     def test_disconnect_when_not_connected(self) -> None:
         """Test that disconnect is safe when not connected."""
         streamer = HueDtlsStreamer()
-        streamer.disconnect()  # Should not raise
+        streamer.disconnect()

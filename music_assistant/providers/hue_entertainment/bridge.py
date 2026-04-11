@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-SENDSPIN_WS_URL = "ws://127.0.0.1:8927/sendspin"
+SENDSPIN_PORT = 8927
 
 
 class HueEntertainmentBridge:
@@ -82,6 +82,8 @@ class HueEntertainmentBridge:
         self._client_task: asyncio.Task[None] | None = None
         self._is_streaming = False
         self._unsubscribe_viz: Callable[[], None] | None = None
+        self._stop_debounce_task: asyncio.Task[None] | None = None
+        self._entertainment_starting: bool = False
 
     async def start(self) -> None:
         """Start the bridge — connect as a Sendspin visualizer client."""
@@ -178,7 +180,9 @@ class HueEntertainmentBridge:
         """Connect to the Sendspin server and stay connected."""
         try:
             assert self._sendspin_client is not None
-            await self._sendspin_client.connect(SENDSPIN_WS_URL)
+            bind_ip = self.mass.streams.bind_ip
+            ws_url = f"ws://{bind_ip}:{SENDSPIN_PORT}/sendspin"
+            await self._sendspin_client.connect(ws_url)
             self.logger.info("Connected to Sendspin server as visualizer client")
 
             # Keep alive until stopped — entertainment mode starts on first viz frame
@@ -265,8 +269,6 @@ class HueEntertainmentBridge:
             self.logger.info("Stream starting for area '%s', connecting DTLS...", self.area.name)
             self.mass.create_task(self._start_entertainment())
 
-    _stop_debounce_task: asyncio.Task[None] | None = None
-
     def _on_stream_end(self, roles: list[str] | None) -> None:
         """Handle stream end — debounce to survive track transitions."""
         if roles and "visualizer" in roles and self._is_streaming:
@@ -281,8 +283,6 @@ class HueEntertainmentBridge:
         if self._is_streaming:
             self.logger.info("Visualizer stream ended for area '%s'", self.area.name)
             await self._stop_entertainment()
-
-    _entertainment_starting: bool = False
 
     # Latency correction in microseconds. Negative = send later (lights are early).
     _HUE_LATENCY_US = -20_000
