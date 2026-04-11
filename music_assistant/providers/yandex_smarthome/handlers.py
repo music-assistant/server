@@ -48,9 +48,9 @@ async def handle_device_list(
     devices = []
     for player in mass.players.all_players():
         state = player.state
-        if not is_player_exposable(state, exposed_ids=exposed_ids):  # type: ignore[arg-type]
+        if not is_player_exposable(state, exposed_ids=exposed_ids):
             continue
-        devices.append(get_device_description(state))  # type: ignore[arg-type]
+        devices.append(get_device_description(state))
     _LOGGER.debug("Device list: %d devices exposed", len(devices))
     return DeviceListPayload(user_id=user_id, devices=devices)
 

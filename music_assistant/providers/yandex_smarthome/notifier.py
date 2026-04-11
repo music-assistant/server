@@ -182,8 +182,8 @@ class StateNotifier:
         devices: list[DeviceState] = []
         for player in self._mass.players.all_players():
             state = player.state
-            if is_player_exposable(state, exposed_ids=self._exposed_ids):  # type: ignore[arg-type]
-                devices.append(get_device_state(state))  # type: ignore[arg-type]
+            if is_player_exposable(state, exposed_ids=self._exposed_ids):
+                devices.append(get_device_state(state))
         if devices:
             self._logger.info("Reporting all states: %d device(s)", len(devices))
             await self._send_state_callback(devices)
