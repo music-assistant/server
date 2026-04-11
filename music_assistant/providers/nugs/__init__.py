@@ -173,9 +173,16 @@ class NugsProvider(MusicProvider):
                     return track
         raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
+        tracks = await self._get_album_tracks(prov_album_id)
+        for track in tracks:
+            self._track_album_mapping[track.item_id] = prov_album_id
+        return tracks
+
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    async def _get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Fetch album tracks from the API (cached)."""
         endpoint = f"shows/{prov_album_id}"
         response = await self._get_data("catalog", endpoint)
         album_data = response["Response"]
@@ -184,14 +191,11 @@ class NugsProvider(MusicProvider):
             MediaType.ALBUM, album_data["containerID"], album_data["containerInfo"]
         )
         image = f"https://api.livedownloads.com{album_data['img']['url']}"
-        tracks = [
+        return [
             self._parse_track(item, artist=artist, album=album, image_url=image)
             for item in album_data["tracks"]
             if item["trackID"]
         ]
-        for track in tracks:
-            self._track_album_mapping[track.item_id] = prov_album_id
-        return tracks
 
     @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
