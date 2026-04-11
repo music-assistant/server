@@ -20,6 +20,7 @@ import xmltodict
 from aiofiles.os import wrap
 from music_assistant_models.enums import (
     ContentType,
+    EventType,
     ExternalID,
     ImageType,
     MediaType,
@@ -449,6 +450,7 @@ class LocalFileSystemProvider(MusicProvider):
                 base_path_reachable,
             )
             report_current_task_failure("Sync aborted: filesystem unavailable during scan")
+            self._set_available(False)
             return
 
         # work out deletions
@@ -457,6 +459,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
+
+        # flag provider as available again if an earlier sync had marked it down
+        self._set_available(True)
 
     async def _check_base_path_reachable(self) -> bool:
         """Return whether the provider's base path is currently reachable."""
@@ -470,6 +475,13 @@ class LocalFileSystemProvider(MusicProvider):
             return True
 
         return await asyncio.to_thread(_probe)
+
+    def _set_available(self, available: bool) -> None:
+        """Update the provider availability and notify listeners on change."""
+        if self.available == available:
+            return
+        self.available = available
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
 
     async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item asynchronously.
