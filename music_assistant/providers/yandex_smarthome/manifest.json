@@ -9,7 +9,7 @@
   ],
   "requirements": ["ya-passport-auth==1.0.0"],
   "documentation": "https://github.com/trudenboy/ma-provider-yandex-smarthome",
-  "stage": "alpha",
+  "stage": "beta",
   "multi_instance": false,
   "builtin": false
 }
