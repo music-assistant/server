@@ -151,7 +151,7 @@ class StateNotifier:
             player = self._mass.players.get_player(player_id)
             if player is None:
                 continue
-            state = player.state if hasattr(player, "state") else player
+            state = player.state
             if is_player_exposable(state, exposed_ids=self._exposed_ids):
                 devices.append(get_device_state(state))
 
