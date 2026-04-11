@@ -147,6 +147,11 @@ class AirPlayPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of this player."""
         features = set(BASE_PLAYER_FEATURES)
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            # AP2 sync is broken — cliap2 doesn't respect the NTP start time
+            # correctly, so grouping produces multi-second sync offsets.
+            # See https://github.com/music-assistant/cliairplay/issues/102
+            features.discard(PlayerFeature.SET_MEMBERS)
         if not (self.group_members or self.synced_to):
             # we only support pause when the player is not synced,
             # because we don't want to deal with the complexity of pausing a group of players
@@ -154,6 +159,24 @@ class AirPlayPlayer(Player):
             # which is a common approach for AirPlay players
             features.add(PlayerFeature.PAUSE)
         return features
+
+    @property
+    def can_group_with(self) -> set[str]:
+        """Return player IDs this player can group with.
+
+        AP2 players cannot group (broken NTP sync in cliap2).
+        RAOP players can group with other RAOP players only.
+        """
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            return set()
+        prov = cast("AirPlayProvider", self.provider)
+        return {
+            p.player_id
+            for p in prov.get_players()
+            if p.available
+            and p.player_id != self.player_id
+            and p.protocol != StreamingProtocol.AIRPLAY2
+        }
 
     @property
     def output_buffer_duration_ms(self) -> int:
@@ -189,6 +212,15 @@ class AirPlayPlayer(Player):
         if require_authentication:
             base_entries = [*self._get_pairing_config_entries(values)]
 
+        # Determine effective protocol from values being saved (if available)
+        # or fall back to stored config. This ensures config entries reflect
+        # the current form state, not stale stored state.
+        if values and (val := values.get(CONF_AIRPLAY_PROTOCOL)) is not None:
+            effective_protocol = self._get_protocol_for_config_value(cast("int", val))
+        else:
+            effective_protocol = self.protocol
+        is_raop = effective_protocol == StreamingProtocol.RAOP
+
         # Regular AirPlay config entries
         base_entries += [
             ConfigEntry(
@@ -201,13 +233,22 @@ class AirPlayPlayer(Player):
                 "Some newer devices do not fully support RAOP and "
                 "will only work with AirPlay version 2, "
                 "while older devices may only support RAOP.\n\n"
-                "In most cases the default automatic selection will work fine.",
+                "In most cases the default automatic selection will work fine.\n\n"
+                "NOTE: AirPlay 2 currently does not support audio synchronization. "
+                "Grouping/syncing with other players is only available when "
+                "using AirPlay 1 (RAOP).",
                 options=[
-                    # TODO: only show options that are actually available for a player
-                    # based on the mdns service info
-                    ConfigValueOption("Automatically select", 0),
-                    ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
-                    ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value),
+                    opt
+                    for opt in (
+                        ConfigValueOption("Automatically select", 0),
+                        ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value)
+                        if self.raop_discovery_info
+                        else None,
+                        ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value)
+                        if self.airplay_discovery_info
+                        else None,
+                    )
+                    if opt is not None
                 ],
                 default_value=0,
                 category="protocol_generic",
@@ -221,7 +262,7 @@ class AirPlayPlayer(Player):
                 "some (3rd party) players require this to be disabled.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
-                hidden=self.protocol != StreamingProtocol.RAOP,
+                hidden=not is_raop,
                 category="protocol_generic",
                 advanced=True,
             ),
@@ -234,7 +275,7 @@ class AirPlayPlayer(Player):
                 "(lossless) ALAC at the cost of a bit of CPU.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
-                hidden=self.protocol != StreamingProtocol.RAOP,
+                hidden=not is_raop,
                 category="protocol_generic",
                 advanced=True,
             ),
@@ -248,7 +289,7 @@ class AirPlayPlayer(Player):
                 description="Some devices require a password to connect/play.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
-                hidden=self.protocol != StreamingProtocol.RAOP,
+                hidden=not is_raop,
                 category="protocol_generic",
                 advanced=True,
             ),
@@ -278,6 +319,24 @@ class AirPlayPlayer(Player):
 
         if is_broken_airplay_model(self.device_info.manufacturer, self.device_info.model):
             base_entries.insert(-1, BROKEN_AIRPLAY_WARN)
+
+        if effective_protocol == StreamingProtocol.AIRPLAY2:
+            # Insert the warning right after the protocol choice entry
+            for i, entry in enumerate(base_entries):
+                if entry.key == CONF_AIRPLAY_PROTOCOL:
+                    base_entries.insert(
+                        i + 1,
+                        ConfigEntry(
+                            key="AIRPLAY2_SYNC_WARN",
+                            type=ConfigEntryType.ALERT,
+                            default_value=None,
+                            required=False,
+                            label="AirPlay 2 currently does not support audio synchronization. "
+                            "Grouping/syncing with other players is not available. "
+                            "Switch to AirPlay 1 (RAOP) if you need multi-room sync.",
+                        ),
+                    )
+                    break
 
         return base_entries
 
@@ -876,6 +935,19 @@ class AirPlayPlayer(Player):
                 self.player_id, CONF_STORED_VOLUME, self._attr_volume_level
             )
             self.update_state()
+
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player config is updated."""
+        await super().on_config_updated()
+        prov = cast("AirPlayProvider", self.provider)
+        bridge_manager = prov.bridge_manager
+        has_bridge = bridge_manager.get_bridge(self.player_id) is not None
+        if self.protocol == StreamingProtocol.AIRPLAY2 and has_bridge:
+            # AP2 doesn't support sync — tear down the Sendspin bridge
+            await bridge_manager.remove_bridge(self.player_id)
+        elif self.protocol != StreamingProtocol.AIRPLAY2 and not has_bridge:
+            # Switched back to RAOP — set up the Sendspin bridge
+            await bridge_manager.setup_bridge(self)
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
