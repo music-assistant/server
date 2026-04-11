@@ -324,7 +324,7 @@ class TestStateNotifierCloudPlus:
 
     @pytest.mark.asyncio
     async def test_rejects_http_500(self) -> None:
-        """Non-success status codes should still trigger warning."""
+        """Non-success status codes should re-queue pending and raise."""
         mock_resp = AsyncMock()
         mock_resp.status = 500
         mock_resp.text = AsyncMock(return_value="Internal Server Error")
@@ -341,9 +341,12 @@ class TestStateNotifierCloudPlus:
         player = MockPlayer(player_id="p1")
         notifier._pending["p1"] = get_device_state(player)  # type: ignore[arg-type]
 
-        await notifier._flush_pending()
+        with pytest.raises(RuntimeError, match="State callback failed"):
+            await notifier._flush_pending()
 
         session.post.assert_called_once()
+        # Devices should be re-queued after failure
+        assert "p1" in notifier._pending
 
     @pytest.mark.asyncio
     async def test_discovery_url_cloud_plus(self) -> None:

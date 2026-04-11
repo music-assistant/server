@@ -299,9 +299,9 @@ class DirectConnectionHandler:
         if not redirect_uri:
             return web.Response(text="Missing redirect_uri", status=400)
 
-        # Validate redirect_uri is a Yandex domain (prevent open redirect)
+        # Validate redirect_uri is the expected Yandex HTTPS endpoint (prevent open redirect)
         parsed = urllib.parse.urlparse(redirect_uri)
-        if not parsed.hostname or not parsed.hostname.endswith(".yandex.net"):
+        if parsed.scheme != "https" or parsed.hostname != "social.yandex.net":
             return web.Response(text="Invalid redirect_uri", status=400)
 
         # Generate authorization code

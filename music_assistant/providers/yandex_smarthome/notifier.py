@@ -169,13 +169,13 @@ class StateNotifier:
             ) as resp:
                 if resp.status not in (200, 202):
                     body = await resp.text()
-                    self._logger.warning(
-                        "State callback failed (HTTP %d): %s", resp.status, body[:200]
+                    raise RuntimeError(
+                        f"State callback failed with HTTP {resp.status}: {body[:200]}"
                     )
-                else:
-                    self._logger.debug("State callback sent: %d device(s)", len(devices))
+                self._logger.debug("State callback sent: %d device(s)", len(devices))
         except Exception:
             self._logger.exception("State callback error")
+            raise
 
     async def _report_all_states(self) -> None:
         """Report states for all currently exposed players."""
