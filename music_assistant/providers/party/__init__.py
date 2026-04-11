@@ -726,13 +726,6 @@ class PartyPlugin(PluginProvider):
         if not queue:
             raise InvalidDataError(f"Queue not found: {queue_id}")
 
-        # Check for duplicate tracks if configured
-        if self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS):
-            queue_items = self.mass.player_queues.items(queue_id)
-            for queue_item in queue_items:
-                if queue_item.uri == uri:
-                    raise InvalidDataError("This track is already in the queue")
-
         # Handle different scenarios based on queue state and boost mode
         started_playback = False
 
@@ -746,6 +739,10 @@ class PartyPlugin(PluginProvider):
             # Queue is not playing — resolve the item, insert, and start playback.
             # Hold the lock so concurrent guests don't both start playback.
             async with self._queue_lock:
+                if self.config.get_value(
+                    CONF_PREVENT_DUPLICATE_TRACKS
+                ) and self._queue_contains_uri(self.mass.player_queues.items(queue_id), uri):
+                    raise InvalidDataError("This track is already in the queue")
                 media_item = await self.mass.music.get_item_by_uri(uri)
                 if not media_item or media_item.media_type not in (
                     MediaType.TRACK,
@@ -922,6 +919,10 @@ class PartyPlugin(PluginProvider):
         async with self._queue_lock:
             queue = self.mass.player_queues.get(queue_id)
             queue_items = self.mass.player_queues.items(queue_id)
+            if self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS) and self._queue_contains_uri(
+                queue_items, uri
+            ):
+                raise InvalidDataError("This track is already in the queue")
 
             # Use index_in_buffer when playing to avoid inserting before an already-buffered
             # track, which would cause the newly added song to be skipped
@@ -954,6 +955,11 @@ class PartyPlugin(PluginProvider):
         user = get_current_user()
         if not user or user.username != PARTY_GUEST_USER:
             raise InvalidDataError("This endpoint is only available to party guests")
+
+    @staticmethod
+    def _queue_contains_uri(queue_items: list[QueueItem], uri: str) -> bool:
+        """Return whether the queue already contains the given item URI."""
+        return any(queue_item.uri == uri for queue_item in queue_items)
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:

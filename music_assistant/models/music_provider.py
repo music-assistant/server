@@ -474,6 +474,16 @@ class MusicProvider(Provider):
         is_playing is True when the track is currently playing.
         """
 
+    async def on_item_updated(self, item: MediaItemType) -> None:
+        """
+        Handle callback when a library item's metadata has been updated.
+
+        Providers can implement this to sync changes to their own storage
+        (e.g. config entries, file tags).
+
+        :param item: The updated library item.
+        """
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.

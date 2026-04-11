@@ -682,7 +682,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             provider_instance_id_or_domain="library",
         ):
             items.append(media_item_to_playlist_item(track))
-        return generate_m3u(playlist.name, items)
+        playlist_image_url = playlist.image.path if playlist.image else None
+        return generate_m3u(playlist.name, items, playlist_image_url)
 
     async def import_playlist(
         self,

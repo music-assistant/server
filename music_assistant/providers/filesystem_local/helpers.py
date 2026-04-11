@@ -236,14 +236,20 @@ def recursive_iter(
     base_path: str,
     supported_extensions: set[str],
     log: logging.Logger,
+    scan_errors: list[OSError] | None = None,
 ) -> Iterator[FileSystemItem]:
-    """Recursively traverse directory entries yielding supported files.
+    """
+    Recursively traverse directory entries yielding supported files.
 
     :param path: The directory path to scan.
     :param base_path: The root base path for constructing relative paths.
     :param supported_extensions: Set of file extensions to include (lowercase, no dot).
     :param log: Logger instance to use for warnings/debug messages.
+    :param scan_errors: Optional list populated with OSErrors raised while scanning
+        the provider's root base path. Callers treat a non-empty list as "provider
+        unreachable" and abort the sync.
     """
+    is_root = path == base_path
     try:
         scan_iter = os.scandir(path)
     except OSError as err:
@@ -252,11 +258,22 @@ def recursive_iter(
                 "Skipping directory '%s' - unsupported characters in path",
                 path,
             )
-        else:
-            log.warning("Unable to scan directory %s: %s", path, err)
+            return
+        log.warning("Unable to scan directory %s: %s", path, err)
+        if is_root and scan_errors is not None:
+            scan_errors.append(err)
         return
     with scan_iter:
-        for item in scan_iter:
+        while True:
+            try:
+                item = next(scan_iter)
+            except StopIteration:
+                break
+            except OSError as err:
+                log.warning("Error while scanning directory %s: %s", path, err)
+                if is_root and scan_errors is not None:
+                    scan_errors.append(err)
+                return
             if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                 continue
             try:
@@ -268,9 +285,17 @@ def recursive_iter(
                         "Skipping '%s' - unsupported characters in name",
                         item.name,
                     )
+                else:
+                    log.debug("Skipping entry %s due to OS error: %s", item.path, err)
                 continue
             if is_dir:
-                yield from recursive_iter(item.path, base_path, supported_extensions, log)
+                yield from recursive_iter(
+                    item.path,
+                    base_path,
+                    supported_extensions,
+                    log,
+                    scan_errors,
+                )
             elif is_file:
                 if "." not in item.name:
                     continue
