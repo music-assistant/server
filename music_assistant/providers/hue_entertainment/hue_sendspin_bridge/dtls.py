@@ -30,6 +30,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from .constants import (
     COLOR_SPACE_RGB,
     HUE_ENTERTAINMENT_PORT,
+    HUESTREAM_HEADER,
+    HUESTREAM_VERSION,
     KEEPALIVE_INTERVAL_S,
 )
 from .models import LightColorCommand
@@ -37,7 +39,7 @@ from .models import LightColorCommand
 LOGGER = logging.getLogger(__name__)
 
 _STOP = object()
-HANDSHAKE_TIMEOUT = 10.0
+HANDSHAKE_TIMEOUT = 5.0
 
 # DTLS constants
 _DTLS_VERSION = b"\xfe\xfd"  # DTLS 1.2
@@ -173,8 +175,8 @@ class HueDtlsStreamer:
         Per-channel: channel_id(1) + R(2) + G(2) + B(2)
         """
         header = bytearray()
-        header.extend(b"HueStream")  # 9 bytes protocol name
-        header.extend(b"\x02\x00")  # version 2.0
+        header.extend(HUESTREAM_HEADER)  # 9 bytes protocol name
+        header.extend(HUESTREAM_VERSION)  # version 2.0
         header.append(self._sequence & 0xFF)  # sequence id
         header.extend(b"\x00\x00")  # reserved
         header.append(COLOR_SPACE_RGB)  # color space (0x00 = RGB)

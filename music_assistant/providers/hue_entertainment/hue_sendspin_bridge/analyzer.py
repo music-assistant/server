@@ -76,18 +76,20 @@ class HueAudioAnalyzer:
         self._brightness = max(0, min(100, brightness)) / 100.0
         self._intensity = max(0, min(100, intensity)) / 100.0
 
-        # Filters for smooth dynamics
-        self._bass_filter = _ExpFilter(alpha_rise=0.9, alpha_decay=0.15)
-        self._energy_filter = _ExpFilter(alpha_rise=0.8, alpha_decay=0.2)
+        # Filters tuned for ~10Hz frame rate (100ms between frames)
+        self._bass_filter = _ExpFilter(alpha_rise=0.95, alpha_decay=0.3)
+        self._energy_filter = _ExpFilter(alpha_rise=0.9, alpha_decay=0.4)
         self._beat_flash = 0.0  # decays each frame
 
-        # Beat detection state
+        # Beat detection — tuned for 10Hz: lower thresholds, shorter history
         self._loudness_history: list[float] = []
         self._last_beat_time = 0.0
-        self._min_beat_interval = 0.12  # 500 BPM max
+        self._min_beat_interval = 0.2  # 300 BPM max at 10Hz
+        self._prev_loudness = 0.0  # for delta-based detection
 
-        # Color cycling
+        # Color cycling + channel rotation
         self._color_index = 0
+        self._channel_offset = 0  # rotates which light gets which color
         self._base_hue_offset = 0.0
 
         # Per-channel smoothed output
@@ -132,22 +134,32 @@ class HueAudioAnalyzer:
         spectrum = self._get_spectrum_energies(frame)
         bass_energy = self._get_bass_energy(spectrum)
         loudness = self._get_loudness(frame)
-        beat = self._detect_beat(loudness)
+        # Use bass energy for beat detection — aligns with drum hits,
+        # not vocals or general loudness
+        beat = self._detect_beat(bass_energy)
 
-        # Cycle colors on beat
-        if beat:
+        # Color cycling speed depends on energy — faster when music is intense
+        self._base_hue_offset += 0.003 + 0.01 * loudness
+
+        # High energy peak → full white strobe flash
+        if loudness > 0.7 and beat:
+            self._beat_flash = 1.5  # extra bright white strobe
+            self._color_index = (self._color_index + 2) % len(_COLOR_PALETTE)
+            self._channel_offset = (self._channel_offset + 1) % max(1, num_channels)
+        elif beat:
+            self._beat_flash = max(self._beat_flash, 0.8)
             self._color_index = (self._color_index + 1) % len(_COLOR_PALETTE)
-            self._beat_flash = 1.0  # white flash
+            self._channel_offset = (self._channel_offset + 1) % max(1, num_channels)
 
         # Decay beat flash
-        self._beat_flash *= 0.6
+        self._beat_flash *= 0.4
 
         # Filtered bass for brightness modulation
         filtered_bass = self._bass_filter.update(bass_energy)
         filtered_energy = self._energy_filter.update(loudness)
 
-        # Overall brightness: base + bass pulse + intensity scaling
-        base_brightness = 0.3 + 0.7 * filtered_energy
+        # Low floor so quiet parts are dim — makes beats pop
+        base_brightness = 0.05 + 0.95 * filtered_energy
         brightness = min(1.0, base_brightness * self._brightness)
 
         num_bins = len(spectrum)
@@ -156,8 +168,8 @@ class HueAudioAnalyzer:
             bin_idx = min(i * num_bins // num_channels, num_bins - 1) if num_bins > 0 else 0
             energy = spectrum[bin_idx] if bin_idx < num_bins else 0.0
 
-            # Get color from cycling palette — offset per channel for spread
-            palette_idx = (self._color_index + i) % len(_COLOR_PALETTE)
+            # Get color — rotate channel assignment on beats so all lights change
+            palette_idx = (self._color_index + i + self._channel_offset) % len(_COLOR_PALETTE)
             base_r, base_g, base_b = _COLOR_PALETTE[palette_idx]
 
             # Scale by energy and overall brightness
@@ -166,12 +178,13 @@ class HueAudioAnalyzer:
             g = base_g * scale
             b = base_b * scale
 
-            # Add beat flash (white overlay)
+            # Beat flash — white overlay, overrides color on strong hits
             if self._beat_flash > 0.05:
-                flash = self._beat_flash * self._intensity
-                r = min(1.0, r + flash)
-                g = min(1.0, g + flash)
-                b = min(1.0, b + flash)
+                flash = min(1.0, self._beat_flash * self._intensity)
+                # Blend toward white: the stronger the flash, the more white
+                r = r * (1.0 - flash) + flash
+                g = g * (1.0 - flash) + flash
+                b = b * (1.0 - flash) + flash
 
             # Add bass pulse (warm tint)
             if filtered_bass > 0.2:
@@ -193,16 +206,19 @@ class HueAudioAnalyzer:
         spectrum = self._get_spectrum_energies(frame)
         bass_energy = self._get_bass_energy(spectrum)
         loudness = self._get_loudness(frame)
-        beat = self._detect_beat(loudness)
+        beat = self._detect_beat(bass_energy)
 
-        if beat:
-            self._beat_flash = 1.0
+        if loudness > 0.7 and beat:
+            self._beat_flash = 1.5  # white strobe on big hits
+            self._color_index = (self._color_index + 2) % len(_COLOR_PALETTE)
+        elif beat:
+            self._beat_flash = max(self._beat_flash, 0.8)
             self._color_index = (self._color_index + 1) % len(_COLOR_PALETTE)
 
-        self._beat_flash *= 0.55
+        self._beat_flash *= 0.35
 
         filtered_bass = self._bass_filter.update(bass_energy)
-        brightness = min(1.0, (0.2 + 0.8 * filtered_bass) * self._brightness)
+        brightness = min(1.0, (0.05 + 0.95 * filtered_bass) * self._brightness)
 
         for i, channel in enumerate(self._channels):
             # Warm bass color
@@ -210,13 +226,20 @@ class HueAudioAnalyzer:
             g = filtered_bass * 0.3 * brightness
             b = filtered_bass * 0.05 * brightness
 
-            # Beat flash — cycle through palette colors
+            # Beat flash — white strobe on peaks, palette color on normal beats
             if self._beat_flash > 0.05:
-                flash_color = _COLOR_PALETTE[self._color_index]
-                flash = self._beat_flash * self._intensity
-                r = min(1.0, r + flash_color[0] * flash)
-                g = min(1.0, g + flash_color[1] * flash)
-                b = min(1.0, b + flash_color[2] * flash)
+                flash = min(1.0, self._beat_flash * self._intensity)
+                if self._beat_flash > 1.0:
+                    # High energy peak — white strobe
+                    r = r * (1.0 - flash) + flash
+                    g = g * (1.0 - flash) + flash
+                    b = b * (1.0 - flash) + flash
+                else:
+                    # Normal beat — palette color flash
+                    flash_color = _COLOR_PALETTE[self._color_index]
+                    r = min(1.0, r + flash_color[0] * flash)
+                    g = min(1.0, g + flash_color[1] * flash)
+                    b = min(1.0, b + flash_color[2] * flash)
 
             r, g, b = self._smooth(i, r, g, b)
             commands.append(self._to_command(channel.channel_id, r, g, b))
@@ -290,34 +313,47 @@ class HueAudioAnalyzer:
         return 0.3
 
     def _detect_beat(self, loudness: float) -> bool:
-        """Simple volume-spike beat detection."""
+        """Beat detection tuned for 10Hz frame rate.
+
+        Uses both frame-to-frame delta AND average comparison for
+        reliable detection at low sample rates.
+        """
         now = time.monotonic()
+        delta = loudness - self._prev_loudness
+        self._prev_loudness = loudness
 
         # Minimum interval between beats
         if now - self._last_beat_time < self._min_beat_interval:
             self._loudness_history.append(loudness)
-            if len(self._loudness_history) > 20:
+            if len(self._loudness_history) > 10:
                 self._loudness_history.pop(0)
             return False
 
         self._loudness_history.append(loudness)
-        if len(self._loudness_history) > 20:
+        if len(self._loudness_history) > 10:
             self._loudness_history.pop(0)
 
-        if len(self._loudness_history) < 5:
+        if len(self._loudness_history) < 3:
             return False
 
         avg = sum(self._loudness_history) / len(self._loudness_history)
-        # Beat = current loudness significantly above recent average
-        if avg > 0.01 and loudness > avg * 1.4 and loudness > 0.25:
+
+        # Beat detected if:
+        # - Positive delta (sudden loudness increase), OR
+        # - Current loudness above recent average
+        is_beat = (
+            (delta > 0.08 and loudness > 0.15)
+            or (avg > 0.01 and loudness > avg * 1.15 and loudness > 0.15)
+        )
+        if is_beat:
             self._last_beat_time = now
             return True
         return False
 
     def _smooth(self, idx: int, r: float, g: float, b: float) -> tuple[float, float, float]:
-        """Apply light smoothing — faster than before for responsiveness."""
+        """Apply minimal smoothing — at 10Hz each frame counts."""
         prev_r, prev_g, prev_b = self._smoothed[idx]
-        s = 0.3  # 30% of previous, 70% new — responsive
+        s = 0.15  # 15% of previous, 85% new — very responsive at 10Hz
         r_s = prev_r * s + r * (1.0 - s)
         g_s = prev_g * s + g * (1.0 - s)
         b_s = prev_b * s + b * (1.0 - s)

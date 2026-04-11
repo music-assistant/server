@@ -71,6 +71,14 @@ async def _handle_pair_action(values: dict[str, ConfigValueType]) -> None:
         credentials = await api.pair()
         values[CONF_USERNAME] = credentials["username"]
         values[CONF_CLIENTKEY] = credentials["clientkey"]
+        # Fetch and store bridge ID for mDNS IP tracking
+        api_authed = HueEntertainmentAPI(host, credentials["username"])
+        try:
+            bridge_id = await api_authed.get_bridge_id()
+            if bridge_id:
+                values[CONF_BRIDGE_ID] = bridge_id
+        finally:
+            await api_authed.close()
         LOGGER.info("Hue bridge pairing successful!")
     except TimeoutError as err:
         LOGGER.warning("Hue bridge pairing timed out: %s", err)
