@@ -231,30 +231,12 @@ def get_absolute_path(base_path: str, path: str) -> str:
     return os.path.join(base_path, path)
 
 
-def _record_dir_scan_failure(
-    path: str,
-    base_path: str,
-    is_root: bool,
-    err: OSError,
-    scan_errors: list[OSError] | None,
-    incomplete_dirs: set[str] | None,
-) -> None:
-    """Classify a directory scan failure as either fatal or per-subtree recoverable."""
-    if is_root:
-        if scan_errors is not None:
-            scan_errors.append(err)
-        return
-    if incomplete_dirs is not None and (rel := get_relative_path(base_path, path)):
-        incomplete_dirs.add(rel)
-
-
 def recursive_iter(
     path: str,
     base_path: str,
     supported_extensions: set[str],
     log: logging.Logger,
     scan_errors: list[OSError] | None = None,
-    incomplete_dirs: set[str] | None = None,
 ) -> Iterator[FileSystemItem]:
     """
     Recursively traverse directory entries yielding supported files.
@@ -266,9 +248,6 @@ def recursive_iter(
     :param scan_errors: Optional list populated with OSErrors raised while scanning
         the provider's root base path. Callers treat a non-empty list as "provider
         unreachable" and abort the sync.
-    :param incomplete_dirs: Optional set populated with the relative paths of
-        sub-directories that could not be fully scanned. Callers use this to
-        exclude deletions under those subtrees.
     """
     is_root = path == base_path
     try:
@@ -281,7 +260,8 @@ def recursive_iter(
             )
             return
         log.warning("Unable to scan directory %s: %s", path, err)
-        _record_dir_scan_failure(path, base_path, is_root, err, scan_errors, incomplete_dirs)
+        if is_root and scan_errors is not None:
+            scan_errors.append(err)
         return
     with scan_iter:
         while True:
@@ -291,9 +271,8 @@ def recursive_iter(
                 break
             except OSError as err:
                 log.warning("Error while scanning directory %s: %s", path, err)
-                _record_dir_scan_failure(
-                    path, base_path, is_root, err, scan_errors, incomplete_dirs
-                )
+                if is_root and scan_errors is not None:
+                    scan_errors.append(err)
                 return
             if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                 continue
@@ -306,17 +285,8 @@ def recursive_iter(
                         "Skipping '%s' - unsupported characters in name",
                         item.name,
                     )
-                elif err.errno == errno.ENOENT:
-                    # benign race: entry vanished between scandir and stat
-                    log.debug("Skipping entry %s - vanished during scan", item.path)
                 else:
-                    # ESTALE / EIO / EACCES on a single entry: we cannot trust
-                    # any entry in this directory, so treat the parent as
-                    # incomplete to shield the sibling files from deletion
-                    log.warning("Unable to stat %s: %s", item.path, err)
-                    _record_dir_scan_failure(
-                        path, base_path, is_root, err, scan_errors, incomplete_dirs
-                    )
+                    log.debug("Skipping entry %s due to OS error: %s", item.path, err)
                 continue
             if is_dir:
                 yield from recursive_iter(
@@ -325,7 +295,6 @@ def recursive_iter(
                     supported_extensions,
                     log,
                     scan_errors,
-                    incomplete_dirs,
                 )
             elif is_file:
                 if "." not in item.name:

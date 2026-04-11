@@ -189,15 +189,3 @@ CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
 CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 
 DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
-
-# sanity guard for the library sync deletion phase: refuse deletions when more
-# than this fraction of previously indexed items disappeared in one scan. A
-# wrong/empty mount is the most likely explanation; users can still curate
-# individual items manually through the UI.
-MASS_DELETE_GUARD_MIN_PREV: Final[int] = 10
-MASS_DELETE_GUARD_RATIO: Final[float] = 0.5
-
-# when incomplete_dirs shield at least this fraction of previously indexed
-# items, the sync surfaces a task failure so the user can tell a healthy
-# "nothing to delete" run apart from a partially broken one
-INCOMPLETE_DIRS_TASK_FAILURE_RATIO: Final[float] = 0.1

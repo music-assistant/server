@@ -132,50 +132,6 @@ def _build_music_tree(root: Path) -> None:
     (root / "Artist2" / "track3.mp3").write_bytes(b"x")
 
 
-def _patched_scandir_with_stat_error(target_path: str, err: OSError):  # type: ignore[no-untyped-def]
-    """Return a context manager that patches os.scandir so the given path's is_dir raises err."""
-    real_scandir = os.scandir
-
-    class _EntryWrapper:
-        def __init__(self, entry: os.DirEntry[str]) -> None:
-            self._entry = entry
-            self.name = entry.name
-            self.path = entry.path
-
-        def is_dir(self, *, follow_symlinks: bool = True) -> bool:
-            if self.path == target_path:
-                raise err
-            return self._entry.is_dir(follow_symlinks=follow_symlinks)
-
-        def is_file(self, *, follow_symlinks: bool = True) -> bool:
-            return self._entry.is_file(follow_symlinks=follow_symlinks)
-
-        def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
-            return self._entry.stat(follow_symlinks=follow_symlinks)
-
-    class _IterWrapper:
-        def __init__(self, inner) -> None:  # type: ignore[no-untyped-def]
-            self._inner = inner
-
-        def __iter__(self) -> "_IterWrapper":
-            return self
-
-        def __next__(self):  # type: ignore[no-untyped-def]
-            return _EntryWrapper(next(self._inner))
-
-        def __enter__(self) -> "_IterWrapper":
-            self._inner.__enter__()
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            self._inner.__exit__(*exc)
-
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        return _IterWrapper(real_scandir(path))
-
-    return patch("os.scandir", side_effect=fake_scandir)
-
-
 def test_recursive_iter_happy_path(tmp_path: Path) -> None:
     """Test that a healthy scan yields all supported files and records no errors."""
     _build_music_tree(tmp_path)
@@ -216,14 +172,10 @@ def test_recursive_iter_root_unreachable_records_error(tmp_path: Path) -> None:
     assert errors[0].errno == errno.ENOENT
 
 
-def test_recursive_iter_root_fatal_even_for_eacces() -> None:
-    """Test that permission-denied on the root path is treated as fatal."""
+def test_recursive_iter_root_eacces_records_error() -> None:
+    """Test that permission-denied on the root path is reported via scan_errors."""
     errors: list[OSError] = []
-
-    def _raise_eacces(_path: str) -> None:
-        raise PermissionError(errno.EACCES, "denied")
-
-    with patch("os.scandir", side_effect=_raise_eacces):
+    with patch("os.scandir", side_effect=PermissionError(errno.EACCES, "denied")):
         items = list(
             helpers.recursive_iter(
                 "/fake/root",
@@ -238,48 +190,12 @@ def test_recursive_iter_root_fatal_even_for_eacces() -> None:
     assert errors[0].errno == errno.EACCES
 
 
-def test_recursive_iter_subfolder_eacces_recorded_in_incomplete_dirs(tmp_path: Path) -> None:
-    """Test that permission-denied on a sub-folder is recorded in incomplete_dirs."""
+def test_recursive_iter_subfolder_failure_is_not_fatal(tmp_path: Path) -> None:
+    """Test that a sub-folder scan failure does not populate scan_errors."""
     _build_music_tree(tmp_path)
     errors: list[OSError] = []
-    incomplete: set[str] = set()
-
     real_scandir = os.scandir
     bad_dir = str(tmp_path / "Artist1" / "Album1")
-
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        if str(path) == bad_dir:
-            raise PermissionError(errno.EACCES, "denied")
-        return real_scandir(path)
-
-    with patch("os.scandir", side_effect=fake_scandir):
-        items = list(
-            helpers.recursive_iter(
-                str(tmp_path),
-                str(tmp_path),
-                SUPPORTED,
-                logging.getLogger("test"),
-                errors,
-                incomplete,
-            )
-        )
-
-    rel_paths = sorted(i.relative_path for i in items)
-    assert rel_paths == ["Artist2/track3.mp3"]
-    assert errors == []
-    assert incomplete == {"Artist1/Album1"}
-
-
-def test_recursive_iter_subfolder_io_error_recorded_in_incomplete_dirs(
-    tmp_path: Path,
-) -> None:
-    """Test that an EIO failure on a sub-folder is recorded in incomplete_dirs."""
-    _build_music_tree(tmp_path)
-    errors: list[OSError] = []
-    incomplete: set[str] = set()
-
-    real_scandir = os.scandir
-    bad_dir = str(tmp_path / "Artist2")
 
     def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
         if str(path) == bad_dir:
@@ -287,60 +203,6 @@ def test_recursive_iter_subfolder_io_error_recorded_in_incomplete_dirs(
         return real_scandir(path)
 
     with patch("os.scandir", side_effect=fake_scandir):
-        list(
-            helpers.recursive_iter(
-                str(tmp_path),
-                str(tmp_path),
-                SUPPORTED,
-                logging.getLogger("test"),
-                errors,
-                incomplete,
-            )
-        )
-
-    assert errors == []
-    assert incomplete == {"Artist2"}
-
-
-def test_recursive_iter_subfolder_mid_iter_failure(tmp_path: Path) -> None:
-    """Test that a mid-iteration OSError in a sub-folder is recorded in incomplete_dirs."""
-    (tmp_path / "Good" / "Album").mkdir(parents=True)
-    (tmp_path / "Good" / "Album" / "good.mp3").write_bytes(b"x")
-    (tmp_path / "Flaky").mkdir()
-
-    errors: list[OSError] = []
-    incomplete: set[str] = set()
-    real_scandir = os.scandir
-    flaky_dir = str(tmp_path / "Flaky")
-
-    class _FlakyIter:
-        def __init__(self) -> None:
-            self._raised = False
-
-        def __iter__(self) -> "_FlakyIter":
-            return self
-
-        def __next__(self):  # type: ignore[no-untyped-def]
-            if not self._raised:
-                self._raised = True
-                raise OSError(errno.EIO, "i/o error")
-            raise StopIteration
-
-        def __enter__(self) -> "_FlakyIter":
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            return None
-
-        def close(self) -> None:
-            return None
-
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        if str(path) == flaky_dir:
-            return _FlakyIter()
-        return real_scandir(path)
-
-    with patch("os.scandir", side_effect=fake_scandir):
         items = list(
             helpers.recursive_iter(
                 str(tmp_path),
@@ -348,83 +210,18 @@ def test_recursive_iter_subfolder_mid_iter_failure(tmp_path: Path) -> None:
                 SUPPORTED,
                 logging.getLogger("test"),
                 errors,
-                incomplete,
             )
         )
 
     rel_paths = sorted(i.relative_path for i in items)
-    assert rel_paths == ["Good/Album/good.mp3"]
+    assert rel_paths == ["Artist2/track3.mp3"]
     assert errors == []
-    assert incomplete == {"Flaky"}
-
-
-def test_recursive_iter_per_item_enoent_is_silent(tmp_path: Path) -> None:
-    """Test that a per-item stat ENOENT race is silently skipped without tracking."""
-    (tmp_path / "Artist").mkdir()
-    (tmp_path / "Artist" / "good.mp3").write_bytes(b"x")
-    (tmp_path / "Artist" / "racy.mp3").write_bytes(b"x")
-
-    errors: list[OSError] = []
-    incomplete: set[str] = set()
-
-    with _patched_scandir_with_stat_error(
-        str(tmp_path / "Artist" / "racy.mp3"),
-        FileNotFoundError(errno.ENOENT, "vanished"),
-    ):
-        items = list(
-            helpers.recursive_iter(
-                str(tmp_path),
-                str(tmp_path),
-                SUPPORTED,
-                logging.getLogger("test"),
-                errors,
-                incomplete,
-            )
-        )
-
-    rel_paths = sorted(i.relative_path for i in items)
-    assert rel_paths == ["Artist/good.mp3"]
-    assert errors == []
-    assert incomplete == set()
-
-
-def test_recursive_iter_per_item_eio_marks_parent_incomplete(tmp_path: Path) -> None:
-    """Test that a per-item stat EIO on an entry marks its parent directory incomplete."""
-    (tmp_path / "Artist").mkdir()
-    (tmp_path / "Artist" / "good.mp3").write_bytes(b"x")
-    (tmp_path / "Artist" / "flaky.mp3").write_bytes(b"x")
-
-    errors: list[OSError] = []
-    incomplete: set[str] = set()
-
-    with _patched_scandir_with_stat_error(
-        str(tmp_path / "Artist" / "flaky.mp3"),
-        OSError(errno.EIO, "i/o error"),
-    ):
-        list(
-            helpers.recursive_iter(
-                str(tmp_path),
-                str(tmp_path),
-                SUPPORTED,
-                logging.getLogger("test"),
-                errors,
-                incomplete,
-            )
-        )
-
-    assert errors == []
-    assert incomplete == {"Artist"}
 
 
 def test_recursive_iter_einval_is_ignored() -> None:
     """Test that EINVAL from an unsupported path name is not recorded."""
     errors: list[OSError] = []
-    incomplete: set[str] = set()
-
-    def _raise_einval(_path: str) -> None:
-        raise OSError(errno.EINVAL, "invalid path")
-
-    with patch("os.scandir", side_effect=_raise_einval):
+    with patch("os.scandir", side_effect=OSError(errno.EINVAL, "invalid path")):
         items = list(
             helpers.recursive_iter(
                 "/weird/\udcff",
@@ -432,9 +229,7 @@ def test_recursive_iter_einval_is_ignored() -> None:
                 SUPPORTED,
                 logging.getLogger("test"),
                 errors,
-                incomplete,
             )
         )
     assert items == []
     assert errors == []
-    assert incomplete == set()

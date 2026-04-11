@@ -97,9 +97,6 @@ from .constants import (
     CONF_ENTRY_PROPAGATE_GENRES,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
-    INCOMPLETE_DIRS_TASK_FAILURE_RATIO,
-    MASS_DELETE_GUARD_MIN_PREV,
-    MASS_DELETE_GUARD_RATIO,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
@@ -380,11 +377,8 @@ class LocalFileSystemProvider(MusicProvider):
         ignore_album_playlists = self.media_content_type == "music" and self.config.get_value(
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key
         )
-        # populated by recursive_iter on root-scandir failure → triggers abort
+        # populated by recursive_iter on a root-scandir failure
         scan_errors: list[OSError] = []
-        # relative paths of sub-directories that were not fully scanned; used
-        # below to shield their contents from the deletion phase
-        incomplete_dirs: set[str] = set()
 
         def enumerate_files() -> None:
             """Enumerate all files, collecting changed items for processing."""
@@ -395,7 +389,6 @@ class LocalFileSystemProvider(MusicProvider):
                 SUPPORTED_EXTENSIONS,
                 self.logger,
                 scan_errors,
-                incomplete_dirs,
             ):
                 scanned += 1
                 if scanned % 500 == 0:
@@ -447,71 +440,31 @@ class LocalFileSystemProvider(MusicProvider):
         finally:
             self.sync_running = False
 
-        # abort the deletion phase if the root base path could not be scanned
-        # (provider is unreachable — wiping the library would be catastrophic)
+        # do not run deletions if the root base path could not be scanned
         if scan_errors:
             self.logger.error(
-                "Aborting sync for %s: %d root scan error(s)",
-                self.name,
-                len(scan_errors),
+                "Aborting sync for %s: %d root scan error(s)", self.name, len(scan_errors)
             )
             report_current_task_failure("Sync aborted: filesystem unavailable during scan")
             self._set_available(False)
             return
 
-        deleted_files = prev_filenames - cur_filenames
-        effective_prev = len(prev_filenames)
-
-        # shield files under sub-directories that were not fully scanned
-        # (e.g. SMB auth expiry on one subtree, transient I/O errors).
-        # get_relative_path yields platform-native separators, so os.sep on
-        # the prefix matches on both Linux and Windows.
-        if incomplete_dirs:
-            incomplete_prefixes = tuple(p + os.sep for p in incomplete_dirs)
-            shielded = {f for f in prev_filenames if f.startswith(incomplete_prefixes)}
-            effective_prev -= len(shielded)
-            if shielded & deleted_files:
-                self.logger.warning(
-                    "Preserving %d item(s) under %d unscanned director(y/ies) for %s",
-                    len(shielded & deleted_files),
-                    len(incomplete_dirs),
-                    self.name,
-                )
-            deleted_files -= shielded
-            # surface the degraded sync as a task failure when a meaningful
-            # fraction of the library was not scanned, so the UI stops
-            # reporting a silent success
-            if (
-                prev_filenames
-                and len(shielded) / len(prev_filenames) >= INCOMPLETE_DIRS_TASK_FAILURE_RATIO
-            ):
-                report_current_task_failure(
-                    f"Sync degraded: {len(incomplete_dirs)} director(y/ies) could "
-                    f"not be fully scanned, {len(shielded)} item(s) were preserved"
-                )
-
-        # sanity guard: refuse a mass deletion that looks like a wrong/empty mount
-        if (
-            effective_prev >= MASS_DELETE_GUARD_MIN_PREV
-            and len(deleted_files) > effective_prev * MASS_DELETE_GUARD_RATIO
-        ):
+        # do not run deletions on a clean but empty scan of a previously non-empty library
+        # (wrong share mounted, empty backup mount, ...)
+        if prev_filenames and not cur_filenames:
             self.logger.error(
-                "Refusing mass deletion for %s: %d of %d expected items missing "
-                "(only %d found on disk). Verify the source and re-run the sync.",
+                "Aborting sync for %s: scan found no files but %d were previously indexed",
                 self.name,
-                len(deleted_files),
-                effective_prev,
-                len(cur_filenames),
+                len(prev_filenames),
             )
             report_current_task_failure(
-                f"Refused mass deletion: only {len(cur_filenames)} of "
-                f"{effective_prev} expected files were found"
+                f"Sync aborted: scan found no files but {len(prev_filenames)} "
+                "were previously indexed"
             )
             return
 
+        deleted_files = prev_filenames - cur_filenames
         await self._process_deletions(deleted_files)
-
-        # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
 
         # flag provider as available again if an earlier sync had marked it down
