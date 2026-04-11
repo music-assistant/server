@@ -97,7 +97,7 @@ from .constants import (
     CONF_ENTRY_PROPAGATE_GENRES,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
-    MASS_DELETE_GUARD_MIN_DELETES,
+    INCOMPLETE_DIRS_TASK_FAILURE_RATIO,
     MASS_DELETE_GUARD_MIN_PREV,
     MASS_DELETE_GUARD_RATIO,
     PLAYLIST_EXTENSIONS,
@@ -463,7 +463,9 @@ class LocalFileSystemProvider(MusicProvider):
         effective_prev = len(prev_filenames)
 
         # shield files under sub-directories that were not fully scanned
-        # (e.g. SMB auth expiry on one subtree, transient I/O errors)
+        # (e.g. SMB auth expiry on one subtree, transient I/O errors).
+        # get_relative_path yields platform-native separators, so os.sep on
+        # the prefix matches on both Linux and Windows.
         if incomplete_dirs:
             incomplete_prefixes = tuple(p + os.sep for p in incomplete_dirs)
             shielded = {f for f in prev_filenames if f.startswith(incomplete_prefixes)}
@@ -476,11 +478,21 @@ class LocalFileSystemProvider(MusicProvider):
                     self.name,
                 )
             deleted_files -= shielded
+            # surface the degraded sync as a task failure when a meaningful
+            # fraction of the library was not scanned, so the UI stops
+            # reporting a silent success
+            if (
+                prev_filenames
+                and len(shielded) / len(prev_filenames) >= INCOMPLETE_DIRS_TASK_FAILURE_RATIO
+            ):
+                report_current_task_failure(
+                    f"Sync degraded: {len(incomplete_dirs)} director(y/ies) could "
+                    f"not be fully scanned, {len(shielded)} item(s) were preserved"
+                )
 
         # sanity guard: refuse a mass deletion that looks like a wrong/empty mount
         if (
             effective_prev >= MASS_DELETE_GUARD_MIN_PREV
-            and len(deleted_files) >= MASS_DELETE_GUARD_MIN_DELETES
             and len(deleted_files) > effective_prev * MASS_DELETE_GUARD_RATIO
         ):
             self.logger.error(

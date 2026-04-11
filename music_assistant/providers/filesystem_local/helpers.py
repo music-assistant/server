@@ -306,8 +306,17 @@ def recursive_iter(
                         "Skipping '%s' - unsupported characters in name",
                         item.name,
                     )
+                elif err.errno == errno.ENOENT:
+                    # benign race: entry vanished between scandir and stat
+                    log.debug("Skipping entry %s - vanished during scan", item.path)
                 else:
-                    log.debug("Skipping entry %s due to OS error: %s", item.path, err)
+                    # ESTALE / EIO / EACCES on a single entry: we cannot trust
+                    # any entry in this directory, so treat the parent as
+                    # incomplete to shield the sibling files from deletion
+                    log.warning("Unable to stat %s: %s", item.path, err)
+                    _record_dir_scan_failure(
+                        path, base_path, is_root, err, scan_errors, incomplete_dirs
+                    )
                 continue
             if is_dir:
                 yield from recursive_iter(

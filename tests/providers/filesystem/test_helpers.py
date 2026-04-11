@@ -132,6 +132,50 @@ def _build_music_tree(root: Path) -> None:
     (root / "Artist2" / "track3.mp3").write_bytes(b"x")
 
 
+def _patched_scandir_with_stat_error(target_path: str, err: OSError):  # type: ignore[no-untyped-def]
+    """Return a context manager that patches os.scandir so the given path's is_dir raises err."""
+    real_scandir = os.scandir
+
+    class _EntryWrapper:
+        def __init__(self, entry: os.DirEntry[str]) -> None:
+            self._entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+            if self.path == target_path:
+                raise err
+            return self._entry.is_dir(follow_symlinks=follow_symlinks)
+
+        def is_file(self, *, follow_symlinks: bool = True) -> bool:
+            return self._entry.is_file(follow_symlinks=follow_symlinks)
+
+        def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+            return self._entry.stat(follow_symlinks=follow_symlinks)
+
+    class _IterWrapper:
+        def __init__(self, inner) -> None:  # type: ignore[no-untyped-def]
+            self._inner = inner
+
+        def __iter__(self) -> "_IterWrapper":
+            return self
+
+        def __next__(self):  # type: ignore[no-untyped-def]
+            return _EntryWrapper(next(self._inner))
+
+        def __enter__(self) -> "_IterWrapper":
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self._inner.__exit__(*exc)
+
+    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
+        return _IterWrapper(real_scandir(path))
+
+    return patch("os.scandir", side_effect=fake_scandir)
+
+
 def test_recursive_iter_happy_path(tmp_path: Path) -> None:
     """Test that a healthy scan yields all supported files and records no errors."""
     _build_music_tree(tmp_path)
@@ -322,47 +366,11 @@ def test_recursive_iter_per_item_enoent_is_silent(tmp_path: Path) -> None:
 
     errors: list[OSError] = []
     incomplete: set[str] = set()
-    real_scandir = os.scandir
-    racy_path = str(tmp_path / "Artist" / "racy.mp3")
 
-    class _EntryWrapper:
-        def __init__(self, entry: os.DirEntry[str]) -> None:
-            self._entry = entry
-            self.name = entry.name
-            self.path = entry.path
-
-        def is_dir(self, *, follow_symlinks: bool = True) -> bool:
-            if self.path == racy_path:
-                raise FileNotFoundError(errno.ENOENT, "vanished")
-            return self._entry.is_dir(follow_symlinks=follow_symlinks)
-
-        def is_file(self, *, follow_symlinks: bool = True) -> bool:
-            return self._entry.is_file(follow_symlinks=follow_symlinks)
-
-        def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
-            return self._entry.stat(follow_symlinks=follow_symlinks)
-
-    class _IterWrapper:
-        def __init__(self, inner) -> None:  # type: ignore[no-untyped-def]
-            self._inner = inner
-
-        def __iter__(self) -> "_IterWrapper":
-            return self
-
-        def __next__(self):  # type: ignore[no-untyped-def]
-            return _EntryWrapper(next(self._inner))
-
-        def __enter__(self) -> "_IterWrapper":
-            self._inner.__enter__()
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            self._inner.__exit__(*exc)
-
-    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
-        return _IterWrapper(real_scandir(path))
-
-    with patch("os.scandir", side_effect=fake_scandir):
+    with _patched_scandir_with_stat_error(
+        str(tmp_path / "Artist" / "racy.mp3"),
+        FileNotFoundError(errno.ENOENT, "vanished"),
+    ):
         items = list(
             helpers.recursive_iter(
                 str(tmp_path),
@@ -378,6 +386,34 @@ def test_recursive_iter_per_item_enoent_is_silent(tmp_path: Path) -> None:
     assert rel_paths == ["Artist/good.mp3"]
     assert errors == []
     assert incomplete == set()
+
+
+def test_recursive_iter_per_item_eio_marks_parent_incomplete(tmp_path: Path) -> None:
+    """Test that a per-item stat EIO on an entry marks its parent directory incomplete."""
+    (tmp_path / "Artist").mkdir()
+    (tmp_path / "Artist" / "good.mp3").write_bytes(b"x")
+    (tmp_path / "Artist" / "flaky.mp3").write_bytes(b"x")
+
+    errors: list[OSError] = []
+    incomplete: set[str] = set()
+
+    with _patched_scandir_with_stat_error(
+        str(tmp_path / "Artist" / "flaky.mp3"),
+        OSError(errno.EIO, "i/o error"),
+    ):
+        list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+                incomplete,
+            )
+        )
+
+    assert errors == []
+    assert incomplete == {"Artist"}
 
 
 def test_recursive_iter_einval_is_ignored() -> None:
