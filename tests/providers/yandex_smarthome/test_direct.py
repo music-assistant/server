@@ -733,7 +733,7 @@ async def test_code_consumed_after_use(handler: DirectConnectionHandler) -> None
 
 def _make_direct_config(**overrides: Any) -> MagicMock:
     """Create a mock config for direct mode with sensible defaults."""
-    defaults = {
+    defaults: dict[str, Any] = {
         "instance_name": "TestMA",
         "connection_type": CONNECTION_TYPE_DIRECT,
         "skill_id": "test-skill-id",
@@ -744,6 +744,7 @@ def _make_direct_config(**overrides: Any) -> MagicMock:
         "cloud_instance_id": "",
         "cloud_instance_password": "",
         "cloud_connection_token": "",
+        "log_level": "GLOBAL",
     }
     defaults.update(overrides)
     config = MagicMock()
@@ -757,7 +758,7 @@ async def test_start_direct_mode_registers_routes(mock_mass: MagicMock) -> None:
     config = _make_direct_config()
     plugin = YandexSmartHomePlugin(
         mass=mock_mass,
-        manifest=MagicMock(),
+        manifest=MagicMock(domain="yandex_smarthome"),
         config=config,
         supported_features=set(),
     )
@@ -775,7 +776,7 @@ async def test_start_direct_mode_missing_skill_id(mock_mass: MagicMock) -> None:
     config = _make_direct_config(skill_id="")
     plugin = YandexSmartHomePlugin(
         mass=mock_mass,
-        manifest=MagicMock(),
+        manifest=MagicMock(domain="yandex_smarthome"),
         config=config,
         supported_features=set(),
     )
@@ -793,7 +794,7 @@ async def test_unload_cleans_up_direct(mock_mass: MagicMock) -> None:
     config = _make_direct_config()
     plugin = YandexSmartHomePlugin(
         mass=mock_mass,
-        manifest=MagicMock(),
+        manifest=MagicMock(domain="yandex_smarthome"),
         config=config,
         supported_features=set(),
     )
