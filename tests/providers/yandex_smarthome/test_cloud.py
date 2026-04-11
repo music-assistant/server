@@ -92,13 +92,18 @@ class TestCloudManager:
 
     @pytest.mark.asyncio
     async def test_handle_message_exception_logged(self) -> None:
-        """Test handle message exception logged."""
+        """Test handle message exception sends error response."""
         callback = AsyncMock(side_effect=RuntimeError("boom"))
         mgr = self._make_manager(on_request=callback)
 
         ws = AsyncMock()
+        ws.closed = False
         # Should not raise
         await mgr._handle_message(ws, {"request_id": "r1", "action": "test"})
+        # Should send error response so relay doesn't hang
+        ws.send_json.assert_awaited_once_with(
+            {"request_id": "r1", "payload": {"error": "INTERNAL_ERROR"}}
+        )
 
     @pytest.mark.asyncio
     async def test_disconnect(self) -> None:

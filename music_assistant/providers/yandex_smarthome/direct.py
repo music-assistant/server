@@ -334,7 +334,9 @@ class DirectConnectionHandler:
         # Validate client credentials
         client_id = str(data.get("client_id", ""))
         client_secret = str(data.get("client_secret", ""))
-        if client_id != DIRECT_OAUTH_CLIENT_ID or client_secret != self._client_secret:
+        if client_id != DIRECT_OAUTH_CLIENT_ID or not secrets.compare_digest(
+            client_secret, self._client_secret
+        ):
             return web.json_response({"error": "invalid_client"}, status=401)
 
         grant_type = str(data.get("grant_type", ""))

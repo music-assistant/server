@@ -127,6 +127,15 @@ class CloudManager:
             await ws.send_json(response)
         except Exception:
             self._logger.exception("Error handling cloud message: %s", data)
+            # Send best-effort error response so the relay doesn't hang
+            request_id = data.get("request_id")
+            if request_id and ws and not ws.closed:
+                try:
+                    await ws.send_json(
+                        {"request_id": request_id, "payload": {"error": "INTERNAL_ERROR"}}
+                    )
+                except Exception:
+                    self._logger.debug("Failed to send error response for %s", request_id)
 
     async def disconnect(self) -> None:
         """Stop the connection loop and close WebSocket."""
