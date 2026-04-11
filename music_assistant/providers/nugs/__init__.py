@@ -210,7 +210,7 @@ class NugsProvider(MusicProvider):
         return result
 
     async def _cache_tracks(self, tracks: list[Track]) -> None:
-        """Persistently cache individual tracks for later lookup by get_track."""
+        """Cache individual tracks persistently for later lookup by get_track."""
         for track in tracks:
             await self.mass.cache.set(
                 f"nugs_track_{track.item_id}",
