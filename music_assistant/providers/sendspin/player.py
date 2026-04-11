@@ -120,6 +120,7 @@ def format_to_display_string(fmt: SupportedAudioFormat) -> str:
 
 
 if TYPE_CHECKING:
+    from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import ConfigValueType
@@ -147,11 +148,17 @@ class SendspinPlayer(Player):
         """Return if the player requires flow mode."""
         return True
 
-    def __init__(self, provider: SendspinProvider, player_id: str) -> None:
+    def __init__(
+        self,
+        provider: SendspinProvider,
+        player_id: str,
+        initial_hello: ClientHelloPayload | None = None,
+    ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
         sendspin_client = provider.server_api.get_client(player_id)
         assert sendspin_client is not None
+        hello_payload = initial_hello or sendspin_client.info
         self.api = sendspin_client
         self.unsub_event_cb = None
         self.unsub_group_event_cb = None
@@ -164,15 +171,15 @@ class SendspinPlayer(Player):
             PlayerFeature.MULTI_DEVICE_DSP,
         }
         # Keep volume/mute features of the first registration as a workaround for Cast.
-        if sendspin_client.info.player_support:
-            _supported_commands = sendspin_client.info.player_support.supported_commands
+        if hello_payload.player_support:
+            _supported_commands = hello_payload.player_support.supported_commands
             if PlayerCommand.VOLUME in _supported_commands:
                 self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
             if PlayerCommand.MUTE in _supported_commands:
                 self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
         self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
-        self._refresh_client_info(sendspin_client)
+        self._refresh_client_info(sendspin_client, hello_payload=initial_hello)
         self._subscribe_client_callbacks()
 
     def preserve_control_features_from(self, other: SendspinPlayer) -> None:
@@ -229,11 +236,13 @@ class SendspinPlayer(Player):
     def _refresh_client_info(
         self,
         sendspin_client: SendspinClient,
+        hello_payload: ClientHelloPayload | None = None,
     ) -> None:
         """Refresh player attributes from a Sendspin client hello/info payload."""
+        client_info = hello_payload or sendspin_client.info
         preserved_identifiers = dict(self._attr_device_info.identifiers)
-        self._attr_name = sendspin_client.name
-        if device_info := sendspin_client.info.device_info:
+        self._attr_name = client_info.name
+        if device_info := client_info.device_info:
             self._attr_device_info = DeviceInfo(
                 model=device_info.product_name or "Unknown model",
                 manufacturer=device_info.manufacturer or "Unknown Manufacturer",
@@ -264,7 +273,7 @@ class SendspinPlayer(Player):
                 self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, _mac)
             elif is_valid_mac_address(self.player_id):
                 self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.player_id)
-        if sendspin_client.info.player_support:
+        if client_info.player_support:
             for role in sendspin_client.roles_by_family("player"):
                 volume = role.get_player_volume()
                 muted = role.get_player_muted()
