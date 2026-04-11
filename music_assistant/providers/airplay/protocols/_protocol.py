@@ -59,7 +59,7 @@ class AirPlayProtocol(ABC):
         self._stream_bytes_sent = 0
         self._connected = asyncio.Event()
         self._metadata_checksum = ""
-        self._last_metadata_sent: float = 0.0
+        self._last_progress_sent: int = -1
         self._elapsed_time_offset: float | None = None
 
     @property
@@ -86,6 +86,8 @@ class AirPlayProtocol(ABC):
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         # we also need to send the metadata after connection, because some players (e.g. Sonos)
         # simply won't start playback until they receive the metadata ?!
+        # reset checksum so the resend isn't blocked by deduplication
+        self._metadata_checksum = ""
         self.mass.call_later(2, self.player._on_player_media_updated)
 
     async def stop(self, force: bool = False) -> None:
@@ -147,21 +149,17 @@ class AirPlayProtocol(ABC):
             album = metadata.album or ""
 
             metadata_checksum = f"{title}|{artist}|{album}|{duration}|{metadata.image_url}"
-            if (
-                metadata_checksum == self._metadata_checksum
-                and time.time() - self._last_metadata_sent <= 2
-            ):
-                # metadata has not changed since last time, skip sending to CLI
+            if metadata_checksum == self._metadata_checksum:
                 return
             self._metadata_checksum = metadata_checksum
-            self._last_metadata_sent = time.time()
 
             cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
             cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
 
             await self.send_cli_command(cmd)
-            # get image
+            self._last_progress_sent = 0
             if metadata.image_url:
                 await self.send_cli_command(f"ARTWORK={metadata.image_url}")
-        if progress is not None:
+        if progress is not None and abs(progress - self._last_progress_sent) >= 2:
+            self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")
