@@ -1467,6 +1467,11 @@ class Player(ABC):
 
         Returns a tuple of (playback_state, elapsed_time, elapsed_time_last_updated).
         """
+        # Determine base state from protocol player, parent/group, or self.
+        playback_state: PlaybackState
+        elapsed_time: float | None
+        elapsed_time_last_updated: float | None
+
         # If an output protocol is active (and not native), use the protocol player's state
         if (
             self.__attr_active_output_protocol
@@ -1476,23 +1481,38 @@ class Player(ABC):
             )
             and protocol_player.playback_state != PlaybackState.IDLE
         ):
-            return (
-                protocol_player.state.playback_state,
-                protocol_player.state.elapsed_time,
-                protocol_player.state.elapsed_time_last_updated,
-            )
+            playback_state = protocol_player.state.playback_state
+            elapsed_time = protocol_player.state.elapsed_time
+            elapsed_time_last_updated = protocol_player.state.elapsed_time_last_updated
         # If we're synced or part of an active group, use the parent/group player's state
         # for playback state and elapsed time.
         # NOTE: Don't do this for the active group player itself,
         # because the group player relies on the sync leader for state info.
-        parent_id = self.__final_synced_to or self.__final_active_group
-        if parent_id and (parent_player := self.mass.players.get_player(parent_id)):
-            return (
-                parent_player.state.playback_state,
-                parent_player.state.elapsed_time,
-                parent_player.state.elapsed_time_last_updated,
-            )
-        return (self.playback_state, self.elapsed_time, self.elapsed_time_last_updated)
+        elif (parent_id := self.__final_synced_to or self.__final_active_group) and (
+            parent_player := self.mass.players.get_player(parent_id)
+        ):
+            playback_state = parent_player.state.playback_state
+            elapsed_time = parent_player.state.elapsed_time
+            elapsed_time_last_updated = parent_player.state.elapsed_time_last_updated
+        else:
+            playback_state = self.playback_state
+            elapsed_time = self.elapsed_time
+            elapsed_time_last_updated = self.elapsed_time_last_updated
+
+        # If a PluginSource is active with elapsed_time metadata, prefer it
+        # over the player/protocol elapsed_time (which tracks bytes consumed,
+        # not the source's logical playback position).
+        active_source = self.__final_active_source
+        if (
+            active_source
+            and (source := self.mass.players.get_plugin_source(active_source))
+            and source.metadata
+            and source.metadata.elapsed_time is not None
+        ):
+            elapsed_time = source.metadata.elapsed_time
+            elapsed_time_last_updated = source.metadata.elapsed_time_last_updated or time.time()
+
+        return (playback_state, elapsed_time, elapsed_time_last_updated)
 
     @cached_property
     @final
