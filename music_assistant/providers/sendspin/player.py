@@ -895,6 +895,8 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
     """A non-audio Sendspin player for visualizer/lighting devices."""
 
     _attr_type = PlayerType.VISUALIZER
+    _attr_hidden_by_default = True
+    _attr_expose_to_ha_by_default = False
 
     def __init__(
         self,

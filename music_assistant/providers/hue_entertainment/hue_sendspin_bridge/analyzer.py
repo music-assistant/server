@@ -341,9 +341,8 @@ class HueAudioAnalyzer:
         # Beat detected if:
         # - Positive delta (sudden loudness increase), OR
         # - Current loudness above recent average
-        is_beat = (
-            (delta > 0.08 and loudness > 0.15)
-            or (avg > 0.01 and loudness > avg * 1.15 and loudness > 0.15)
+        is_beat = (delta > 0.08 and loudness > 0.15) or (
+            avg > 0.01 and loudness > avg * 1.15 and loudness > 0.15
         )
         if is_beat:
             self._last_beat_time = now

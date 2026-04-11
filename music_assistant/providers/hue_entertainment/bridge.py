@@ -18,11 +18,13 @@ from typing import TYPE_CHECKING
 
 from aiosendspin.client import SendspinClient
 from aiosendspin.models import Roles
+from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSpectrum,
     ClientHelloVisualizerSupport,
     VisualizerFrame,
 )
+from music_assistant_models.enums import PlayerType
 
 from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import (
     HueAudioAnalyzer,
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import (
         EntertainmentArea,
     )
+    from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .provider import HueEntertainmentProvider
 
@@ -91,10 +94,21 @@ class HueEntertainmentBridge:
 
         # Create Sendspin client with visualizer role
         client_id = f"hue-{self.area.id.replace('-', '')[:16]}"
+
+        # Register this client as a LIGHT player type with the Sendspin provider
+        # so the resulting player shows up correctly in the UI
+        sendspin_prov: SendspinProvider | None = self.mass.get_provider("sendspin")  # type: ignore[assignment]
+        if sendspin_prov:
+            sendspin_prov.register_bridge_player_type(client_id, PlayerType.LIGHT)
+
         self._sendspin_client = SendspinClient(
             client_id=client_id,
             client_name=f"Hue: {self.area.name}",
             roles=[Roles.VISUALIZER],
+            device_info=SendspinDeviceInfo(
+                manufacturer="Signify",
+                product_name="Hue Entertainment Area",
+            ),
             visualizer_support=ClientHelloVisualizerSupport(
                 # Small buffer — we want frames at playback time, not seconds ahead.
                 # Each viz frame is ~50 bytes, so 100 bytes ≈ 2 frames ≈ 200ms lead.
@@ -186,13 +200,11 @@ class HueEntertainmentBridge:
             return
 
         # Stop any active entertainment area first — bridge only allows one
-        try:
+        with suppress(Exception):
             areas = await hue_api.get_entertainment_areas()
             for area in areas:
                 with suppress(Exception):
                     await hue_api.stop_entertainment(area.id)
-        except Exception:
-            pass
 
         username = str(self.provider.config.get_value("hue_username") or "")
         clientkey = str(self.provider.config.get_value("hue_clientkey") or "")
@@ -211,9 +223,7 @@ class HueEntertainmentBridge:
                         self.area.id,
                     )
                     self._is_streaming = True
-                    self.logger.info(
-                        "Entertainment streaming active for area '%s'", self.area.name
-                    )
+                    self.logger.info("Entertainment streaming active for area '%s'", self.area.name)
                     return
                 except Exception as err:
                     self.logger.warning(
@@ -244,7 +254,7 @@ class HueEntertainmentBridge:
             with suppress(Exception):
                 await hue_api.stop_entertainment(self.area.id)
 
-    def _on_stream_start(self, message: object) -> None:  # noqa: ARG002
+    def _on_stream_start(self, message: object) -> None:
         """Handle stream start — start entertainment mode + DTLS proactively."""
         # Cancel any pending stop from a previous stream end (track transition)
         if self._stop_debounce_task and not self._stop_debounce_task.done():
