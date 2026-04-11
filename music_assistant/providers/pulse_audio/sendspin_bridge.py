@@ -421,7 +421,7 @@ class LocalPulseAudioBridgeManager:
                 bit_depth = int("".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0])))
             except (IndexError, ValueError):
                 continue
-            if channels < 1:
+            if channels < 2:
                 continue
             sinks.append({
                 "name": desc,
