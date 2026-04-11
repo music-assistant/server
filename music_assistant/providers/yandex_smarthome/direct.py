@@ -38,6 +38,7 @@ from .constants import (
     DIRECT_AUTH_BASE_PATH,
     DIRECT_HEALTH_RESPONSE,
     DIRECT_OAUTH_CLIENT_ID,
+    MAX_PENDING_CODES,
     OAUTH_CODE_EXPIRY,
 )
 from .handlers import (
@@ -230,6 +231,10 @@ class DirectConnectionHandler:
 
         try:
             body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return web.json_response(build_response(request_id, {}), status=400)
+
+        try:
             if not isinstance(body, dict):
                 body = {}
             devices_raw = body.get("devices", [])
@@ -254,6 +259,10 @@ class DirectConnectionHandler:
 
         try:
             body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return web.json_response(build_response(request_id, {}), status=400)
+
+        try:
             action_payload = parse_action_payload(body)
             result = await handle_devices_action(
                 self._mass, action_payload, exposed_ids=self._exposed_ids
@@ -311,10 +320,12 @@ class DirectConnectionHandler:
         if parsed.scheme != "https" or parsed.hostname != "social.yandex.net":
             return web.Response(text="Invalid redirect_uri", status=400)
 
-        # Generate authorization code
+        # Generate authorization code (with DoS cap on pending codes)
+        self._cleanup_expired_codes()
+        if len(self._pending_codes) >= MAX_PENDING_CODES:
+            return web.Response(text="Too many pending authorization requests", status=429)
         code = uuid.uuid4().hex
         self._pending_codes[code] = time.time() + OAUTH_CODE_EXPIRY
-        self._cleanup_expired_codes()
 
         # Build redirect URL with code and state
         params = {"code": code}
