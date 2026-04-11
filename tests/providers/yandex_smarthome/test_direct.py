@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+
+if TYPE_CHECKING:
+    from aiohttp import web
 
 from music_assistant.providers.yandex_smarthome.constants import (
     CONNECTION_TYPE_DIRECT,
@@ -21,10 +24,11 @@ from music_assistant.providers.yandex_smarthome.constants import (
 from music_assistant.providers.yandex_smarthome.direct import DirectConnectionHandler
 from music_assistant.providers.yandex_smarthome.plugin import YandexSmartHomePlugin
 
-if TYPE_CHECKING:
-    from aiohttp import web
-
 TEST_CLIENT_SECRET = "test-client-secret-abc123"
+
+# token_store lists shared between fixtures and tests
+_handler_tokens: list[str] = []
+_handler_no_token_tokens: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +37,7 @@ TEST_CLIENT_SECRET = "test-client-secret-abc123"
 
 
 @pytest.fixture
-def mock_mass():
+def mock_mass() -> MagicMock:
     """Return a mock MusicAssistant with a webserver stub."""
     mass = MagicMock()
     mass.webserver.base_url = "https://my-ma.example.com"
@@ -44,14 +48,14 @@ def mock_mass():
 
 
 @pytest.fixture
-def handler(mock_mass):
+def handler(mock_mass: MagicMock) -> DirectConnectionHandler:
     """Return a DirectConnectionHandler with a known token."""
-    token_store: list[str] = []
+    _handler_tokens.clear()
 
     def on_token(t: str) -> None:
-        token_store.append(t)
+        _handler_tokens.append(t)
 
-    h = DirectConnectionHandler(
+    return DirectConnectionHandler(
         mass=mock_mass,
         user_id="test_user",
         access_token="test-token-abc",
@@ -59,19 +63,17 @@ def handler(mock_mass):
         exposed_ids=None,
         on_token_created=on_token,
     )
-    h._token_store = token_store  # stash for assertions
-    return h
 
 
 @pytest.fixture
-def handler_no_token(mock_mass):
+def handler_no_token(mock_mass: MagicMock) -> DirectConnectionHandler:
     """Return a handler with no initial access token (first-time OAuth flow)."""
-    token_store: list[str] = []
+    _handler_no_token_tokens.clear()
 
     def on_token(t: str) -> None:
-        token_store.append(t)
+        _handler_no_token_tokens.append(t)
 
-    h = DirectConnectionHandler(
+    return DirectConnectionHandler(
         mass=mock_mass,
         user_id="test_user",
         access_token="",
@@ -79,17 +81,15 @@ def handler_no_token(mock_mass):
         exposed_ids=None,
         on_token_created=on_token,
     )
-    h._token_store = token_store
-    return h
 
 
 def _make_request(
     method: str = "GET",
     path: str = "/",
-    headers: dict | None = None,
-    payload: dict | None = None,
-    query: dict | None = None,
-    post_data: dict | None = None,
+    headers: dict[str, str] | None = None,
+    payload: dict[str, Any] | None = None,
+    query: dict[str, str] | None = None,
+    post_data: dict[str, str] | None = None,
 ) -> web.Request:
     """Build a mock aiohttp Request."""
     req = make_mocked_request(
@@ -98,20 +98,20 @@ def _make_request(
         headers=headers or {},
     )
     if query:
-        req._rel_url = req._rel_url.with_query(query)
+        object.__setattr__(req, "_rel_url", req._rel_url.with_query(query))
     if payload is not None:
-        req._payload_writer = None
+        object.__setattr__(req, "_payload_writer", None)
 
-        async def _json():
+        async def _json(**_kwargs: Any) -> dict[str, Any]:
             return payload
 
-        req.json = _json
+        object.__setattr__(req, "json", _json)
     if post_data is not None:
 
-        async def _post():
+        async def _post() -> dict[str, str]:
             return post_data
 
-        req.post = _post
+        object.__setattr__(req, "post", _post)
     return req
 
 
@@ -156,13 +156,13 @@ def test_oauth_constants() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_register_routes(handler, mock_mass) -> None:
+def test_register_routes(handler: DirectConnectionHandler, mock_mass: MagicMock) -> None:
     """register_routes should register all 10 HTTP routes."""
     handler.register_routes()
     assert mock_mass.webserver.register_dynamic_route.call_count == 10
 
 
-def test_unregister_routes(handler) -> None:
+def test_unregister_routes(handler: DirectConnectionHandler) -> None:
     """unregister_routes should call all stored callbacks and clear."""
     handler.register_routes()
     handler.unregister_routes()
@@ -174,31 +174,31 @@ def test_unregister_routes(handler) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_auth_valid(handler) -> None:
+def test_auth_valid(handler: DirectConnectionHandler) -> None:
     """Valid Bearer token should pass validation."""
     req = _make_request(headers={"Authorization": "Bearer test-token-abc"})
     assert handler._validate_auth(req) is True
 
 
-def test_auth_invalid(handler) -> None:
+def test_auth_invalid(handler: DirectConnectionHandler) -> None:
     """Wrong Bearer token should fail validation."""
     req = _make_request(headers={"Authorization": "Bearer wrong-token"})
     assert handler._validate_auth(req) is False
 
 
-def test_auth_missing(handler) -> None:
+def test_auth_missing(handler: DirectConnectionHandler) -> None:
     """Missing Authorization header should fail validation."""
     req = _make_request()
     assert handler._validate_auth(req) is False
 
 
-def test_auth_non_bearer(handler) -> None:
+def test_auth_non_bearer(handler: DirectConnectionHandler) -> None:
     """Non-Bearer auth scheme should fail validation."""
     req = _make_request(headers={"Authorization": "Basic dXNlcjpwYXNz"})
     assert handler._validate_auth(req) is False
 
 
-def test_auth_empty_token_rejects(handler_no_token) -> None:
+def test_auth_empty_token_rejects(handler_no_token: DirectConnectionHandler) -> None:
     """Handler with no access token should reject any Bearer token."""
     req = _make_request(headers={"Authorization": "Bearer anything"})
     assert handler_no_token._validate_auth(req) is False
@@ -210,7 +210,7 @@ def test_auth_empty_token_rejects(handler_no_token) -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_get(handler) -> None:
+async def test_health_get(handler: DirectConnectionHandler) -> None:
     """GET health check should return 200 with health text."""
     req = _make_request(method="GET", path="/v1.0")
     resp = await handler._handle_health(req)
@@ -219,7 +219,7 @@ async def test_health_get(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_head(handler) -> None:
+async def test_health_head(handler: DirectConnectionHandler) -> None:
     """HEAD health check should return 200."""
     req = _make_request(method="HEAD", path="/v1.0")
     resp = await handler._handle_health(req)
@@ -232,7 +232,7 @@ async def test_health_head(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_devices_unauthorized(handler) -> None:
+async def test_devices_unauthorized(handler: DirectConnectionHandler) -> None:
     """POST /user/devices with bad token should return 401."""
     req = _make_request(method="POST", headers={"Authorization": "Bearer bad"})
     resp = await handler._handle_devices(req)
@@ -240,7 +240,7 @@ async def test_devices_unauthorized(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_query_unauthorized(handler) -> None:
+async def test_query_unauthorized(handler: DirectConnectionHandler) -> None:
     """POST /user/devices/query with bad token should return 401."""
     req = _make_request(method="POST", headers={"Authorization": "Bearer bad"})
     resp = await handler._handle_query(req)
@@ -248,7 +248,7 @@ async def test_query_unauthorized(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_action_unauthorized(handler) -> None:
+async def test_action_unauthorized(handler: DirectConnectionHandler) -> None:
     """POST /user/devices/action with bad token should return 401."""
     req = _make_request(method="POST", headers={"Authorization": "Bearer bad"})
     resp = await handler._handle_action(req)
@@ -256,7 +256,7 @@ async def test_action_unauthorized(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unlink_unauthorized(handler) -> None:
+async def test_unlink_unauthorized(handler: DirectConnectionHandler) -> None:
     """POST /user/unlink with bad token should return 401."""
     req = _make_request(method="POST", headers={"Authorization": "Bearer bad"})
     resp = await handler._handle_unlink(req)
@@ -271,7 +271,7 @@ _AUTH_HEADERS = {"Authorization": "Bearer test-token-abc"}
 
 
 @pytest.mark.asyncio
-async def test_devices_success(handler) -> None:
+async def test_devices_success(handler: DirectConnectionHandler) -> None:
     """Authorized /user/devices should return 200 with device list."""
     req = _make_request(
         method="POST",
@@ -280,23 +280,23 @@ async def test_devices_success(handler) -> None:
     mock_result = MagicMock()
     resp_payload = {"request_id": "req-1", "payload": {"devices": []}}
     mock_hdl = patch(
-        "provider.direct.handle_device_list",
+        "music_assistant.providers.yandex_smarthome.direct.handle_device_list",
         new_callable=AsyncMock,
         return_value=mock_result,
     )
     with (
         mock_hdl,
-        patch("provider.direct.asdict", return_value={"devices": []}),
-        patch("provider.direct.build_response", return_value=resp_payload),
+        patch("music_assistant.providers.yandex_smarthome.direct.asdict", return_value={"devices": []}),
+        patch("music_assistant.providers.yandex_smarthome.direct.build_response", return_value=resp_payload),
     ):
         resp = await handler._handle_devices(req)
         assert resp.status == 200
-        body = json.loads(resp.body)
+        body = json.loads(resp.body)  # type: ignore[arg-type]
         assert body["request_id"] == "req-1"
 
 
 @pytest.mark.asyncio
-async def test_query_success(handler) -> None:
+async def test_query_success(handler: DirectConnectionHandler) -> None:
     """Authorized /user/devices/query should return 200."""
     req = _make_request(
         method="POST",
@@ -306,21 +306,21 @@ async def test_query_success(handler) -> None:
     mock_result = MagicMock()
     resp_payload = {"request_id": "req-2", "payload": {"devices": []}}
     mock_query = patch(
-        "provider.direct.handle_devices_query",
+        "music_assistant.providers.yandex_smarthome.direct.handle_devices_query",
         new_callable=AsyncMock,
         return_value=mock_result,
     )
     with (
         mock_query,
-        patch("provider.direct.asdict", return_value={"devices": []}),
-        patch("provider.direct.build_response", return_value=resp_payload),
+        patch("music_assistant.providers.yandex_smarthome.direct.asdict", return_value={"devices": []}),
+        patch("music_assistant.providers.yandex_smarthome.direct.build_response", return_value=resp_payload),
     ):
         resp = await handler._handle_query(req)
         assert resp.status == 200
 
 
 @pytest.mark.asyncio
-async def test_action_success(handler) -> None:
+async def test_action_success(handler: DirectConnectionHandler) -> None:
     """Authorized /user/devices/action should return 200."""
     req = _make_request(
         method="POST",
@@ -329,22 +329,22 @@ async def test_action_success(handler) -> None:
     )
     resp_payload = {"request_id": "req-3", "payload": {"devices": []}}
     mock_action = patch(
-        "provider.direct.handle_devices_action",
+        "music_assistant.providers.yandex_smarthome.direct.handle_devices_action",
         new_callable=AsyncMock,
         return_value=MagicMock(),
     )
     with (
-        patch("provider.direct.parse_action_payload", return_value=MagicMock()),
+        patch("music_assistant.providers.yandex_smarthome.direct.parse_action_payload", return_value=MagicMock()),
         mock_action,
-        patch("provider.direct.asdict", return_value={"devices": []}),
-        patch("provider.direct.build_response", return_value=resp_payload),
+        patch("music_assistant.providers.yandex_smarthome.direct.asdict", return_value={"devices": []}),
+        patch("music_assistant.providers.yandex_smarthome.direct.build_response", return_value=resp_payload),
     ):
         resp = await handler._handle_action(req)
         assert resp.status == 200
 
 
 @pytest.mark.asyncio
-async def test_unlink_success(handler) -> None:
+async def test_unlink_success(handler: DirectConnectionHandler) -> None:
     """Authorized /user/unlink should return 200."""
     req = _make_request(
         method="POST",
@@ -352,8 +352,8 @@ async def test_unlink_success(handler) -> None:
     )
     resp_payload = {"request_id": "req-4"}
     with (
-        patch("provider.direct.handle_user_unlink", new_callable=AsyncMock, return_value={}),
-        patch("provider.direct.build_response", return_value=resp_payload),
+        patch("music_assistant.providers.yandex_smarthome.direct.handle_user_unlink", new_callable=AsyncMock, return_value={}),
+        patch("music_assistant.providers.yandex_smarthome.direct.build_response", return_value=resp_payload),
     ):
         resp = await handler._handle_unlink(req)
         assert resp.status == 200
@@ -365,7 +365,7 @@ async def test_unlink_success(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_authorize_returns_html(handler) -> None:
+async def test_authorize_returns_html(handler: DirectConnectionHandler) -> None:
     """GET /auth/authorize should return HTML with link button."""
     req = _make_request(
         method="GET",
@@ -380,12 +380,13 @@ async def test_authorize_returns_html(handler) -> None:
     resp = await handler._handle_oauth_authorize(req)
     assert resp.status == 200
     assert resp.content_type == "text/html"
+    assert resp.text is not None
     assert "Music Assistant" in resp.text
     assert "abc123" in resp.text
 
 
 @pytest.mark.asyncio
-async def test_authorize_missing_redirect_uri(handler) -> None:
+async def test_authorize_missing_redirect_uri(handler: DirectConnectionHandler) -> None:
     """GET /auth/authorize without redirect_uri should return 400."""
     req = _make_request(method="GET", path="/auth/authorize", query={})
     resp = await handler._handle_oauth_authorize(req)
@@ -393,7 +394,7 @@ async def test_authorize_missing_redirect_uri(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_authorize_creates_pending_code(handler) -> None:
+async def test_authorize_creates_pending_code(handler: DirectConnectionHandler) -> None:
     """GET /auth/authorize should create a pending authorization code."""
     req = _make_request(
         method="GET",
@@ -411,7 +412,7 @@ async def test_authorize_creates_pending_code(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_authorize_invalid_client_id(handler) -> None:
+async def test_authorize_invalid_client_id(handler: DirectConnectionHandler) -> None:
     """GET /auth/authorize with wrong client_id should return 400."""
     req = _make_request(
         method="GET",
@@ -428,7 +429,7 @@ async def test_authorize_invalid_client_id(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_authorize_invalid_response_type(handler) -> None:
+async def test_authorize_invalid_response_type(handler: DirectConnectionHandler) -> None:
     """GET /auth/authorize with wrong response_type should return 400."""
     req = _make_request(
         method="GET",
@@ -445,7 +446,7 @@ async def test_authorize_invalid_response_type(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_authorize_invalid_redirect_uri_domain(handler) -> None:
+async def test_authorize_invalid_redirect_uri_domain(handler: DirectConnectionHandler) -> None:
     """GET /auth/authorize with non-Yandex redirect_uri should return 400."""
     req = _make_request(
         method="GET",
@@ -467,7 +468,7 @@ async def test_authorize_invalid_redirect_uri_domain(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_token_exchange_valid_code(handler) -> None:
+async def test_token_exchange_valid_code(handler: DirectConnectionHandler) -> None:
     """Token exchange with valid code should return access_token."""
     req_auth = _make_request(
         method="GET",
@@ -494,14 +495,16 @@ async def test_token_exchange_valid_code(handler) -> None:
     )
     resp = await handler._handle_oauth_token(req_token)
     assert resp.status == 200
-    body = json.loads(resp.body)
+    body = json.loads(resp.body)  # type: ignore[arg-type]
     assert body["access_token"] == "test-token-abc"
     assert body["token_type"] == "bearer"
     assert "refresh_token" in body
 
 
 @pytest.mark.asyncio
-async def test_token_exchange_generates_new_token(handler_no_token) -> None:
+async def test_token_exchange_generates_new_token(
+    handler_no_token: DirectConnectionHandler,
+) -> None:
     """When no token exists, OAuth should generate a new one."""
     req_auth = _make_request(
         method="GET",
@@ -528,15 +531,15 @@ async def test_token_exchange_generates_new_token(handler_no_token) -> None:
     )
     resp = await handler_no_token._handle_oauth_token(req_token)
     assert resp.status == 200
-    body = json.loads(resp.body)
+    body = json.loads(resp.body)  # type: ignore[arg-type]
     assert body["access_token"]
     assert len(body["access_token"]) == 32  # uuid4().hex
-    assert len(handler_no_token._token_store) == 1
-    assert handler_no_token._token_store[0] == body["access_token"]
+    assert len(_handler_no_token_tokens) == 1
+    assert _handler_no_token_tokens[0] == body["access_token"]
 
 
 @pytest.mark.asyncio
-async def test_token_exchange_invalid_client_secret(handler) -> None:
+async def test_token_exchange_invalid_client_secret(handler: DirectConnectionHandler) -> None:
     """Token exchange with wrong client_secret should return 401."""
     req = _make_request(
         method="POST",
@@ -550,12 +553,12 @@ async def test_token_exchange_invalid_client_secret(handler) -> None:
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 401
-    body = json.loads(resp.body)
+    body = json.loads(resp.body)  # type: ignore[arg-type]
     assert body["error"] == "invalid_client"
 
 
 @pytest.mark.asyncio
-async def test_token_exchange_invalid_client_id(handler) -> None:
+async def test_token_exchange_invalid_client_id(handler: DirectConnectionHandler) -> None:
     """Token exchange with wrong client_id should return 401."""
     req = _make_request(
         method="POST",
@@ -569,12 +572,12 @@ async def test_token_exchange_invalid_client_id(handler) -> None:
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 401
-    body = json.loads(resp.body)
+    body = json.loads(resp.body)  # type: ignore[arg-type]
     assert body["error"] == "invalid_client"
 
 
 @pytest.mark.asyncio
-async def test_token_exchange_invalid_code(handler) -> None:
+async def test_token_exchange_invalid_code(handler: DirectConnectionHandler) -> None:
     """Token exchange with invalid code should return 400."""
     req = _make_request(
         method="POST",
@@ -588,12 +591,12 @@ async def test_token_exchange_invalid_code(handler) -> None:
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 400
-    body = json.loads(resp.body)
+    body = json.loads(resp.body)  # type: ignore[arg-type]
     assert body["error"] == "invalid_grant"
 
 
 @pytest.mark.asyncio
-async def test_token_exchange_expired_code(handler) -> None:
+async def test_token_exchange_expired_code(handler: DirectConnectionHandler) -> None:
     """Expired authorization codes should be rejected."""
     handler._pending_codes["expired-code"] = time.time() - 10
     req = _make_request(
@@ -611,7 +614,7 @@ async def test_token_exchange_expired_code(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_valid(handler) -> None:
+async def test_refresh_token_valid(handler: DirectConnectionHandler) -> None:
     """Refresh token with correct token should return 200."""
     req = _make_request(
         method="POST",
@@ -625,12 +628,12 @@ async def test_refresh_token_valid(handler) -> None:
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 200
-    body = json.loads(resp.body)
+    body = json.loads(resp.body)  # type: ignore[arg-type]
     assert body["access_token"] == "test-token-abc"
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_invalid(handler) -> None:
+async def test_refresh_token_invalid(handler: DirectConnectionHandler) -> None:
     """Refresh token with wrong token should return 400."""
     req = _make_request(
         method="POST",
@@ -647,7 +650,7 @@ async def test_refresh_token_invalid(handler) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unsupported_grant_type(handler) -> None:
+async def test_unsupported_grant_type(handler: DirectConnectionHandler) -> None:
     """Unsupported grant_type should return 400."""
     req = _make_request(
         method="POST",
@@ -660,12 +663,12 @@ async def test_unsupported_grant_type(handler) -> None:
     )
     resp = await handler._handle_oauth_token(req)
     assert resp.status == 400
-    body = json.loads(resp.body)
+    body = json.loads(resp.body)  # type: ignore[arg-type]
     assert body["error"] == "unsupported_grant_type"
 
 
 @pytest.mark.asyncio
-async def test_code_consumed_after_use(handler) -> None:
+async def test_code_consumed_after_use(handler: DirectConnectionHandler) -> None:
     """Authorization codes should be single-use."""
     req_auth = _make_request(
         method="GET",
@@ -703,7 +706,7 @@ async def test_code_consumed_after_use(handler) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_direct_config(**overrides: str) -> MagicMock:
+def _make_direct_config(**overrides: Any) -> MagicMock:
     """Create a mock config for direct mode with sensible defaults."""
     defaults = {
         "instance_name": "TestMA",
@@ -724,7 +727,7 @@ def _make_direct_config(**overrides: str) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_start_direct_mode_registers_routes(mock_mass) -> None:
+async def test_start_direct_mode_registers_routes(mock_mass: MagicMock) -> None:
     """_start_direct_mode should create handler and register routes."""
     config = _make_direct_config()
     plugin = YandexSmartHomePlugin(
@@ -742,7 +745,7 @@ async def test_start_direct_mode_registers_routes(mock_mass) -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_direct_mode_missing_skill_id(mock_mass) -> None:
+async def test_start_direct_mode_missing_skill_id(mock_mass: MagicMock) -> None:
     """Direct mode without skill_id should log error and not start."""
     config = _make_direct_config(skill_id="")
     plugin = YandexSmartHomePlugin(
@@ -751,6 +754,7 @@ async def test_start_direct_mode_missing_skill_id(mock_mass) -> None:
         config=config,
         supported_features=set(),
     )
+    plugin.logger = MagicMock()
     await plugin.handle_async_init()
     await plugin.loaded_in_mass()
 
@@ -759,7 +763,7 @@ async def test_start_direct_mode_missing_skill_id(mock_mass) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unload_cleans_up_direct(mock_mass) -> None:
+async def test_unload_cleans_up_direct(mock_mass: MagicMock) -> None:
     """unload() should unregister routes and stop notifier."""
     config = _make_direct_config()
     plugin = YandexSmartHomePlugin(

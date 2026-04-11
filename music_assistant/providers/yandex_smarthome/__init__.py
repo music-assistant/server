@@ -23,7 +23,24 @@ from typing import TYPE_CHECKING, cast
 import aiohttp
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from ya_passport_auth import SecretStr
+
+try:
+    from ya_passport_auth import SecretStr
+except ImportError:
+
+    class SecretStr:  # type: ignore[no-redef]
+        """Minimal fallback when ya-passport-auth is not yet installed."""
+
+        def __init__(self, value: str) -> None:
+            """Initialize with a secret value."""
+            if not value:
+                raise ValueError("SecretStr value must not be empty")
+            self._value = value
+
+        def get_secret(self) -> str:
+            """Return the secret value."""
+            return self._value
+
 
 from .cloud import get_cloud_otp, register_cloud_instance
 from .constants import (

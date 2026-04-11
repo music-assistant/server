@@ -21,7 +21,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from ya_passport_auth import SecretStr
+try:
+    from ya_passport_auth import SecretStr
+except ImportError:
+    from . import SecretStr  # type: ignore[attr-defined]
 
 from music_assistant.models.plugin import PluginProvider
 
