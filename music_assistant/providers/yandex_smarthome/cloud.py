@@ -128,7 +128,7 @@ class CloudManager:
         except Exception:
             self._logger.exception("Error handling cloud message: %s", data)
             # Send best-effort error response so the relay doesn't hang
-            request_id = data.get("request_id")
+            request_id = data.get("request_id") if isinstance(data, dict) else None
             if request_id and ws and not ws.closed:
                 try:
                     await ws.send_json(

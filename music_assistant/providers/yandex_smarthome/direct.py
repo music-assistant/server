@@ -367,8 +367,8 @@ class DirectConnectionHandler:
             )
 
         if grant_type == "refresh_token":
-            refresh_token = data.get("refresh_token", "")
-            if refresh_token and refresh_token == self._access_token:
+            refresh_token = str(data.get("refresh_token", ""))
+            if refresh_token and secrets.compare_digest(refresh_token, self._access_token):
                 return web.json_response(
                     {
                         "access_token": self._access_token,

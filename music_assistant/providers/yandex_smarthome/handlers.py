@@ -141,7 +141,10 @@ async def handle_user_unlink() -> dict[str, Any]:
 def parse_action_payload(raw: dict[str, Any]) -> ActionRequestPayload:
     """Parse a raw /user/devices/action message into ActionRequestPayload."""
     devices = []
-    for dev_raw in raw.get("payload", raw).get("devices", []):
+    payload_obj = raw.get("payload", raw)
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+    for dev_raw in payload_obj.get("devices", []):
         dev_id = dev_raw.get("id")
         if not dev_id:
             continue

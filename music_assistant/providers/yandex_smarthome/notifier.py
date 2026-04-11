@@ -25,6 +25,7 @@ from .constants import (
     STATE_REPORT_DELAY,
 )
 from .device import get_device_state, is_player_exposable
+from .handlers import _strip_none
 from .schema import CallbackPayload, CallbackRequest, DeviceState
 
 if TYPE_CHECKING:
@@ -186,7 +187,7 @@ class StateNotifier:
         try:
             async with self._session.post(
                 self._callback_url,
-                json=asdict(payload),
+                json=_strip_none(asdict(payload)),
                 headers=self._auth_header,
             ) as resp:
                 if resp.status not in (200, 202):
