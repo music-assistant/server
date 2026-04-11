@@ -55,9 +55,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _is_group_player(player: Player) -> bool:
-    """Check if player is a group (has child players)."""
-    group_childs = getattr(player, "group_childs", None)
-    return bool(group_childs)
+    """Check if player is a group (has child members)."""
+    group_members = getattr(player, "group_members", None)
+    return bool(group_members)
 
 
 def _has_feature(player: Player, feature_name: str) -> bool:
@@ -210,7 +210,15 @@ def get_device_state(player: Player) -> DeviceState:
     """Read current MA player state and convert to Yandex capability states."""
     is_on = player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
     is_paused = player.playback_state == PlaybackState.PAUSED
-    volume = player.volume_level if player.volume_level is not None else 0
+    is_group = _is_group_player(player)
+
+    # For groups use group_volume/group_volume_muted which aggregate children
+    if is_group:
+        volume = getattr(player, "group_volume", None)
+        if volume is None:
+            volume = player.volume_level if player.volume_level is not None else 0
+    else:
+        volume = player.volume_level if player.volume_level is not None else 0
 
     capabilities = [
         CapabilityState(
@@ -232,8 +240,13 @@ def get_device_state(player: Player) -> DeviceState:
     ]
 
     # mute state — if player supports VOLUME_MUTE or is a group
-    if _has_feature(player, "volume_mute") or _is_group_player(player):
-        muted = player.volume_muted if player.volume_muted is not None else False
+    if _has_feature(player, "volume_mute") or is_group:
+        if is_group:
+            muted = getattr(player, "group_volume_muted", None)
+            if muted is None:
+                muted = player.volume_muted if player.volume_muted is not None else False
+        else:
+            muted = player.volume_muted if player.volume_muted is not None else False
         capabilities.append(
             CapabilityState(
                 type=YandexCapabilityType.TOGGLE,
@@ -269,6 +282,8 @@ async def execute_capability_action(
     """
     instance = action.state.instance
     value = action.state.value
+    player = mass.players.get_player(player_id)
+    is_group = _is_group_player(player) if player else False
 
     try:
         if action.type == YandexCapabilityType.ON_OFF:
@@ -282,16 +297,15 @@ async def execute_capability_action(
                 target = max(0, min(100, current_volume + int(float(value))))
             else:
                 target = max(0, min(100, int(float(value))))
-            await mass.players.cmd_volume_set(player_id, target)
+            if is_group:
+                await mass.players.cmd_group_volume(player_id, target)
+            else:
+                await mass.players.cmd_volume_set(player_id, target)
             value = target
 
         elif action.type == YandexCapabilityType.TOGGLE and instance == INSTANCE_MUTE:
-            # For groups, mute each child individually (group may not support mute natively)
-            player = mass.players.get_player(player_id)
-            group_childs = getattr(player, "group_childs", None) if player else None
-            if group_childs:
-                for child_id in group_childs:
-                    await mass.players.cmd_volume_mute(child_id, bool(value))
+            if is_group:
+                await mass.players.cmd_group_volume_mute(player_id, bool(value))
             else:
                 await mass.players.cmd_volume_mute(player_id, bool(value))
 
@@ -310,7 +324,6 @@ async def execute_capability_action(
             # Non-relative channel set is ignored (no concept of channel number in MA)
 
         elif action.type == YandexCapabilityType.MODE and instance == INSTANCE_INPUT_SOURCE:
-            player = mass.players.get_player(player_id)
             if player is None:
                 return CapabilityActionResult(
                     type=action.type,

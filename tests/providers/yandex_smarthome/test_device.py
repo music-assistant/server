@@ -67,7 +67,9 @@ class MockPlayer:
     supported_features: set[str] = field(default_factory=set)
     source_list: list[MockPlayerSource] = field(default_factory=list)
     active_source: str | None = None
-    group_childs: list[str] = field(default_factory=list)
+    group_members: list[str] = field(default_factory=list)
+    group_volume: int | None = None
+    group_volume_muted: bool | None = None
 
 
 class MockPlayers:
@@ -81,6 +83,8 @@ class MockPlayers:
         self.cmd_power = AsyncMock()
         self.cmd_volume_set = AsyncMock()
         self.cmd_volume_mute = AsyncMock()
+        self.cmd_group_volume = AsyncMock()
+        self.cmd_group_volume_mute = AsyncMock()
         self.cmd_next_track = AsyncMock()
         self.cmd_previous_track = AsyncMock()
         self.select_source = AsyncMock()
@@ -128,7 +132,7 @@ class TestGetDeviceDescription:
 
     def test_description_group_has_mute(self) -> None:
         """Group players always get mute toggle even without VOLUME_MUTE feature."""
-        player = MockPlayer(group_childs=["child1", "child2"])
+        player = MockPlayer(group_members=["child1", "child2"])
         desc = get_device_description(player)  # type: ignore[arg-type]
         assert len(desc.capabilities) == 5
         instances = {c.parameters.instance for c in desc.capabilities if c.parameters}
@@ -280,17 +284,19 @@ class TestGetDeviceState:
         assert by_instance[INSTANCE_MUTE] is False
 
     def test_group_state_includes_mute(self) -> None:
-        """Group players should include mute state even without VOLUME_MUTE feature."""
+        """Group players should include mute state using group_volume_muted."""
         player = MockPlayer(
             playback_state=PlaybackState.PLAYING,
-            volume_level=60,
-            volume_muted=True,
-            group_childs=["c1", "c2"],
+            volume_level=40,
+            volume_muted=False,
+            group_members=["c1", "c2"],
+            group_volume=75,
+            group_volume_muted=True,
         )
         state = get_device_state(player)  # type: ignore[arg-type]
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
-        assert by_instance[INSTANCE_VOLUME] == 60
+        assert by_instance[INSTANCE_VOLUME] == 75
         assert by_instance[INSTANCE_MUTE] is True
 
 
@@ -388,9 +394,9 @@ class TestExecuteCapabilityAction:
 
     @pytest.mark.asyncio
     async def test_mute_toggle_group(self) -> None:
-        """Group mute should mute each child player individually."""
+        """Group mute should use cmd_group_volume_mute."""
         mass = MockMass()
-        group = MockPlayer(player_id="grp", group_childs=["c1", "c2"])
+        group = MockPlayer(player_id="grp", group_members=["c1", "c2"])
         mass.players._players["grp"] = group
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
@@ -398,10 +404,22 @@ class TestExecuteCapabilityAction:
         )
         result = await execute_capability_action(mass, "grp", action)
         assert result.state.action_result.status == "DONE"
-        calls = mass.players.cmd_volume_mute.await_args_list
-        assert len(calls) == 2
-        assert calls[0].args == ("c1", True)
-        assert calls[1].args == ("c2", True)
+        mass.players.cmd_group_volume_mute.assert_awaited_once_with("grp", True)
+
+    @pytest.mark.asyncio
+    async def test_volume_set_group(self) -> None:
+        """Group volume should use cmd_group_volume."""
+        mass = MockMass()
+        group = MockPlayer(player_id="grp", group_members=["c1", "c2"])
+        mass.players._players["grp"] = group
+        action = CapabilityAction(
+            type=YandexCapabilityType.RANGE,
+            state=CapabilityActionState(instance="volume", value=70),
+        )
+        result = await execute_capability_action(mass, "grp", action)
+        assert result.state.action_result.status == "DONE"
+        mass.players.cmd_group_volume.assert_awaited_once_with("grp", 70)
+        mass.players.cmd_volume_set.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pause_true(self) -> None:
