@@ -228,7 +228,8 @@ class SpotifyProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -278,7 +279,8 @@ class SpotifyProvider(MusicProvider):
     def _process_search_results(
         self, api_result: dict[str, Any], searchresult: SearchResults
     ) -> int:
-        """Process API search results and update searchresult object.
+        """
+        Process API search results and update searchresult object.
 
         Returns the total number of items received.
         """
@@ -824,7 +826,8 @@ class SpotifyProvider(MusicProvider):
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:
-        """Log-in Spotify global session and return Auth/token info.
+        """
+        Log-in Spotify global session and return Auth/token info.
 
         This uses MA's global client ID which has full API access but heavy rate limits.
         """
@@ -882,7 +885,8 @@ class SpotifyProvider(MusicProvider):
 
     @lock
     async def login_dev(self, force_refresh: bool = False) -> dict[str, Any]:
-        """Log-in Spotify developer session and return Auth/token info.
+        """
+        Log-in Spotify developer session and return Auth/token info.
 
         This uses the user's custom client ID which has less rate limits but limited API access.
         """
@@ -930,7 +934,8 @@ class SpotifyProvider(MusicProvider):
         return auth_info
 
     async def _setup_librespot_auth(self, access_token: str) -> None:
-        """Set up librespot authentication with the given access token.
+        """
+        Set up librespot authentication with the given access token.
 
         :param access_token: Spotify access token to use for librespot authentication.
         """
@@ -959,7 +964,8 @@ class SpotifyProvider(MusicProvider):
                 raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
-        """Get auth info for API requests, preferring dev session if available.
+        """
+        Get auth info for API requests, preferring dev session if available.
 
         :param use_global_session: Force use of global session (for features not available on dev).
         """
@@ -1014,7 +1020,8 @@ class SpotifyProvider(MusicProvider):
         return liked_songs
 
     async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:
-        """Check if a playlist requires global token (cached).
+        """
+        Check if a playlist requires global token (cached).
 
         :param prov_playlist_id: The Spotify playlist ID.
         :returns: True if the playlist requires global token.
@@ -1023,7 +1030,8 @@ class SpotifyProvider(MusicProvider):
         return bool(await self.mass.cache.get(cache_key, provider=self.instance_id))
 
     async def _set_playlist_requires_global_token(self, prov_playlist_id: str) -> None:
-        """Mark a playlist as requiring global token in cache.
+        """
+        Mark a playlist as requiring global token in cache.
 
         :param prov_playlist_id: The Spotify playlist ID.
         """
@@ -1156,7 +1164,8 @@ class SpotifyProvider(MusicProvider):
 
     @throttle_with_retries
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
-        """Get data from api.
+        """
+        Get data from api.
 
         :param endpoint: API endpoint to call.
         :param use_global_session: Force use of global session (for features not available on dev).
