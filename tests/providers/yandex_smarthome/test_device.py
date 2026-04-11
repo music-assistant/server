@@ -106,14 +106,24 @@ class TestGetDeviceDescription:
     """Tests for get_device_description."""
 
     def test_basic_description(self) -> None:
-        """Test basic description."""
+        """Test basic description without mute support."""
         player = MockPlayer()
         desc = get_device_description(player)  # type: ignore[arg-type]
         assert desc.id == "test_player_1"
         assert desc.name == "Living Room Speaker"
         assert desc.type == YANDEX_DEVICE_TYPE_MEDIA
-        # 5 base capabilities: on_off, volume, mute, pause, channel
+        # 4 base capabilities: on_off, volume, pause, channel (no mute without feature)
+        assert len(desc.capabilities) == 4
+        instances = {c.parameters.instance for c in desc.capabilities if c.parameters}
+        assert INSTANCE_MUTE not in instances
+
+    def test_description_with_mute(self) -> None:
+        """Test description includes mute toggle when VOLUME_MUTE feature is set."""
+        player = MockPlayer(supported_features={"volume_mute"})
+        desc = get_device_description(player)  # type: ignore[arg-type]
         assert len(desc.capabilities) == 5
+        instances = {c.parameters.instance for c in desc.capabilities if c.parameters}
+        assert INSTANCE_MUTE in instances
 
     def test_capability_types(self) -> None:
         """Test capability types."""
@@ -206,7 +216,7 @@ class TestGetDeviceState:
     """Tests for get_device_state."""
 
     def test_idle_state(self) -> None:
-        """Test idle state."""
+        """Test idle state without mute support."""
         player = MockPlayer(playback_state=PlaybackState.IDLE, volume_level=30, volume_muted=False)
         state = get_device_state(player)  # type: ignore[arg-type]
         assert state.id == "test_player_1"
@@ -214,8 +224,21 @@ class TestGetDeviceState:
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
         assert by_instance[INSTANCE_ON] is False  # idle means "off"
         assert by_instance[INSTANCE_VOLUME] == 30
-        assert by_instance[INSTANCE_MUTE] is False
+        assert INSTANCE_MUTE not in by_instance
         assert by_instance[INSTANCE_PAUSE] is False
+
+    def test_idle_state_with_mute(self) -> None:
+        """Test idle state with mute support."""
+        player = MockPlayer(
+            playback_state=PlaybackState.IDLE,
+            volume_level=30,
+            volume_muted=False,
+            supported_features={"volume_mute"},
+        )
+        state = get_device_state(player)  # type: ignore[arg-type]
+
+        by_instance = {c.state.instance: c.state.value for c in state.capabilities}
+        assert by_instance[INSTANCE_MUTE] is False
 
     def test_playing_state(self) -> None:
         """Test playing state."""
@@ -238,7 +261,9 @@ class TestGetDeviceState:
 
     def test_none_volume(self) -> None:
         """Test none volume."""
-        player = MockPlayer(volume_level=None, volume_muted=None)
+        player = MockPlayer(
+            volume_level=None, volume_muted=None, supported_features={"volume_mute"}
+        )
         state = get_device_state(player)  # type: ignore[arg-type]
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}

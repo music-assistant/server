@@ -54,15 +54,19 @@ _LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _supports_select_source(player: Player) -> bool:
-    """Check if player natively supports source selection."""
+def _has_feature(player: Player, feature_name: str) -> bool:
+    """Check if player supports a given PlayerFeature by name."""
     features = getattr(player, "supported_features", None)
     if not features:
         return False
-    # PlayerFeature.SELECT_SOURCE == "select_source"
     return any(
-        str(f) == "select_source" or getattr(f, "value", None) == "select_source" for f in features
+        str(f) == feature_name or getattr(f, "value", None) == feature_name for f in features
     )
+
+
+def _supports_select_source(player: Player) -> bool:
+    """Check if player natively supports source selection."""
+    return _has_feature(player, "select_source")
 
 
 def _get_source_list(player: Player) -> list[PlayerSource]:
@@ -147,10 +151,6 @@ def get_device_description(player: Player) -> DeviceDescription:
         ),
         CapabilityDescription(
             type=YandexCapabilityType.TOGGLE,
-            parameters=CapabilityParameters(instance=INSTANCE_MUTE),
-        ),
-        CapabilityDescription(
-            type=YandexCapabilityType.TOGGLE,
             parameters=CapabilityParameters(instance=INSTANCE_PAUSE),
         ),
         CapabilityDescription(
@@ -162,6 +162,15 @@ def get_device_description(player: Player) -> DeviceDescription:
             ),
         ),
     ]
+
+    # toggle(mute) — only if player supports VOLUME_MUTE
+    if _has_feature(player, "volume_mute"):
+        capabilities.append(
+            CapabilityDescription(
+                type=YandexCapabilityType.TOGGLE,
+                parameters=CapabilityParameters(instance=INSTANCE_MUTE),
+            )
+        )
 
     # mode(input_source) — only if player has sources
     source_list = _get_source_list(player)
@@ -196,7 +205,6 @@ def get_device_state(player: Player) -> DeviceState:
     is_on = player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
     is_paused = player.playback_state == PlaybackState.PAUSED
     volume = player.volume_level if player.volume_level is not None else 0
-    muted = player.volume_muted if player.volume_muted is not None else False
 
     capabilities = [
         CapabilityState(
@@ -209,10 +217,6 @@ def get_device_state(player: Player) -> DeviceState:
         ),
         CapabilityState(
             type=YandexCapabilityType.TOGGLE,
-            state=CapabilityInstanceState(instance=INSTANCE_MUTE, value=muted),
-        ),
-        CapabilityState(
-            type=YandexCapabilityType.TOGGLE,
             state=CapabilityInstanceState(instance=INSTANCE_PAUSE, value=is_paused),
         ),
         CapabilityState(
@@ -220,6 +224,16 @@ def get_device_state(player: Player) -> DeviceState:
             state=CapabilityInstanceState(instance=INSTANCE_CHANNEL, value=0),
         ),
     ]
+
+    # mute state — only if player supports VOLUME_MUTE
+    if _has_feature(player, "volume_mute"):
+        muted = player.volume_muted if player.volume_muted is not None else False
+        capabilities.append(
+            CapabilityState(
+                type=YandexCapabilityType.TOGGLE,
+                state=CapabilityInstanceState(instance=INSTANCE_MUTE, value=muted),
+            )
+        )
 
     # input_source state — only if player has sources
     source_list = _get_source_list(player)

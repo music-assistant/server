@@ -13,7 +13,6 @@ import pytest
 # Use mock enums from conftest
 from music_assistant_models.enums import EventType, PlaybackState
 
-from music_assistant.providers.yandex_smarthome.device import get_device_state
 from music_assistant.providers.yandex_smarthome.notifier import StateNotifier
 
 
@@ -137,7 +136,7 @@ class TestStateNotifierEvents:
     """Tests for StateNotifier event handling."""
 
     def test_on_player_updated_queues_state(self) -> None:
-        """Test on player updated queues state."""
+        """Test on player updated marks player as dirty."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
@@ -146,7 +145,7 @@ class TestStateNotifierEvents:
 
         notifier._on_player_event(event)  # type: ignore[arg-type]
 
-        assert "p1" in notifier._pending
+        assert "p1" in notifier._dirty_player_ids
 
     def test_on_player_updated_unavailable_ignored(self) -> None:
         """Test on player updated unavailable ignored."""
@@ -158,7 +157,7 @@ class TestStateNotifierEvents:
 
         notifier._on_player_event(event)  # type: ignore[arg-type]
 
-        assert "p1" not in notifier._pending
+        assert "p1" not in notifier._dirty_player_ids
 
     def test_on_player_added_triggers_discovery(self) -> None:
         """Test on player added triggers discovery."""
@@ -189,7 +188,7 @@ class TestStateNotifierEvents:
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=None)
         notifier._on_player_event(event)  # type: ignore[arg-type]
 
-        assert len(notifier._pending) == 0
+        assert len(notifier._dirty_player_ids) == 0
 
     def test_on_player_filtered_by_exposed_ids(self) -> None:
         """Player not in exposed_ids should be ignored."""
@@ -201,10 +200,10 @@ class TestStateNotifierEvents:
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
         notifier._on_player_event(event)  # type: ignore[arg-type]
 
-        assert "p1" not in notifier._pending
+        assert "p1" not in notifier._dirty_player_ids
 
     def test_on_player_included_by_exposed_ids(self) -> None:
-        """Player in exposed_ids should be queued."""
+        """Player in exposed_ids should be marked dirty."""
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
         notifier._exposed_ids = {"p1", "p2"}
@@ -213,7 +212,7 @@ class TestStateNotifierEvents:
         event = MockEvent(event=EventType.PLAYER_UPDATED, data=player)
         notifier._on_player_event(event)  # type: ignore[arg-type]
 
-        assert "p1" in notifier._pending
+        assert "p1" in notifier._dirty_player_ids
 
 
 class TestStateNotifierFlush:
@@ -221,7 +220,7 @@ class TestStateNotifierFlush:
 
     @pytest.mark.asyncio
     async def test_flush_sends_callback(self) -> None:
-        """Test flush sends callback."""
+        """Test flush reads fresh state and sends callback."""
         mock_resp = AsyncMock()
         mock_resp.status = 200
 
@@ -231,17 +230,17 @@ class TestStateNotifierFlush:
         ctx.__aexit__ = AsyncMock(return_value=False)
         session.post.return_value = ctx
 
-        mass = _make_mass()
+        player = MockPlayer(player_id="p1", volume_level=75)
+        mass = _make_mass([player])
+        mass.players.get_player = MagicMock(return_value=player)
         notifier = _make_notifier(mass=mass, session=session)
 
-        # Queue a pending state
-        player = MockPlayer(player_id="p1")
-        notifier._pending["p1"] = get_device_state(player)  # type: ignore[arg-type]
+        notifier._dirty_player_ids.add("p1")
 
         await notifier._flush_pending()
 
         session.post.assert_called_once()
-        assert len(notifier._pending) == 0
+        assert len(notifier._dirty_player_ids) == 0
 
     @pytest.mark.asyncio
     async def test_flush_empty_noop(self) -> None:
@@ -253,6 +252,42 @@ class TestStateNotifierFlush:
         await notifier._flush_pending()
 
         session.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flush_reads_fresh_volume(self) -> None:
+        """Volume should be read at flush time, not at event time."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        session.post.return_value = ctx
+
+        # Event arrives with volume 0 (transient state)
+        player_event = MockPlayer(player_id="p1", volume_level=0)
+        # But by flush time, player has correct volume
+        player_live = MockPlayer(player_id="p1", volume_level=75)
+
+        mass = _make_mass([player_live])
+        mass.players.get_player = MagicMock(return_value=player_live)
+        notifier = _make_notifier(mass=mass, session=session)
+
+        # Simulate event with transient volume=0
+        event = MockEvent(event=EventType.PLAYER_UPDATED, data=player_event)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
+
+        # Flush should use live player state (volume=75)
+        await notifier._flush_pending()
+
+        call_kwargs = session.post.call_args
+        json_body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        devices = json_body["payload"]["devices"]
+        volume_cap = next(
+            c for c in devices[0]["capabilities"] if c["state"]["instance"] == "volume"
+        )
+        assert volume_cap["state"]["value"] == 75
 
 
 class TestStateNotifierReportAll:
@@ -319,7 +354,8 @@ class TestStateNotifierCloudPlus:
         )
 
         player = MockPlayer(player_id="p1")
-        notifier._pending["p1"] = get_device_state(player)  # type: ignore[arg-type]
+        mass.players.get_player = MagicMock(return_value=player)
+        notifier._dirty_player_ids.add("p1")
 
         await notifier._flush_pending()
 
@@ -330,7 +366,7 @@ class TestStateNotifierCloudPlus:
 
     @pytest.mark.asyncio
     async def test_rejects_http_500(self) -> None:
-        """Non-success status codes should re-queue pending and raise."""
+        """Non-success status codes should re-queue dirty IDs and raise."""
         mock_resp = AsyncMock()
         mock_resp.status = 500
         mock_resp.text = AsyncMock(return_value="Internal Server Error")
@@ -341,18 +377,19 @@ class TestStateNotifierCloudPlus:
         ctx.__aexit__ = AsyncMock(return_value=False)
         session.post.return_value = ctx
 
-        mass = _make_mass()
+        player = MockPlayer(player_id="p1")
+        mass = _make_mass([player])
+        mass.players.get_player = MagicMock(return_value=player)
         notifier = _make_notifier(mass=mass, session=session)
 
-        player = MockPlayer(player_id="p1")
-        notifier._pending["p1"] = get_device_state(player)  # type: ignore[arg-type]
+        notifier._dirty_player_ids.add("p1")
 
         with pytest.raises(RuntimeError, match="State callback failed"):
             await notifier._flush_pending()
 
         session.post.assert_called_once()
-        # Devices should be re-queued after failure
-        assert "p1" in notifier._pending
+        # Player IDs should be re-queued after failure
+        assert "p1" in notifier._dirty_player_ids
 
     @pytest.mark.asyncio
     async def test_discovery_url_cloud_plus(self) -> None:

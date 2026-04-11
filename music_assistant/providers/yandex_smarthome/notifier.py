@@ -57,7 +57,7 @@ class StateNotifier:
         self._logger = logger or _LOGGER
         self._exposed_ids = exposed_ids
 
-        self._pending: dict[str, DeviceState] = {}
+        self._dirty_player_ids: set[str] = set()
         self._flush_handle: asyncio.TimerHandle | None = None
         self._initial_report_handle: asyncio.TimerHandle | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -101,7 +101,7 @@ class StateNotifier:
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
-        self._pending.clear()
+        self._dirty_player_ids.clear()
         self._logger.info("State notifier stopped")
 
     # -----------------------------------------------------------------------
@@ -109,7 +109,7 @@ class StateNotifier:
     # -----------------------------------------------------------------------
 
     def _on_player_event(self, event: MassEvent) -> None:
-        """Handle player state change — queue for batched reporting."""
+        """Handle player state change — mark player as dirty for batched reporting."""
         if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED):
             self._schedule_discovery()
             return
@@ -122,8 +122,7 @@ class StateNotifier:
         if not is_player_exposable(player_state, exposed_ids=self._exposed_ids):
             return
 
-        device_state = get_device_state(player_state)
-        self._pending[device_state.id] = device_state
+        self._dirty_player_ids.add(player_state.player_id)
         self._schedule_flush()
 
     def _schedule_flush(self) -> None:
@@ -136,18 +135,33 @@ class StateNotifier:
         )
 
     async def _flush_pending(self) -> None:
-        """Send all pending state changes to Yandex."""
+        """Send all pending state changes to Yandex.
+
+        Reads the fresh player state at flush time (not at event time)
+        so transient states during track transitions are not reported.
+        """
         self._flush_handle = None
-        if not self._pending:
+        if not self._dirty_player_ids:
             return
-        pending = self._pending
-        self._pending = {}
-        devices = list(pending.values())
+        dirty = self._dirty_player_ids
+        self._dirty_player_ids = set()
+
+        devices: list[DeviceState] = []
+        for player_id in dirty:
+            player = self._mass.players.get_player(player_id)
+            if player is None:
+                continue
+            state = player.state if hasattr(player, "state") else player
+            if is_player_exposable(state, exposed_ids=self._exposed_ids):
+                devices.append(get_device_state(state))
+
+        if not devices:
+            return
         try:
             await self._send_state_callback(devices)
         except Exception:
-            # Re-queue failed devices (merge back, newer wins)
-            self._pending = pending | self._pending
+            # Re-queue failed player IDs
+            self._dirty_player_ids |= dirty
             self._schedule_flush()
             raise
 
