@@ -154,8 +154,10 @@ async def register_cloud_instance(
     For Cloud Plus mode, pass platform="yandex" so the relay can validate
     the client_id during OAuth account linking.
     """
-    json_body = {"platform": platform} if platform else None
-    async with session.post(CLOUD_REGISTER_URL, json=json_body) as resp:
+    kwargs: dict[str, Any] = {}
+    if platform:
+        kwargs["json"] = {"platform": platform}
+    async with session.post(CLOUD_REGISTER_URL, **kwargs) as resp:
         resp.raise_for_status()
         # yaha-cloud.ru may return text/plain content-type for JSON
         data = await resp.json(content_type=None)

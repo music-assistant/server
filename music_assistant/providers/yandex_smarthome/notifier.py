@@ -140,9 +140,16 @@ class StateNotifier:
         self._flush_handle = None
         if not self._pending:
             return
-        devices = list(self._pending.values())
-        self._pending.clear()
-        await self._send_state_callback(devices)
+        pending = self._pending
+        self._pending = {}
+        devices = list(pending.values())
+        try:
+            await self._send_state_callback(devices)
+        except Exception:
+            # Re-queue failed devices (merge back, newer wins)
+            self._pending = pending | self._pending
+            self._schedule_flush()
+            raise
 
     # -----------------------------------------------------------------------
     # State reporting
