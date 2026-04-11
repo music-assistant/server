@@ -1481,10 +1481,11 @@ class Player(ABC):
                 protocol_player.state.elapsed_time,
                 protocol_player.state.elapsed_time_last_updated,
             )
-        # If we're synced, use the syncleader state for playback state and elapsed time
-        # NOTE: Don't do this for the active group player,
+        # If we're synced or part of an active group, use the parent/group player's state
+        # for playback state and elapsed time.
+        # NOTE: Don't do this for the active group player itself,
         # because the group player relies on the sync leader for state info.
-        parent_id = self.__final_synced_to
+        parent_id = self.__final_synced_to or self.__final_active_group
         if parent_id and (parent_player := self.mass.players.get_player(parent_id)):
             return (
                 parent_player.state.playback_state,
