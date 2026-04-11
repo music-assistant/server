@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import soxr
@@ -73,23 +73,40 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        (
+            self._beat_this_model,
+            self._beat_this_post_processor,
+            self._skey_vqt,
+            self._skey_chromanet,
+            self._skey_crop,
+            self._spectral_centroid,
+        ) = await asyncio.to_thread(self._initialize_models)
+
+    def _initialize_models(self) -> tuple[Any, ...]:
+        """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
         torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
-        self._beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # Select best available quantization engine (fbgemm is x86-only, qnnpack for ARM)
         supported_engines = torch.backends.quantized.supported_engines
         quantized_engine = next((e for e in ("fbgemm", "qnnpack") if e in supported_engines), None)
         if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
             torch.backends.quantized.engine = quantized_engine
-        self._beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
-            self._beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
+        beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
+            beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
         )
-        self._beat_this_post_processor = DBNDownBeatTracker(
+        beat_this_post_processor = DBNDownBeatTracker(
             beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
         )
-        self._skey_vqt, self._skey_chromanet, self._skey_crop = load_skey_components(
-            device=self._device
+        skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
+        spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
+        return (
+            beat_this_model,
+            beat_this_post_processor,
+            skey_vqt,
+            skey_chromanet,
+            skey_crop,
+            spectral_centroid,
         )
-        self._spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
 
     async def process_pcm_chunk(
         self,
@@ -294,7 +311,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         RMS is computed in 100ms windows (~2205 samples at 22050 Hz).
         Spectral centroid is computed per hop frame (~43 frames/s).
-        Both are resampled to per-beat resolution in _finalize.
+        Both are interpolated to the fixed 1800-bin output representation in _finalize.
         """
         sr = ANALYSIS_SAMPLE_RATE
         # RMS energy in 100ms windows, including partial final window
