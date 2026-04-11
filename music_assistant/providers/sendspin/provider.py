@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.server import (
@@ -117,16 +118,19 @@ class SendspinProvider(PlayerProvider):
         if hass_device := await hass.get_device_by_connection(client_id):
             player._attr_name = hass_device["name_by_user"] or hass_device["name"] or player.name
 
-    async def _handle_client_added(self, client_id: str, event_version: int) -> None:
+    async def _handle_client_added(self, client_id: str, event_version: int) -> None:  # noqa: PLR0915
         """Handle a new client connection asynchronously."""
         try:
             if self._unloading:
                 return
-            # Yield to allow any synchronous registration
-            # (like register_external_player) to complete.
-            # This is needed because ClientAddedEvent fires during get_or_create_client, before
-            # preload_hello sets the client info
-            await asyncio.sleep(0)
+            sendspin_client = self.server_api.get_client(client_id)
+            if sendspin_client is None:
+                self.logger.debug("Client %s disconnected before add handling started", client_id)
+                return
+            bridge_hello_snapshot = None
+            if client_id in self._bridge_identifiers and sendspin_client._info is not None:
+                # Snapshot the bridges hello before a reconnect can overwrite it
+                bridge_hello_snapshot = deepcopy(sendspin_client._info)
             if pending_event := self._pending_unregisters.get(client_id):
                 self.logger.debug(
                     "Waiting for pending unregister of %s before registering", client_id
@@ -171,7 +175,7 @@ class SendspinProvider(PlayerProvider):
                     return
 
             extra_ids = self._bridge_identifiers.pop(client_id, None)
-            player = SendspinPlayer(self, client_id)
+            player = SendspinPlayer(self, client_id, initial_hello=bridge_hello_snapshot)
             if isinstance(existing_player, SendspinPlayer):
                 player.preserve_control_features_from(existing_player)
             # Apply any bridge identifiers that were pre-registered by the bridge manager.
