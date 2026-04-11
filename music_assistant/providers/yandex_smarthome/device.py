@@ -22,7 +22,7 @@ from .constants import (
     INSTANCE_PAUSE,
     INSTANCE_VOLUME,
     UNIT_PERCENT,
-    YANDEX_DEVICE_TYPE_RECEIVER,
+    YANDEX_DEVICE_TYPE_MEDIA,
     YANDEX_MODE_VALUES,
 )
 from .schema import (
@@ -164,7 +164,7 @@ def get_device_description(player: Player) -> DeviceDescription:
     return DeviceDescription(
         id=player.player_id,
         name=player.name,
-        type=YANDEX_DEVICE_TYPE_RECEIVER,
+        type=YANDEX_DEVICE_TYPE_MEDIA,
         capabilities=capabilities,
         device_info=YandexDeviceInfo(model=model),
     )

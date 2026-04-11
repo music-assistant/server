@@ -17,7 +17,7 @@ from music_assistant.providers.yandex_smarthome.constants import (
     INSTANCE_ON,
     INSTANCE_PAUSE,
     INSTANCE_VOLUME,
-    YANDEX_DEVICE_TYPE_RECEIVER,
+    YANDEX_DEVICE_TYPE_MEDIA,
 )
 from music_assistant.providers.yandex_smarthome.device import (
     execute_capability_action,
@@ -110,7 +110,7 @@ class TestGetDeviceDescription:
         desc = get_device_description(player)  # type: ignore[arg-type]
         assert desc.id == "test_player_1"
         assert desc.name == "Living Room Speaker"
-        assert desc.type == YANDEX_DEVICE_TYPE_RECEIVER
+        assert desc.type == YANDEX_DEVICE_TYPE_MEDIA
         # 5 base capabilities: on_off, volume, mute, pause, channel
         assert len(desc.capabilities) == 5
 
