@@ -434,7 +434,25 @@ class LocalFileSystemProvider(MusicProvider):
             self.sync_running = False
 
         # work out deletions
+        # Safeguard: abort deletions if the source appears unavailable.
+        # When a NAS/SMB/NFS mount goes offline, scandir returns empty results
+        # which would incorrectly mark all files as deleted.
         deleted_files = prev_filenames - cur_filenames
+        if deleted_files:
+            if not await isdir(self.base_path):
+                self.logger.warning(
+                    "Source directory %s is no longer accessible - skipping deletion processing",
+                    self.base_path,
+                )
+                deleted_files = set()
+            elif len(prev_filenames) > 50 and len(deleted_files) > (len(prev_filenames) * 0.9):
+                self.logger.warning(
+                    "Skipping deletion processing: %d of %d items would be removed, "
+                    "which suggests the source may be temporarily unavailable",
+                    len(deleted_files),
+                    len(prev_filenames),
+                )
+                deleted_files = set()
         await self._process_deletions(deleted_files)
 
         # process orphaned albums and artists
