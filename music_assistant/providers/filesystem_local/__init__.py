@@ -377,8 +377,9 @@ class LocalFileSystemProvider(MusicProvider):
         ignore_album_playlists = self.media_content_type == "music" and self.config.get_value(
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key
         )
-        # populated by recursive_iter on a root-scandir failure
-        scan_errors: list[OSError] = []
+        # populated by recursive_iter when the provider's root base path cannot
+        # be scanned; sub-directory failures remain a silent skip as before
+        root_scan_errors: list[OSError] = []
 
         def enumerate_files() -> None:
             """Enumerate all files, collecting changed items for processing."""
@@ -388,7 +389,7 @@ class LocalFileSystemProvider(MusicProvider):
                 self.base_path,
                 SUPPORTED_EXTENSIONS,
                 self.logger,
-                scan_errors,
+                scan_errors=root_scan_errors,
             ):
                 scanned += 1
                 if scanned % 500 == 0:
@@ -441,9 +442,11 @@ class LocalFileSystemProvider(MusicProvider):
             self.sync_running = False
 
         # do not run deletions if the root base path could not be scanned
-        if scan_errors:
+        if root_scan_errors:
             self.logger.error(
-                "Aborting sync for %s: %d root scan error(s)", self.name, len(scan_errors)
+                "Aborting sync for %s: %d root scan error(s)",
+                self.name,
+                len(root_scan_errors),
             )
             report_current_task_failure("Sync aborted: filesystem unavailable during scan")
             self._set_available(False)
