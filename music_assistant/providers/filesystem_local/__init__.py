@@ -97,6 +97,9 @@ from .constants import (
     CONF_ENTRY_PROPAGATE_GENRES,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
+    MASS_DELETE_GUARD_MIN_DELETES,
+    MASS_DELETE_GUARD_MIN_PREV,
+    MASS_DELETE_GUARD_RATIO,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
@@ -377,8 +380,11 @@ class LocalFileSystemProvider(MusicProvider):
         ignore_album_playlists = self.media_content_type == "music" and self.config.get_value(
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key
         )
-        # populated by recursive_iter when the filesystem becomes unreachable
+        # populated by recursive_iter on root-scandir failure → triggers abort
         scan_errors: list[OSError] = []
+        # relative paths of sub-directories that were not fully scanned; used
+        # below to shield their contents from the deletion phase
+        incomplete_dirs: set[str] = set()
 
         def enumerate_files() -> None:
             """Enumerate all files, collecting changed items for processing."""
@@ -389,6 +395,7 @@ class LocalFileSystemProvider(MusicProvider):
                 SUPPORTED_EXTENSIONS,
                 self.logger,
                 scan_errors,
+                incomplete_dirs,
             ):
                 scanned += 1
                 if scanned % 500 == 0:
@@ -440,21 +447,56 @@ class LocalFileSystemProvider(MusicProvider):
         finally:
             self.sync_running = False
 
-        # do not run deletions if the filesystem is (or became) unreachable
-        base_path_reachable = await self._check_base_path_reachable()
-        if scan_errors or not base_path_reachable:
+        # abort the deletion phase if the root base path could not be scanned
+        # (provider is unreachable — wiping the library would be catastrophic)
+        if scan_errors:
             self.logger.error(
-                "Aborting sync for %s: %d scan error(s), base path reachable=%s",
+                "Aborting sync for %s: %d root scan error(s)",
                 self.name,
                 len(scan_errors),
-                base_path_reachable,
             )
             report_current_task_failure("Sync aborted: filesystem unavailable during scan")
             self._set_available(False)
             return
 
-        # work out deletions
         deleted_files = prev_filenames - cur_filenames
+        effective_prev = len(prev_filenames)
+
+        # shield files under sub-directories that were not fully scanned
+        # (e.g. SMB auth expiry on one subtree, transient I/O errors)
+        if incomplete_dirs:
+            incomplete_prefixes = tuple(p + os.sep for p in incomplete_dirs)
+            shielded = {f for f in prev_filenames if f.startswith(incomplete_prefixes)}
+            effective_prev -= len(shielded)
+            if shielded & deleted_files:
+                self.logger.warning(
+                    "Preserving %d item(s) under %d unscanned director(y/ies) for %s",
+                    len(shielded & deleted_files),
+                    len(incomplete_dirs),
+                    self.name,
+                )
+            deleted_files -= shielded
+
+        # sanity guard: refuse a mass deletion that looks like a wrong/empty mount
+        if (
+            effective_prev >= MASS_DELETE_GUARD_MIN_PREV
+            and len(deleted_files) >= MASS_DELETE_GUARD_MIN_DELETES
+            and len(deleted_files) > effective_prev * MASS_DELETE_GUARD_RATIO
+        ):
+            self.logger.error(
+                "Refusing mass deletion for %s: %d of %d expected items missing "
+                "(only %d found on disk). Verify the source and re-run the sync.",
+                self.name,
+                len(deleted_files),
+                effective_prev,
+                len(cur_filenames),
+            )
+            report_current_task_failure(
+                f"Refused mass deletion: only {len(cur_filenames)} of "
+                f"{effective_prev} expected files were found"
+            )
+            return
+
         await self._process_deletions(deleted_files)
 
         # process orphaned albums and artists
@@ -462,19 +504,6 @@ class LocalFileSystemProvider(MusicProvider):
 
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
-
-    async def _check_base_path_reachable(self) -> bool:
-        """Return whether the provider's base path is currently reachable."""
-
-        def _probe() -> bool:
-            try:
-                with os.scandir(self.base_path):
-                    pass
-            except OSError:
-                return False
-            return True
-
-        return await asyncio.to_thread(_probe)
 
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""

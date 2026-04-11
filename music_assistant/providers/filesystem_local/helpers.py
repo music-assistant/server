@@ -231,14 +231,21 @@ def get_absolute_path(base_path: str, path: str) -> str:
     return os.path.join(base_path, path)
 
 
-# errnos that indicate a user/folder-specific problem rather than the whole
-# provider being unreachable
-_NON_FATAL_SCAN_ERRNOS = frozenset({errno.EINVAL, errno.EACCES, errno.EPERM})
-
-
-def _is_fatal_scan_error(err: OSError) -> bool:
-    """Return whether an OSError indicates the filesystem provider is unreachable."""
-    return err.errno not in _NON_FATAL_SCAN_ERRNOS
+def _record_dir_scan_failure(
+    path: str,
+    base_path: str,
+    is_root: bool,
+    err: OSError,
+    scan_errors: list[OSError] | None,
+    incomplete_dirs: set[str] | None,
+) -> None:
+    """Classify a directory scan failure as either fatal or per-subtree recoverable."""
+    if is_root:
+        if scan_errors is not None:
+            scan_errors.append(err)
+        return
+    if incomplete_dirs is not None and (rel := get_relative_path(base_path, path)):
+        incomplete_dirs.add(rel)
 
 
 def recursive_iter(
@@ -247,6 +254,7 @@ def recursive_iter(
     supported_extensions: set[str],
     log: logging.Logger,
     scan_errors: list[OSError] | None = None,
+    incomplete_dirs: set[str] | None = None,
 ) -> Iterator[FileSystemItem]:
     """
     Recursively traverse directory entries yielding supported files.
@@ -255,8 +263,12 @@ def recursive_iter(
     :param base_path: The root base path for constructing relative paths.
     :param supported_extensions: Set of file extensions to include (lowercase, no dot).
     :param log: Logger instance to use for warnings/debug messages.
-    :param scan_errors: Optional list that will be appended with any OSError that
-        indicates the provider became unreachable during the scan.
+    :param scan_errors: Optional list populated with OSErrors raised while scanning
+        the provider's root base path. Callers treat a non-empty list as "provider
+        unreachable" and abort the sync.
+    :param incomplete_dirs: Optional set populated with the relative paths of
+        sub-directories that could not be fully scanned. Callers use this to
+        exclude deletions under those subtrees.
     """
     is_root = path == base_path
     try:
@@ -267,11 +279,9 @@ def recursive_iter(
                 "Skipping directory '%s' - unsupported characters in path",
                 path,
             )
-        else:
-            log.warning("Unable to scan directory %s: %s", path, err)
-            # failure to scan the root base path is always fatal
-            if scan_errors is not None and (is_root or _is_fatal_scan_error(err)):
-                scan_errors.append(err)
+            return
+        log.warning("Unable to scan directory %s: %s", path, err)
+        _record_dir_scan_failure(path, base_path, is_root, err, scan_errors, incomplete_dirs)
         return
     with scan_iter:
         while True:
@@ -281,8 +291,9 @@ def recursive_iter(
                 break
             except OSError as err:
                 log.warning("Error while scanning directory %s: %s", path, err)
-                if scan_errors is not None and (is_root or _is_fatal_scan_error(err)):
-                    scan_errors.append(err)
+                _record_dir_scan_failure(
+                    path, base_path, is_root, err, scan_errors, incomplete_dirs
+                )
                 return
             if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                 continue
@@ -296,13 +307,16 @@ def recursive_iter(
                         item.name,
                     )
                 else:
-                    log.warning("Unable to stat '%s': %s", item.path, err)
-                    if scan_errors is not None and _is_fatal_scan_error(err):
-                        scan_errors.append(err)
+                    log.debug("Skipping entry %s due to OS error: %s", item.path, err)
                 continue
             if is_dir:
                 yield from recursive_iter(
-                    item.path, base_path, supported_extensions, log, scan_errors
+                    item.path,
+                    base_path,
+                    supported_extensions,
+                    log,
+                    scan_errors,
+                    incomplete_dirs,
                 )
             elif is_file:
                 if "." not in item.name:

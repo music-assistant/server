@@ -189,3 +189,10 @@ CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
 CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 
 DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
+
+# sanity guard for the library sync deletion phase: refuse deletions when the
+# fraction of previously indexed items that disappeared in one scan is so high
+# that a wrong/empty mount is the most likely explanation
+MASS_DELETE_GUARD_MIN_PREV: Final[int] = 100
+MASS_DELETE_GUARD_MIN_DELETES: Final[int] = 50
+MASS_DELETE_GUARD_RATIO: Final[float] = 0.5
