@@ -16,7 +16,7 @@ import aiofiles
 from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import UserRole
-from music_assistant_models.enums import CoreState, EventType, ProviderType
+from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.event import MassEvent
 from music_assistant_models.helpers import set_global_cache_values
@@ -58,6 +58,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -423,6 +424,19 @@ class MusicAssistant:
             and prov.domain == domain
             and (return_unavailable or prov.available)
         ]
+
+    def get_plugins_by_feature(self, feature: ProviderFeature) -> list[PluginProvider]:
+        """Return all available PluginProvider instances that support the given feature."""
+        return cast(
+            "list[PluginProvider]",
+            [
+                prov
+                for prov in list(self._providers.values())
+                if prov.available
+                and isinstance(prov, PluginProvider)
+                and feature in prov.supported_features
+            ],
+        )
 
     def signal_event(
         self,
