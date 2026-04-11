@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import html as html_module
 import logging
+import secrets
 import time
 import urllib.parse
 import uuid
@@ -182,7 +183,7 @@ class DirectConnectionHandler:
             return False
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
-            return auth[7:] == self._access_token
+            return secrets.compare_digest(auth[7:], self._access_token)
         return False
 
     def _unauthorized_response(self, request_id: str = "") -> web.Response:

@@ -142,12 +142,18 @@ def parse_action_payload(raw: dict[str, Any]) -> ActionRequestPayload:
     """Parse a raw /user/devices/action message into ActionRequestPayload."""
     devices = []
     for dev_raw in raw.get("payload", raw).get("devices", []):
+        dev_id = dev_raw.get("id")
+        if not dev_id:
+            continue
         capabilities = []
         for cap_raw in dev_raw.get("capabilities", []):
+            cap_type = cap_raw.get("type")
+            if not cap_type:
+                continue
             state_raw = cap_raw.get("state", {})
             capabilities.append(
                 CapabilityAction(
-                    type=cap_raw["type"],
+                    type=cap_type,
                     state=CapabilityActionState(
                         instance=state_raw.get("instance", ""),
                         value=state_raw.get("value"),
@@ -155,7 +161,7 @@ def parse_action_payload(raw: dict[str, Any]) -> ActionRequestPayload:
                     ),
                 )
             )
-        devices.append(DeviceAction(id=dev_raw["id"], capabilities=capabilities))
+        devices.append(DeviceAction(id=dev_id, capabilities=capabilities))
     return ActionRequestPayload(devices=devices)
 
 

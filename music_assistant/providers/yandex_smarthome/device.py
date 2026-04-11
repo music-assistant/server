@@ -238,9 +238,9 @@ async def execute_capability_action(
 
         elif action.type == YandexCapabilityType.RANGE and instance == INSTANCE_VOLUME:
             if action.state.relative:
-                target = max(0, min(100, current_volume + int(value)))
+                target = max(0, min(100, current_volume + int(float(value))))
             else:
-                target = max(0, min(100, int(value)))
+                target = max(0, min(100, int(float(value))))
             await mass.players.cmd_volume_set(player_id, target)
             value = target
 
@@ -255,14 +255,26 @@ async def execute_capability_action(
 
         elif action.type == YandexCapabilityType.RANGE and instance == INSTANCE_CHANNEL:
             if action.state.relative:
-                if int(value) > 0:
+                if int(float(value)) > 0:
                     await mass.players.cmd_next_track(player_id)
-                elif int(value) < 0:
+                elif int(float(value)) < 0:
                     await mass.players.cmd_previous_track(player_id)
             # Non-relative channel set is ignored (no concept of channel number in MA)
 
         elif action.type == YandexCapabilityType.MODE and instance == INSTANCE_INPUT_SOURCE:
             player = mass.players.get_player(player_id)
+            if player is None:
+                return CapabilityActionResult(
+                    type=action.type,
+                    state=CapabilityActionResultState(
+                        instance=instance,
+                        action_result=ActionResult(
+                            status="ERROR",
+                            error_code=ERROR_DEVICE_UNREACHABLE,
+                            error_message=f"Player {player_id} not found",
+                        ),
+                    ),
+                )
             p_state = player.state if hasattr(player, "state") else player
             source_list = _get_source_list(p_state)
             source = _mode_to_source(str(value), source_list)
@@ -294,6 +306,18 @@ async def execute_capability_action(
                 ),
             )
 
+    except (ValueError, TypeError):
+        return CapabilityActionResult(
+            type=action.type,
+            state=CapabilityActionResultState(
+                instance=instance,
+                action_result=ActionResult(
+                    status="ERROR",
+                    error_code=ERROR_INVALID_ACTION,
+                    error_message=f"Invalid value for {action.type}/{instance}: {value}",
+                ),
+            ),
+        )
     except Exception:
         _LOGGER.exception("Error executing action %s/%s on %s", action.type, instance, player_id)
         return CapabilityActionResult(

@@ -198,6 +198,10 @@ class YandexSmartHomePlugin(PluginProvider):
             )
             return
 
+        if not self._direct_client_secret:
+            self.logger.error("Direct mode requires a client secret for OAuth account linking")
+            return
+
         self._user_id = self._instance_name
 
         def _on_token_created(token: str) -> None:

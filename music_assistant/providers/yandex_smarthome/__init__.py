@@ -604,12 +604,4 @@ async def get_config_entries(
             required=False,
             value=(cast("str", values.get(CONF_DIRECT_ACCESS_TOKEN)) if values else None),
         ),
-        ConfigEntry(
-            key=CONF_DIRECT_CLIENT_SECRET,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Direct Client Secret",
-            hidden=True,
-            required=False,
-            value=(cast("str", values.get(CONF_DIRECT_CLIENT_SECRET)) if values else None),
-        ),
     )
