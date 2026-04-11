@@ -8,7 +8,13 @@ from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
-from .parsers import parse_album, parse_artist, parse_playlist, parse_track
+from .parsers import (
+    parse_album,
+    parse_artist,
+    parse_favorite_tracks_playlist,
+    parse_playlist,
+    parse_track,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -63,6 +69,9 @@ class TidalLibraryManager:
         async for item in self.api.paginate(path):
             if item and item.get("playlist") and item["playlist"].get("uuid"):
                 yield parse_playlist(self.provider, item)
+
+        # 3. Get the virtual favorite tracks playlist
+        yield parse_favorite_tracks_playlist(self.provider)
 
     async def add_item(self, item: MediaItemType) -> bool:
         """Add item to library."""
