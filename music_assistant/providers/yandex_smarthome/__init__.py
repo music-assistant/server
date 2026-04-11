@@ -237,15 +237,12 @@ async def get_config_entries(
 
     # Build player options for exposed players filter
     player_options: list[ConfigValueOption] = []
-    seen_ids: set[str] = set()
     try:
-        for player in mass.players:
-            p = player.state if hasattr(player, "state") else player
-            pid = p.player_id
-            if pid in seen_ids:
-                continue
-            seen_ids.add(pid)
-            player_options.append(ConfigValueOption(title=p.name or pid, value=pid))
+        for player in mass.players.all_players():
+            state = player.state
+            player_options.append(
+                ConfigValueOption(title=state.name or state.player_id, value=state.player_id)
+            )
     except Exception:  # noqa: S110
         pass
 

@@ -40,11 +40,17 @@ class MockPlayer:
     source_list: list[str] = field(default_factory=list)
     active_source: str | None = None
 
+    @property
+    def state(self) -> MockPlayer:
+        """Return self as state (mirrors real Player.state)."""
+        return self
+
 
 def _make_mass(players: list[MockPlayer]) -> MagicMock:
     """Create a mock MusicAssistant with given players."""
     mass = MagicMock()
     mass.players.__iter__ = MagicMock(return_value=iter(players))
+    mass.players.all_players = MagicMock(return_value=players)
 
     player_map = {p.player_id: p for p in players}
     mass.players.get_player = MagicMock(side_effect=player_map.get)

@@ -180,10 +180,10 @@ class StateNotifier:
     async def _report_all_states(self) -> None:
         """Report states for all currently exposed players."""
         devices: list[DeviceState] = []
-        for player in self._mass.players:
-            player_state = player.state if hasattr(player, "state") else player
-            if is_player_exposable(player_state, exposed_ids=self._exposed_ids):  # type: ignore[arg-type]
-                devices.append(get_device_state(player_state))  # type: ignore[arg-type]
+        for player in self._mass.players.all_players():
+            state = player.state
+            if is_player_exposable(state, exposed_ids=self._exposed_ids):  # type: ignore[arg-type]
+                devices.append(get_device_state(state))  # type: ignore[arg-type]
         if devices:
             self._logger.info("Reporting all states: %d device(s)", len(devices))
             await self._send_state_callback(devices)

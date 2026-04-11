@@ -35,6 +35,11 @@ class MockPlayer:
     source_list: list[str] = field(default_factory=list)
     active_source: str | None = None
 
+    @property
+    def state(self) -> MockPlayer:
+        """Return self as state (mirrors real Player.state)."""
+        return self
+
 
 @dataclass
 class MockEvent:
@@ -52,6 +57,7 @@ def _make_mass(players: list[MockPlayer] | None = None) -> MagicMock:
     if players is None:
         players = [MockPlayer()]
     mass.players.__iter__ = MagicMock(return_value=iter(players))
+    mass.players.all_players = MagicMock(return_value=players)
 
     # subscribe returns an unsubscribe callable
     mass.subscribe = MagicMock(return_value=MagicMock())
