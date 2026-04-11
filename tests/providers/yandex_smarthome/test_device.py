@@ -235,7 +235,7 @@ class TestGetDeviceState:
         assert state.id == "test_player_1"
 
         by_instance = {c.state.instance: c.state.value for c in state.capabilities}
-        assert by_instance[INSTANCE_ON] is False  # idle means "off"
+        assert by_instance[INSTANCE_ON] is True  # powered on = "on" regardless of playback
         assert by_instance[INSTANCE_VOLUME] == 30
         assert INSTANCE_MUTE not in by_instance
         assert by_instance[INSTANCE_PAUSE] is True
@@ -318,6 +318,7 @@ class TestExecuteCapabilityAction:
         )
         result = await execute_capability_action(mass, "p1", action)
         mass.players.cmd_play.assert_awaited_once_with("p1")
+        mass.players.cmd_power.assert_not_awaited()
         assert result.state.action_result.status == "DONE"
 
     @pytest.mark.asyncio
@@ -330,6 +331,37 @@ class TestExecuteCapabilityAction:
         )
         result = await execute_capability_action(mass, "p1", action)
         mass.players.cmd_stop.assert_awaited_once_with("p1")
+        mass.players.cmd_power.assert_not_awaited()
+        assert result.state.action_result.status == "DONE"
+
+    @pytest.mark.asyncio
+    async def test_on_powers_on_when_supported(self) -> None:
+        """ON with power feature should power on then play."""
+        mass = MockMass()
+        player = MockPlayer(player_id="p1", supported_features={"power"})
+        mass.players._players["p1"] = player
+        action = CapabilityAction(
+            type=YandexCapabilityType.ON_OFF,
+            state=CapabilityActionState(instance="on", value=True),
+        )
+        result = await execute_capability_action(mass, "p1", action)
+        mass.players.cmd_power.assert_awaited_once_with("p1", True)
+        mass.players.cmd_play.assert_awaited_once_with("p1")
+        assert result.state.action_result.status == "DONE"
+
+    @pytest.mark.asyncio
+    async def test_off_powers_off_when_supported(self) -> None:
+        """OFF with power feature should stop then power off."""
+        mass = MockMass()
+        player = MockPlayer(player_id="p1", supported_features={"power"})
+        mass.players._players["p1"] = player
+        action = CapabilityAction(
+            type=YandexCapabilityType.ON_OFF,
+            state=CapabilityActionState(instance="on", value=False),
+        )
+        result = await execute_capability_action(mass, "p1", action)
+        mass.players.cmd_stop.assert_awaited_once_with("p1")
+        mass.players.cmd_power.assert_awaited_once_with("p1", False)
         assert result.state.action_result.status == "DONE"
 
     @pytest.mark.asyncio

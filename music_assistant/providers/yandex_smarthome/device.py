@@ -208,7 +208,9 @@ def get_device_description(player: Player) -> DeviceDescription:
 
 def get_device_state(player: Player) -> DeviceState:
     """Read current MA player state and convert to Yandex capability states."""
-    is_on = player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+    # on = player is powered on (or available if power state unknown)
+    powered = getattr(player, "powered", None)
+    is_on = powered if powered is not None else getattr(player, "available", True)
     is_paused = player.playback_state != PlaybackState.PLAYING
     is_group = _is_group_player(player)
 
@@ -270,6 +272,41 @@ def get_device_state(player: Player) -> DeviceState:
     return DeviceState(id=player.player_id, capabilities=capabilities)
 
 
+async def _execute_input_source(
+    mass: Any, player_id: str, player: Player | None, instance: str, value: Any
+) -> CapabilityActionResult | None:
+    """Handle input_source mode action. Returns error result or None on success."""
+    if player is None:
+        return CapabilityActionResult(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionResultState(
+                instance=instance,
+                action_result=ActionResult(
+                    status="ERROR",
+                    error_code=ERROR_DEVICE_UNREACHABLE,
+                    error_message=f"Player {player_id} not found",
+                ),
+            ),
+        )
+    p_state = player.state if hasattr(player, "state") else player
+    source_list = _get_source_list(p_state)
+    source = _mode_to_source(str(value), source_list)
+    if source:
+        await mass.players.select_source(player_id, source)
+        return None
+    return CapabilityActionResult(
+        type=YandexCapabilityType.MODE,
+        state=CapabilityActionResultState(
+            instance=instance,
+            action_result=ActionResult(
+                status="ERROR",
+                error_code=ERROR_INVALID_ACTION,
+                error_message=f"Unknown source mode: {value}",
+            ),
+        ),
+    )
+
+
 async def execute_capability_action(
     mass: Any,
     player_id: str,
@@ -288,9 +325,14 @@ async def execute_capability_action(
     try:
         if action.type == YandexCapabilityType.ON_OFF:
             if value:
+                # Power on if supported, then play
+                if player and _has_feature(player, "power"):
+                    await mass.players.cmd_power(player_id, True)
                 await mass.players.cmd_play(player_id)
             else:
                 await mass.players.cmd_stop(player_id)
+                if player and _has_feature(player, "power"):
+                    await mass.players.cmd_power(player_id, False)
 
         elif action.type == YandexCapabilityType.RANGE and instance == INSTANCE_VOLUME:
             if action.state.relative:
@@ -324,35 +366,9 @@ async def execute_capability_action(
             # Non-relative channel set is ignored (no concept of channel number in MA)
 
         elif action.type == YandexCapabilityType.MODE and instance == INSTANCE_INPUT_SOURCE:
-            if player is None:
-                return CapabilityActionResult(
-                    type=action.type,
-                    state=CapabilityActionResultState(
-                        instance=instance,
-                        action_result=ActionResult(
-                            status="ERROR",
-                            error_code=ERROR_DEVICE_UNREACHABLE,
-                            error_message=f"Player {player_id} not found",
-                        ),
-                    ),
-                )
-            p_state = player.state if hasattr(player, "state") else player
-            source_list = _get_source_list(p_state)
-            source = _mode_to_source(str(value), source_list)
-            if source:
-                await mass.players.select_source(player_id, source)
-            else:
-                return CapabilityActionResult(
-                    type=action.type,
-                    state=CapabilityActionResultState(
-                        instance=instance,
-                        action_result=ActionResult(
-                            status="ERROR",
-                            error_code=ERROR_INVALID_ACTION,
-                            error_message=f"Unknown source mode: {value}",
-                        ),
-                    ),
-                )
+            result = await _execute_input_source(mass, player_id, player, instance, value)
+            if result:
+                return result
 
         else:
             return CapabilityActionResult(
