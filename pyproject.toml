@@ -28,7 +28,7 @@ dependencies = [
   "getmac==0.9.5",
   "mashumaro==3.20",
   "music-assistant-frontend==2.17.145",
-  "music-assistant-models==1.1.113",
+  "music-assistant-models==1.1.115",
   "mutagen==1.47.0",
   "orjson==3.11.6",
   "pillow==12.1.1",
@@ -139,7 +139,6 @@ exclude = [
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
-  '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
 extra_checks = false
