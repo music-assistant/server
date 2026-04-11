@@ -538,7 +538,7 @@ class TestInputSourceCapability:
 
     @pytest.mark.asyncio
     async def test_select_source_action(self) -> None:
-        """Mode action should call select_source with resolved source name."""
+        """Mode action should call select_source with resolved source id."""
         sources = [
             MockPlayerSource(id="hdmi1", name="HDMI 1"),
             MockPlayerSource(id="optical", name="Optical"),
@@ -554,7 +554,7 @@ class TestInputSourceCapability:
             state=CapabilityActionState(instance="input_source", value="two"),
         )
         result = await execute_capability_action(mass, "p1", action)
-        mass.players.select_source.assert_awaited_once_with("p1", "Optical")
+        mass.players.select_source.assert_awaited_once_with("p1", "optical")
         assert result.state.action_result.status == "DONE"
 
     @pytest.mark.asyncio

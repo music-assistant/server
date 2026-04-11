@@ -92,14 +92,14 @@ def _source_to_mode(active_source: str | None, source_list: list[PlayerSource]) 
 
 
 def _mode_to_source(mode_value: str, source_list: list[PlayerSource]) -> str | None:
-    """Resolve a Yandex mode value to an MA source name."""
+    """Resolve a Yandex mode value to an MA source id."""
     try:
         idx = list(YANDEX_MODE_VALUES).index(mode_value)
     except ValueError:
         return None
     if idx >= len(source_list):
         return None
-    return source_list[idx].name
+    return source_list[idx].id
 
 
 # ---------------------------------------------------------------------------
