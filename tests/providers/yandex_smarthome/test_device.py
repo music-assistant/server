@@ -67,6 +67,7 @@ class MockPlayer:
     supported_features: set[str] = field(default_factory=set)
     source_list: list[MockPlayerSource] = field(default_factory=list)
     active_source: str | None = None
+    group_childs: list[str] = field(default_factory=list)
 
 
 class MockPlayers:
@@ -120,6 +121,14 @@ class TestGetDeviceDescription:
     def test_description_with_mute(self) -> None:
         """Test description includes mute toggle when VOLUME_MUTE feature is set."""
         player = MockPlayer(supported_features={"volume_mute"})
+        desc = get_device_description(player)  # type: ignore[arg-type]
+        assert len(desc.capabilities) == 5
+        instances = {c.parameters.instance for c in desc.capabilities if c.parameters}
+        assert INSTANCE_MUTE in instances
+
+    def test_description_group_has_mute(self) -> None:
+        """Group players always get mute toggle even without VOLUME_MUTE feature."""
+        player = MockPlayer(group_childs=["child1", "child2"])
         desc = get_device_description(player)  # type: ignore[arg-type]
         assert len(desc.capabilities) == 5
         instances = {c.parameters.instance for c in desc.capabilities if c.parameters}
@@ -270,6 +279,20 @@ class TestGetDeviceState:
         assert by_instance[INSTANCE_VOLUME] == 0
         assert by_instance[INSTANCE_MUTE] is False
 
+    def test_group_state_includes_mute(self) -> None:
+        """Group players should include mute state even without VOLUME_MUTE feature."""
+        player = MockPlayer(
+            playback_state=PlaybackState.PLAYING,
+            volume_level=60,
+            volume_muted=True,
+            group_childs=["c1", "c2"],
+        )
+        state = get_device_state(player)  # type: ignore[arg-type]
+
+        by_instance = {c.state.instance: c.state.value for c in state.capabilities}
+        assert by_instance[INSTANCE_VOLUME] == 60
+        assert by_instance[INSTANCE_MUTE] is True
+
 
 # ---------------------------------------------------------------------------
 # Tests: execute_capability_action
@@ -362,6 +385,23 @@ class TestExecuteCapabilityAction:
         result = await execute_capability_action(mass, "p1", action)
         mass.players.cmd_volume_mute.assert_awaited_once_with("p1", True)
         assert result.state.action_result.status == "DONE"
+
+    @pytest.mark.asyncio
+    async def test_mute_toggle_group(self) -> None:
+        """Group mute should mute each child player individually."""
+        mass = MockMass()
+        group = MockPlayer(player_id="grp", group_childs=["c1", "c2"])
+        mass.players._players["grp"] = group
+        action = CapabilityAction(
+            type=YandexCapabilityType.TOGGLE,
+            state=CapabilityActionState(instance="mute", value=True),
+        )
+        result = await execute_capability_action(mass, "grp", action)
+        assert result.state.action_result.status == "DONE"
+        calls = mass.players.cmd_volume_mute.await_args_list
+        assert len(calls) == 2
+        assert calls[0].args == ("c1", True)
+        assert calls[1].args == ("c2", True)
 
     @pytest.mark.asyncio
     async def test_pause_true(self) -> None:

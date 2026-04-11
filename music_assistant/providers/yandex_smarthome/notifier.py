@@ -119,6 +119,14 @@ class StateNotifier:
         if player_state is None:
             return
 
+        # If this player is synced to a group, propagate the event to the group
+        # (child volume/mute changes should update the group's state in Yandex)
+        synced_to = getattr(player_state, "synced_to", None)
+        if synced_to:
+            self._dirty_player_ids.add(synced_to)
+            self._schedule_flush()
+            return
+
         if not is_player_exposable(player_state, exposed_ids=self._exposed_ids):
             return
 

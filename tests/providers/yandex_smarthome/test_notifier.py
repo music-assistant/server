@@ -33,6 +33,7 @@ class MockPlayer:
     supported_features: set[str] = field(default_factory=set)
     source_list: list[str] = field(default_factory=list)
     active_source: str | None = None
+    group_childs: list[str] = field(default_factory=list)
 
     @property
     def state(self) -> MockPlayer:
@@ -213,6 +214,18 @@ class TestStateNotifierEvents:
         notifier._on_player_event(event)  # type: ignore[arg-type]
 
         assert "p1" in notifier._dirty_player_ids
+
+    def test_child_event_propagates_to_group(self) -> None:
+        """When a synced child fires PLAYER_UPDATED, the parent group is marked dirty."""
+        mass = _make_mass()
+        notifier = _make_notifier(mass=mass)
+
+        child = MockPlayer(player_id="child1", synced_to="grp1")
+        event = MockEvent(event=EventType.PLAYER_UPDATED, data=child)
+        notifier._on_player_event(event)  # type: ignore[arg-type]
+
+        assert "grp1" in notifier._dirty_player_ids
+        assert "child1" not in notifier._dirty_player_ids
 
 
 class TestStateNotifierFlush:

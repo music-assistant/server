@@ -54,6 +54,12 @@ _LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _is_group_player(player: Player) -> bool:
+    """Check if player is a group (has child players)."""
+    group_childs = getattr(player, "group_childs", None)
+    return bool(group_childs)
+
+
 def _has_feature(player: Player, feature_name: str) -> bool:
     """Check if player supports a given PlayerFeature by name."""
     features = getattr(player, "supported_features", None)
@@ -163,8 +169,8 @@ def get_device_description(player: Player) -> DeviceDescription:
         ),
     ]
 
-    # toggle(mute) — only if player supports VOLUME_MUTE
-    if _has_feature(player, "volume_mute"):
+    # toggle(mute) — if player supports VOLUME_MUTE or is a group
+    if _has_feature(player, "volume_mute") or _is_group_player(player):
         capabilities.append(
             CapabilityDescription(
                 type=YandexCapabilityType.TOGGLE,
@@ -225,8 +231,8 @@ def get_device_state(player: Player) -> DeviceState:
         ),
     ]
 
-    # mute state — only if player supports VOLUME_MUTE
-    if _has_feature(player, "volume_mute"):
+    # mute state — if player supports VOLUME_MUTE or is a group
+    if _has_feature(player, "volume_mute") or _is_group_player(player):
         muted = player.volume_muted if player.volume_muted is not None else False
         capabilities.append(
             CapabilityState(
@@ -280,7 +286,14 @@ async def execute_capability_action(
             value = target
 
         elif action.type == YandexCapabilityType.TOGGLE and instance == INSTANCE_MUTE:
-            await mass.players.cmd_volume_mute(player_id, bool(value))
+            # For groups, mute each child individually (group may not support mute natively)
+            player = mass.players.get_player(player_id)
+            group_childs = getattr(player, "group_childs", None) if player else None
+            if group_childs:
+                for child_id in group_childs:
+                    await mass.players.cmd_volume_mute(child_id, bool(value))
+            else:
+                await mass.players.cmd_volume_mute(player_id, bool(value))
 
         elif action.type == YandexCapabilityType.TOGGLE and instance == INSTANCE_PAUSE:
             if value:
