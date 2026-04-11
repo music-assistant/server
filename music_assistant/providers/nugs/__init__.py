@@ -106,6 +106,7 @@ class NugsProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._track_album_mapping: dict[str, str] = {}
         await self.login()
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -164,6 +165,14 @@ class NugsProvider(MusicProvider):
         response = await self._get_data("stash", endpoint)
         return self._parse_playlist(response["items"])
 
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id."""
+        if prov_album_id := self._track_album_mapping.get(prov_track_id):
+            for track in await self.get_album_tracks(prov_album_id):
+                if track.item_id == prov_track_id:
+                    return track
+        raise MediaNotFoundError(f"Track {prov_track_id} not found")
+
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
@@ -175,11 +184,14 @@ class NugsProvider(MusicProvider):
             MediaType.ALBUM, album_data["containerID"], album_data["containerInfo"]
         )
         image = f"https://api.livedownloads.com{album_data['img']['url']}"
-        return [
+        tracks = [
             self._parse_track(item, artist=artist, album=album, image_url=image)
             for item in album_data["tracks"]
             if item["trackID"]
         ]
+        for track in tracks:
+            self._track_album_mapping[track.item_id] = prov_album_id
+        return tracks
 
     @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
