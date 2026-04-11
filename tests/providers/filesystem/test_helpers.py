@@ -120,21 +120,11 @@ def test_get_album_dir(album_name: str, track_dir: str, expected: str) -> None:
     assert helpers.get_album_dir(track_dir, album_name) == expected
 
 
-# ---------------------------------------------------------------------------
-# recursive_iter error-tracking tests
-#
-# These protect against the data-loss bug where a filesystem provider would
-# wipe the entire library when its base path (e.g. a NAS share) became
-# unavailable: recursive_iter used to silently return an empty iterator, which
-# the sync then treated as "all previously-indexed files were deleted".
-# ---------------------------------------------------------------------------
-
-
 SUPPORTED = {"mp3", "flac"}
 
 
 def _build_music_tree(root: Path) -> None:
-    """Create a small fake music tree used by the tests below."""
+    """Create a small music tree fixture."""
     (root / "Artist1" / "Album1").mkdir(parents=True)
     (root / "Artist1" / "Album1" / "track1.mp3").write_bytes(b"x")
     (root / "Artist1" / "Album1" / "track2.flac").write_bytes(b"x")
@@ -143,7 +133,7 @@ def _build_music_tree(root: Path) -> None:
 
 
 def test_recursive_iter_happy_path(tmp_path: Path) -> None:
-    """A healthy scan yields every supported file and records no errors."""
+    """Test that a healthy scan yields all supported files and records no errors."""
     _build_music_tree(tmp_path)
     errors: list[OSError] = []
     items = list(
@@ -165,12 +155,7 @@ def test_recursive_iter_happy_path(tmp_path: Path) -> None:
 
 
 def test_recursive_iter_root_unreachable_records_error(tmp_path: Path) -> None:
-    """If scanning the root path fails, the error must be recorded.
-
-    This is the exact NAS-offline scenario: we must never silently return an
-    empty iterator, or the caller would treat every previously-indexed file as
-    "deleted" and wipe the library.
-    """
+    """Test that a missing root path is reported via scan_errors."""
     errors: list[OSError] = []
     missing = tmp_path / "does-not-exist"
     items = list(
@@ -188,11 +173,7 @@ def test_recursive_iter_root_unreachable_records_error(tmp_path: Path) -> None:
 
 
 def test_recursive_iter_root_fatal_even_for_eacces() -> None:
-    """A permission-denied at the root is always fatal.
-
-    Per-sub-folder EACCES is expected to be logged-but-ignored, but losing
-    access to the base path itself means the provider is unreachable.
-    """
+    """Test that permission-denied on the root path is treated as fatal."""
     errors: list[OSError] = []
 
     def _raise_eacces(_path: str) -> None:
@@ -214,11 +195,7 @@ def test_recursive_iter_root_fatal_even_for_eacces() -> None:
 
 
 def test_recursive_iter_subfolder_eacces_is_not_fatal(tmp_path: Path) -> None:
-    """A permission error on a single sub-folder must not poison the whole scan.
-
-    Users legitimately have folders they can't read; treating those as "NAS is
-    gone" would block deletions forever.
-    """
+    """Test that permission-denied on a sub-folder does not poison the whole scan."""
     _build_music_tree(tmp_path)
     errors: list[OSError] = []
 
@@ -242,14 +219,12 @@ def test_recursive_iter_subfolder_eacces_is_not_fatal(tmp_path: Path) -> None:
         )
 
     rel_paths = sorted(i.relative_path for i in items)
-    # Album1 is unreadable, but Artist2 still surfaces.
     assert rel_paths == ["Artist2/track3.mp3"]
-    # EACCES on a sub-folder is expected to be non-fatal.
     assert errors == []
 
 
 def test_recursive_iter_subfolder_io_error_is_fatal(tmp_path: Path) -> None:
-    """An EIO-class failure on a sub-folder is treated as provider unavailability."""
+    """Test that an EIO failure on a sub-folder is recorded as fatal."""
     _build_music_tree(tmp_path)
     errors: list[OSError] = []
 
@@ -277,7 +252,7 @@ def test_recursive_iter_subfolder_io_error_is_fatal(tmp_path: Path) -> None:
 
 
 def test_recursive_iter_einval_is_ignored() -> None:
-    """EINVAL from a path with unsupported characters must not be recorded."""
+    """Test that EINVAL from an unsupported path name is not recorded."""
     errors: list[OSError] = []
 
     def _raise_einval(_path: str) -> None:

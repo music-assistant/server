@@ -376,10 +376,7 @@ class LocalFileSystemProvider(MusicProvider):
         ignore_album_playlists = self.media_content_type == "music" and self.config.get_value(
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key
         )
-        # Track critical errors that occur while walking the filesystem. If any
-        # directory fails to scan (e.g. a NAS share going offline), we must not
-        # run the deletion phase — otherwise we would wipe the library for items
-        # we simply couldn't see this time.
+        # populated by recursive_iter when the filesystem becomes unreachable
         scan_errors: list[OSError] = []
 
         def enumerate_files() -> None:
@@ -442,9 +439,7 @@ class LocalFileSystemProvider(MusicProvider):
         finally:
             self.sync_running = False
 
-        # Safeguard: verify the base path is still reachable before running any
-        # deletions. If it's not (e.g. NAS powered off), abort the sync to avoid
-        # wiping the entire library.
+        # do not run deletions if the filesystem is (or became) unreachable
         base_path_reachable = await self._check_base_path_reachable()
         if scan_errors or not base_path_reachable:
             self.logger.error(
@@ -468,20 +463,13 @@ class LocalFileSystemProvider(MusicProvider):
 
         def _probe() -> bool:
             try:
-                with os.scandir(self.base_path) as it:
-                    # force the directory handle to actually open by advancing
-                    # the iterator once; an empty directory is fine
-                    next(it, None)
-            except StopIteration:
-                return True
+                with os.scandir(self.base_path):
+                    pass
             except OSError:
                 return False
             return True
 
-        try:
-            return await asyncio.to_thread(_probe)
-        except OSError:
-            return False
+        return await asyncio.to_thread(_probe)
 
     async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item asynchronously.
