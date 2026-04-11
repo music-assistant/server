@@ -448,17 +448,12 @@ class LocalFileSystemProvider(MusicProvider):
         base_path_reachable = await self._check_base_path_reachable()
         if scan_errors or not base_path_reachable:
             self.logger.error(
-                "Aborting sync for %s before the deletion phase to prevent data loss: "
-                "%d scan error(s) encountered, base path reachable=%s. "
-                "The previously indexed library items will be kept untouched.",
+                "Aborting sync for %s: %d scan error(s), base path reachable=%s",
                 self.name,
                 len(scan_errors),
                 base_path_reachable,
             )
-            report_current_task_failure(
-                "Sync aborted: filesystem became unavailable during the scan. "
-                "Library items were preserved."
-            )
+            report_current_task_failure("Sync aborted: filesystem unavailable during scan")
             return
 
         # work out deletions
