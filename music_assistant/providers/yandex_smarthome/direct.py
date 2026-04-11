@@ -230,7 +230,14 @@ class DirectConnectionHandler:
 
         try:
             body = await request.json()
-            device_ids = [device_id for d in body.get("devices", []) if (device_id := d.get("id"))]
+            if not isinstance(body, dict):
+                body = {}
+            devices_raw = body.get("devices", [])
+            if not isinstance(devices_raw, list):
+                devices_raw = []
+            device_ids = [
+                device_id for d in devices_raw if isinstance(d, dict) and (device_id := d.get("id"))
+            ]
             states = await handle_devices_query(
                 self._mass, device_ids, exposed_ids=self._exposed_ids
             )

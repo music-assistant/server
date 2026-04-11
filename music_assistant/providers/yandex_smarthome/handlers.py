@@ -139,21 +139,37 @@ async def handle_user_unlink() -> dict[str, Any]:
 
 
 def parse_action_payload(raw: dict[str, Any]) -> ActionRequestPayload:
-    """Parse a raw /user/devices/action message into ActionRequestPayload."""
+    """Parse a raw /user/devices/action message into ActionRequestPayload.
+
+    Defensively handles malformed input: non-list devices, non-dict entries,
+    missing/non-dict state objects are all silently skipped.
+    """
     devices = []
     payload_obj = raw.get("payload", raw)
     if not isinstance(payload_obj, dict):
         payload_obj = {}
-    for dev_raw in payload_obj.get("devices", []):
+    devices_raw = payload_obj.get("devices", [])
+    if not isinstance(devices_raw, list):
+        devices_raw = []
+    for dev_raw in devices_raw:
+        if not isinstance(dev_raw, dict):
+            continue
         dev_id = dev_raw.get("id")
         if not dev_id:
             continue
         capabilities = []
-        for cap_raw in dev_raw.get("capabilities", []):
+        caps_raw = dev_raw.get("capabilities", [])
+        if not isinstance(caps_raw, list):
+            caps_raw = []
+        for cap_raw in caps_raw:
+            if not isinstance(cap_raw, dict):
+                continue
             cap_type = cap_raw.get("type")
             if not cap_type:
                 continue
-            state_raw = cap_raw.get("state", {})
+            state_raw = cap_raw.get("state")
+            if not isinstance(state_raw, dict):
+                continue
             capabilities.append(
                 CapabilityAction(
                     type=cap_type,
