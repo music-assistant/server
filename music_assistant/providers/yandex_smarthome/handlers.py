@@ -120,6 +120,8 @@ async def handle_devices_action(
             continue
 
         current_volume = player_state.volume_level or 0
+        if getattr(player_state, "group_members", None):
+            current_volume = getattr(player_state, "group_volume", None) or current_volume
         cap_results = []
         for cap_action in device_action.capabilities:
             result = await execute_capability_action(

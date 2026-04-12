@@ -42,6 +42,9 @@ CLOUD_PLATFORM = "music_assistant"
 
 # Account linking template: client_id = "yandex_smart_home:{instance_id}"
 CLOUD_SKILL_CLIENT_ID_TEMPLATE = "yandex_smart_home:{instance_id}"
+# Account linking: fixed client_secret required by yaha-cloud.ru relay protocol.
+# This is NOT a per-install secret — the relay expects exactly this value.
+# Direct mode uses a per-install auto-generated secret instead (see CONF_DIRECT_CLIENT_SECRET).
 CLOUD_SKILL_CLIENT_SECRET = "secret"
 
 # ---------------------------------------------------------------------------
