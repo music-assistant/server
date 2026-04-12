@@ -147,17 +147,17 @@ class AirPlayStreamSession:
             start_at = self.start_time + first_byte_pos
 
             # If start_at is in the past (or too close to now), prepend silence
-            # so the late joiner has enough headroom to connect before real audio plays.
+            # to prime the pipeline while cliraop connects. The device will use
+            # NTP sync to discard past-due silence and start playing at the
+            # correct position — the silence just keeps the pipe fed.
             min_headroom = 1.0
             if start_at < now + min_headroom:
                 deficit = (now + min_headroom) - start_at
                 silence_bytes = int(deficit * pcm_sample_size)
-                # align to sample frame boundaries (16-bit stereo = 4 bytes per frame)
-                frame_size = (self.pcm_format.bit_depth // 8) * 2
+                frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
                 silence_bytes -= silence_bytes % frame_size
-                buffered_pcm = b"\x00" * silence_bytes + buffered_pcm
-                first_byte_pos -= deficit
-                start_at = self.start_time + first_byte_pos
+                if silence_bytes > 0:
+                    buffered_pcm = b"\x00" * silence_bytes + buffered_pcm
 
             start_ntp = unix_time_to_ntp(start_at)
 
