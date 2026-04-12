@@ -88,7 +88,6 @@ class SqueezelitePlayer(Player):
         # Set static player attributes
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.POWER,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
@@ -120,17 +119,17 @@ class SqueezelitePlayer(Player):
         self.logger.info("Player %s connected", self.client.name or player_id)
         # update all dynamic attributes
         self.update_attributes()
-        # restore volume and power state
+        # restore volume state
         if last_state := await self.mass.cache.get(
             key=player_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_PREV_STATE
         ):
-            init_power = last_state[0]
+            init_muted = last_state[0]
             init_volume = last_state[1]
         else:
+            init_muted = False
             init_volume = DEFAULT_PLAYER_VOLUME
-            init_power = False
-        await self.client.power(init_power)
         await self.client.stop()
+        await self.client.mute(init_muted)
         await self.client.volume_set(init_volume)
         await self.mass.players.register_or_update(self)
 
@@ -174,24 +173,13 @@ class SqueezelitePlayer(Player):
             ),
         ]
 
-    async def power(self, powered: bool) -> None:
-        """Handle POWER command on the player."""
-        await self.client.power(powered)
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=[powered, self.client.volume_level],
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_STATE,
-        )
-
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         await self.client.volume_set(volume_level)
         # store last state in cache
         await self.mass.cache.set(
             key=self.player_id,
-            data=[self.client.powered, volume_level],
+            data=[self.client.muted, volume_level],
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_STATE,
         )
@@ -199,6 +187,13 @@ class SqueezelitePlayer(Player):
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         await self.client.mute(muted)
+        # store last state in cache
+        await self.mass.cache.set(
+            key=self.player_id,
+            data=[muted, self.client.volume_level],
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
+        )
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -393,7 +388,6 @@ class SqueezelitePlayer(Player):
         )
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
-        self._attr_powered = self.client.powered
         old_state = self._attr_playback_state
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
