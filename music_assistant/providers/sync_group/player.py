@@ -719,4 +719,13 @@ class SyncGroupPlayer(Player):
                 new_leader.display_name,
                 self.display_name,
             )
+            # Sync remaining members to the new leader at the protocol level.
+            # Without this, the new leader's protocol player won't know about
+            # the remaining group members, causing state tracking mismatches.
+            remaining_members = [m for m in self._attr_group_members if m != new_leader.player_id]
+            if remaining_members:
+                await self.mass.players.cmd_set_members(
+                    new_leader.player_id,
+                    player_ids_to_add=remaining_members,
+                )
         self.update_state()
