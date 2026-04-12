@@ -19,10 +19,17 @@ from music_assistant_models.errors import AlreadyRegisteredError
 
 from music_assistant.constants import CONF_ENABLED
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.sendspin.player import SendspinPlayer
+from music_assistant.providers.sendspin.player import (
+    SendspinBasePlayer,
+    SendspinPlayer,
+    SendspinVisualizerPlayer,
+)
 
 if TYPE_CHECKING:
+    from aiosendspin.models.core import ClientHelloPayload
+    from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -50,6 +57,7 @@ class SendspinProvider(PlayerProvider):
         )
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
+        self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
         self._client_event_task_counts = {}
         self._unloading = False
@@ -108,7 +116,16 @@ class SendspinProvider(PlayerProvider):
         """
         self._bridge_identifiers[client_id] = identifiers
 
-    async def _apply_hass_name_override(self, player: SendspinPlayer, client_id: str) -> None:
+    def register_bridge_player_type(self, client_id: str, player_type: PlayerType) -> None:
+        """
+        Pre-register a PlayerType override for a bridge client.
+
+        Called by bridge managers to set the player type for the resulting
+        player (e.g. PlayerType.LIGHT for Hue Entertainment bridges).
+        """
+        self._bridge_player_types[client_id] = player_type
+
+    async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
         """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
         if player.device_info.manufacturer != "ESPHome":
             return
@@ -118,7 +135,48 @@ class SendspinProvider(PlayerProvider):
         if hass_device := await hass.get_device_by_connection(client_id):
             player._attr_name = hass_device["name_by_user"] or hass_device["name"] or player.name
 
-    async def _handle_client_added(self, client_id: str, event_version: int) -> None:  # noqa: PLR0915
+    def _create_player(
+        self,
+        client_id: str,
+        sendspin_client: SendspinClient,
+        existing_player: Player | None,
+        initial_hello: ClientHelloPayload | None = None,
+    ) -> SendspinBasePlayer:
+        """
+        Create the appropriate player class based on client roles.
+
+        Priority: player role -> SendspinPlayer, metadata role -> DISPLAY,
+        visualizer role -> VISUALIZER. Bridge-registered type overrides the default.
+        """
+        extra_ids = self._bridge_identifiers.pop(client_id, None)
+        bridge_player_type = self._bridge_player_types.pop(client_id, None)
+
+        has_player_role = bool(sendspin_client.roles_by_family("player"))
+        has_metadata_role = bool(sendspin_client.roles_by_family("metadata"))
+        has_visualizer_role = bool(sendspin_client.roles_by_family("visualizer"))
+
+        if has_player_role:
+            audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
+            if isinstance(existing_player, SendspinPlayer):
+                audio_player.preserve_control_features_from(existing_player)
+            player: SendspinBasePlayer = audio_player
+        elif has_metadata_role or has_visualizer_role:
+            default_type = PlayerType.DISPLAY if has_metadata_role else PlayerType.VISUALIZER
+            viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
+            viz_player._attr_type = bridge_player_type or default_type
+            player = viz_player
+        else:
+            audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
+            if isinstance(existing_player, SendspinPlayer):
+                audio_player.preserve_control_features_from(existing_player)
+            player = audio_player
+
+        if extra_ids:
+            for id_type, id_value in extra_ids.items():
+                player.device_info.add_identifier(id_type, id_value)
+        return player
+
+    async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
         try:
             if self._unloading:
@@ -174,15 +232,9 @@ class SendspinProvider(PlayerProvider):
                     self.logger.debug("Client %s disconnected after unregister", client_id)
                     return
 
-            extra_ids = self._bridge_identifiers.pop(client_id, None)
-            player = SendspinPlayer(self, client_id, initial_hello=bridge_hello_snapshot)
-            if isinstance(existing_player, SendspinPlayer):
-                player.preserve_control_features_from(existing_player)
-            # Apply any bridge identifiers that were pre-registered by the bridge manager.
-            # This enables cross-protocol matching (e.g., Sendspin ↔ Chromecast via CAST_UUID).
-            if extra_ids:
-                for id_type, id_value in extra_ids.items():
-                    player.device_info.add_identifier(id_type, id_value)
+            player = self._create_player(
+                client_id, sendspin_client, existing_player, bridge_hello_snapshot
+            )
             for id_type, id_value in preserved_identifiers.items():
                 player.device_info.add_identifier(id_type, id_value)
             self.logger.debug("Client %s connected", client_id)
@@ -238,12 +290,13 @@ class SendspinProvider(PlayerProvider):
                 self.logger.debug("Skipping stale update event for %s", client_id)
                 return
             existing_player = self.mass.players.get_player(client_id)
-            if not isinstance(existing_player, SendspinPlayer):
+            if not isinstance(existing_player, SendspinBasePlayer):
                 return
             previous_device_info = existing_player.device_info
             previous_type = existing_player.type
             existing_player._refresh_client_info(sendspin_client)
-            existing_player.restore_bridge_identity(previous_device_info, previous_type)
+            if isinstance(existing_player, SendspinPlayer):
+                existing_player.restore_bridge_identity(previous_device_info, previous_type)
             await self._apply_hass_name_override(existing_player, client_id)
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
