@@ -580,7 +580,7 @@ class SyncGroupPlayer(Player):
         # after the sync group is dissolved. The controller's normal
         # clearing (in _handle_cmd_stop) is skipped when the protocol
         # player had multiple group members at stop time.
-        if sync_leader:
+        if sync_leader and sync_leader.state.playback_state != PlaybackState.PLAYING:
             sync_leader.set_active_output_protocol(None)
         self.sync_leader = None
         self._active_protocol_domain = None
