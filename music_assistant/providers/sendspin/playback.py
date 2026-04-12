@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -19,6 +18,7 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
+from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.bridge_role import (
@@ -654,8 +654,8 @@ class SendspinPlaybackSession:
                 async for chunk in audio_source:
                     if not chunk:
                         continue
-                    for slice_chunk in self._iter_pcm_slices(
-                        chunk, _PCM_FORMAT, _PRODUCER_SLICE_US
+                    for slice_chunk in iter_pcm_slices(
+                        chunk, _PCM_FORMAT, target_duration_ms=_PRODUCER_SLICE_US // 1000
                     ):
                         if not slice_chunk:
                             continue
@@ -1277,34 +1277,6 @@ class SendspinPlaybackSession:
         if bytes_per_second <= 0:
             return 0
         return int((len(audio) / bytes_per_second) * 1_000_000)
-
-    @staticmethod
-    def _iter_pcm_slices(
-        audio: bytes, audio_format: AudioFormat, target_duration_us: int
-    ) -> Iterator[bytes]:
-        """Yield frame-aligned PCM slices up to target duration."""
-        if not audio:
-            return
-        bytes_per_sample = max(1, int(audio_format.bit_depth // 8))
-        frame_size = bytes_per_sample * int(audio_format.channels)
-        if frame_size <= 0:
-            yield audio
-            return
-        samples_per_slice = max(
-            1, round((target_duration_us / 1_000_000) * int(audio_format.sample_rate))
-        )
-        slice_size = max(frame_size, samples_per_slice * frame_size)
-        offset = 0
-        audio_len = len(audio)
-        while offset < audio_len:
-            end = min(audio_len, offset + slice_size)
-            if end < audio_len:
-                aligned_end = end - (end % frame_size)
-                if aligned_end <= offset:
-                    aligned_end = min(audio_len, offset + frame_size)
-                end = aligned_end
-            yield audio[offset:end]
-            offset = end
 
     @staticmethod
     def _silence_for_duration_us(duration_us: int) -> bytes:

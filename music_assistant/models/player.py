@@ -56,6 +56,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
+    PLAYER_CONTROL_PROTOCOL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
 )
@@ -764,23 +765,13 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != "auto":
-            # the control type is explicitly set to a (protocol) player_id or player control,
-            # check if it exists and is (currently) available
-            if (_player := self.mass.players.get_player(str(conf))) and _player.available:
-                return _player.player_id
-            if _control := self.mass.players.get_player_control(str(conf)):
-                return _control.id
+        if conf and (_control := self.mass.players.get_player_control(str(conf))):
+            # the control type is explicitly set to a player control,
+            return _control.id
         # handle auto-select logic if not explicitly set in config
         if PlayerFeature.POWER in self.supported_features:
             # player supports native power control, always prefer that
             return PLAYER_CONTROL_NATIVE
-        # check if the active (or preferred) protocol player supports power control
-        # check for protocol player with power support, and use that if found
-        if protocol_player := self._get_protocol_player_for_feature(
-            PlayerFeature.POWER, require_active=True
-        ):
-            return protocol_player.player_id
         return PLAYER_CONTROL_NONE
 
     @cached_property
@@ -791,7 +782,7 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != "auto":
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # the control type is explicitly set to a (protocol) player_id or player control,
             # check if it exists and is (currently) available
             if (_player := self.mass.players.get_player(str(conf))) and _player.available:
@@ -817,7 +808,7 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != "auto":
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # the control type is explicitly set to a (protocol) player_id or player control,
             # check if it exists and is (currently) available
             if (_player := self.mass.players.get_player(str(conf))) and _player.available:
@@ -1344,13 +1335,7 @@ class Player(ABC):
             return self
         # prefer active (or preferred) protocol player with the feature
         active_protocol = self.active_output_protocol
-        if not active_protocol:
-            preferred = self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
-            )
-            if preferred and preferred not in ("auto", "native"):
-                active_protocol = str(preferred)
-        if active_protocol:
+        if active_protocol and active_protocol != "native":
             protocol_player = self.mass.players.get_player(active_protocol)
             if (
                 protocol_player
@@ -1362,6 +1347,19 @@ class Player(ABC):
             # if we require active and the active protocol
             # doesn't support the feature, return None
             return None
+
+        # fallback to preferred protocol from config
+        preferred_conf = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
+        )
+        if preferred_conf and preferred_conf not in ("auto", "native"):
+            preferred_protocol = str(preferred_conf)
+            if (
+                (_player := self.mass.players.get_player(preferred_protocol))
+                and _player.available
+                and feature in _player.supported_features
+            ):
+                return _player
 
         # Otherwise, use the first available linked protocol.
         # Prefer protocols that can process commands without active streaming
@@ -1467,6 +1465,11 @@ class Player(ABC):
 
         Returns a tuple of (playback_state, elapsed_time, elapsed_time_last_updated).
         """
+        # Determine base state from protocol player, parent/group, or self.
+        playback_state: PlaybackState
+        elapsed_time: float | None
+        elapsed_time_last_updated: float | None
+
         # If an output protocol is active (and not native), use the protocol player's state
         if (
             self.__attr_active_output_protocol
@@ -1476,22 +1479,38 @@ class Player(ABC):
             )
             and protocol_player.playback_state != PlaybackState.IDLE
         ):
-            return (
-                protocol_player.state.playback_state,
-                protocol_player.state.elapsed_time,
-                protocol_player.state.elapsed_time_last_updated,
-            )
-        # If we're synced, use the syncleader state for playback state and elapsed time
-        # NOTE: Don't do this for the active group player,
+            playback_state = protocol_player.state.playback_state
+            elapsed_time = protocol_player.state.elapsed_time
+            elapsed_time_last_updated = protocol_player.state.elapsed_time_last_updated
+        # If we're synced or part of an active group, use the parent/group player's state
+        # for playback state and elapsed time.
+        # NOTE: Don't do this for the active group player itself,
         # because the group player relies on the sync leader for state info.
-        parent_id = self.__final_synced_to
-        if parent_id and (parent_player := self.mass.players.get_player(parent_id)):
-            return (
-                parent_player.state.playback_state,
-                parent_player.state.elapsed_time,
-                parent_player.state.elapsed_time_last_updated,
-            )
-        return (self.playback_state, self.elapsed_time, self.elapsed_time_last_updated)
+        elif (parent_id := self.__final_synced_to or self.__final_active_group) and (
+            parent_player := self.mass.players.get_player(parent_id)
+        ):
+            playback_state = parent_player.state.playback_state
+            elapsed_time = parent_player.state.elapsed_time
+            elapsed_time_last_updated = parent_player.state.elapsed_time_last_updated
+        else:
+            playback_state = self.playback_state
+            elapsed_time = self.elapsed_time
+            elapsed_time_last_updated = self.elapsed_time_last_updated
+
+        # If a PluginSource is active with elapsed_time metadata, prefer it
+        # over the player/protocol elapsed_time (which tracks bytes consumed,
+        # not the source's logical playback position).
+        active_source = self.__final_active_source
+        if (
+            active_source
+            and (source := self.mass.players.get_plugin_source(active_source))
+            and source.metadata
+            and source.metadata.elapsed_time is not None
+        ):
+            elapsed_time = source.metadata.elapsed_time
+            elapsed_time_last_updated = source.metadata.elapsed_time_last_updated or time.time()
+
+        return (playback_state, elapsed_time, elapsed_time_last_updated)
 
     @cached_property
     @final

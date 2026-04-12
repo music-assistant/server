@@ -3044,16 +3044,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             else:
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
-        # handle protocol player power control
-        elif protocol_player := self.get_player(player.state.power_control):
-            self.logger.debug(
-                "Redirecting power command to protocol player %s",
-                protocol_player.provider.manifest.name,
-            )
-            await self._handle_cmd_power(protocol_player.player_id, powered, True)
-            if powered:
-                await wait_for_power_on(self.logger, protocol_player)
-
         # always trigger a state update to update the UI
         player.update_state()
 
@@ -3084,7 +3074,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Check if player has mute lock (set when individually muted in a group)
         # If locked, don't auto-unmute when volume changes
+        # Also check the protocol parent player, because cmd_volume_mute stores
+        # the lock on the parent player while this method may be called with
+        # the protocol player ID (e.g. during group volume changes).
         has_mute_lock = player.extra_data.get(ATTR_MUTE_LOCK, False)
+        if not has_mute_lock and player.protocol_parent_id:
+            if parent := self.get_player(player.protocol_parent_id):
+                has_mute_lock = parent.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
             not has_mute_lock
             and player.state.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
