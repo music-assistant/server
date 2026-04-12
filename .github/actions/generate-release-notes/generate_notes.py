@@ -24,8 +24,24 @@ def load_config():
         return yaml.safe_load(f)
 
 
+def get_tag_date(repo, tag_name):
+    """Get the creation date of a tag (supports both annotated and lightweight tags)."""
+    try:
+        ref = repo.get_git_ref(f"tags/{tag_name}")
+        if ref.object.type == "tag":
+            tag_obj = repo.get_git_tag(ref.object.sha)
+            return tag_obj.tagger.date
+        # Lightweight tag - use the commit date
+        commit = repo.get_commit(ref.object.sha)
+        return commit.commit.committer.date
+    except GithubException as e:
+        print(f"Warning: Could not get date for tag {tag_name}: {e}")  # noqa: T201
+        return None
+
+
 def get_prs_between_tags(repo, previous_tag, current_branch):
     """Get all merged PRs between the previous tag and current HEAD."""
+    tag_date = None
     if not previous_tag:
         print("No previous tag specified, will include all PRs from branch history")  # noqa: T201
         # Get the first commit on the branch
@@ -34,6 +50,9 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
         commits = commits[:100]
     else:
         print(f"Finding PRs between {previous_tag} and {current_branch}")  # noqa: T201
+        tag_date = get_tag_date(repo, previous_tag)
+        if tag_date:
+            print(f"Previous tag date: {tag_date}")  # noqa: T201
         comparison = repo.compare(previous_tag, current_branch)
         commits = comparison.commits
         print(f"Found {comparison.total_commits} commits")  # noqa: T201
@@ -56,15 +75,25 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
 
     print(f"Found {len(pr_numbers)} unique PRs")  # noqa: T201
 
-    # Fetch the actual PR objects
+    # Fetch the actual PR objects, filtering out PRs merged before the previous tag
     prs = []
+    skipped = 0
     for pr_num in sorted(pr_numbers):
         try:
             pr = repo.get_pull(pr_num)
             if pr.merged:
+                if tag_date and pr.merged_at and pr.merged_at <= tag_date:
+                    skipped += 1
+                    print(  # noqa: T201
+                        f"  Skipping PR #{pr_num}: merged at {pr.merged_at}, before tag date {tag_date}"
+                    )
+                    continue
                 prs.append(pr)
         except GithubException as e:
             print(f"Warning: Could not fetch PR #{pr_num}: {e}")  # noqa: T201
+
+    if skipped:
+        print(f"Filtered out {skipped} PRs merged before {previous_tag}")  # noqa: T201
 
     return prs
 

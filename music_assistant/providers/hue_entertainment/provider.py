@@ -1,0 +1,183 @@
+"""
+Hue Lights Sync provider for Music Assistant.
+
+Discovers entertainment areas on a paired Hue bridge and creates
+virtual Sendspin players for each. When music plays to a virtual player,
+the lights in that entertainment area react to the music.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+from zeroconf import ServiceStateChange
+
+from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueEntertainmentAPI
+
+from .bridge import HueEntertainmentBridgeManager
+from .constants import (
+    CONF_BRIDGE_HOST,
+    CONF_BRIDGE_ID,
+    CONF_BRIGHTNESS,
+    CONF_COLOR_MODE,
+    CONF_INTENSITY,
+    CONF_USERNAME,
+)
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
+    from music_assistant_models.provider import ProviderManifest
+    from zeroconf.asyncio import AsyncServiceInfo
+
+    from music_assistant.mass import MusicAssistant
+
+LOGGER = logging.getLogger(__name__)
+
+
+class HueEntertainmentProvider(PluginProvider):
+    """Provider that syncs Hue lights to music via Sendspin."""
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
+    ) -> None:
+        """Initialize the provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._hue_api: HueEntertainmentAPI | None = None
+        self._bridge_manager: HueEntertainmentBridgeManager | None = None
+
+    @property
+    def hue_api(self) -> HueEntertainmentAPI | None:
+        """Return the Hue API client."""
+        return self._hue_api
+
+    async def loaded_in_mass(self) -> None:
+        """Initialize Hue bridge connection and set up entertainment area bridges."""
+        host = self.config.get_value(CONF_BRIDGE_HOST)
+        username = self.config.get_value(CONF_USERNAME)
+
+        if not host or not username:
+            self.logger.warning("Hue bridge not configured, provider inactive")
+            self.available = False
+            return
+
+        self._hue_api = HueEntertainmentAPI(str(host), str(username))
+        self._bridge_manager = HueEntertainmentBridgeManager(self)
+
+        # Fetch entertainment areas and set up bridges
+        try:
+            areas = await self._hue_api.get_entertainment_areas()
+            if not areas:
+                self.logger.warning("No entertainment areas found on Hue bridge at %s", host)
+            else:
+                self.logger.info(
+                    "Found %d entertainment area(s) on Hue bridge: %s",
+                    len(areas),
+                    ", ".join(a.name for a in areas),
+                )
+            await self._bridge_manager.setup_bridges(areas)
+            self.available = True
+        except Exception as err:
+            self.logger.error("Failed to initialize Hue bridge at %s: %s", host, err)
+            self.available = False
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        if self._bridge_manager:
+            await self._bridge_manager.stop_all()
+            self._bridge_manager = None
+        if self._hue_api:
+            await self._hue_api.close()
+            self._hue_api = None
+
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Handle mDNS service discovery for Hue bridges.
+
+        Updates the bridge IP address if it changes (e.g. DHCP renewal).
+        """
+        if info is None:
+            return
+
+        # Extract the bridge ID from the mDNS service name
+        raw_bridge_id = info.properties.get(b"bridgeid", b"")
+        bridge_id = raw_bridge_id.decode("utf-8", errors="ignore") if raw_bridge_id else ""
+        if not bridge_id:
+            return
+
+        configured_bridge_id = self.config.get_value(CONF_BRIDGE_ID) or ""
+
+        if state_change == ServiceStateChange.Removed:
+            if bridge_id == configured_bridge_id:
+                self.logger.info("Hue bridge %s removed from network", bridge_id)
+                self.available = False
+            return
+
+        # Extract IP address from service info
+        addresses = info.parsed_addresses()
+        if not addresses:
+            return
+        new_host = addresses[0]
+
+        if state_change == ServiceStateChange.Added:
+            # If we don't have a bridge ID configured yet, and no host is set,
+            # this is likely the initial discovery during setup
+            if not configured_bridge_id:
+                self.logger.debug(
+                    "Discovered Hue bridge %s at %s (not yet configured)", bridge_id, new_host
+                )
+                return
+
+        if bridge_id != configured_bridge_id:
+            return
+
+        # Update the host if it changed
+        current_host = self.config.get_value(CONF_BRIDGE_HOST) or ""
+        if new_host != current_host:
+            self.logger.info(
+                "Hue bridge %s IP changed from %s to %s",
+                bridge_id,
+                current_host,
+                new_host,
+            )
+            if self._hue_api:
+                self._hue_api.host = new_host
+            # Persist the new IP
+            self._update_config_value(CONF_BRIDGE_HOST, new_host)
+
+        if not self.available:
+            self.available = True
+            # Re-initialize bridges if we were previously unavailable
+            if self._hue_api and self._bridge_manager:
+                try:
+                    areas = await self._hue_api.get_entertainment_areas()
+                    await self._bridge_manager.setup_bridges(areas)
+                except Exception as err:
+                    self.logger.warning("Failed to reinitialize bridges: %s", err)
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """
+        Handle config changes.
+
+        Settings like brightness/intensity/color_mode can be updated
+        without a full provider reload.
+        """
+        settings_keys = {CONF_BRIGHTNESS, CONF_INTENSITY, CONF_COLOR_MODE}
+        if changed_keys & settings_keys and self._bridge_manager:
+            self._bridge_manager.update_settings(
+                color_mode=str(config.get_value(CONF_COLOR_MODE) or "spectrum"),
+                brightness=int(float(str(config.get_value(CONF_BRIGHTNESS) or 100))),
+                intensity=int(float(str(config.get_value(CONF_INTENSITY) or 70))),
+            )
+            self.config = config
+            return
+
+        # For other changes (host, credentials), do a full reload
+        await super().update_config(config, changed_keys)
