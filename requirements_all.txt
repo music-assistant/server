@@ -78,7 +78,7 @@ unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0
 xmltodict==1.0.4
-ya-passport-auth==1.0.0
+ya-passport-auth==1.2.3
 yandex-music==2.2.0
 ytmusicapi==1.11.5
 zeroconf==0.148.0
