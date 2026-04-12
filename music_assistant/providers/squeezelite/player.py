@@ -101,6 +101,7 @@ class SqueezelitePlayer(Player):
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
         self._plugin_source_active: bool = False
+        self._low_latency_stream: bool = False
         # TEMP: patch slimclient send_strm to adjust buffer thresholds
         # this can be removed when we did a new release of aioslimproto with this change
         # after this has been tested in beta for a while
@@ -456,6 +457,7 @@ class SqueezelitePlayer(Player):
         self._plugin_source_active = (
             source_id is not None and self.mass.players.get_plugin_source(source_id) is not None
         )
+        self._low_latency_stream = self._plugin_source_active or media.media_type == MediaType.RADIO
         await slimplayer.play_url(
             url=url,
             mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
@@ -749,7 +751,7 @@ async def _patched_send_strm(  # noqa: PLR0913
     httpreq: bytes = b"",
 ) -> None:
     """Create stream request message based on given arguments."""
-    if player._plugin_source_active:
+    if player._low_latency_stream:
         threshold = 64  # KB of input buffer data before autostart or notify
         output_threshold = (
             1  # amount of output buffer data before playback starts, in tenths of second
