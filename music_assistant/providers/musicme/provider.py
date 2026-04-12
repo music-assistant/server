@@ -285,8 +285,7 @@ class MusicMeProvider(MusicProvider):
                 "&resources=styles,artists{maxResults:10},videos{maxResults:0}"
             ),
             self._api_get(
-                "/radios?filters={theme:0}"
-                "&resources=themes,theme-airplays{maxResults:10},home"
+                "/radios?filters={theme:0}&resources=themes,theme-airplays{maxResults:10},home"
             ),
         )
 
