@@ -482,6 +482,18 @@ class DLNAPlayer(Player):
         if self.device.can_pause:
             await self.device.async_pause()
             return
+
+        # Check our new player-specific config
+        replace_pause_with_stop: bool = await self.mass.config.get_player_config_value(
+            self.player_id, "replace_pause_with_stop_on_unseekable_streams"
+        )
+
+        if replace_pause_with_stop:
+            stop_action = self.device._action("AVT", "Stop")
+            if stop_action is not None:
+                await stop_action.async_call(InstanceID=0)
+            return
+
         # Some devices expose Pause but report stale CurrentTransportActions.
         # Force-call Pause when action exists; otherwise fallback to Stop.
         pause_action = self.device._action("AVT", "Pause")
