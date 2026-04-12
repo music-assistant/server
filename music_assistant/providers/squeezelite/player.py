@@ -59,7 +59,9 @@ if TYPE_CHECKING:
     from .provider import SqueezelitePlayerProvider
 
 
-CACHE_CATEGORY_PREV_STATE = 0  # category for caching previous player state
+CACHE_CATEGORY_PREV_STATE = (
+    1  # category for caching previous player state (bumped to invalidate old format)
+)
 
 PLAYER_DEVICE_TYPES = {
     # list of device types that are considered real hardware players

@@ -782,7 +782,7 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != PLAYER_CONTROL_PROTOCOL:
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # the control type is explicitly set to a (protocol) player_id or player control,
             # check if it exists and is (currently) available
             if (_player := self.mass.players.get_player(str(conf))) and _player.available:
@@ -808,7 +808,7 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != PLAYER_CONTROL_PROTOCOL:
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # the control type is explicitly set to a (protocol) player_id or player control,
             # check if it exists and is (currently) available
             if (_player := self.mass.players.get_player(str(conf))) and _player.available:
