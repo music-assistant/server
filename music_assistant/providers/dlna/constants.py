@@ -12,11 +12,11 @@ PLAYER_CONFIG_ENTRIES = [
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
     # Replace Pause with Stop for legacy audiophile gear that does not support pause on unseekable streams (e.g., radio or chunked HTTP).
     ConfigEntry(
-        key="replace_pause_with_stop_on_unseekable_streams",
+        key="replace_pause_with_stop",
         type=ConfigEntryType.BOOLEAN,
-        label="Replace Pause with Stop on unseekable streams, e.g. internet radio",
+        label="Replace Pause with Stop",
         default_value=False,
-        description="Forces the player to stop when paused on an unseekable streams (like radio or chunked HTTP). Enable for legacy streamers (e.g., Naim) which are unable to pause/resume playback when playing a stream.",
+        description="Forces Music Assistant to stop playback instead of pausing. Enable for some legacy streamers which are unable to pause/resume playback when streaming uPnP/DLNA.",
         advanced=True,
     ),
 ]
