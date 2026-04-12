@@ -435,7 +435,7 @@ class SmartCrossFade(SmartFade):
         downbeat_positions = calculate_beat_positions(
             self.extrapolated_fadeout_downbeats, self.fade_in_downbeats, crossfade_bars
         )
-        if downbeat_positions:
+        if downbeat_positions is not None:
             return downbeat_positions
 
         # Try regular beats if downbeats insufficient
@@ -443,7 +443,7 @@ class SmartCrossFade(SmartFade):
         beat_positions = calculate_beat_positions(
             self.fade_out_beats, self.fade_in_beats, required_beats
         )
-        if beat_positions:
+        if beat_positions is not None:
             return beat_positions
 
         # Fallback: No beat alignment possible
