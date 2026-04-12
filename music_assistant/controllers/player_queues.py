@@ -1599,20 +1599,20 @@ class PlayerQueuesController(CoreController):
         # update queue_item.duration from streamdetails if we got a better value
         if queue_item.streamdetails.duration and not queue_item.duration:
             queue_item.duration = queue_item.streamdetails.duration
+            self.signal_update(queue_id, items_changed=True)
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
         # immediate playback start. For preloaded next tracks we skip this and
         # initialize the buffer ~30s before the current track ends instead.
         if is_start:
-            buffer = await AudioBuffer.get_buffer(
+            await AudioBuffer.get_buffer(
                 self.mass,
                 queue_item.streamdetails,
                 seek_position_ms=seek_position * 1000,
                 wait_ready=True,
                 reason="prepare",
             )
-            self._register_duration_callback(buffer, queue_item)
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
         """Call when a player has (started) loading a track in the buffer."""
@@ -2259,24 +2259,6 @@ class PlayerQueuesController(CoreController):
             abort_existing=True,
         )
 
-    def _register_duration_callback(self, buffer: AudioBuffer, queue_item: QueueItem) -> None:
-        """Register a chunk callback on the buffer to update queue_item duration when known.
-
-        When the audio buffer finishes filling (EOF), the streamdetails duration
-        has been set from the actual PCM data. This callback propagates that
-        accurate duration to the queue_item so the UI can display it.
-        """
-        streamdetails = queue_item.streamdetails
-
-        async def _on_chunk(_position: int, _data: bytes, is_last: bool) -> None:
-            if not is_last:
-                return
-            if streamdetails and streamdetails.duration and not queue_item.duration:
-                queue_item.duration = streamdetails.duration
-                self.signal_update(queue_item.queue_id, items_changed=True)
-
-        buffer.register_chunk_callback(_on_chunk)
-
     def _prepare_next_audio_buffer(self, queue_id: str) -> None:
         """
         Prepare the AudioBuffer for the next track in the queue.
@@ -2312,13 +2294,12 @@ class PlayerQueuesController(CoreController):
                     next_item.name,
                     queue.display_name,
                 )
-                buffer = await AudioBuffer.get_buffer(
+                await AudioBuffer.get_buffer(
                     self.mass,
                     next_item.streamdetails,
                     reason="prepare_next",
                     wait_ready=True,
                 )
-                self._register_duration_callback(buffer, next_item)
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
 
