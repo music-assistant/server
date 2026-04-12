@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -19,6 +18,7 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
+from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.bridge_role import (
@@ -340,6 +340,32 @@ class SendspinPlaybackSession:
 
     # -- Public API ------------------------------------------------------------
 
+    async def transfer_to(self, new_player: SendspinPlayer) -> None:
+        """Transfer session ownership to a new player.
+
+        Used during dynamic leader switching to keep the push stream alive
+        while the old leader is removed from the sendspin group. The PushStream
+        and all internal state (pipelines, history, join-catchup) stay intact;
+        only the owning player reference is updated.
+
+        Cleans up the old leader's pipeline/channel state so its FFmpeg
+        processor is released.
+
+        :param new_player: The SendspinPlayer that will take over as session owner.
+        """
+        old_leader_id = self.player.player_id
+        self.player = new_player
+        # Release the old leader's DSP pipeline -- it's no longer in the group
+        # and _refresh_member_mappings won't touch it since it only iterates
+        # current members + the (new) leader.
+        async with self._state_lock:
+            pipeline = self._member_pipelines.pop(old_leader_id, None)
+            self._pipeline_config_cache.pop(old_leader_id, None)
+            self._preassigned_channels.pop(old_leader_id, None)
+            self._mapping_dirty = True
+        if pipeline is not None and pipeline.processor is not None:
+            await self._close_member_ffmpeg(pipeline.processor)
+
     async def cancel(self, reason: str) -> None:
         """Cancel and await the active playback task, if any."""
         task = self.playback_task
@@ -654,8 +680,8 @@ class SendspinPlaybackSession:
                 async for chunk in audio_source:
                     if not chunk:
                         continue
-                    for slice_chunk in self._iter_pcm_slices(
-                        chunk, _PCM_FORMAT, _PRODUCER_SLICE_US
+                    for slice_chunk in iter_pcm_slices(
+                        chunk, _PCM_FORMAT, target_duration_ms=_PRODUCER_SLICE_US // 1000
                     ):
                         if not slice_chunk:
                             continue
@@ -1277,34 +1303,6 @@ class SendspinPlaybackSession:
         if bytes_per_second <= 0:
             return 0
         return int((len(audio) / bytes_per_second) * 1_000_000)
-
-    @staticmethod
-    def _iter_pcm_slices(
-        audio: bytes, audio_format: AudioFormat, target_duration_us: int
-    ) -> Iterator[bytes]:
-        """Yield frame-aligned PCM slices up to target duration."""
-        if not audio:
-            return
-        bytes_per_sample = max(1, int(audio_format.bit_depth // 8))
-        frame_size = bytes_per_sample * int(audio_format.channels)
-        if frame_size <= 0:
-            yield audio
-            return
-        samples_per_slice = max(
-            1, round((target_duration_us / 1_000_000) * int(audio_format.sample_rate))
-        )
-        slice_size = max(frame_size, samples_per_slice * frame_size)
-        offset = 0
-        audio_len = len(audio)
-        while offset < audio_len:
-            end = min(audio_len, offset + slice_size)
-            if end < audio_len:
-                aligned_end = end - (end % frame_size)
-                if aligned_end <= offset:
-                    aligned_end = min(audio_len, offset + frame_size)
-                end = aligned_end
-            yield audio[offset:end]
-            offset = end
 
     @staticmethod
     def _silence_for_duration_us(duration_us: int) -> bytes:
