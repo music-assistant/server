@@ -214,8 +214,13 @@ class StateNotifier:
     async def _heartbeat_loop(self) -> None:
         """Periodically report all states as a heartbeat."""
         while True:
-            await asyncio.sleep(STATE_HEARTBEAT_INTERVAL)
-            await self._report_all_states()
+            try:
+                await asyncio.sleep(STATE_HEARTBEAT_INTERVAL)
+                await self._report_all_states()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._logger.exception("Heartbeat state report failed, will retry next interval")
 
     # -----------------------------------------------------------------------
     # Discovery notification

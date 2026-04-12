@@ -309,6 +309,8 @@ class YandexSmartHomePlugin(PluginProvider):
             await self._cloud_manager.disconnect()
             self._cloud_manager = None
 
-        if self._cloud_task and not self._cloud_task.done():
-            self._cloud_task.cancel()
+        if self._cloud_task:
+            cloud_task = self._cloud_task
             self._cloud_task = None
+            if not cloud_task.done():
+                cloud_task.cancel()
