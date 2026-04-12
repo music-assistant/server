@@ -1110,7 +1110,7 @@ class StreamsController(CoreController):
                 input_format=plugin_source.audio_format,
                 output_format=output_format,
                 filter_params=player_filter_params,
-                extra_input_args=["-y", "-re"],
+                extra_input_args=["-y", "-readrate", "1.1", "-readrate_initial_burst", "5"],
             ):
                 if plugin_source.in_use_by != player_id:
                     # another player took over or the stream ended, stop streaming
