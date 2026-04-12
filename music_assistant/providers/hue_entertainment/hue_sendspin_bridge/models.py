@@ -1,4 +1,4 @@
-"""Data models for the Philips Hue Entertainment provider."""
+"""Data models for the Hue Lights Sync provider."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# Philips Hue Entertainment Plugin
+# Hue Lights Sync Plugin
 
 Syncs Philips Hue lights to music using the Entertainment API. Each entertainment area on a paired Hue bridge reacts to music in real time when joined to a playing group.
 
@@ -67,7 +67,7 @@ hue_entertainment/
 ## Quick Setup
 
 1. Create an Entertainment Area in the Philips Hue app (Settings → Entertainment Areas)
-2. In Music Assistant, go to Settings → Providers → Add Provider → Philips Hue Entertainment
+2. In Music Assistant, go to Settings → Providers → Add Provider → Hue Lights Sync
 3. Enter your Hue bridge IP address (or let mDNS discover it)
 4. Press the physical button on your Hue bridge, then click "Pair"
 5. Click Save — the entertainment area(s) appear as Light players

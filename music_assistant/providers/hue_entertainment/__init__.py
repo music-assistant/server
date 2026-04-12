@@ -1,5 +1,5 @@
 """
-Philips Hue Entertainment Plugin for Music Assistant.
+Hue Lights Sync Plugin for Music Assistant.
 
 Syncs Philips Hue lights in Entertainment Areas to music using the
 Sendspin visualization pipeline and the Hue Entertainment API (DTLS streaming).

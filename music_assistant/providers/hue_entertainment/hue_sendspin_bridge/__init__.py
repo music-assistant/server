@@ -1,7 +1,7 @@
 """
 Reusable Hue Entertainment bridge library.
 
-Provides the core building blocks for syncing Philips Hue lights to audio:
+Provides the core building blocks for syncing Hue lights to audio:
 DTLS streaming, HueStream protocol, REST API, and audio-to-color analysis.
 
 This package is intentionally decoupled from Music Assistant specifics so

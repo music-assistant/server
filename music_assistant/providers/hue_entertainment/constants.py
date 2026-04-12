@@ -1,4 +1,4 @@
-"""Config constants for the Philips Hue Entertainment provider."""
+"""Config constants for the Hue Lights Sync provider."""
 
 from __future__ import annotations
 

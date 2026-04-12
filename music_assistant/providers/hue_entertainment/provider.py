@@ -1,5 +1,5 @@
 """
-Philips Hue Entertainment provider for Music Assistant.
+Hue Lights Sync provider for Music Assistant.
 
 Discovers entertainment areas on a paired Hue bridge and creates
 virtual Sendspin players for each. When music plays to a virtual player,
@@ -38,7 +38,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class HueEntertainmentProvider(PluginProvider):
-    """Provider that syncs Hue Entertainment lights to music via Sendspin."""
+    """Provider that syncs Hue lights to music via Sendspin."""
 
     def __init__(
         self,
