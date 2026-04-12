@@ -1596,6 +1596,10 @@ class PlayerQueuesController(CoreController):
             fade_in=fade_in,
             prefer_album_loudness=bool(playing_album_tracks),
         )
+        # update queue_item.duration from streamdetails if we got a better value
+        if queue_item.streamdetails.duration and not queue_item.duration:
+            queue_item.duration = queue_item.streamdetails.duration
+            self.signal_update(queue_id, items_changed=True)
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
