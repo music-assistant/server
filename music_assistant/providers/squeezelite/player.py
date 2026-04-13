@@ -59,7 +59,9 @@ if TYPE_CHECKING:
     from .provider import SqueezelitePlayerProvider
 
 
-CACHE_CATEGORY_PREV_STATE = 0  # category for caching previous player state
+CACHE_CATEGORY_PREV_STATE = (
+    1  # category for caching previous player state (bumped to invalidate old format)
+)
 
 PLAYER_DEVICE_TYPES = {
     # list of device types that are considered real hardware players
@@ -88,7 +90,6 @@ class SqueezelitePlayer(Player):
         # Set static player attributes
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.POWER,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
@@ -101,6 +102,7 @@ class SqueezelitePlayer(Player):
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
         self._plugin_source_active: bool = False
+        self._low_latency_stream: bool = False
         # TEMP: patch slimclient send_strm to adjust buffer thresholds
         # this can be removed when we did a new release of aioslimproto with this change
         # after this has been tested in beta for a while
@@ -120,17 +122,17 @@ class SqueezelitePlayer(Player):
         self.logger.info("Player %s connected", self.client.name or player_id)
         # update all dynamic attributes
         self.update_attributes()
-        # restore volume and power state
+        # restore volume state
         if last_state := await self.mass.cache.get(
             key=player_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_PREV_STATE
         ):
-            init_power = last_state[0]
+            init_muted = last_state[0]
             init_volume = last_state[1]
         else:
+            init_muted = False
             init_volume = DEFAULT_PLAYER_VOLUME
-            init_power = False
-        await self.client.power(init_power)
         await self.client.stop()
+        await self.client.mute(init_muted)
         await self.client.volume_set(init_volume)
         await self.mass.players.register_or_update(self)
 
@@ -174,24 +176,13 @@ class SqueezelitePlayer(Player):
             ),
         ]
 
-    async def power(self, powered: bool) -> None:
-        """Handle POWER command on the player."""
-        await self.client.power(powered)
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=[powered, self.client.volume_level],
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_STATE,
-        )
-
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         await self.client.volume_set(volume_level)
         # store last state in cache
         await self.mass.cache.set(
             key=self.player_id,
-            data=[self.client.powered, volume_level],
+            data=[self.client.muted, volume_level],
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_STATE,
         )
@@ -199,6 +190,13 @@ class SqueezelitePlayer(Player):
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         await self.client.mute(muted)
+        # store last state in cache
+        await self.mass.cache.set(
+            key=self.player_id,
+            data=[muted, self.client.volume_level],
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
+        )
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -393,7 +391,6 @@ class SqueezelitePlayer(Player):
         )
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
-        self._attr_powered = self.client.powered
         old_state = self._attr_playback_state
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
@@ -453,9 +450,16 @@ class SqueezelitePlayer(Player):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
         source_id = media.source_id or (media.custom_data or {}).get("source_id")
-        self._plugin_source_active = (
+        plugin_source_active = (
             source_id is not None and self.mass.players.get_plugin_source(source_id) is not None
         )
+        low_latency_stream = plugin_source_active or media.media_type == MediaType.RADIO
+        # set the flags on the player that owns the slimclient (may differ from self
+        # during group playback where self is the leader but slimplayer is a member)
+        target_player = self.mass.players.get_player(slimplayer.player_id)
+        if isinstance(target_player, SqueezelitePlayer):
+            target_player._plugin_source_active = plugin_source_active
+            target_player._low_latency_stream = low_latency_stream
         await slimplayer.play_url(
             url=url,
             mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
@@ -749,7 +753,7 @@ async def _patched_send_strm(  # noqa: PLR0913
     httpreq: bytes = b"",
 ) -> None:
     """Create stream request message based on given arguments."""
-    if player._plugin_source_active:
+    if player._low_latency_stream:
         threshold = 64  # KB of input buffer data before autostart or notify
         output_threshold = (
             1  # amount of output buffer data before playback starts, in tenths of second

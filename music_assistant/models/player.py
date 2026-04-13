@@ -56,6 +56,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
+    PLAYER_CONTROL_PROTOCOL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
 )
@@ -764,23 +765,13 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != "auto":
-            # the control type is explicitly set to a (protocol) player_id or player control,
-            # check if it exists and is (currently) available
-            if (_player := self.mass.players.get_player(str(conf))) and _player.available:
-                return _player.player_id
-            if _control := self.mass.players.get_player_control(str(conf)):
-                return _control.id
+        if conf and (_control := self.mass.players.get_player_control(str(conf))):
+            # the control type is explicitly set to a player control,
+            return _control.id
         # handle auto-select logic if not explicitly set in config
         if PlayerFeature.POWER in self.supported_features:
             # player supports native power control, always prefer that
             return PLAYER_CONTROL_NATIVE
-        # check if the active (or preferred) protocol player supports power control
-        # check for protocol player with power support, and use that if found
-        if protocol_player := self._get_protocol_player_for_feature(
-            PlayerFeature.POWER, require_active=True
-        ):
-            return protocol_player.player_id
         return PLAYER_CONTROL_NONE
 
     @cached_property
@@ -791,7 +782,7 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != "auto":
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # the control type is explicitly set to a (protocol) player_id or player control,
             # check if it exists and is (currently) available
             if (_player := self.mass.players.get_player(str(conf))) and _player.available:
@@ -817,7 +808,7 @@ class Player(ABC):
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
-        if conf and conf != "auto":
+        if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # the control type is explicitly set to a (protocol) player_id or player control,
             # check if it exists and is (currently) available
             if (_player := self.mass.players.get_player(str(conf))) and _player.available:
@@ -1344,13 +1335,7 @@ class Player(ABC):
             return self
         # prefer active (or preferred) protocol player with the feature
         active_protocol = self.active_output_protocol
-        if not active_protocol:
-            preferred = self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
-            )
-            if preferred and preferred not in ("auto", "native"):
-                active_protocol = str(preferred)
-        if active_protocol:
+        if active_protocol and active_protocol != "native":
             protocol_player = self.mass.players.get_player(active_protocol)
             if (
                 protocol_player
@@ -1362,6 +1347,19 @@ class Player(ABC):
             # if we require active and the active protocol
             # doesn't support the feature, return None
             return None
+
+        # fallback to preferred protocol from config
+        preferred_conf = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
+        )
+        if preferred_conf and preferred_conf not in ("auto", "native"):
+            preferred_protocol = str(preferred_conf)
+            if (
+                (_player := self.mass.players.get_player(preferred_protocol))
+                and _player.available
+                and feature in _player.supported_features
+            ):
+                return _player
 
         # Otherwise, use the first available linked protocol.
         # Prefer protocols that can process commands without active streaming
