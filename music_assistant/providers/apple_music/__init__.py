@@ -1101,6 +1101,8 @@ class AppleMusicProvider(MusicProvider):
             track.metadata.genres = set(genres)
         if composers := attributes.get("composerName"):
             track.metadata.performers = set(composers.split(", "))
+        if content_rating := attributes.get("contentRating"):
+            track.metadata.explicit = content_rating == "explicit"
         if isrc := attributes.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))
         track.favorite = is_favourite or False

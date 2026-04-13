@@ -5,7 +5,7 @@
   "documentation": "https://music-assistant.io/music-providers/motherearth/",
   "type": "music",
   "requirements": [],
-  "codeowners": "@fvonhoven",
+  "codeowners": ["@fvonhoven"],
   "multi_instance": false,
   "stage": "beta"
 }
