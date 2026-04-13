@@ -312,6 +312,7 @@ class TestExecuteCapabilityAction:
     async def test_on_off_true_plays(self) -> None:
         """Test on off true plays."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
             state=CapabilityActionState(instance="on", value=True),
@@ -325,6 +326,7 @@ class TestExecuteCapabilityAction:
     async def test_on_off_false_stops(self) -> None:
         """Test on off false stops."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
             state=CapabilityActionState(instance="on", value=False),
@@ -368,6 +370,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_absolute(self) -> None:
         """Test volume absolute."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=65),
@@ -380,6 +383,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_relative_up(self) -> None:
         """Test volume relative up."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=10, relative=True),
@@ -392,6 +396,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_relative_clamp_max(self) -> None:
         """Test volume relative clamp max."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=20, relative=True),
@@ -404,6 +409,7 @@ class TestExecuteCapabilityAction:
     async def test_volume_relative_clamp_min(self) -> None:
         """Test volume relative clamp min."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="volume", value=-20, relative=True),
@@ -416,6 +422,7 @@ class TestExecuteCapabilityAction:
     async def test_mute_toggle(self) -> None:
         """Test mute toggle."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="mute", value=True),
@@ -457,6 +464,7 @@ class TestExecuteCapabilityAction:
     async def test_pause_true(self) -> None:
         """Test pause true."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="pause", value=True),
@@ -469,6 +477,7 @@ class TestExecuteCapabilityAction:
     async def test_pause_false_plays(self) -> None:
         """Test pause false plays."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.TOGGLE,
             state=CapabilityActionState(instance="pause", value=False),
@@ -480,6 +489,7 @@ class TestExecuteCapabilityAction:
     async def test_unknown_capability_returns_error(self) -> None:
         """Test unknown capability returns error."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type="devices.capabilities.unknown",
             state=CapabilityActionState(instance="foo", value=42),
@@ -492,6 +502,7 @@ class TestExecuteCapabilityAction:
     async def test_command_exception_returns_error(self) -> None:
         """Test command exception returns error."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         mass.players.cmd_play.side_effect = RuntimeError("Connection lost")
         action = CapabilityAction(
             type=YandexCapabilityType.ON_OFF,
@@ -500,6 +511,18 @@ class TestExecuteCapabilityAction:
         result = await execute_capability_action(mass, "p1", action)
         assert result.state.action_result.status == "ERROR"
         assert result.state.action_result.error_code == "INTERNAL_ERROR"
+
+    @pytest.mark.asyncio
+    async def test_missing_player_returns_device_unreachable(self) -> None:
+        """Player not found should return DEVICE_UNREACHABLE."""
+        mass = MockMass()
+        action = CapabilityAction(
+            type=YandexCapabilityType.ON_OFF,
+            state=CapabilityActionState(instance="on", value=True),
+        )
+        result = await execute_capability_action(mass, "nonexistent", action)
+        assert result.state.action_result.status == "ERROR"
+        assert result.state.action_result.error_code == "DEVICE_UNREACHABLE"
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +621,7 @@ class TestChannelCapability:
     async def test_channel_relative_positive_next_track(self) -> None:
         """Relative +1 channel → cmd_next_track."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="channel", value=1, relative=True),
@@ -610,6 +634,7 @@ class TestChannelCapability:
     async def test_channel_relative_negative_prev_track(self) -> None:
         """Relative -1 channel → cmd_previous_track."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="channel", value=-1, relative=True),
@@ -622,6 +647,7 @@ class TestChannelCapability:
     async def test_channel_non_relative_ignored(self) -> None:
         """Non-relative channel set is a no-op (returns DONE)."""
         mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
         action = CapabilityAction(
             type=YandexCapabilityType.RANGE,
             state=CapabilityActionState(instance="channel", value=5, relative=False),

@@ -320,18 +320,32 @@ async def execute_capability_action(
     instance = action.state.instance
     value = action.state.value
     player = mass.players.get_player(player_id)
-    is_group = _is_group_player(player) if player else False
+
+    if player is None:
+        return CapabilityActionResult(
+            type=action.type,
+            state=CapabilityActionResultState(
+                instance=instance,
+                action_result=ActionResult(
+                    status="ERROR",
+                    error_code=ERROR_DEVICE_UNREACHABLE,
+                    error_message=f"Player {player_id} not found",
+                ),
+            ),
+        )
+
+    is_group = _is_group_player(player)
 
     try:
         if action.type == YandexCapabilityType.ON_OFF:
             if value:
                 # Power on if supported, then play
-                if player and _has_feature(player, "power"):
+                if _has_feature(player, "power"):
                     await mass.players.cmd_power(player_id, True)
                 await mass.players.cmd_play(player_id)
             else:
                 await mass.players.cmd_stop(player_id)
-                if player and _has_feature(player, "power"):
+                if _has_feature(player, "power"):
                     await mass.players.cmd_power(player_id, False)
 
         elif action.type == YandexCapabilityType.RANGE and instance == INSTANCE_VOLUME:
