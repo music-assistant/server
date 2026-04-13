@@ -952,51 +952,56 @@ class Player(ABC):
         """
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
 
-    @property
-    def supports_dynamic_leader_switching(self) -> bool:
+    async def handoff_sync_leadership(
+        self,
+        new_leader: Player,
+        remaining_members: list[str] | None = None,
+    ) -> None:
         """
-        Return if the player supports dynamic leader switching within a sync group.
-
-        If a sync group removes its current leader while playing, providers that
-        return True keep the remaining members playing uninterrupted (a new
-        leader is selected without tearing down the stream session). Providers
-        that return False require the full sync group to be dissolved and
-        re-formed with a new leader on leader removal.
-        """
-        # TODO: promote this to a PlayerFeature (or ProviderFeature) on
-        # music_assistant_models so providers can declare it via
-        # supported_features instead of overriding a Python property here.
-        return False
-
-    async def handoff_sync_leadership(self) -> None:
-        """
-        Hand off sync leadership so the rest of the group keeps playing without this player.
+        Hand off sync leadership of the live session from this player to ``new_leader``.
 
         Call on the current sync leader when it should step down and leave the
-        remaining members playing uninterrupted — for example when the leader is
-        removed from a sync group while playback is active, and another member
-        will take over. This only performs the "leader steps out" half of the
-        handoff: the caller is responsible for selecting the next leader and
-        re-syncing the remaining members to it.
+        remaining group members playing uninterrupted on a new leader — for
+        example when the current leader is removed from a sync group while
+        playback is active and another member should take over.
 
-        The operation is dispatched on whichever player owns the live sync session
-        — the active output protocol player if a non-native protocol is in use,
-        otherwise this native player itself — and intentionally bypasses
-        ``cmd_set_members`` on the controller, which would otherwise interpret
-        self-removal as "dissolve the entire group".
+        The handoff is two atomic halves:
+          1. Remove this player from the live sync session on the player that
+             owns it (the active output protocol player if a non-native
+             protocol is in use, otherwise this native player itself). The
+             removal intentionally bypasses ``cmd_set_members`` on the
+             controller, which would otherwise interpret self-removal as
+             "dissolve the entire group".
+          2. Attach ``remaining_members`` to ``new_leader`` via the normal
+             controller path so protocol linking/grouping runs correctly on
+             the new leader.
 
-        Only safe to call when :attr:`supports_dynamic_leader_switching` is True
-        on the target player; otherwise the entire sync session must be torn down
-        and re-formed with the new leader.
+        Only safe to call when the provider of the current leader's active
+        session target has :attr:`PlayerProvider.supports_dynamic_leader_switching`
+        set to True; otherwise the entire sync session must be torn down and
+        re-formed with the new leader.
+
+        :param new_leader: The player that should take over as sync leader.
+        :param remaining_members: Parent player ids (excluding ``new_leader``)
+            that should be grouped onto ``new_leader`` after the handoff.
         """
-        target: Player = self
+        # Resolve this (old) leader's active session target.
+        old_target: Player = self
         if (
             self.active_output_protocol
             and self.active_output_protocol != "native"
             and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
         ):
-            target = protocol_player
-        await target.set_members(player_ids_to_remove=[target.player_id])
+            old_target = protocol_player
+        # Step out of the live session (bypasses cmd_set_members self-dissolve).
+        await old_target.set_members(player_ids_to_remove=[old_target.player_id])
+        # Attach remaining members to the new leader via the normal controller
+        # path (handles protocol linking/grouping).
+        if remaining_members:
+            await self.mass.players.cmd_set_members(
+                new_leader.player_id,
+                player_ids_to_add=remaining_members,
+            )
 
     @property
     @final

@@ -82,11 +82,6 @@ class SnapCastPlayer(Player):
         return True
 
     @property
-    def supports_dynamic_leader_switching(self) -> bool:
-        """Return True: Snapcast supports removing the leader without stream teardown."""
-        return True
-
-    @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
         grp_name = self.snap_group_name
