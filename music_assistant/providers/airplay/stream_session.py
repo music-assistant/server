@@ -150,7 +150,10 @@ class AirPlayStreamSession:
             # to prime the pipeline while cliraop connects. The device will use
             # NTP sync to discard past-due silence and start playing at the
             # correct position — the silence just keeps the pipe fed.
-            min_headroom = 1.0
+            # Scale the headroom with the configured AirPlay latency so devices
+            # with a longer wait_start still land with a positive start offset.
+            min_headroom = max(2.0, self.wait_start)
+            deficit = 0.0
             if start_at < now + min_headroom:
                 deficit = (now + min_headroom) - start_at
                 silence_bytes = int(deficit * pcm_sample_size)
@@ -163,12 +166,15 @@ class AirPlayStreamSession:
 
             self.prov.logger.debug(
                 "Late joiner %s: sending %.2fs of buffered audio, "
-                "stream_pos=%.2fs, first_byte_pos=%.2fs, start_at is %.2fs from now",
+                "stream_pos=%.2fs, first_byte_pos=%.2fs, "
+                "start_at is %.2fs from now (min_headroom=%.2fs, deficit=%.2fs)",
                 airplay_player.player_id,
                 len(buffered_pcm) / pcm_sample_size,
                 self.seconds_streamed,
                 first_byte_pos,
                 start_at - now,
+                min_headroom,
+                deficit,
             )
 
             # Start ffmpeg+CLI and immediately write the buffered PCM.

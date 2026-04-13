@@ -552,13 +552,11 @@ class StreamsController(CoreController):
                 break
         if queue_item.streamdetails.stream_error:
             self.logger.error(
-                "Error streaming QueueItem %s (%s) to %s - will try to skip to next item",
+                "Error streaming QueueItem %s (%s) to %s",
                 queue_item.name,
                 queue_item.uri,
                 queue.display_name,
             )
-            # try to skip to the next item in the queue after a short delay
-            self.mass.call_later(5, self.mass.player_queues.next(queue_id))
         elif (
             bytes_sent > 0
             and queue_item.streamdetails

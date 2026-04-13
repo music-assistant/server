@@ -952,6 +952,65 @@ class Player(ABC):
         """
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
 
+    async def handoff_sync_leadership(
+        self,
+        new_leader: Player,
+        remaining_members: list[str] | None = None,
+    ) -> None:
+        """
+        Hand off sync leadership of the live session from this player to ``new_leader``.
+
+        Call on the current sync leader when it should step down and leave the
+        remaining group members playing uninterrupted on a new leader — for
+        example when the current leader is removed from a sync group while
+        playback is active and another member should take over.
+
+        The handoff is two atomic halves:
+          1. Remove this player from the live sync session on the player that
+             owns it (the active output protocol player if a non-native
+             protocol is in use, otherwise this native player itself). The
+             removal intentionally bypasses ``cmd_set_members`` on the
+             controller, which would otherwise interpret self-removal as
+             "dissolve the entire group".
+          2. Attach ``remaining_members`` to ``new_leader`` via the normal
+             controller path so protocol linking/grouping runs correctly on
+             the new leader.
+
+        Only safe to call when the provider of the current leader's active
+        session target has :attr:`PlayerProvider.supports_dynamic_leader_switching`
+        set to True; otherwise the entire sync session must be torn down and
+        re-formed with the new leader.
+
+        :param new_leader: The player that should take over as sync leader.
+        :param remaining_members: Parent player ids (excluding ``new_leader``)
+            that should be grouped onto ``new_leader`` after the handoff.
+        """
+        # Resolve this (old) leader's active session target.
+        old_target: Player = self
+        if (
+            self.active_output_protocol
+            and self.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
+        ):
+            old_target = protocol_player
+        # Guard: this operation requires that the provider actually supports
+        # removing the leader without tearing down the session. Callers should
+        # check the capability first, but enforce it defensively here too.
+        if not old_target.provider.supports_dynamic_leader_switching:
+            raise NotImplementedError(
+                f"Provider {old_target.provider.domain} does not support dynamic leader "
+                "switching; the sync session must be torn down and re-formed instead."
+            )
+        # Step out of the live session (bypasses cmd_set_members self-dissolve).
+        await old_target.set_members(player_ids_to_remove=[old_target.player_id])
+        # Attach remaining members to the new leader via the normal controller
+        # path (handles protocol linking/grouping).
+        if remaining_members:
+            await self.mass.players.cmd_set_members(
+                new_leader.player_id,
+                player_ids_to_add=remaining_members,
+            )
+
     @property
     @final
     def state(self) -> PlayerState:
@@ -1471,13 +1530,16 @@ class Player(ABC):
         elapsed_time_last_updated: float | None
 
         # If an output protocol is active (and not native), use the protocol player's state
+        # as the source of truth — including when the protocol player is IDLE. Falling
+        # through to the parent/group when the protocol is IDLE creates a circular
+        # dependency (group state derives from sync leader → sync leader → group), which
+        # strands the player in PLAYING forever when the protocol's stream actually ended.
         if (
             self.__attr_active_output_protocol
             and self.__attr_active_output_protocol != "native"
             and (
                 protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
             )
-            and protocol_player.playback_state != PlaybackState.IDLE
         ):
             playback_state = protocol_player.state.playback_state
             elapsed_time = protocol_player.state.elapsed_time
