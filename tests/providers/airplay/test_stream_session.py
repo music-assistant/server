@@ -169,10 +169,8 @@ async def test_late_join_no_running_session() -> None:
 @pytest.mark.asyncio
 async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
     """When start_at would be in the past, trim from buffer head and shift start_at forward."""
-    now = time.time()
-    # Buffer alone would land start_at at now - 0.5s (in the past).
-    # buffer = 5.5s, seconds_streamed = 5.5, start_time = now → start_at = now → too close
-    # Make it negative: start_time = now - 0.5, buffer 5.0s, seconds_streamed 5.0
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
     start_time = now - 0.5
     seconds_streamed = 5.0
     session = _make_session(start_time, seconds_streamed)
@@ -197,34 +195,33 @@ async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
             "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
             side_effect=capture_ntp,
         ),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    # start_at should be pushed to ~now + min_headroom (max(2.0, wait_start) = 2.0)
+    # start_at should be pushed to exactly now + min_headroom (max(2.0, wait_start) = 2.0)
     assert captured_start_at, "unix_time_to_ntp was never called"
-    assert captured_start_at[0] - now >= 1.9, (
-        f"start_at should be in the future, got offset {captured_start_at[0] - now:.2f}s"
-    )
-    assert captured_start_at[0] - now <= 2.5, (
-        f"start_at should be ~min_headroom, got offset {captured_start_at[0] - now:.2f}s"
+    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01), (
+        f"start_at should be at now + min_headroom, got offset {captured_start_at[0] - now:.4f}s"
     )
 
     # The buffer should have been trimmed (and contain only \x01 bytes — no silence prepend)
     assert written_chunks, "No data was written to the player"
     written = written_chunks[0]
     assert b"\x00" not in written, "No silence should be prepended (trim+shift, not prepend)"
-    # We trimmed ~2.5s out of 5s, so ~2.5s of \x01 should remain
+    # We trimmed 2.5s out of 5s (start_at went from -0.5 to +2.0), so 2.5s of \x01 should remain
     remaining_seconds = len(written) / PCM_SAMPLE_SIZE
-    assert 2.0 <= remaining_seconds <= 3.0, (
-        f"expected ~2.5s remaining, got {remaining_seconds:.2f}s"
+    assert remaining_seconds == pytest.approx(2.5, abs=0.01), (
+        f"expected 2.5s remaining, got {remaining_seconds:.4f}s"
     )
 
 
 @pytest.mark.asyncio
 async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
     """When the required trim exceeds the buffer, the buffer is dropped entirely."""
-    now = time.time()
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
     # start_at = now - 4.0 (way in the past). With 3s buffer the required trim
     # is 6s but buffer only holds 3s → buffer fully consumed.
     start_time = now - 4.0
@@ -250,11 +247,13 @@ async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
             "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
             side_effect=capture_ntp,
         ),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
     # No bytes should be written (buffer fully trimmed)
     assert written_chunks == [], "Buffer should have been dropped entirely"
-    # start_at should be at least min_headroom in the future
-    assert captured_start_at[0] - now >= 1.9
+    # start_at should be exactly now + min_headroom (since the next-chunk anchor would
+    # have landed at now - 1.0, which is below the target).
+    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01)

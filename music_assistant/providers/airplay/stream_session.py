@@ -157,11 +157,13 @@ class AirPlayStreamSession:
             first_byte_pos = self.seconds_streamed - buffer_seconds
             start_at = self.start_time + first_byte_pos
 
-            # The device needs at least ``wait_start`` of lead time after
-            # being told to start, plus a small safety margin for cliraop to
-            # connect / RAOP handshake. Anything below this and the device
-            # is effectively starting in the past.
-            min_headroom = max(2.0, self.wait_start)
+            # The audio we hand to ffmpeg → cliraop must be bit-aligned with
+            # ``start_at``: the first sample sent should be the one that should
+            # play at ``start_at``. cliraop buffers ``wait_start`` seconds of
+            # audio before starting playback, so we keep ``start_at`` at least
+            # that far in the future (using the larger of the session's
+            # existing wait_start and the late joiner's own).
+            min_headroom = max(self.wait_start, airplay_player.wait_start / 1000)
             target_start_at = now + min_headroom
             trim_seconds = 0.0
             if start_at < target_start_at:
