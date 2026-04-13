@@ -1,0 +1,31 @@
+{
+  "followLimit": 20,
+  "mylists": [
+    {
+      "id": 78597499,
+      "status": "public",
+      "detail": {
+        "id": 78597499,
+        "isPublic": true,
+        "name": "テストマイリスト68461151-78597499",
+        "description": "This is a dummy description for testing purposes.",
+        "decoratedDescriptionHtml": "This is a dummy description for testing purposes.",
+        "defaultSortKey": "addedAt",
+        "defaultSortOrder": "desc",
+        "itemsCount": 1,
+        "owner": {
+          "ownerType": "user",
+          "type": "user",
+          "visibility": "visible",
+          "id": "68461151",
+          "name": "ゲスト",
+          "iconUrl": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg"
+        },
+        "sampleItems": [],
+        "followerCount": 1,
+        "createdAt": "2025-08-10T16:58:04+09:00",
+        "isFollowing": true
+      }
+    }
+  ]
+}

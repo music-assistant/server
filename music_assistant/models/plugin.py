@@ -15,7 +15,7 @@ from music_assistant.models.player import PlayerSource
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.streamdetails import StreamMetadata
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 
 @dataclass
@@ -118,6 +118,14 @@ class PluginSource(PlayerSource):
         repr=False,
     )
 
+    # Callback for volume change command: async def callback(volume: int) -> None
+    on_volume: Callable[[int], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
     # Callback for when this source is selected: async def callback() -> None
     on_select: Callable[[], Awaitable[None]] | None = field(
         default=None,
@@ -165,6 +173,29 @@ class PluginProvider(Provider):
         Must return audio data as bytes generator (in the format specified by the audio_format).
         """
         yield b""
+        raise NotImplementedError
+
+    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
+        """
+        Convert text to speech audio.
+
+        Will only be called if ProviderFeature.TTS is declared.
+
+        :param message: The text to convert to speech.
+        :param language: Optional language code.
+        :return: StreamDetails for the generated audio.
+        """
+        raise NotImplementedError
+
+    async def ai_query(self, query: str) -> str:
+        """
+        Handle an AI query.
+
+        Will only be called if ProviderFeature.AI_QUERY is declared.
+
+        :param query: The query/prompt to send.
+        :return: The AI response as a string.
+        """
         raise NotImplementedError
 
     async def resolve_image(self, path: str) -> str | bytes:

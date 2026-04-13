@@ -21,7 +21,7 @@ import os
 import pathlib
 import re
 import time
-import unicodedata
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -48,11 +48,13 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -68,8 +70,13 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import infer_album_type
+from music_assistant.helpers.util import (
+    infer_album_type,
+    normalize_unicode,
+    parse_title_and_version,
+)
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.apple_music.helpers import browse_playlists
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -88,6 +95,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+    ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
@@ -95,6 +103,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.FAVORITE_PLAYLISTS_EDIT,
@@ -105,12 +114,12 @@ WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
-
 CONF_MUSIC_APP_TOKEN = "music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
+MAX_ARTWORK_DIMENSION = 1000
 
 
 async def setup(
@@ -257,7 +266,7 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Manual Music User Token",
             required=False,
-            category="advanced",
+            advanced=True,
             description=(
                 "Authenticate with a manual Music User Token in case the Authentication flow"
                 " is unsupported (e.g. when using child accounts)."
@@ -291,26 +300,6 @@ class AppleMusicProvider(MusicProvider):
     # so make it an instance attribute
     throttler = ThrottlerManager(rate_limit=1, period=2, initial_backoff=15)
 
-    @staticmethod
-    def _normalize_unicode(value: str | None) -> str | None:
-        """Normalize Unicode strings to NFC form for consistent handling.
-
-        This ensures that Unicode characters like "é" are stored as single
-        codepoints rather than "e" + combining accent mark, which prevents
-        issues with string comparisons and memory bloat.
-
-        Args:
-            value: String to normalize, or None
-
-        Returns:
-            Normalized string, or None if input was None
-        """
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            return str(value)
-        return unicodedata.normalize("NFC", value)
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._music_user_token = self.config.get_value(
@@ -321,14 +310,22 @@ class AppleMusicProvider(MusicProvider):
         # create random session id to use for decryption keys
         # to invalidate cached keys on each provider initialization
         self._session_id = str(uuid())
-        async with aiofiles.open(
-            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
-        ) as _file:
-            self._decrypt_client_id = await _file.read()
-        async with aiofiles.open(
-            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
-        ) as _file:
-            self._decrypt_private_key = await _file.read()
+        try:
+            async with aiofiles.open(
+                os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
+            ) as _file:
+                self._decrypt_client_id = await _file.read()
+            async with aiofiles.open(
+                os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
+            ) as _file:
+                self._decrypt_private_key = await _file.read()
+        except FileNotFoundError:
+            self.logger.warning(
+                "Widevine CDM files not found at %s. "
+                "Streaming of encrypted catalog tracks will not work. "
+                "Radio stations and unencrypted library tracks are still available.",
+                WIDEVINE_BASE_PATH,
+            )
 
     @use_cache()
     async def search(
@@ -376,8 +373,133 @@ class AppleMusicProvider(MusicProvider):
             ]
         return searchresult
 
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Apple Music with support for playlist folders and radio stations."""
+        sub_path = path.split("://", 1)[1] if "://" in path else ""
+        path_parts = [part for part in sub_path.split("/") if part]
+        if not path_parts:
+            # Top-level: add a "Radio Stations" folder alongside the default items
+            items = list(await super().browse(path))
+            items.append(
+                BrowseFolder(
+                    item_id="stations",
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://stations",
+                    name="Radio Stations",
+                )
+            )
+            return items
+        if path_parts[0] == "playlists":
+            return await browse_playlists(self, path, path_parts)
+        if path_parts[0] == "stations":
+            return await self._browse_stations()
+        return await super().browse(path)
+
+    @use_cache(3600)
+    async def _get_personal_recommendations(self) -> list[RecommendationFolder]:
+        """Fetch personal recommendations grouped into folders by section title.
+
+        :return: Deduplicated, live-filtered list of RecommendationFolders.
+        """
+        response = await self._get_data(
+            "me/recommendations?include[personal-recommendation]=contents"
+        )
+        seen: set[str] = set()
+        folders: dict[str, RecommendationFolder] = {}
+        for recommendation in response.get("data", []):
+            rec_id = recommendation.get("id", "")
+            title = (
+                recommendation.get("attributes", {}).get("title", {}).get("stringForDisplay", "")
+            )
+            if not rec_id or not title:
+                continue
+            contents = recommendation.get("relationships", {}).get("contents", {})
+            for item in contents.get("data", []):
+                if item.get("type") != "stations":
+                    continue
+                station_id = item.get("id")
+                if not station_id or station_id in seen:
+                    continue
+                attributes = item.get("attributes", {})
+                if attributes.get("isLive", False):
+                    # Live broadcast stations (e.g. Apple Music 1) require Widevine DRM
+                    # which is not supported; skip them.
+                    continue
+                seen.add(station_id)
+                if attributes.get("name"):
+                    playlist = self._parse_station_as_playlist(item)
+                else:
+                    playlist = await self.get_playlist(station_id)
+                    if playlist.name == station_id:
+                        continue
+                if title not in folders:
+                    folders[title] = RecommendationFolder(
+                        item_id=rec_id,
+                        provider=self.instance_id,
+                        name=title,
+                    )
+                folders[title].items.append(playlist)
+        return list(folders.values())
+
+    async def _browse_stations(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Return recommended radio stations from personal recommendations."""
+        return [
+            item for folder in await self._get_personal_recommendations() for item in folder.items
+        ]
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get personalized station recommendations for the Discover page."""
+        return await self._get_personal_recommendations()
+
+    def _parse_station_as_playlist(self, station_obj: dict[str, Any]) -> Playlist:
+        """Parse a station object from recommendations into a Playlist."""
+        station_id = station_obj["id"]
+        attributes = station_obj.get("attributes", {})
+        name = attributes.get("name", station_id)
+        playlist = Playlist(
+            item_id=station_id,
+            provider=self.instance_id,
+            name=name,
+            is_dynamic=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=station_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        if artwork := attributes.get("artwork"):
+            url = artwork["url"]
+            if artwork.get("width") and artwork.get("height"):
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
+            playlist.metadata.add_image(
+                MediaItemImage(
+                    provider=self.instance_id,
+                    type=ImageType.THUMB,
+                    path=url,
+                    remotely_accessible=True,
+                )
+            )
+        return playlist
+
+    async def _get_station_playlist(self, station_id: str) -> Playlist:
+        """Fetch name and artwork for a ra. station and return it as a dynamic Playlist."""
+        try:
+            station_response = await self._get_data(
+                f"catalog/{self._storefront}/stations/{station_id}"
+            )
+            station_obj = station_response["data"][0]
+            station_obj["id"] = station_id
+            return self._parse_station_as_playlist(station_obj)
+        except (MediaNotFoundError, KeyError, IndexError):
+            return self._parse_station_as_playlist({"id": station_id})
+
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
-        """Retrieve library artists from spotify."""
+        """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self._get_all_items(endpoint, include="catalog", extend="editorialNotes"):
             if item and item["id"]:
@@ -424,8 +546,8 @@ class AppleMusicProvider(MusicProvider):
                 library_only_tracks.append(item)
             else:
                 song_catalog_ids.append(catalog_id)
-        # Obtain catalog info per 200 songs, the documented limit of 300 results in a 504 timeout
-        max_limit = 200
+        # Obtain catalog info per 150 songs, the documented limit of 300 results in a 504 timeout
+        max_limit = 150
         for i in range(0, len(song_catalog_ids), max_limit):
             catalog_ids = song_catalog_ids[i : i + max_limit]
             catalog_endpoint = f"catalog/{self._storefront}/songs"
@@ -492,14 +614,20 @@ class AppleMusicProvider(MusicProvider):
         is_favourite = rating_response.get(prov_track_id)
         return self._parse_track(response["data"][0], is_favourite)
 
-    @use_cache()
     async def get_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
         """Get full playlist details by id."""
+        if prov_playlist_id.startswith("ra."):
+            # Station metadata is not cached so transient errors don't persist.
+            return await self._get_station_playlist(prov_playlist_id)
+        return await self._get_regular_playlist(prov_playlist_id, is_favourite)
+
+    @use_cache()
+    async def _get_regular_playlist(self, prov_playlist_id, is_favourite: bool = False) -> Playlist:
+        """Fetch and cache details for a regular (non-station) playlist."""
         if not self.is_library_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}"
-        endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0], is_favourite)
 
@@ -521,9 +649,19 @@ class AppleMusicProvider(MusicProvider):
             tracks.append(track)
         return tracks
 
-    @use_cache(3600 * 3)  # cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
+        if prov_playlist_id.startswith("ra."):
+            # Radio stations don't support paging; each call to next-tracks yields a fresh batch.
+            # Must not be cached — every call should return the next set of tracks from Apple Music.
+            if page > 0:
+                return []
+            return await self._get_station_tracks(prov_playlist_id)
+        return await self._get_playlist_tracks_cached(prov_playlist_id, page)
+
+    @use_cache(3600 * 3)  # cache for 3 hours
+    async def _get_playlist_tracks_cached(self, prov_playlist_id, page: int = 0) -> list[Track]:
+        """Fetch and cache tracks for a regular (non-station) playlist."""
         if self._is_catalog_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}/tracks"
         else:
@@ -544,6 +682,21 @@ class AppleMusicProvider(MusicProvider):
                 parsed_track = self._parse_track(track, is_favourite)
                 parsed_track.position = offset + index + 1
                 result.append(parsed_track)
+        return result
+
+    async def _get_station_tracks(self, station_id: str) -> list[Track]:
+        """Fetch the next batch of tracks for a radio station."""
+        response = await self._post_data(f"me/stations/next-tracks/{station_id}", include="artists")
+        tracks = response.get("data", [])
+        if not tracks:
+            return []
+        track_ids = [t["id"] for t in tracks if t and t.get("id")]
+        rating_response = await self._get_ratings(track_ids, MediaType.TRACK)
+        result = []
+        for track_obj in tracks:
+            if track_obj and track_obj.get("id"):
+                parsed = self._parse_track(track_obj, rating_response.get(track_obj["id"]))
+                result.append(parsed)
         return result
 
     @use_cache(3600 * 24 * 7)  # cache for 7 days
@@ -621,10 +774,11 @@ class AppleMusicProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        self.logger.warning(
+        message = (
             "Removing tracks from playlists is not supported by the Apple Music "
             "API. Make sure to delete them using the Apple Music app."
         )
+        raise MusicAssistantError(message)
 
     @use_cache(3600 * 24)  # cache for 24 hours
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
@@ -651,6 +805,10 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        return await self._get_track_stream_details(item_id)
+
+    async def _get_track_stream_details(self, item_id: str) -> StreamDetails:
+        """Return StreamDetails for a single catalog or library track."""
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
         if self.is_library_id(item_id):
             # Library items are not encrypted and do not need decryption keys
@@ -662,14 +820,19 @@ class AppleMusicProvider(MusicProvider):
                 ) from exc
             return StreamDetails(
                 item_id=item_id,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 path=stream_url,
                 stream_type=StreamType.HTTP,
                 audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
                 can_seek=True,
                 allow_seek=True,
             )
-        # Continue to obtain decryption keys for catalog items
+        # Catalog track: needs Widevine decryption keys
+        if not self._decrypt_client_id or not self._decrypt_private_key:
+            raise MediaNotFoundError(
+                "Widevine CDM files are not available. "
+                "Cannot stream encrypted catalog tracks without them."
+            )
         license_url = stream_metadata["hls-key-server-url"]
         stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
         if not stream_url or not uri:
@@ -677,7 +840,7 @@ class AppleMusicProvider(MusicProvider):
         key_id = base64.b64decode(uri.split(",")[1])
         return StreamDetails(
             item_id=item_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             audio_format=AudioFormat(content_type=ContentType.MP4, codec_type=ContentType.AAC),
             stream_type=StreamType.ENCRYPTED_HTTP,
             decryption_key=await self._get_decryption_key(license_url, key_id, uri, item_id),
@@ -719,13 +882,13 @@ class AppleMusicProvider(MusicProvider):
             # No more details available other than the id, return an ItemMapping
             return ItemMapping(
                 media_type=MediaType.ARTIST,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 item_id=artist_id,
                 name=artist_id,
             )
         artist = Artist(
             item_id=artist_id,
-            name=self._normalize_unicode(attributes.get("name")),
+            name=normalize_unicode(attributes.get("name")),
             provider=self.domain,
             provider_mappings={
                 ProviderMapping(
@@ -737,11 +900,17 @@ class AppleMusicProvider(MusicProvider):
             },
         )
         if artwork := attributes.get("artwork"):
+            url = artwork["url"]
+            if artwork["width"] and artwork["height"]:
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
             artist.metadata.add_image(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=url,
                     remotely_accessible=True,
                 )
             )
@@ -772,7 +941,7 @@ class AppleMusicProvider(MusicProvider):
             # No more details available other than the id, return an ItemMapping
             return ItemMapping(
                 media_type=MediaType.ALBUM,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 item_id=album_id,
                 name=album_id,
             )
@@ -783,10 +952,12 @@ class AppleMusicProvider(MusicProvider):
                 attributes.get("name"),
             )
             return None
+        name, version = parse_title_and_version(attributes["name"])
         album = Album(
             item_id=album_id,
             provider=self.domain,
-            name=self._normalize_unicode(attributes.get("name")),
+            name=normalize_unicode(name),
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=album_id,
@@ -804,9 +975,9 @@ class AppleMusicProvider(MusicProvider):
                 [
                     ItemMapping(
                         media_type=MediaType.ARTIST,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         item_id=artist_name,
-                        name=self._normalize_unicode(artist_name),
+                        name=normalize_unicode(artist_name),
                     )
                 ]
             )
@@ -815,11 +986,17 @@ class AppleMusicProvider(MusicProvider):
         if genres := attributes.get("genreNames"):
             album.metadata.genres = set(genres)
         if artwork := attributes.get("artwork"):
+            url = artwork["url"]
+            if artwork["width"] and artwork["height"]:
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
             album.metadata.add_image(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=url,
                     remotely_accessible=True,
                 )
             )
@@ -869,10 +1046,12 @@ class AppleMusicProvider(MusicProvider):
         else:
             track_id = track_obj["id"]
             attributes = {}
+        name, version = parse_title_and_version(attributes.get("name", ""))
         track = Track(
             item_id=track_id,
             provider=self.domain,
-            name=self._normalize_unicode(attributes.get("name")),
+            name=normalize_unicode(name),
+            version=version,
             duration=attributes.get("durationInMillis", 0) / 1000,
             provider_mappings={
                 ProviderMapping(
@@ -900,19 +1079,25 @@ class AppleMusicProvider(MusicProvider):
                 ItemMapping(
                     media_type=MediaType.ARTIST,
                     item_id=artist_name,
-                    provider=self.lookup_key,
-                    name=self._normalize_unicode(artist_name),
+                    provider=self.instance_id,
+                    name=normalize_unicode(artist_name),
                 )
             ]
         if albums := relationships.get("albums"):
             if "data" in albums and len(albums["data"]) > 0:
                 track.album = self._parse_album(albums["data"][0])
         if artwork := attributes.get("artwork"):
+            url = artwork["url"]
+            if artwork["width"] and artwork["height"]:
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
             track.metadata.add_image(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.THUMB,
-                    path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
+                    path=url,
                     remotely_accessible=True,
                 )
             )
@@ -920,6 +1105,8 @@ class AppleMusicProvider(MusicProvider):
             track.metadata.genres = set(genres)
         if composers := attributes.get("composerName"):
             track.metadata.performers = set(composers.split(", "))
+        if content_rating := attributes.get("contentRating"):
+            track.metadata.explicit = content_rating == "explicit"
         if isrc := attributes.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))
         track.favorite = is_favourite or False
@@ -934,7 +1121,7 @@ class AppleMusicProvider(MusicProvider):
         is_editable = attributes.get("canEdit", False)
         playlist = Playlist(
             item_id=playlist_id,
-            provider=self.instance_id if is_editable else self.lookup_key,
+            provider=self.instance_id,
             name=attributes.get("name", UNKNOWN_PLAYLIST_NAME),
             owner=attributes.get("curatorName", "me"),
             provider_mappings={
@@ -943,6 +1130,7 @@ class AppleMusicProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=attributes.get("url"),
+                    is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
             is_editable=is_editable,
@@ -950,10 +1138,13 @@ class AppleMusicProvider(MusicProvider):
         if artwork := attributes.get("artwork"):
             url = artwork["url"]
             if artwork["width"] and artwork["height"]:
-                url = url.format(w=artwork["width"], h=artwork["height"])
+                url = url.format(
+                    w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+                    h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+                )
             playlist.metadata.add_image(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.THUMB,
                     path=url,
                     remotely_accessible=True,
@@ -1133,7 +1324,7 @@ class AppleMusicProvider(MusicProvider):
         """Check a library ID matches known format."""
         if not isinstance(library_id, str):
             return False
-        valid = re.findall(r"^(?:[a|i|l|p]{1}\.|pl\.u\-)[a-zA-Z0-9]+$", library_id)
+        valid = re.findall(r"^(?:[ailp]\.)[a-zA-Z0-9]+$", library_id)
         return bool(valid)
 
     def _is_catalog_id(self, catalog_id: str) -> bool:

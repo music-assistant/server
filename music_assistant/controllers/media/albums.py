@@ -8,10 +8,19 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
-from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemImage,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
 from music_assistant.controllers.media.base import MediaControllerBase
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_album,
     compare_artists,
@@ -19,10 +28,12 @@ from music_assistant.helpers.compare import (
     create_safe_string,
     loose_compare_strings,
 )
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant import MusicAssistant
 
 
 class AlbumsController(MediaControllerBase[Album]):
@@ -32,23 +43,24 @@ class AlbumsController(MediaControllerBase[Album]):
     media_type = MediaType.ALBUM
     item_cls = Album
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self.base_query = """
         SELECT
             albums.*,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library
-                )) FROM provider_mappings WHERE provider_mappings.item_id = albums.item_id AND media_type = 'album') AS provider_mappings,
+                'item_id', album_pm.provider_item_id,
+                    'provider_domain', album_pm.provider_domain,
+                        'provider_instance', album_pm.provider_instance,
+                        'available', album_pm.available,
+                        'audio_format', json(album_pm.audio_format),
+                        'url', album_pm.url,
+                        'details', album_pm.details,
+                        'in_library', album_pm.in_library,
+                        'is_unique', album_pm.is_unique
+                )) FROM provider_mappings album_pm WHERE album_pm.item_id = albums.item_id AND album_pm.media_type = 'album') AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
                 'item_id', artists.item_id,
@@ -57,7 +69,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     'sort_name', artists.sort_name,
                     'media_type', 'artist'
                 )) FROM artists JOIN album_artists on album_artists.album_id = albums.item_id  WHERE artists.item_id = album_artists.artist_id) AS artists
-            FROM albums"""  # noqa: E501
+            FROM albums"""
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
@@ -67,18 +79,20 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        allow_update_metadata: bool = True,
         recursive: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
             item_id,
             provider_instance_id_or_domain,
+            allow_update_metadata=allow_update_metadata,
         )
         if not recursive:
             return album
 
         # append artist details to full album item (resolve ItemMappings)
-        album_artists = UniqueList()
+        album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
         for artist in album.artists:
             if not isinstance(artist, ItemMapping):
                 album_artists.append(artist)
@@ -86,8 +100,7 @@ class AlbumsController(MediaControllerBase[Album]):
             with contextlib.suppress(MediaNotFoundError):
                 album_artists.append(
                     await self.mass.music.artists.get(
-                        artist.item_id,
-                        artist.provider,
+                        artist.item_id, artist.provider, allow_update_metadata=False
                     )
                 )
         album.artists = album_artists
@@ -100,14 +113,24 @@ class AlbumsController(MediaControllerBase[Album]):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
-        provider: str | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
+        provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
         album_types: list[AlbumType] | None = None,
+        **kwargs: Any,
     ) -> list[Album]:
-        """Get in-database albums."""
-        extra_query_params: dict[str, Any] = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
+        """Get in-database albums.
+
+        :param favorite: Filter by favorite status.
+        :param search: Filter by search query.
+        :param limit: Maximum number of items to return.
+        :param offset: Number of items to skip.
+        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param provider: Filter by provider instance ID (single string or list).
+        :param album_types: Filter by album types.
+        :param genre: Filter by genre id(s).
+        """
+        extra_query_params: dict[str, Any] = {}
+        extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
         artist_table_joined = False
         # optional album type filter
@@ -139,16 +162,18 @@ class AlbumsController(MediaControllerBase[Album]):
             )
             artist_table_joined = True
             extra_query_params["search_artist"] = f"%{artist_str}%"
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
+            genre_ids=genre,
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider=provider,
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
+            in_library_only=True,
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -167,15 +192,16 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_params["search_artist"] = f"%{search}%"
             existing_uris = {item.uri for item in result}
 
-            for album in await self._get_library_items_by_query(
+            for album in await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
                 order_by=order_by,
-                provider=provider,
+                provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
+                in_library_only=True,
             ):
                 # prevent duplicates (when artist is also in the title)
                 if album.uri not in existing_uris:
@@ -223,16 +249,27 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> UniqueList[Track]:
+    ) -> list[Track]:
         """Return album tracks for the given provider album id."""
         # always check if we have a library item for this album
         library_album = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
-            return await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
+            album_tracks = await self._get_provider_album_tracks(
+                item_id, provider_instance_id_or_domain
+            )
+            if album_tracks and not album_tracks[0].image:
+                # set album image from provider album if not present on tracks
+                prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+                if prov_album.image:
+                    for track in album_tracks:
+                        if not track.image:
+                            track.metadata.add_image(prov_album.image)
+            return album_tracks
+
         db_items = await self.get_library_album_tracks(library_album.item_id)
-        result: UniqueList[Track] = UniqueList(db_items)
+        result: list[Track] = list(db_items)
         if in_library_only:
             # return in-library items only
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
@@ -243,8 +280,15 @@ class AlbumsController(MediaControllerBase[Album]):
         unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
         unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
         for db_item in db_items:
-            unique_ids.add(x.item_id for x in db_item.provider_mappings)
+            unique_ids.update(x.item_id for x in db_item.provider_mappings)
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
         for provider_mapping in library_album.provider_mappings:
+            if (
+                user_provider_filter
+                and provider_mapping.provider_instance not in user_provider_filter
+            ):
+                continue
             provider_tracks = await self._get_provider_album_tracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
@@ -267,8 +311,8 @@ class AlbumsController(MediaControllerBase[Album]):
                     and db_track.track_number != provider_track.track_number
                 ):
                     await self._set_album_track(
-                        db_id=library_album.item_id,
-                        db_track_id=db_track.item_id,
+                        db_id=int(library_album.item_id),
+                        db_track_id=int(db_track.item_id),
                         track=provider_track,
                     )
                 if provider_track.item_id in unique_ids:
@@ -283,8 +327,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_track.album = library_album
                 # always prefer album image
                 album_images = [library_album.image] if library_album.image else []
-                track_images = provider_track.metadata.images or []
-                provider_track.metadata.images = album_images + track_images
+                track_images: list[MediaItemImage] = provider_track.metadata.images or []
+                provider_track.metadata.images = UniqueList(album_images + track_images)
                 result.append(provider_track)
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
@@ -301,7 +345,7 @@ class AlbumsController(MediaControllerBase[Album]):
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
-            if not provider:
+            if not provider or not isinstance(provider, MusicProvider):
                 continue
             if not provider.library_supported(MediaType.ALBUM):
                 continue
@@ -320,8 +364,10 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str | int,
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
-        return await self.mass.music.tracks._get_library_items_by_query(
-            extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
+        db_id = int(item_id)  # ensure integer
+        return await self.mass.music.tracks.get_library_items_by_query(
+            extra_query_parts=["WHERE album_tracks.album_id = :album_id"],
+            extra_query_params={"album_id": db_id},
         )
 
     async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
@@ -334,10 +380,10 @@ class AlbumsController(MediaControllerBase[Album]):
         album = self.album_from_item_mapping(item)
         return await self.add_item_to_library(album)
 
-    async def _add_library_item(self, item: Album) -> int:
+    async def _add_library_item(self, item: Album, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
-        if not isinstance(item, Album):
-            msg = "Not a valid Album object (ItemMapping can not be added to db)"
+        if not isinstance(item, Album):  # TODO: Remove this once the codebase is fully typed
+            msg = "Not a valid Album object (ItemMapping can not be added to db)"  # type: ignore[unreachable]
             raise InvalidDataError(msg)
         db_id = await self.mass.music.database.insert(
             self.db_table,
@@ -351,7 +397,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(item.sort_name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -389,7 +436,10 @@ class AlbumsController(MediaControllerBase[Album]):
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
                 "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -415,11 +465,16 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-    ):
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
-        return await self.tracks(item_id, provider_instance_id_or_domain, in_library_only=False)
+        item: Album,
+        preferred_provider_instances: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Album to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
+        return await self.tracks(item.item_id, item.provider, in_library_only=False)
 
     async def _set_album_artists(
         self,
@@ -443,7 +498,7 @@ class AlbumsController(MediaControllerBase[Album]):
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
     ) -> ItemMapping:
         """Store Album Artist info."""
-        db_artist: Artist | ItemMapping = None
+        db_artist: Artist | ItemMapping | None = None
         if artist.provider == "library":
             db_artist = artist
         elif existing := await self.mass.music.artists.get_library_item_by_prov_id(
@@ -452,8 +507,14 @@ class AlbumsController(MediaControllerBase[Album]):
             db_artist = existing
 
         if not db_artist or overwrite:
+            # Convert ItemMapping to Artist if needed
+            artist_to_add = (
+                self.mass.music.artists.artist_from_item_mapping(artist)
+                if isinstance(artist, ItemMapping)
+                else artist
+            )
             db_artist = await self.mass.music.artists.add_item_to_library(
-                artist, overwrite_existing=overwrite
+                artist_to_add, overwrite_existing=overwrite
             )
         # write (or update) record in album_artists table
         await self.mass.music.database.insert_or_replace(
@@ -478,6 +539,41 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
 
+    async def match_provider(
+        self, db_album: Album, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
+        """
+        Try to find match on (streaming) provider for the provided (database) album.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
+        matches: list[ProviderMapping] = []
+        artist_name = db_album.artists[0].name
+        search_str = f"{artist_name} - {db_album.name}"
+        search_result = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_result:
+            if not search_result_item.available:
+                continue
+            if not compare_media_item(db_album, search_result_item, strict=strict):
+                continue
+            # we must fetch the full album version, search results can be simplified objects
+            prov_album = await self.get_provider_item(
+                search_result_item.item_id,
+                search_result_item.provider,
+                fallback=search_result_item,
+            )
+            if compare_album(db_album, prov_album, strict=strict):
+                # 100% match
+                matches.extend(prov_album.provider_mappings)
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Album %s on provider %s",
+                db_album.name,
+                provider.name,
+            )
+        return matches
+
     async def match_providers(self, db_album: Album) -> None:
         """Try to find match on all (streaming) providers for the provided (database) album.
 
@@ -487,38 +583,11 @@ class AlbumsController(MediaControllerBase[Album]):
             return  # Matching only supported for database items
         if not db_album.artists:
             return  # guard
-        artist_name = db_album.artists[0].name
-
-        async def find_prov_match(provider: MusicProvider):
-            self.logger.debug(
-                "Trying to match album %s on provider %s", db_album.name, provider.name
-            )
-            match_found = False
-            search_str = f"{artist_name} - {db_album.name}"
-            search_result = await self.search(search_str, provider.instance_id)
-            for search_result_item in search_result:
-                if not search_result_item.available:
-                    continue
-                if not compare_media_item(db_album, search_result_item):
-                    continue
-                # we must fetch the full album version, search results can be simplified objects
-                prov_album = await self.get_provider_item(
-                    search_result_item.item_id,
-                    search_result_item.provider,
-                    fallback=search_result_item,
-                )
-                if compare_album(db_album, prov_album):
-                    # 100% match, we update the db with the additional provider mapping(s)
-                    match_found = True
-                    for provider_mapping in search_result_item.provider_mappings:
-                        await self.add_provider_mapping(db_album.item_id, provider_mapping)
-                        db_album.provider_mappings.add(provider_mapping)
-            return match_found
 
         # try to find match on all providers
-        cur_provider_domains = {x.provider_domain for x in db_album.provider_mappings}
+        processed_domains = set()
         for provider in self.mass.music.providers:
-            if provider.domain in cur_provider_domains:
+            if provider.domain in processed_domains:
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
@@ -527,14 +596,10 @@ class AlbumsController(MediaControllerBase[Album]):
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
                 continue
-            if await find_prov_match(provider):
-                cur_provider_domains.add(provider.domain)
-            else:
-                self.logger.debug(
-                    "Could not find match for Album %s on provider %s",
-                    db_album.name,
-                    provider.name,
-                )
+            if match := await self.match_provider(db_album, provider):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_album.item_id, match)
+                processed_domains.add(provider.domain)
 
     def album_from_item_mapping(self, item: ItemMapping) -> Album:
         """Create an Album object from an ItemMapping object."""

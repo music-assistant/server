@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import AsyncGenerator, Sequence
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    SearchResults,
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
@@ -53,6 +54,7 @@ CONF_SXM_REGION = "sxm_region"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.SEARCH,
 }
 
 
@@ -171,7 +173,7 @@ class SiriusXMProvider(MusicProvider):
             bind_port=bind_port,
             base_url=self._base_url,
             static_routes=[
-                ("*", "/{tail:.*}", cast("Awaitable", http_handler)),
+                ("*", "/{tail:.*}", http_handler),
             ],
         )
 
@@ -206,6 +208,28 @@ class SiriusXMProvider(MusicProvider):
             if channel.is_favorite:
                 yield self._parse_radio(channel)
 
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform search on SiriusXM channels."""
+        results = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return results
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+        radios: list[Radio] = []
+        for channel in self._channels:
+            if search_query_lower in channel.name.lower():
+                radios.append(self._parse_radio(channel))
+                if len(radios) >= limit:
+                    break
+        results.radio = radios
+        return results
+
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
@@ -233,7 +257,7 @@ class SiriusXMProvider(MusicProvider):
         # See `_channel_updated` for where this is handled.
         self._current_stream_details = StreamDetails(
             item_id=item_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=ContentType.AAC,
             ),
@@ -292,7 +316,7 @@ class SiriusXMProvider(MusicProvider):
 
     def _parse_radio(self, channel: XMChannel) -> Radio:
         radio = Radio(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=channel.id,
             name=channel.name,
             provider_mappings={
@@ -314,7 +338,7 @@ class SiriusXMProvider(MusicProvider):
         if icon is not None:
             images.append(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.THUMB,
                     path=icon,
                     remotely_accessible=True,
@@ -322,7 +346,7 @@ class SiriusXMProvider(MusicProvider):
             )
             images.append(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.LOGO,
                     path=icon,
                     remotely_accessible=True,
@@ -332,7 +356,7 @@ class SiriusXMProvider(MusicProvider):
         if banner is not None:
             images.append(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.BANNER,
                     path=banner,
                     remotely_accessible=True,
@@ -340,7 +364,7 @@ class SiriusXMProvider(MusicProvider):
             )
             images.append(
                 MediaItemImage(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     type=ImageType.LANDSCAPE,
                     path=banner,
                     remotely_accessible=True,

@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant - Create Admin Account</title>
+    <link rel="stylesheet" href="resources/common.css">
+    <style>
+        body {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .setup-container {
+            background: var(--panel);
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12),
+                        0 0 0 1px var(--border);
+            padding: 48px 40px;
+            width: 100%;
+            max-width: 520px;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+
+        .logo-icon {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 16px;
+        }
+
+        .logo-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .logo h1 {
+            color: var(--fg);
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .logo p {
+            color: var(--text-tertiary);
+            font-size: 14px;
+            font-weight: 400;
+        }
+
+        .header {
+            margin-bottom: 24px;
+        }
+
+        .header h2 {
+            color: var(--fg);
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .password-requirements {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-tertiary);
+        }
+
+        .form-actions {
+            margin-top: 24px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            letter-spacing: 0.3px;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            filter: brightness(1.1);
+            box-shadow: 0 8px 24px var(--primary-glow);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+            filter: brightness(0.95);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            filter: none;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="setup-container">
+        <div class="logo">
+            <div class="logo-icon">
+                <img src="logo.png" alt="Music Assistant">
+            </div>
+            <h1>Music Assistant</h1>
+            <p>Create Admin Account</p>
+        </div>
+
+        <div class="header">
+            <h2>Welcome!</h2>
+            <p>Create an administrator account to get started with Music Assistant.</p>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <form id="setupForm">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input
+                    type="text"
+                    id="username"
+                    name="username"
+                    required
+                    autocomplete="username"
+                    placeholder="Enter your username"
+                    minlength="2"
+                >
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input
+                    type="password"
+                    id="password"
+                    name="password"
+                    required
+                    autocomplete="new-password"
+                    placeholder="Enter a secure password"
+                    minlength="8"
+                >
+                <div class="password-requirements">
+                    Minimum 8 characters
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="confirmPassword">Confirm Password</label>
+                <input
+                    type="password"
+                    id="confirmPassword"
+                    name="confirmPassword"
+                    required
+                    autocomplete="new-password"
+                    placeholder="Re-enter your password"
+                >
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="createAccountBtn">Create Account</button>
+            </div>
+        </form>
+
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const deviceName = urlParams.get('device_name');
+        const returnUrl = urlParams.get('return_url');
+
+        function isValidRedirectUrl(url) {
+            if (!url) return false;
+            try {
+                const parsed = new URL(url, window.location.origin);
+                const allowedProtocols = ['http:', 'https:', 'musicassistant:'];
+                return allowedProtocols.includes(parsed.protocol);
+            } catch {
+                return false;
+            }
+        }
+
+        function showError(message) {
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.textContent = message;
+            errorMessage.classList.add('show');
+        }
+
+        function hideError() {
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.classList.remove('show');
+        }
+
+        function redirectWithToken(token) {
+            if (returnUrl && isValidRedirectUrl(returnUrl)) {
+                let finalUrl = returnUrl;
+
+                if (returnUrl.includes('#')) {
+                    const parts = returnUrl.split('#', 2);
+                    const basePart = parts[0];
+                    const hashPart = parts[1];
+                    const separator = basePart.includes('?') ? '&' : '?';
+                    finalUrl = `${basePart}${separator}code=${encodeURIComponent(token)}&onboard=true#${hashPart}`;
+                } else {
+                    const separator = returnUrl.includes('?') ? '&' : '?';
+                    finalUrl = `${returnUrl}${separator}code=${encodeURIComponent(token)}&onboard=true`;
+                }
+
+                window.location.href = finalUrl;
+            } else {
+                window.location.href = `./?code=${encodeURIComponent(token)}&onboard=true`;
+            }
+        }
+
+        document.getElementById('setupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+
+            if (username.length < 2) {
+                showError('Username must be at least 2 characters long');
+                return;
+            }
+
+            if (password.length < 8) {
+                showError('Password must be at least 8 characters long');
+                return;
+            }
+
+            if (password !== confirmPassword) {
+                showError('Passwords do not match');
+                return;
+            }
+
+            const submitBtn = document.getElementById('createAccountBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Creating Account...';
+
+            try {
+                const requestBody = {
+                    username: username,
+                    password: password,
+                };
+
+                if (deviceName) {
+                    requestBody.device_name = deviceName;
+                }
+
+                const response = await fetch('setup', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody),
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    redirectWithToken(data.token);
+                } else {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Create Account';
+                    showError(data.error || 'Setup failed. Please try again.');
+                }
+            } catch (error) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Create Account';
+                showError('Network error. Please check your connection and try again.');
+                console.error('Setup error:', error);
+            }
+        });
+
+        document.querySelectorAll('input').forEach(input => {
+            input.addEventListener('input', hideError);
+        });
+    </script>
+</body>
+</html>

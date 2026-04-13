@@ -51,8 +51,20 @@ class Webserver:
         static_routes: list[tuple[str, str, Handler]] | None = None,
         static_content: tuple[str, str, str] | None = None,
         ingress_tcp_site_params: tuple[str, int] | None = None,
+        app_state: dict[str, Any] | None = None,
+        ssl_context: Any | None = None,
     ) -> None:
-        """Async initialize of module."""
+        """Async initialize of module.
+
+        :param bind_ip: IP address to bind to.
+        :param bind_port: Port to bind to.
+        :param base_url: Base URL for the server.
+        :param static_routes: List of static routes to register.
+        :param static_content: Tuple of (path, directory, name) for static content.
+        :param ingress_tcp_site_params: Tuple of (host, port) for ingress TCP site.
+        :param app_state: Optional dict of key-value pairs to set on app before starting.
+        :param ssl_context: Optional SSL context for HTTPS support.
+        """
         self._base_url = base_url.removesuffix("/")
         self._bind_port = bind_port
         self._static_routes = static_routes
@@ -64,6 +76,10 @@ class Webserver:
                 "max_field_size": MAX_LINE_SIZE,
             },
         )
+        # Set app state before starting
+        if app_state:
+            for key, value in app_state.items():
+                self._webapp[key] = value
         self._apprunner = web.AppRunner(self._webapp, access_log=None, shutdown_timeout=10)
         # add static routes
         if self._static_routes:
@@ -78,9 +94,11 @@ class Webserver:
             self._webapp.router.add_route("*", "/{tail:.*}", self._handle_catch_all)
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
-        host = None if bind_ip == "0.0.0.0" else bind_ip
+        host = None if bind_ip in ("0.0.0.0", "::") else bind_ip
         try:
-            self._tcp_site = web.TCPSite(self._apprunner, host=host, port=bind_port)
+            self._tcp_site = web.TCPSite(
+                self._apprunner, host=host, port=bind_port, ssl_context=ssl_context
+            )
             await self._tcp_site.start()
         except OSError:
             if host is None:
@@ -89,12 +107,16 @@ class Webserver:
             self.logger.error(
                 "Could not bind to %s, will start on all interfaces as fallback!", host
             )
-            self._tcp_site = web.TCPSite(self._apprunner, host=None, port=bind_port)
+            self._tcp_site = web.TCPSite(
+                self._apprunner, host=None, port=bind_port, ssl_context=ssl_context
+            )
             await self._tcp_site.start()
         # start additional ingress TCP site if configured
         # this is only used if we're running in the context of an HA add-on
         # which proxies our frontend and api through ingress
         if ingress_tcp_site_params:
+            # Store ingress site reference in app for security checks
+            self._webapp["ingress_site"] = ingress_tcp_site_params
             self._ingress_tcp_site = web.TCPSite(
                 self._apprunner,
                 host=ingress_tcp_site_params[0],
@@ -170,7 +192,7 @@ class Webserver:
                 return await handler(request)
         # Try prefix match (for routes registered with /*)
         if self._dynamic_routes is not None:
-            for route_key, handler in self._dynamic_routes.items():
+            for route_key, handler in list(self._dynamic_routes.items()):
                 method, path = route_key.split(".", 1)
                 if method in (request.method, "*") and path.endswith("/*"):
                     prefix = path[:-2]

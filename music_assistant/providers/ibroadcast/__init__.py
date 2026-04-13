@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse, urlunparse
 
-from aiohttp import ClientSession
 from ibroadcastaio import IBroadcastClient
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -15,7 +15,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -105,21 +105,18 @@ class IBroadcastProvider(MusicProvider):
 
     _user_id: str
     _client: IBroadcastClient
-    _token: str
 
     async def handle_async_init(self) -> None:
         """Set up the iBroadcast provider."""
-        async with ClientSession() as session:
-            self._client = IBroadcastClient(session)
-            status = await self._client.login(
-                self.config.get_value(CONF_USERNAME),
-                self.config.get_value(CONF_PASSWORD),
-            )
-            self._user_id = status["user"]["id"]
-            self._token = status["user"]["token"]
+        self._client = IBroadcastClient(self.mass.http_session)
+        status = await self._client.login(
+            self.config.get_value(CONF_USERNAME),
+            self.config.get_value(CONF_PASSWORD),
+        )
+        self._user_id = status["user"]["id"]
 
-            # temporary call to refresh library until ibroadcast provides a detailed api
-            await self._client.refresh_library()
+        # temporary call to refresh library until ibroadcast provides a detailed api
+        await self._client.refresh_library()
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from ibroadcast."""
@@ -200,7 +197,7 @@ class IBroadcastProvider(MusicProvider):
         return ItemMapping(
             media_type=media_type,
             item_id=key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=name,
         )
 
@@ -219,6 +216,7 @@ class IBroadcastProvider(MusicProvider):
             playlist = await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
+            raise MediaNotFoundError(f"Playlist {prov_playlist_id} could not be parsed") from error
         return playlist
 
     @use_cache(3600)  # Cache for 1 hour
@@ -240,12 +238,18 @@ class IBroadcastProvider(MusicProvider):
         # See https://devguide.ibroadcast.com/?p=streaming-server
         url = await self._client.get_full_stream_url(int(item_id), "music-assistant")
 
+        # Replace the bitrate path segment with "orig" to request the original upload format.
+        # By default the bitrate is always 128kbps.
+        parsed = urlparse(url)
+        path_parts = parsed.path.split("/")
+        if len(path_parts) > 1 and path_parts[1].isdigit():
+            path_parts[1] = "orig"
+            url = urlunparse(parsed._replace(path="/".join(path_parts)))
+
         return StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=item_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.UNKNOWN,
-            ),
+            audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
             stream_type=StreamType.HTTP,
             path=url,
             can_seek=True,
@@ -270,7 +274,7 @@ class IBroadcastProvider(MusicProvider):
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["name"],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=artist_id,
@@ -287,7 +291,7 @@ class IBroadcastProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=await self._client.get_artist_artwork_url(artist_id),
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -300,7 +304,7 @@ class IBroadcastProvider(MusicProvider):
         name, version = parse_title_and_version(album_obj["name"])
         album = Album(
             item_id=album_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=name,
             year=album_obj["year"],
             version=version,
@@ -309,7 +313,7 @@ class IBroadcastProvider(MusicProvider):
                     item_id=album_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    audio_format=AudioFormat(content_type=ContentType.MPEG),
+                    audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
                     url=f"https://media.ibroadcast.com/?view=container&container_id={album_id}&type=albums",
                 )
             },
@@ -318,7 +322,7 @@ class IBroadcastProvider(MusicProvider):
             artist = Artist(
                 item_id=VARIOUS_ARTISTS_MBID,
                 name=VARIOUS_ARTISTS_NAME,
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 provider_mappings={
                     ProviderMapping(
                         item_id=VARIOUS_ARTISTS_MBID,
@@ -353,7 +357,7 @@ class IBroadcastProvider(MusicProvider):
         return MediaItemImage(
             type=ImageType.THUMB,
             path=url,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             remotely_accessible=True,
         )
 
@@ -361,7 +365,7 @@ class IBroadcastProvider(MusicProvider):
         """Parse an iBroadcast track object to a Track model object."""
         track = Track(
             item_id=track_obj["track_id"],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=track_obj["title"],
             provider_mappings={
                 ProviderMapping(
@@ -369,9 +373,7 @@ class IBroadcastProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     available=not track_obj["trashed"],
-                    audio_format=AudioFormat(
-                        content_type=ContentType.MPEG,
-                    ),
+                    audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
                 )
             },
         )
@@ -442,7 +444,7 @@ class IBroadcastProvider(MusicProvider):
         playlist_id = str(playlist_obj["playlist_id"])
         playlist = Playlist(
             item_id=playlist_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=playlist_obj["name"],
             provider_mappings={
                 ProviderMapping(

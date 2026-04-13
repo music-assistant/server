@@ -13,9 +13,6 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
-    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
 )
 
 
@@ -38,6 +35,9 @@ RANDOM_ARTIST = "random_artist"
 RANDOM_ALBUM = "random_album"
 RANDOM_TRACKS = "random_tracks"
 RECENTLY_PLAYED = "recently_played"
+RECENTLY_ADDED_TRACKS = "recently_added_tracks"
+INFINITE_MIX = "infinite_mix"
+INFINITE_MIX_FAVORITES = "infinite_mix_favorites"
 
 BUILTIN_PLAYLISTS = {
     ALL_FAVORITE_TRACKS: "All favorited tracks",
@@ -45,13 +45,34 @@ BUILTIN_PLAYLISTS = {
     RANDOM_ALBUM: "Random Album (from library)",
     RANDOM_TRACKS: "500 Random tracks (from library)",
     RECENTLY_PLAYED: "Recently played tracks",
+    RECENTLY_ADDED_TRACKS: "Recently added tracks",
+    INFINITE_MIX: "Infinite Mix (library)",
+    INFINITE_MIX_FAVORITES: "Infinite Mix (favorites)",
 }
+
+# Playlists that are dynamic: tracks are fetched on demand, never pre-loaded.
+DYNAMIC_BUILTIN_PLAYLISTS = frozenset({INFINITE_MIX, INFINITE_MIX_FAVORITES})
+
+# Optional descriptions shown in the UI for built-in playlists.
+BUILTIN_PLAYLIST_DESCRIPTIONS: dict[str, str] = {
+    INFINITE_MIX: (
+        "An endless, ever-changing playlist that draws 25 random tracks from your full library "
+        "each time the queue is about to run out. No pre-loading — memory usage stays constant "
+        "regardless of library size."
+    ),
+    INFINITE_MIX_FAVORITES: (
+        "Like Infinite Mix, but limited to your favorited tracks. "
+        "25 fresh random favorites are added whenever the queue is nearly empty."
+    ),
+}
+
 BUILTIN_PLAYLISTS_ENTRIES = [
     ConfigEntry(
         key=key,
         type=ConfigEntryType.BOOLEAN,
         label=name,
         default_value=True,
+        description=BUILTIN_PLAYLIST_DESCRIPTIONS.get(key),
         category="generic",
     )
     for key, name in BUILTIN_PLAYLISTS.items()
@@ -99,30 +120,6 @@ CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
         **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),
         "hidden": True,
         "default_value": True,
-    }
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS.to_dict(),
-        "default_value": 180,
-        "label": "Playlists refresh interval",
-        "description": "The interval at which the builtin generated playlists are refreshed.",
-    }
-)
-
-
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS.to_dict(),
-        "hidden": True,
-        "default_value": 180,
-    }
-)
-CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS.to_dict(),
-        "hidden": True,
-        "default_value": 180,
     }
 )
 CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN = ConfigEntry.from_dict(

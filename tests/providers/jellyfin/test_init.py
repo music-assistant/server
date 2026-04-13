@@ -44,6 +44,18 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
 
 
 @pytest.mark.usefixtures("jellyfin_provider")
+async def test_get_artist_albums(mass: MusicAssistant) -> None:
+    """Test that get_artist_albums returns albums for a real artist ID."""
+    artists = await mass.music.artists.library_items(search="Ash")
+    ash = artists[0]
+    prov_mapping = next(m for m in ash.provider_mappings if m.provider_domain == "jellyfin")
+    albums = await mass.music.artists.get_provider_artist_albums(
+        prov_mapping.item_id, prov_mapping.provider_instance
+    )
+    assert any(album.name == "Nu-Clear Sounds" for album in albums)
+
+
+@pytest.mark.usefixtures("jellyfin_provider")
 async def test_initial_sync(mass: MusicAssistant) -> None:
     """Test that initial sync worked."""
     artists = await mass.music.artists.library_items(search="Ash")
@@ -53,4 +65,5 @@ async def test_initial_sync(mass: MusicAssistant) -> None:
     assert albums[0].name == "This Is Christmas"
 
     tracks = await mass.music.tracks.library_items(search="where the bands are")
-    assert tracks[0].name == "Where the Bands Are (2018 Version)"
+    assert tracks[0].name == "Where the Bands Are"
+    assert tracks[0].version == "2018 Version"

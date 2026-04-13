@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import datetime
 from io import StringIO
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 from aiohttp import ClientConnectorError
 from duration_parser import parse as parse_str_duration
@@ -54,7 +55,7 @@ from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import infer_album_type, install_package
+from music_assistant.helpers.util import infer_album_type, install_package, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -102,9 +103,12 @@ VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 YT_PLAYLIST_ID_DELIMITER = "🎵"
 PODCAST_EPISODE_SPLITTER = "|"
 YT_LIKED_SONGS_PLAYLIST_ID = "LM"
+YT_PERSONAL_PODCAST_PLAYLISTS = (
+    "SE",  # Episodes for later
+    "RDPN",  # New episodes
+)
 YT_PERSONAL_PLAYLISTS = (
     YT_LIKED_SONGS_PLAYLIST_ID,  # Liked songs
-    "SE",  # Episodes for Later
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
     "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
     "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
@@ -121,6 +125,7 @@ YT_PERSONAL_PLAYLISTS = (
 DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
 PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
+DEFAULT_STREAM_URL_EXPIRATION = 3600  # 1 hour
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -196,6 +201,7 @@ class YoutubeMusicProvider(MusicProvider):
     _cipher = None
     _yt_user = None
     _cookie = None
+    _yt_dlp_module = None
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
@@ -298,6 +304,9 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for playlist in playlists_obj:
+            playlist_id = playlist["id"]
+            if playlist_id in YT_PERSONAL_PODCAST_PLAYLISTS:
+                continue
             yield self._parse_playlist(playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -320,6 +329,9 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers, language=self.language, user=self._yt_user
         )
         for podcast in podcasts_obj:
+            podcast_id = podcast.get("podcastId")
+            if podcast_id in YT_PERSONAL_PODCAST_PLAYLISTS:
+                continue
             yield self._parse_podcast(podcast)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
@@ -403,7 +415,7 @@ class YoutubeMusicProvider(MusicProvider):
         limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
-            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
         if (
             prov_playlist_id in YT_PERSONAL_PLAYLISTS
             and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
@@ -544,7 +556,7 @@ class YoutubeMusicProvider(MusicProvider):
         """Add track(s) to playlist."""
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
-            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
         return await add_remove_playlist_tracks(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
@@ -561,7 +573,7 @@ class YoutubeMusicProvider(MusicProvider):
         limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
-            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
         if (
             prov_playlist_id in YT_PERSONAL_PLAYLISTS
             and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
@@ -620,16 +632,22 @@ class YoutubeMusicProvider(MusicProvider):
             item_id = item_id.split(PODCAST_EPISODE_SPLITTER)[1]
         stream_format = await self._get_stream_format(item_id=item_id)
         self.logger.debug("Found stream_format: %s for song %s", stream_format["format"], item_id)
+        url = stream_format["url"]
+        expiration = DEFAULT_STREAM_URL_EXPIRATION
+        if parsed := parse_qs(urlparse(url).query):
+            if expire_ts := parsed.get("expire", [None])[0]:
+                expiration = int(expire_ts) - int(time.time())
         stream_details = StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format["audio_ext"]),
             ),
             stream_type=StreamType.HTTP,
-            path=stream_format["url"],
+            path=url,
             can_seek=True,
             allow_seek=True,
+            expiration=expiration,
         )
         if (
             stream_format.get("audio_channels")
@@ -649,7 +667,7 @@ class YoutubeMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 name=section["title"],
                 item_id=f"{self.instance_id}_{section['title']}",
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 icon=determine_recommendation_icon(section["title"]),
             )
             for recommended_item in section.get("contents", []):
@@ -704,7 +722,7 @@ class YoutubeMusicProvider(MusicProvider):
     def _initialize_headers(self) -> dict[str, str]:
         """Return headers to include in the requests."""
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",  # noqa: E501
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.5",
             "Content-Type": "application/json",
@@ -740,13 +758,16 @@ class YoutubeMusicProvider(MusicProvider):
             raise InvalidDataError("Album ID is required but not found")
 
         if "title" in album_obj:
-            name = album_obj["title"]
+            name, version = parse_title_and_version(album_obj["title"])
         elif "name" in album_obj:
-            name = album_obj["name"]
+            name, version = parse_title_and_version(album_obj["name"])
+        else:
+            name, version = "", ""
         album = Album(
             item_id=album_id,
             name=name,
-            provider=self.lookup_key,
+            version=version,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(album_id),
@@ -787,7 +808,7 @@ class YoutubeMusicProvider(MusicProvider):
             album.album_type = album_type
 
         # Try inference - override if it finds something more specific
-        inferred_type = infer_album_type(name, "")  # YouTube doesn't seem to have version field
+        inferred_type = infer_album_type(name, version)
         if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
             album.album_type = inferred_type
 
@@ -808,7 +829,7 @@ class YoutubeMusicProvider(MusicProvider):
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["name"],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist_id),
@@ -837,7 +858,7 @@ class YoutubeMusicProvider(MusicProvider):
             playlist_name = f"{playlist_name} ({self.name})"
         playlist = Playlist(
             item_id=playlist_id,
-            provider=self.instance_id if is_editable else self.lookup_key,
+            provider=self.instance_id,
             name=playlist_name,
             provider_mappings={
                 ProviderMapping(
@@ -845,6 +866,7 @@ class YoutubeMusicProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=f"{YTM_DOMAIN}/playlist?list={playlist_id}",
+                    is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
             is_editable=is_editable,
@@ -872,10 +894,12 @@ class YoutubeMusicProvider(MusicProvider):
             msg = "Track is missing videoId"
             raise InvalidDataError(msg)
         track_id = str(track_obj["videoId"])
+        name, version = parse_title_and_version(track_obj["title"])
         track = Track(
             item_id=track_id,
-            provider=self.lookup_key,
-            name=track_obj["title"],
+            provider=self.instance_id,
+            name=name,
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=track_id,
@@ -930,7 +954,7 @@ class YoutubeMusicProvider(MusicProvider):
         podcast = Podcast(
             item_id=podcast_obj["podcastId"],
             name=podcast_obj["title"],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=podcast_obj["podcastId"],
@@ -956,7 +980,7 @@ class YoutubeMusicProvider(MusicProvider):
         item_id = f"{podcast.item_id}{PODCAST_EPISODE_SPLITTER}{episode_id}"
         episode = PodcastEpisode(
             item_id=item_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=episode_obj.get("title"),
             podcast=podcast,
             provider_mappings={
@@ -987,7 +1011,9 @@ class YoutubeMusicProvider(MusicProvider):
         """Figure out the stream URL to use and return the highest quality."""
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
-            yt_dlp = importlib.import_module("yt_dlp")
+            if self._yt_dlp_module is None:
+                self._yt_dlp_module = importlib.import_module("yt_dlp")
+            yt_dlp = self._yt_dlp_module
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,
@@ -997,14 +1023,10 @@ class YoutubeMusicProvider(MusicProvider):
                 "extractor_args": {
                     "youtubepot-bgutilhttp": {
                         "base_url": [self._po_token_server_url],
-                        # Disable new PO Token server behavior. Disable after this issue is fixed:
-                        # https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues/138
-                        "disable_innertube": "1",
                     },
                     "youtube": {
                         "skip": ["translated_subs", "dash"],
                         "player_client": ["web_music"],
-                        "player_skip": ["webpage"],
                     },
                 },
             }
@@ -1024,7 +1046,7 @@ class YoutubeMusicProvider(MusicProvider):
         return ItemMapping(
             media_type=media_type,
             item_id=key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=name,
         )
 
@@ -1057,7 +1079,7 @@ class YoutubeMusicProvider(MusicProvider):
         processed_images = set()
         for img in sorted(thumbnails_obj, key=lambda w: w.get("width", 0), reverse=True):
             url: str = img["url"]
-            url_base = url.split("=w")[0]
+            url_base = url.split("=w", maxsplit=1)[0]
             width: int = img["width"]
             height: int = img["height"]
             image_ratio: float = width / height
@@ -1079,7 +1101,7 @@ class YoutubeMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=image_type,
                     path=url,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )

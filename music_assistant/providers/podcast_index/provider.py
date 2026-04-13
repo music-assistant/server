@@ -86,9 +86,7 @@ class PodcastIndexProvider(MusicProvider):
 
         podcasts = []
         for feed_data in response.get("feeds", []):
-            podcast = parse_podcast_from_feed(
-                feed_data, self.lookup_key, self.domain, self.instance_id
-            )
+            podcast = parse_podcast_from_feed(feed_data, self.instance_id, self.domain)
             if podcast:
                 podcasts.append(podcast)
 
@@ -129,16 +127,15 @@ class PodcastIndexProvider(MusicProvider):
 
             if subpath == BROWSE_TRENDING:
                 return await self._browse_trending()
-            elif subpath == BROWSE_RECENT:
+            if subpath == BROWSE_RECENT:
                 return await self._browse_recent_episodes()
-            elif subpath == BROWSE_CATEGORIES:
+            if subpath == BROWSE_CATEGORIES:
                 if len(subpath_parts) > 1:
                     # Browse specific category - category name is directly in path
                     category_name = subpath_parts[1]
                     return await self._browse_category_podcasts(category_name)
-                else:
-                    # Browse categories
-                    return await self._browse_categories()
+                # Browse categories
+                return await self._browse_categories()
 
         return []
 
@@ -176,7 +173,7 @@ class PodcastIndexProvider(MusicProvider):
 
         self.logger.debug("Adding podcast %s to library", item.name)
         stored_podcasts.append(feed_url)
-        self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -208,7 +205,7 @@ class PodcastIndexProvider(MusicProvider):
 
         self.logger.debug("Removing podcast %s from library", prov_item_id)
         stored_podcasts = [x for x in stored_podcasts if x != feed_url]
-        self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
@@ -218,9 +215,7 @@ class PodcastIndexProvider(MusicProvider):
             # Try by ID first
             response = await self._api_request("podcasts/byfeedid", params={"id": prov_podcast_id})
             if response.get("feed"):
-                podcast = parse_podcast_from_feed(
-                    response["feed"], self.lookup_key, self.domain, self.instance_id
-                )
+                podcast = parse_podcast_from_feed(response["feed"], self.instance_id, self.domain)
                 if podcast:
                     return podcast
         except (ProviderUnavailableError, InvalidDataError):
@@ -272,9 +267,8 @@ class PodcastIndexProvider(MusicProvider):
                     episode_data,
                     prov_podcast_id,
                     idx,
-                    self.lookup_key,
-                    self.domain,
                     self.instance_id,
+                    self.domain,
                     podcast_name,
                 )
                 if episode:
@@ -303,7 +297,7 @@ class PodcastIndexProvider(MusicProvider):
 
             if episode_data:
                 episode = parse_episode_from_data(
-                    episode_data, podcast_id, 0, self.lookup_key, self.domain, self.instance_id
+                    episode_data, podcast_id, 0, self.instance_id, self.domain
                 )
                 if episode:
                     return episode
@@ -319,7 +313,6 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
 
-    @use_cache(86400)
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Get stream details for a podcast episode.
@@ -341,7 +334,7 @@ class PodcastIndexProvider(MusicProvider):
                 stream_url = episode_data.get("enclosureUrl")
                 if stream_url:
                     return StreamDetails(
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         item_id=item_id,
                         audio_format=AudioFormat(
                             content_type=ContentType.try_parse(
@@ -369,10 +362,9 @@ class PodcastIndexProvider(MusicProvider):
         """Get single MediaItem from provider."""
         if media_type == MediaType.PODCAST:
             return await self.get_podcast(prov_item_id)
-        elif media_type == MediaType.PODCAST_EPISODE:
+        if media_type == MediaType.PODCAST_EPISODE:
             return await self.get_podcast_episode(prov_item_id)
-        else:
-            raise MediaNotFoundError(f"Media type {media_type} not supported by this provider")
+        raise MediaNotFoundError(f"Media type {media_type} not supported by this provider")
 
     async def _fetch_podcasts(
         self, endpoint: str, params: dict[str, Any] | None = None
@@ -381,9 +373,7 @@ class PodcastIndexProvider(MusicProvider):
         response = await self._api_request(endpoint, params)
         podcasts = []
         for feed_data in response.get("feeds", []):
-            podcast = parse_podcast_from_feed(
-                feed_data, self.lookup_key, self.domain, self.instance_id
-            )
+            podcast = parse_podcast_from_feed(feed_data, self.instance_id, self.domain)
             if podcast:
                 podcasts.append(podcast)
         return podcasts
@@ -444,9 +434,8 @@ class PodcastIndexProvider(MusicProvider):
                     episode_data,
                     podcast_id,
                     idx,
-                    self.lookup_key,
-                    self.domain,
                     self.instance_id,
+                    self.domain,
                     podcast_name,
                 )
                 if episode:
@@ -504,9 +493,7 @@ class PodcastIndexProvider(MusicProvider):
 
             podcasts = []
             for feed_data in search_response.get("feeds", []):
-                podcast = parse_podcast_from_feed(
-                    feed_data, self.lookup_key, self.domain, self.instance_id
-                )
+                podcast = parse_podcast_from_feed(feed_data, self.instance_id, self.domain)
                 if podcast:
                     podcasts.append(podcast)
 

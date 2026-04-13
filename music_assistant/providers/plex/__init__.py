@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
 import requests
+import urllib3.exceptions
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -37,7 +39,6 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItem,
     MediaItemImage,
-    MediaItemType,
     Playlist,
     ProviderMapping,
     RecommendationFolder,
@@ -127,7 +128,7 @@ async def setup(
 
 async def get_config_entries(  # noqa: PLR0915
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -169,9 +170,22 @@ async def get_config_entries(  # noqa: PLR0915
         values[CONF_AUTH_TOKEN] = None
         async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
             plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
+            # Generate the PIN/code by calling the Plex API
+            await asyncio.to_thread(plex_auth._getCode)
             auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
             await auth_helper.authenticate(auth_url)
-            if not plex_auth.checkLogin():
+            # After OAuth callback completes, Plex's backend needs time to propagate the token
+            # Use exponential backoff to check if token is ready
+            for attempt in range(10):  # Max 10 attempts (~10 seconds total)
+                if await asyncio.to_thread(plex_auth.checkLogin):
+                    break
+                # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s, etc
+                await asyncio.sleep(0.1 * (2**attempt))
+            else:
+                # token still not available
+                msg = "Authentication to MyPlex failed: token not received"
+                raise LoginFailed(msg)
+            if not plex_auth.token:
                 msg = "Authentication to MyPlex failed"
                 raise LoginFailed(msg)
             # set the retrieved token on the values object to pass along
@@ -233,7 +247,7 @@ async def get_config_entries(  # noqa: PLR0915
             required=True,
             default_value=True,
             depends_on=CONF_LOCAL_SERVER_SSL,
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
@@ -277,6 +291,7 @@ async def get_config_entries(  # noqa: PLR0915
                     server_http_ip,
                     server_http_port,
                     server_http_verify_cert,
+                    instance_id,
                 )
             ):
                 msg = "Unable to retrieve Servers and/or Music Libraries"
@@ -338,7 +353,7 @@ async def get_config_entries(  # noqa: PLR0915
             label="Import Collections",
             description="Import collections (tracks, albums, or artists) as playlists",
             default_value=False,
-            category="advanced",
+            advanced=True,
         )
     )
     entries.append(
@@ -349,7 +364,7 @@ async def get_config_entries(  # noqa: PLR0915
             description="Prefix to add to collection names when imported as playlists",
             default_value="Collection: ",
             depends_on=CONF_IMPORT_COLLECTIONS,
-            category="advanced",
+            advanced=True,
         )
     )
 
@@ -399,7 +414,7 @@ async def get_config_entries(  # noqa: PLR0915
             label="Items per hub",
             description="Maximum number of items to load from each hub (default: 10)",
             default_value=10,
-            category="advanced",
+            advanced=True,
             range=(1, 100),
         )
     )
@@ -453,15 +468,22 @@ class PlexProvider(MusicProvider):
                     f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
                     f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
                 )
-                if token == AUTH_TOKEN_UNAUTH:
-                    # Doing local connection, not via plex.tv.
-                    plex_server = PlexServer(plex_url, session=session)
-                else:
-                    plex_server = PlexServer(
-                        plex_url,
-                        token,
-                        session=session,
+                # silence urllib3 InsecureRequestWarning from Plex connections
+                # using wildcard certificates that don't validate against LAN IPs
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=urllib3.exceptions.InsecureRequestWarning,
                     )
+                    if token == AUTH_TOKEN_UNAUTH:
+                        # Doing local connection, not via plex.tv.
+                        plex_server = PlexServer(plex_url, session=session)
+                    else:
+                        plex_server = PlexServer(
+                            plex_url,
+                            token,
+                            session=session,
+                        )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
@@ -544,14 +566,14 @@ class PlexProvider(MusicProvider):
         return ItemMapping(
             media_type=media_type,
             item_id=key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=mapped_name,
             version=mapped_version,
         )
 
     async def _get_or_create_artist_by_name(self, artist_name: str) -> Artist | ItemMapping:
-        if library_items := await self.mass.music.artists._get_library_items_by_query(
-            search=artist_name, provider=self.lookup_key
+        if library_items := await self.mass.music.artists.get_library_items_by_query(
+            search=artist_name, provider_filter=[self.instance_id]
         ):
             return ItemMapping.from_item(library_items[0])
 
@@ -559,7 +581,7 @@ class PlexProvider(MusicProvider):
         return Artist(
             item_id=artist_id,
             name=artist_name or UNKNOWN_ARTIST,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist_id),
@@ -572,11 +594,11 @@ class PlexProvider(MusicProvider):
     async def _parse(self, plex_media: PlexObject) -> MediaItem | None:
         if plex_media.type == "artist":
             return await self._parse_artist(plex_media)
-        elif plex_media.type == "album":
+        if plex_media.type == "album":
             return await self._parse_album(plex_media)
-        elif plex_media.type == "track":
+        if plex_media.type == "track":
             return await self._parse_track(plex_media)
-        elif plex_media.type == "playlist":
+        if plex_media.type == "playlist":
             return await self._parse_playlist(plex_media)
         return None
 
@@ -651,7 +673,7 @@ class PlexProvider(MusicProvider):
         album_id = plex_album.key
         album = Album(
             item_id=album_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=plex_album.title or "[Unknown]",
             provider_mappings={
                 ProviderMapping(
@@ -676,7 +698,7 @@ class PlexProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=thumb,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=False,
                     )
                 ]
@@ -702,7 +724,7 @@ class PlexProvider(MusicProvider):
         artist = Artist(
             item_id=artist_id,
             name=plex_artist.title or UNKNOWN_ARTIST,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist_id),
@@ -720,7 +742,7 @@ class PlexProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=thumb,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=False,
                     )
                 ]
@@ -731,7 +753,7 @@ class PlexProvider(MusicProvider):
         """Parse a Plex Playlist response to a Playlist object."""
         playlist = Playlist(
             item_id=plex_playlist.key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=plex_playlist.title or "[Unknown]",
             provider_mappings={
                 ProviderMapping(
@@ -750,7 +772,7 @@ class PlexProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=thumb,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=False,
                     )
                 ]
@@ -766,7 +788,7 @@ class PlexProvider(MusicProvider):
         # Collections are imported as playlists with the configured prefix
         playlist = Playlist(
             item_id=f"collection:{plex_collection.key}",
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=f"{collection_prefix}{plex_collection.title}",
             provider_mappings={
                 ProviderMapping(
@@ -783,7 +805,7 @@ class PlexProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=thumb,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=False,
                     )
                 ]
@@ -798,11 +820,14 @@ class PlexProvider(MusicProvider):
             available = True
             content = plex_track.media[0].container
         else:
-            available = False
+            # For Plex (local library provider), assume tracks are available by default
+            # even if media attribute is not populated in the initial response.
+            # This prevents tracks from being skipped during library sync.
+            available = True
             content = None
         track = Track(
             item_id=plex_track.key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=plex_track.title or "[Unknown]",
             provider_mappings={
                 ProviderMapping(
@@ -852,7 +877,7 @@ class PlexProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=thumb,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=False,
                     )
                 ]
@@ -1171,7 +1196,7 @@ class PlexProvider(MusicProvider):
                 folder = RecommendationFolder(
                     name=hub.title,
                     item_id=f"{self.instance_id}_{hub.hubIdentifier}",
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     icon="mdi-music",
                 )
 
@@ -1259,11 +1284,12 @@ class PlexProvider(MusicProvider):
             ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
         )
         media_part: PlexMediaPart = media.parts[0]
-        audio_stream: PlexAudioStream = media_part.audioStreams()[0]
+        audio_streams = media_part.audioStreams()
+        audio_stream: PlexAudioStream | None = audio_streams[0] if audio_streams else None
 
         stream_details = StreamDetails(
             item_id=plex_track.key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=content_type,
                 channels=media.audioChannels,
@@ -1275,184 +1301,24 @@ class PlexProvider(MusicProvider):
             allow_seek=True,
         )
 
+        download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
+
         if content_type != ContentType.M4A:
-            stream_details.path = self._plex_server.url(media_part.key, True)
-            if audio_stream.samplingRate:
+            stream_details.path = download_url
+            if audio_stream and audio_stream.samplingRate:
                 stream_details.audio_format.sample_rate = audio_stream.samplingRate
-            if audio_stream.bitDepth:
+            if audio_stream and audio_stream.bitDepth:
                 stream_details.audio_format.bit_depth = audio_stream.bitDepth
 
         else:
-            url = plex_track.getStreamURL()
-            media_info = await async_parse_tags(url)
-            stream_details.path = url
+            media_info = await async_parse_tags(download_url)
+            stream_details.path = download_url
             stream_details.audio_format.channels = media_info.channels
             stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
             stream_details.audio_format.sample_rate = media_info.sample_rate
             stream_details.audio_format.bit_depth = media_info.bits_per_sample
 
         return stream_details
-
-    async def on_streamed(
-        self,
-        streamdetails: StreamDetails,
-    ) -> None:
-        """Handle callback when an item completed streaming."""
-
-        def mark_played() -> None:
-            """Mark the item as played in Plex."""
-            try:
-                item = streamdetails.data
-                if not item:
-                    self.logger.warning("No Plex item data in streamdetails, cannot scrobble")
-                    return
-
-                if not hasattr(item, "ratingKey"):
-                    self.logger.warning(
-                        "Streamdetails data is not a Plex item (missing ratingKey), cannot scrobble"
-                    )
-                    return
-
-                params = {
-                    "key": str(item.ratingKey),
-                    "identifier": "com.plexapp.plugins.library",
-                }
-                self.logger.debug(
-                    "Scrobbling track %s (ratingKey: %s) to Plex",
-                    streamdetails.uri,
-                    item.ratingKey,
-                )
-                self._plex_server.query("/:/scrobble", params=params)
-                self.logger.info("Successfully scrobbled track %s to Plex", streamdetails.uri)
-            except Exception as err:
-                self.logger.exception(
-                    "Failed to scrobble track %s to Plex: %s",
-                    streamdetails.uri,
-                    err,
-                )
-
-        await asyncio.to_thread(mark_played)
-
-    async def on_played(
-        self,
-        media_type: MediaType,
-        prov_item_id: str,
-        fully_played: bool,
-        position: int,
-        media_item: MediaItemType,
-        is_playing: bool = False,
-    ) -> None:
-        """
-        Handle callback when a media item has been played.
-
-        This is called periodically (every 30s) during playback and when playback stops.
-        We use this to send timeline/progress updates to Plex.
-        """
-        if media_type != MediaType.TRACK:
-            # Only handle tracks for now
-            return
-
-        def update_timeline() -> None:
-            """Update Plex timeline with current playback progress."""
-            try:
-                self.logger.debug(
-                    "on_played: prov_item_id=%s, pos=%s, fully_played=%s, is_playing=%s",
-                    prov_item_id,
-                    position,
-                    fully_played,
-                    is_playing,
-                )
-
-                # Extract ratingKey from the key path (e.g., "/library/metadata/12345" -> "12345")
-                # The prov_item_id is the Plex key path, we need the ratingKey for API calls
-                try:
-                    rating_key = prov_item_id.split("/")[-1]
-                    self.logger.debug(
-                        "Extracted ratingKey %s from path %s", rating_key, prov_item_id
-                    )
-                except Exception as e:
-                    self.logger.error("Failed to extract ratingKey from %s: %s", prov_item_id, e)
-                    return
-
-                # Fetch the track directly from server using ratingKey to avoid ambiguity
-                # Using server.fetchItem() instead of library.fetchItem() is more reliable
-                plex_track = self._plex_server.fetchItem(int(rating_key))
-                if not plex_track:
-                    self.logger.warning("Cannot find Plex item with ratingKey %s", rating_key)
-                    return
-
-                self.logger.debug(
-                    "Found Plex item: '%s' by '%s' (type: %s, ratingKey: %s)",
-                    plex_track.title if hasattr(plex_track, "title") else "unknown",
-                    plex_track.grandparentTitle
-                    if hasattr(plex_track, "grandparentTitle")
-                    else "unknown",
-                    plex_track.type if hasattr(plex_track, "type") else "unknown",
-                    plex_track.ratingKey if hasattr(plex_track, "ratingKey") else "unknown",
-                )
-
-                # Verify this is actually a track, not a collection or other item
-                if not hasattr(plex_track, "type") or plex_track.type != "track":
-                    self.logger.warning(
-                        "Item %s is not a track (type: %s), cannot update timeline",
-                        rating_key,
-                        plex_track.type if hasattr(plex_track, "type") else "unknown",
-                    )
-                    return
-
-                # Convert position to milliseconds (Plex expects ms)
-                position_ms = position * 1000
-
-                # Determine playback state
-                if fully_played:
-                    state = "stopped"
-                elif is_playing:
-                    state = "playing"
-                else:
-                    state = "paused"
-
-                # Send timeline update to Plex with current state
-                # Client identification is set globally on the session headers
-                params = {
-                    "ratingKey": str(plex_track.ratingKey),
-                    "key": prov_item_id,
-                    "state": state,
-                    "time": str(position_ms),
-                    "duration": str(plex_track.duration)
-                    if hasattr(plex_track, "duration")
-                    else "0",
-                }
-                self.logger.debug("Sending Plex timeline update (state=%s): %s", state, params)
-                self._plex_server.query("/:/timeline", params=params)
-
-                # If fully played, also scrobble
-                if fully_played:
-                    scrobble_params = {
-                        "key": str(plex_track.ratingKey),
-                        "identifier": "com.plexapp.plugins.library",
-                    }
-                    self.logger.debug("Scrobbling track to Plex: %s", scrobble_params)
-                    self._plex_server.query("/:/scrobble", params=scrobble_params)
-                    self.logger.info("Track %s marked as played in Plex", prov_item_id)
-
-                # If position is 0 and not playing, mark as unplayed
-                if position == 0 and not is_playing and not fully_played:
-                    unscrobble_params = {
-                        "key": str(plex_track.ratingKey),
-                        "identifier": "com.plexapp.plugins.library",
-                    }
-                    self.logger.debug("Unscrobbling track in Plex: %s", unscrobble_params)
-                    self._plex_server.query("/:/unscrobble", params=unscrobble_params)
-                    self.logger.info("Track %s marked as unplayed in Plex", prov_item_id)
-
-            except Exception as err:
-                self.logger.exception(
-                    "Failed to update Plex timeline for track %s: %s",
-                    prov_item_id,
-                    err,
-                )
-
-        await asyncio.to_thread(update_timeline)
 
     async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""

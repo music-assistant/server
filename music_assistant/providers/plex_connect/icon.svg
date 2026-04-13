@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+     viewBox="0 0 122.88 122.88" xml:space="preserve">
+  <title>Plex × Music Assistant</title>
+
+  <style type="text/css"><![CDATA[
+    .bg{fill:#282A2D;}
+    .bar{fill:#18B6D2;}
+    .bar-alt{fill:#E5A00D;}
+  ]]></style>
+
+  <!-- Background -->
+  <path class="bg" d="M18.43,0h86.02c10.18,0,18.43,8.25,18.43,18.43v86.02c0,10.18-8.25,18.43-18.43,18.43H18.43
+    C8.25,122.88,0,114.63,0,104.45l0-86.02C0,8.25,8.25,0,18.43,0L18.43,0z"/>
+
+  <!-- Left vertical bars (MA style) -->
+  <rect x="20" y="30" width="3.5" height="62" class="bar"/>
+  <rect x="28" y="30" width="3.5" height="62" class="bar"/>
+  <rect x="36" y="30" width="3.5" height="62" class="bar"/>
+  <rect x="44" y="30" width="3.5" height="62" class="bar"/>
+
+  <!-- Center: Plex chevron as a diagonal bar (matching Plex angle) -->
+  <path class="bar-alt" d="M55,30 L61,30 L76.3,61.44 L61,92 L55,92 L70.3,61.44 Z"/>
+
+  <!-- Right diagonal slashes (MA style) -->
+  <path class="bar" d="M72,30 L86,92 L89.5,92 L75.5,30 Z"/>
+  <path class="bar" d="M80,30 L94,92 L97.5,92 L83.5,30 Z"/>
+  <path class="bar" d="M88,30 L102,92 L105.5,92 L91.5,30 Z"/>
+</svg>

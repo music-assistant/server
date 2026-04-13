@@ -83,7 +83,6 @@ ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.LIBRARY_PODCASTS,
 }
 
@@ -161,7 +160,7 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label=f"Successfully signed in as {values.get(CONF_DISPLAY_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",  # noqa: E501
+            label=f"Successfully signed in as {values.get(CONF_DISPLAY_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",
             hidden=not authenticated,
         ),
         ConfigEntry(
@@ -263,10 +262,10 @@ class ARDAudiothek(MusicProvider):
             self.token, self.user_id, _display_name = await _login(
                 self.mass.http_session, str(_email), str(_password)
             )
-            self.update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
-            self.update_config_value(CONF_USERID, self.user_id, encrypted=True)
-            self.update_config_value(CONF_DISPLAY_NAME, _display_name)
-            self.update_config_value(
+            self._update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
+            self._update_config_value(CONF_USERID, self.user_id, encrypted=True)
+            self._update_config_value(CONF_DISPLAY_NAME, _display_name)
+            self._update_config_value(
                 CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
             )
             self._client_initialized = False
@@ -291,6 +290,7 @@ class ARDAudiothek(MusicProvider):
 
     async def _update_progress(self) -> None:
         if not self.user_id:
+            self.remote_progress = {}
             return
 
         async with await self.get_client() as session:
@@ -320,12 +320,14 @@ class ARDAudiothek(MusicProvider):
             )
         return False, 0
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
         await self._update_progress()
 
-        return self._get_progress(item_id)
+        return *self._get_progress(item_id), None
 
     async def on_played(
         self,
@@ -381,7 +383,6 @@ class ARDAudiothek(MusicProvider):
                 podcasts += [
                     _parse_podcast(
                         self.domain,
-                        self.lookup_key,
                         self.instance_id,
                         element,
                         element["coreId"],
@@ -476,7 +477,6 @@ class ARDAudiothek(MusicProvider):
 
         return _parse_podcast(
             self.domain,
-            self.lookup_key,
             self.instance_id,
             result,
             prov_podcast_id,
@@ -514,7 +514,6 @@ class ARDAudiothek(MusicProvider):
                     progress = self._get_progress(episode_id)
                     yield _parse_podcast_episode(
                         self.domain,
-                        self.lookup_key,
                         self.instance_id,
                         episode,
                         episode_id,
@@ -535,7 +534,6 @@ class ARDAudiothek(MusicProvider):
         progress = self._get_progress(prov_episode_id)
         return _parse_podcast_episode(
             self.domain,
-            self.lookup_key,
             self.instance_id,
             result,
             result["showId"],
@@ -667,7 +665,6 @@ class ARDAudiothek(MusicProvider):
 
             podcast = _parse_podcast(
                 self.domain,
-                self.lookup_key,
                 self.instance_id,
                 pod,
                 pod["coreId"],
@@ -700,7 +697,6 @@ def _parse_social_media(
 
 def _parse_podcast(
     domain: str,
-    lookup_key: str,
     instance_id: str,
     podcast_query: dict[str, Any],
     podcast_id: str,
@@ -709,7 +705,7 @@ def _parse_podcast(
         name=podcast_query["title"],
         item_id=podcast_id,
         publisher=podcast_query["publicationService"]["title"],
-        provider=lookup_key,
+        provider=instance_id,
         provider_mappings={
             ProviderMapping(
                 item_id=podcast_id,
@@ -767,7 +763,6 @@ def _parse_radio(
 
 def _parse_podcast_episode(
     domain: str,
-    lookup_key: str,
     instance_id: str,
     episode: dict[str, Any],
     podcast_id: str,
@@ -779,10 +774,10 @@ def _parse_podcast_episode(
         name=episode["title"],
         duration=episode["duration"],
         item_id=episode["coreId"],
-        provider=lookup_key,
+        provider=instance_id,
         podcast=ItemMapping(
             item_id=podcast_id,
-            provider=lookup_key,
+            provider=instance_id,
             name=podcast_title,
             media_type=MediaType.PODCAST,
         ),

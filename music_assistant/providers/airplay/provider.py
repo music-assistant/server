@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from random import randrange
+from contextlib import suppress
+from ipaddress import ip_address
 from typing import cast
 
 from music_assistant_models.enums import PlaybackState
@@ -21,22 +22,21 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
-    CACHE_CATEGORY_PREV_VOLUME,
+    AIRPLAY_VOLUME_MUTE,
     CONF_IGNORE_VOLUME,
+    CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
     RAOP_DISCOVERY_TYPE,
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
+from .sendspin_bridge import SendspinBridgeManager
 
 # TODO: AirPlay provider
-# - Implement authentication for Apple TV
-# - Implement volume control for Apple devices using pyatv
-# - Implement metadata for Apple Apple devices using pyatv
-# - Use pyatv for communicating with original Apple devices (and use cliraop for actual streaming)
-# - Implement AirPlay 2 support
-# - Implement late joining to existing stream (instead of restarting it)
+# Implement Companion protocol for communicating with original Apple (TV) devices
+# This allows for getting state/metadata changes from the device,
+# even if we are not actively streaming to it.
 
 
 class AirPlayProvider(PlayerProvider):
@@ -44,16 +44,26 @@ class AirPlayProvider(PlayerProvider):
 
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
+    _bridge_manager: SendspinBridgeManager
+
+    @property
+    def bridge_manager(self) -> SendspinBridgeManager:
+        """Return the Sendspin bridge manager."""
+        return self._bridge_manager
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # Initialize Sendspin bridge manager for protocol linking
+        self._bridge_manager = SendspinBridgeManager(self)
+
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
-        self.dacp_id = dacp_id = f"{randrange(2**64):X}"
+        # Use first 16 hex chars of server_id as a persistent DACP ID
+        # This ensures the DACP ID remains the same across restarts, which is required
+        # for AirPlay 2 (HAP) pair-verify to work with previously paired devices
+        self.dacp_id = dacp_id = self.mass.server_id[:16].upper()
         self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
-        self._dacp_server = await asyncio.start_server(
-            self._handle_dacp_request, "0.0.0.0", dacp_port
-        )
+        self._dacp_server = await asyncio.start_server(self._handle_dacp_request, port=dacp_port)
         server_id = f"iTunes_Ctrl_{dacp_id}.{DACP_DISCOVERY_TYPE}"
         self._dacp_info = AsyncServiceInfo(
             DACP_DISCOVERY_TYPE,
@@ -68,7 +78,7 @@ class AirPlayProvider(PlayerProvider):
             },
             server=f"{socket.gethostname()}.local",
         )
-        await self.mass.aiozc.async_register_service(self._dacp_info)
+        await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -77,7 +87,7 @@ class AirPlayProvider(PlayerProvider):
         if not info:
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
-                raw_id, display_name = name.split(".")[0].split("@", 1)
+                raw_id, display_name = name.split(".", maxsplit=1)[0].split("@", 1)
             else:
                 # If we are not in a 'Removed' state, we need info to be filled to update the player
                 return
@@ -91,15 +101,17 @@ class AirPlayProvider(PlayerProvider):
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            if _player := self.mass.players.get(player_id):
+            if _player := self.mass.players.get_player(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", _player.display_name)
+                # Remove the Sendspin bridge first
+                await self._bridge_manager.remove_bridge(player_id)
                 await self.mass.players.unregister(player_id)
             return
         # handle update for existing device
         assert info is not None  # type guard
         player: AirPlayPlayer | None
-        if player := cast("AirPlayPlayer | None", self.mass.players.get(player_id)):
+        if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
             return
@@ -107,44 +119,51 @@ class AirPlayProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        # Stop all Sendspin bridges
+        bridge_manager = getattr(self, "_bridge_manager", None)
+        if bridge_manager:
+            await bridge_manager.stop_all()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
         # shutdown DACP zeroconf service
         if self._dacp_info:
-            await self.mass.aiozc.async_unregister_service(self._dacp_info)
+            await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
+        # return early if player is disabled in config
+        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
+            return
         raop_discovery_info: AsyncServiceInfo | None = None
         airplay_discovery_info: AsyncServiceInfo | None = None
         if discovery_info.type == RAOP_DISCOVERY_TYPE:
-            # RAOP service discovered
+            # RAOP service discovered - try to also find the AirPlay service
             raop_discovery_info = discovery_info
             self.logger.debug("Discovered RAOP service for %s", display_name)
-            # always prefer airplay mdns info as it has more details
-            # fallback to raop info if airplay info is not available,
-            # (old device only announcing raop)
-            airplay_discovery_info = AsyncServiceInfo(
-                AIRPLAY_DISCOVERY_TYPE,
-                discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
+            airplay_discovery_info = await self.mass.discovery.async_find_mdns_service(
+                AIRPLAY_DISCOVERY_TYPE, display_name, timeout=10.0
             )
-            await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000)
         else:
-            # AirPlay service discovered
+            # AirPlay service discovered - try to also find the RAOP service
             self.logger.debug("Discovered AirPlay service for %s", display_name)
             airplay_discovery_info = discovery_info
+            raop_discovery_info = await self.mass.discovery.async_find_mdns_service(
+                RAOP_DISCOVERY_TYPE, display_name, timeout=10.0
+            )
 
         if airplay_discovery_info:
             manufacturer, model = get_model_info(airplay_discovery_info)
         elif raop_discovery_info:
             manufacturer, model = get_model_info(raop_discovery_info)
         else:
-            manufacturer, model = "Unknown", "Unknown"
+            return  # should not happen, but guard just in case
 
-        address = get_primary_ip_address_from_zeroconf(discovery_info)
+        prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
+        address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
         if not address:
             return  # should not happen, but guard just in case
 
@@ -153,36 +172,32 @@ class AirPlayProvider(PlayerProvider):
         # We check both model name AND that it's a local address to avoid filtering
         # shairport-sync instances running on other machines
         if model == "ShairportSync":
-            # Check if this is a local address (127.x.x.x or matches our server's IP)
-            if address.startswith("127.") or address == self.mass.streams.publish_ip:
-                return
-
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
-            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
-            return
-        if not discovery_info:
-            return  # should not happen, but guard just in case
+            # Check if this is a local address (loopback or matches our server's IP)
+            if ip_address(address).is_loopback or address == self.mass.streams.publish_ip:
+                # Only filter if the port matches one of MA's own AirPlay Receiver instances.
+                # This allows user-configured shairport-sync instances on the same machine
+                # to be used as AirPlay players (e.g., multiple audio outputs via shairport-sync).
+                receiver_ports = {
+                    port
+                    for prov in self.mass.get_provider_instances("airplay_receiver")
+                    if (port := getattr(prov, "airplay_port", None)) is not None
+                }
+                if discovery_info.port in receiver_ports:
+                    return
 
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
 
-        # Get volume from cache
-        if not (
-            volume := await self.mass.cache.get(
-                key=player_id, provider=self.lookup_key, category=CACHE_CATEGORY_PREV_VOLUME
+        # Get stored volume from playerconfig
+        volume = int(
+            self.mass.config.get_raw_player_config_value(
+                player_id, CONF_STORED_VOLUME, FALLBACK_VOLUME
             )
-        ):
-            volume = FALLBACK_VOLUME
-
-        # Append airplay to the default name for non-apple devices
-        # to make it easier for users to distinguish
-        is_apple = manufacturer.lower() == "apple"
-        if not is_apple and "airplay" not in display_name.lower():
-            display_name += " (AirPlay)"
+        )
 
         # Final check before registration to handle race conditions
         # (multiple MDNS events processed in parallel for same device)
-        if self.mass.players.get(player_id):
+        if self.mass.players.get_player(player_id):
             self.logger.debug(
                 "Player %s already registered during setup, skipping registration", player_id
             )
@@ -209,6 +224,9 @@ class AirPlayProvider(PlayerProvider):
             initial_volume=volume,
         )
         await self.mass.players.register(player)
+
+        # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
+        await self._bridge_manager.setup_bridge(player)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -259,71 +277,120 @@ class AirPlayProvider(PlayerProvider):
             )
             if not player:
                 return
+            if player.protocol_parent_id and (
+                parent := self.mass.players.get_player(player.protocol_parent_id)
+            ):
+                parent_player = parent
+            else:
+                parent_player = player
 
             player_id = player.player_id
             ignore_volume_report = (
                 self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
                 or player.device_info.manufacturer.lower() == "apple"
             )
-            active_queue = self.mass.player_queues.get_active_queue(player_id)
-            if not active_queue:
-                self.logger.warning(
-                    "DACP request for %s (%s) but no active queue found, ignoring request",
-                    player.display_name,
-                    player_id,
-                )
-                return
             if path == "/ctrl-int/1/nextitem":
-                self.mass.create_task(self.mass.player_queues.next(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             elif path == "/ctrl-int/1/previtem":
-                self.mass.create_task(self.mass.player_queues.previous(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
             elif path == "/ctrl-int/1/play":
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
                 if player.playback_state != PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
+                    self.mass.create_task(self.mass.players.cmd_play(player_id))
             elif path == "/ctrl-int/1/playpause":
-                self.mass.create_task(self.mass.player_queues.play_pause(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
             elif path == "/ctrl-int/1/stop":
-                self.mass.create_task(self.mass.player_queues.stop(active_queue.queue_id))
+                self.mass.create_task(self.mass.players.cmd_stop(player_id))
             elif path == "/ctrl-int/1/volumeup":
                 self.mass.create_task(self.mass.players.cmd_volume_up(player_id))
             elif path == "/ctrl-int/1/volumedown":
                 self.mass.create_task(self.mass.players.cmd_volume_down(player_id))
             elif path == "/ctrl-int/1/shuffle_songs":
-                queue = self.mass.player_queues.get(player_id)
-                if not queue:
+                active_queue = self.mass.players.get_active_queue(player)
+                if not active_queue:
                     return
-                self.mass.player_queues.set_shuffle(
-                    active_queue.queue_id, not queue.shuffle_enabled
+                await self.mass.player_queues.set_shuffle(
+                    active_queue.queue_id, not active_queue.shuffle_enabled
                 )
-            elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
-                # sometimes this request is sent by a device as confirmation of a play command
-                # we ignore this if the player is already playing
-                if player.playback_state == PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
+            elif path == "/ctrl-int/1/pause":
+                if player.state.playback_state == PlaybackState.PLAYING:
+                    self.mass.create_task(self.mass.players.cmd_pause(player_id))
+            elif path == "/ctrl-int/1/discrete-pause":
+                # Some devices send discrete-pause right before device-prevent-playback=1
+                # when switching to another source. We debounce the pause to avoid
+                # unnecessary pause commands that would interfere with source switching
+                # so we only process the pause command if we don't receive a
+                # prevent-playback=1 within a short time window.
+                if player.state.playback_state == PlaybackState.PLAYING:
+                    self.mass.call_later(
+                        1.0,
+                        self.mass.players.cmd_pause,
+                        player_id,
+                        task_id=f"debounced_pause_{player_id}",
+                    )
             elif "dmcp.device-volume=" in path and not ignore_volume_report:
                 # This is a bit annoying as this can be either the device confirming a new volume
                 # we've sent or the device requesting a new volume itself.
                 # In case of a small rounding difference, we ignore this,
                 # to prevent an endless pingpong of volume changes
                 airplay_volume = float(path.split("dmcp.device-volume=", 1)[-1])
-                volume = convert_airplay_volume(airplay_volume)
-                player.update_volume_from_device(volume)
+                if airplay_volume <= AIRPLAY_VOLUME_MUTE:
+                    player._attr_volume_muted = True
+                    if player.stream and player.stream.running:
+                        self.mass.create_task(player.stream.send_cli_command("VOLUME=0"))
+                    player.update_state()
+                else:
+                    if player.volume_muted:
+                        player._attr_volume_muted = False
+                        if player.stream and player.stream.running:
+                            self.mass.create_task(
+                                player.stream.send_cli_command(f"VOLUME={player.volume_level or 0}")
+                            )
+                    volume = convert_airplay_volume(airplay_volume)
+                    player.update_volume_from_device(volume)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
                 player.update_volume_from_device(volume)
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
-                if stream := player.stream:
-                    stream.prevent_playback = True
-                    if stream.session:
-                        self.mass.create_task(stream.session.remove_client(player))
+                # Cancel any pending debounced pause since prevent-playback takes precedence
+                self.mass.cancel_timer(f"debounced_pause_{player_id}")
+                # Ignore during stream transition (stale message from old CLI process)
+                if player._transitioning or not player.stream:
+                    self.logger.debug("Ignoring prevent-playback during stream transition")
+                elif player.stream.prevent_playback:
+                    # Already handling a prevent-playback for this stream
+                    # (duplicate message while ungroup/stop is still in progress)
+                    self.logger.debug("Ignoring duplicate prevent-playback for %s", player.name)
+                else:
+                    player.stream.prevent_playback = True
+                    if player.stream.session:
+                        self.logger.debug(
+                            "Prevent playback command detected for player %s",
+                            player.name,
+                        )
+                        if player.synced_to or parent_player.state.active_group:
+                            self.mass.create_task(
+                                self.mass.players.cmd_ungroup(parent_player.player_id)
+                            )
+                        else:
+                            self.mass.create_task(player.stream.stop())
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
-                if stream := player.stream:
-                    stream.prevent_playback = False
+                # use a debounced reset to avoid race conditions where a quick
+                # prevent-playback=0 between duplicate prevent-playback=1 messages
+                # would reset the flag and allow the second message to act
+                if (stream := player.stream) and stream.prevent_playback:
+                    self.mass.call_later(
+                        5,
+                        setattr,
+                        stream,
+                        "prevent_playback",
+                        False,
+                        task_id=f"reset_prevent_playback_{player_id}",
+                    )
 
             # send response
             date_str = utc().strftime("%a, %-d %b %Y %H:%M:%S")
@@ -337,6 +404,8 @@ class AirPlayProvider(PlayerProvider):
             await writer.drain()
         finally:
             writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
 
     def get_players(self) -> list[AirPlayPlayer]:
         """Return all airplay players belonging to this instance."""
@@ -344,4 +413,4 @@ class AirPlayProvider(PlayerProvider):
 
     def get_player(self, player_id: str) -> AirPlayPlayer | None:
         """Return AirplayPlayer by id."""
-        return cast("AirPlayPlayer | None", self.mass.players.get(player_id))
+        return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))

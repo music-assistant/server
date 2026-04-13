@@ -170,14 +170,13 @@ class PodcastMusicprovider(MusicProvider):
             if mass_episode := self._parse_episode(episode, idx):
                 yield mass_episode
 
-    @use_cache(3600)  # Cache for 1 hour
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         for episode in self.parsed_podcast["episodes"]:
             if item_id == episode["guid"]:
                 stream_url = episode["enclosures"][0]["url"]
                 return StreamDetails(
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     item_id=item_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(stream_url),
@@ -200,9 +199,8 @@ class PodcastMusicprovider(MusicProvider):
         return parse_podcast(
             feed_url=self.feed_url,
             parsed_feed=self.parsed_podcast,
-            lookup_key=self.lookup_key,
-            domain=self.domain,
             instance_id=self.instance_id,
+            domain=self.domain,
             mass_item_id=self.podcast_id,
         )
 
@@ -214,9 +212,8 @@ class PodcastMusicprovider(MusicProvider):
             prov_podcast_id=self.podcast_id,
             episode_cnt=fallback_position,
             podcast_cover=self.parsed_podcast.get("cover_url"),
-            lookup_key=self.lookup_key,
-            domain=self.domain,
             instance_id=self.instance_id,
+            domain=self.domain,
             mass_item_id=episode_obj["guid"],
         )
         # Override remotely_accessible as these providers can have unreliable image URLs

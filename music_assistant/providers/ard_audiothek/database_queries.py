@@ -158,6 +158,7 @@ query Show($showId: ID!, $first: Int, $offset: Int, $filter: ItemFilter) {
     title
     showType
     items(first: $first, offset: $offset, filter: $filter) {
+      totalCount
       nodes {
         duration
         title

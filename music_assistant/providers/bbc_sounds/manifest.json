@@ -1,0 +1,18 @@
+{
+  "type": "music",
+  "domain": "bbc_sounds",
+  "stage": "stable",
+  "name": "BBC Sounds",
+  "description": "Stream live BBC radio shows, podcast series and on-demand audio.",
+  "codeowners": [
+    "@kieranhogg"
+  ],
+  "credits": [
+    "[auntie-sounds](https://github.com/kieranhogg/auntie-sounds)"
+  ],
+  "requirements": [
+    "auntie-sounds==1.1.7",
+    "pytz==2025.2"
+  ],
+  "multi_instance": false
+}

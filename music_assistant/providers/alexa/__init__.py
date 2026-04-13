@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -11,25 +12,22 @@ from typing import TYPE_CHECKING, Any, cast
 import aiohttp
 from aiohttp import BasicAuth, web
 from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     PlaybackState,
     PlayerFeature,
     ProviderFeature,
 )
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import ActionUnavailable, LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
-from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_DEPRECATED_CROSSFADE,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.helpers.util import lock
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -52,7 +50,13 @@ CONF_ALEXA_LANGUAGE = "alexa_language"
 
 ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_de-DE": "sag music assistant spiele audio",
+    "play_audio_en-CA": "ask music assistant to play audio",
     "play_audio_en-US": "ask music assistant to play audio",
+    "play_audio_es-ES": "pídele a music assistant que reproduzca audio",
+    "play_audio_fr-CA": "music assistant",
+    "play_audio_fr-FR": "music assistant",
+    "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
+    "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
     "play_audio_default": "ask music assistant to play audio",
 }
 
@@ -185,7 +189,7 @@ async def get_config_entries(
             key=CONF_API_URL,
             type=ConfigEntryType.STRING,
             label="API Url",
-            default_value="http://localhost:3000",
+            default_value="http://localhost:5000",
             required=True,
             value=values.get(CONF_API_URL) if values else None,
         ),
@@ -208,7 +212,17 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Alexa Language",
             required=True,
-            default_value="en-US",
+            options=[
+                ConfigValueOption("English (USA)", "en-US"),
+                ConfigValueOption("English (Canada)", "en-CA"),
+                ConfigValueOption("German (Germany)", "de-DE"),
+                ConfigValueOption("Spanish (Spain)", "es-ES"),
+                ConfigValueOption("French (France)", "fr-FR"),
+                ConfigValueOption("French (Canada)", "fr-CA"),
+                ConfigValueOption("Italian (Italy)", "it-IT"),
+                ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
+            ],
+            default_value="en-US",  # choose a sensible default
         ),
     )
 
@@ -248,6 +262,77 @@ async def delete_cookie(cookiefile: str) -> None:
         _LOGGER.debug("Cookie file %s does not exist, nothing to delete.", cookiefile)
 
 
+async def _request_with_session(
+    session: aiohttp.ClientSession,
+    method: str,
+    url: str,
+    json_data: dict[str, Any] | None,
+    timeout: int,
+    auth: BasicAuth | None,
+) -> str:
+    """Handle an API request with a provided aiohttp session.
+
+    :param session: The aiohttp session to use.
+    :param method: HTTP method to use for the request.
+    :param url: Full URL for the request.
+    :param json_data: Optional JSON payload or query params.
+    :param timeout: Timeout in seconds for the request.
+    :param auth: Optional basic auth credentials.
+    """
+    request_timeout = aiohttp.ClientTimeout(total=timeout)
+    if method.upper() == "GET":
+        async with session.get(url, params=json_data, timeout=request_timeout, auth=auth) as resp:
+            resp_text = await resp.text()
+            if resp.status < 200 or resp.status >= 300:
+                msg = (
+                    f"Failed API request to {url}: Status code: {resp.status}, "
+                    f"Response: {resp_text}"
+                )
+                _LOGGER.error(msg)
+                raise ActionUnavailable(msg)
+            return resp_text
+
+    async with session.request(
+        method.upper(),
+        url,
+        json=json_data,
+        timeout=request_timeout,
+        auth=auth,
+    ) as resp:
+        resp_text = await resp.text()
+        if resp.status < 200 or resp.status >= 300:
+            msg = f"Failed API request to {url}: Status code: {resp.status}, Response: {resp_text}"
+            _LOGGER.error(msg)
+            raise ActionUnavailable(msg)
+        return resp_text
+
+
+async def api_request(
+    provider: PlayerProvider,
+    endpoint: str,
+    method: str = "POST",
+    json_data: dict[str, Any] | None = None,
+    timeout: int = 10,
+) -> str:
+    """Send a request to the configured Music Assistant / Alexa API.
+
+    Returns the response text on success or raises `ActionUnavailable` on failure.
+    """
+    username = provider.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
+    password = provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
+
+    auth = None
+    if username is not None and password is not None:
+        auth = BasicAuth(str(username), str(password))
+
+    api_url = str(provider.config.get_value(CONF_API_URL) or "")
+    url = f"{api_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+    return await _request_with_session(
+        provider.mass.http_session, method, url, json_data, timeout, auth
+    )
+
+
 class AlexaDevice:
     """Representation of an Alexa Device."""
 
@@ -271,6 +356,7 @@ class AlexaPlayer(Player):
         super().__init__(provider, player_id)
         self.device = device
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
         }
@@ -278,6 +364,15 @@ class AlexaPlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._attr_powered = False
         self._attr_available = True
+        # Keep track of the last metadata we pushed to avoid unnecessary uploads
+        self._last_meta_checksum: str | None = None
+        # Keep last stream url pushed (set in play_media)
+        self._last_stream_url: str | None = None
+
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode."""
+        return True
 
     @property
     def api(self) -> AlexaAPI:
@@ -287,20 +382,32 @@ class AlexaPlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        await self.api.stop()
+        provider = cast("AlexaProvider", self.provider)
+
+        utter = await provider.get_intent_utterance("AMAZON.StopIntent", "stop")
+        await self.api.run_custom(utter)
+
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        await self.api.play()
+        provider = cast("AlexaProvider", self.provider)
+
+        utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
+        await self.api.run_custom(utter)
+
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
-        await self.api.pause()
+        provider = cast("AlexaProvider", self.provider)
+
+        utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
+        await self.api.run_custom(utter)
+
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -312,29 +419,26 @@ class AlexaPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
-        username = self.provider.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
-        password = self.provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
 
-        auth = None
-        if username is not None and password is not None:
-            auth = BasicAuth(str(username), str(password))
+        payload = {
+            "streamUrl": stream_url,
+        }
 
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(
-                    f"{self.provider.config.get_value(CONF_API_URL)}/ma/push-url",
-                    json={"streamUrl": media.uri},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    auth=auth,
-                ) as resp:
-                    await resp.text()
-            except Exception as exc:
-                _LOGGER.error("Failed to push URL to Alexa: %s", exc)
-                return
+        await api_request(
+            self.provider,
+            "/ma/push-url",
+            method="POST",
+            json_data=payload,
+            timeout=10,
+        )
+
+        # Save last pushed stream url so metadata updates can reuse it
+        self._last_stream_url = stream_url
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
-        ask_command_key = f"play_audio_{alexa_locale if alexa_locale else 'default'}"
+        ask_command_key = f"play_audio_{alexa_locale or 'default'}"
 
         if ask_command_key not in ALEXA_LANGUAGE_COMMANDS:
             _LOGGER.debug(
@@ -350,37 +454,54 @@ class AlexaPlayer(Player):
         )
 
         await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
-
-        state = await self.api.get_state()
-        if state:
-            state = state.get("playerInfo", None)
-
-        if state:
-            device_media = state.get("infoText")
-            if device_media:
-                media.title = device_media.get("title")
-                media.artist = device_media.get("subText1")
-                self._attr_current_media = media
-            self._attr_elapsed_time = 0
-            self._attr_elapsed_time_last_updated = time.time()
-            if state.get("playbackState") == "PLAYING":
-                self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+        self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_current_media = media
         self.update_state()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries(action=action, values=values)
-        return [
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_DEPRECATED_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_HTTP_PROFILE,
-        ]
+    def _on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated.
+
+        Upload the stream URL and media metadata (title/artist/album/imageUrl)
+        to the configured Music Assistant / Alexa API so the Alexa side can
+        display/update the playing item.
+        """
+        if self._last_stream_url is None:
+            return
+
+        media = self.state.current_media
+
+        async def _upload_metadata() -> None:
+            stream_url = self._last_stream_url
+            if media is not None:
+                title = media.title
+                artist = media.artist
+                album = media.album
+                image_url = media.image_url
+            else:
+                return
+
+            meta_checksum = f"{stream_url}-{album}-{artist}-{title}-{image_url}"
+            if meta_checksum == self._last_meta_checksum:
+                return
+
+            payload = {
+                "streamUrl": stream_url,
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "imageUrl": image_url,
+            }
+
+            await api_request(
+                self.provider, "/ma/push-url", method="POST", json_data=payload, timeout=10
+            )
+
+            # store last pushed values
+            self._last_meta_checksum = meta_checksum
+
+        self.mass.create_task(_upload_metadata())
 
 
 class AlexaProvider(PlayerProvider):
@@ -392,6 +513,8 @@ class AlexaProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.devices = {}
+        self._intents: list[dict[str, Any]] | None = None
+        self._invocation_name: str | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -416,6 +539,8 @@ class AlexaProvider(PlayerProvider):
         if devices is None:
             return
 
+        alexa_locale = str(self.config.get_value(CONF_ALEXA_LANGUAGE, "en-US"))
+
         for device in devices:
             if device.get("capabilities") and "MUSIC_SKILL" in device.get("capabilities"):
                 dev_name = device["accountName"]
@@ -426,9 +551,42 @@ class AlexaProvider(PlayerProvider):
                 device_object.device_serial_number = device["serialNumber"]
                 device_object._device_family = device["deviceOwnerCustomerId"]
                 device_object._cluster_members = device["clusterMembers"]
-                device_object._locale = "en-US"
+                device_object._locale = alexa_locale
                 self.devices[player_id] = device_object
 
                 # Create AlexaPlayer instance
                 player = AlexaPlayer(self, player_id, device_object)
                 await self.mass.players.register_or_update(player)
+
+        await self._load_intents()
+
+    @lock
+    async def _load_intents(self) -> None:
+        """Load intents from the configured API and cache them on the provider."""
+        resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
+        data = json.loads(resp)
+        if isinstance(data, dict):
+            # cache invocationName if present
+            self._invocation_name = data.get("invocationName")
+            self._intents = data.get("intents", []) or []
+        else:
+            self._intents = []
+
+    async def get_intent_utterance(self, intent_name: str, default: str) -> str:
+        """Return the first utterance for the given intent name (cached).
+
+        If intents are not yet cached, attempt to load them.
+        """
+        if self._intents is None:
+            await self._load_intents()
+
+        for intent in self._intents or []:
+            if intent.get("intent") == intent_name:
+                utts = cast("list[str]", intent.get("utterances") or [])
+                if utts:
+                    utter = utts[0]
+                    if self._invocation_name:
+                        inv = self._invocation_name.strip()
+                        return f"{inv} {utter}".strip()
+                    return utter
+        return default

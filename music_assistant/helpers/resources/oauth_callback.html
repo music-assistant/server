@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login Successful</title>
+    <link rel="stylesheet" href="../resources/common.css">
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .consent-banner {
+            display: none;
+            background: var(--error-bg);
+            border: 1px solid var(--error-border);
+            border-left: 4px solid var(--error-text);
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--border);
+        }
+
+        .consent-banner.show {
+            display: block;
+        }
+
+        .consent-banner h2 {
+            color: var(--error-text);
+            font-size: 16px;
+            font-weight: 600;
+            margin: 0 0 10px 0;
+        }
+
+        .consent-banner p {
+            color: var(--fg);
+            font-size: 14px;
+            margin: 0 0 8px 0;
+            line-height: 1.5;
+        }
+
+        .consent-banner .domain {
+            font-weight: 600;
+            font-family: 'Monaco', 'Menlo', monospace;
+            background: var(--input-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .consent-banner .buttons {
+            margin-top: 16px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .consent-banner button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .consent-banner .btn-approve {
+            background: var(--primary);
+            color: white;
+        }
+
+        .consent-banner .btn-approve:hover {
+            filter: brightness(1.1);
+        }
+
+        .consent-banner .btn-cancel {
+            background: var(--input-bg);
+            color: var(--fg);
+            border: 1px solid var(--border);
+        }
+
+        .consent-banner .btn-cancel:hover {
+            background: var(--input-focus-bg);
+        }
+
+        .callback-container {
+            background: var(--panel);
+            padding: 48px 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--border);
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        h1 {
+            color: var(--fg);
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 12px;
+        }
+
+        p {
+            color: var(--text-secondary);
+            font-size: 15px;
+        }
+
+        .close-button {
+            display: none;
+            margin-top: 24px;
+            padding: 12px 24px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .close-button:hover {
+            filter: brightness(1.1);
+            transform: translateY(-1px);
+        }
+
+        .close-button:active {
+            transform: translateY(0);
+        }
+
+        .close-button.show {
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="consent-banner" id="consentBanner">
+        <h2>⚠️ External Application Authorization</h2>
+        <p>The application at <span class="domain" id="redirectDomain"></span> is requesting access to your Music Assistant instance.</p>
+        <p>Only authorize if you trust this application.</p>
+        <div class="buttons">
+            <button class="btn-cancel" onclick="denyRedirect()">Cancel</button>
+            <button class="btn-approve" onclick="approveRedirect()">Authorize & Continue</button>
+        </div>
+    </div>
+    <div class="callback-container">
+        <h1 id="status">Login Successful!</h1>
+        <p id="message">Redirecting...</p>
+        <button class="close-button" id="closeButton" onclick="handleManualClose()">Close Window</button>
+    </div>
+    <script>
+        const statusEl = document.getElementById('status');
+        const messageEl = document.getElementById('message');
+        const token = '{TOKEN}';
+        const redirectUrl = '{REDIRECT_URL}';
+        const requiresConsent = {REQUIRES_CONSENT};
+
+        const isPWA = (window.navigator.standalone === true) ||
+                      window.matchMedia('(display-mode: standalone)').matches ||
+                      window.matchMedia('(display-mode: minimal-ui)').matches;
+
+        function isValidRedirectUrl(url) {
+            if (!url) return false;
+            try {
+                const parsed = new URL(url, window.location.origin);
+                const allowedProtocols = ['http:', 'https:', 'musicassistant:'];
+                return allowedProtocols.includes(parsed.protocol);
+            } catch {
+                return false;
+            }
+        }
+
+        function attemptAutoClose() {
+            window.close();
+            if (window.self !== window.top) {
+                window.self.close();
+            }
+            if (window.opener) {
+                try {
+                    window.opener.focus();
+                    window.close();
+                } catch (e) {
+                    // Silently fail
+                }
+            }
+        }
+
+        function showManualCloseButton() {
+            const closeButton = document.getElementById('closeButton');
+            if (closeButton) {
+                closeButton.classList.add('show');
+            }
+            messageEl.textContent = 'Authentication successful! You can close this window.';
+        }
+
+        function handleManualClose() {
+            attemptAutoClose();
+            setTimeout(() => {
+                if (window.opener && !window.opener.closed) {
+                    window.blur();
+                }
+                messageEl.textContent = 'Please close this window manually.';
+                statusEl.textContent = 'Ready to Close';
+            }, 500);
+        }
+
+        function performRedirect() {
+            const isPopup = window.opener !== null;
+            const isRemoteAuth = redirectUrl === 'about:blank';
+
+            if (isRemoteAuth) {
+                statusEl.textContent = 'Authentication Successful';
+                messageEl.textContent = 'Closing window...';
+                setTimeout(() => {
+                    attemptAutoClose();
+                    setTimeout(() => {
+                        showManualCloseButton();
+                    }, 300);
+                }, 100);
+                return;
+            }
+
+            // PWA mode: OAuth flow on iOS PWAs opens in Safari, then redirects back to PWA
+            // window.opener is null and localStorage is not shared between contexts
+            if (isPWA) {
+                statusEl.textContent = 'Login Complete!';
+                messageEl.textContent = 'Returning to app...';
+                if (isValidRedirectUrl(redirectUrl)) {
+                    window.location.href = redirectUrl;
+                } else {
+                    window.location.href = '/';
+                }
+                return;
+            }
+
+            if (isPopup) {
+                const isExternalRedirect = redirectUrl && !redirectUrl.startsWith(window.location.origin);
+
+                if (isExternalRedirect) {
+                    // External redirect - must redirect to complete OAuth flow
+                    statusEl.textContent = 'Authentication Successful';
+                    messageEl.textContent = 'Redirecting...';
+
+                    if (isValidRedirectUrl(redirectUrl)) {
+                        setTimeout(() => {
+                            window.location.href = redirectUrl;
+                        }, 500);
+                    } else {
+                        messageEl.textContent = 'Redirect failed. Please close this window.';
+                        showManualCloseButton();
+                    }
+                } else {
+                    // Internal redirect - close popup and post message
+                    statusEl.textContent = 'Login Complete!';
+                    messageEl.textContent = 'Closing popup...';
+
+                    if (window.opener && !window.opener.closed) {
+                        try {
+                            window.opener.postMessage({
+                                type: 'oauth_success',
+                                token: token,
+                                redirectUrl: redirectUrl
+                            }, window.location.origin);
+                        } catch (e) {
+                            // Silently fail
+                        }
+                    }
+
+                    setTimeout(() => {
+                        attemptAutoClose();
+                        setTimeout(() => {
+                            showManualCloseButton();
+                        }, 300);
+                    }, 100);
+                }
+            } else {
+                statusEl.textContent = 'Authentication Successful';
+                messageEl.textContent = 'Redirecting...';
+                localStorage.setItem('auth_token', token);
+
+                if (isValidRedirectUrl(redirectUrl)) {
+                    setTimeout(() => {
+                        window.location.href = redirectUrl;
+                    }, 500);
+                } else {
+                    setTimeout(() => {
+                        messageEl.textContent = 'Redirect failed. Please close this window.';
+                        showManualCloseButton();
+                    }, 1000);
+                }
+
+                setTimeout(() => {
+                    showManualCloseButton();
+                }, 2000);
+            }
+        }
+
+        function approveRedirect() {
+            document.getElementById('consentBanner').classList.remove('show');
+            performRedirect();
+        }
+
+        function denyRedirect() {
+            window.location.href = '/';
+        }
+
+        if (requiresConsent) {
+            try {
+                const parsed = new URL(redirectUrl);
+                document.getElementById('redirectDomain').textContent = parsed.origin;
+            } catch {
+                document.getElementById('redirectDomain').textContent = 'unknown';
+            }
+            document.getElementById('consentBanner').classList.add('show');
+            statusEl.textContent = 'Authorization Required';
+            messageEl.textContent = 'Please review the authorization request above.';
+        } else {
+            performRedirect();
+        }
+    </script>
+</body>
+</html>

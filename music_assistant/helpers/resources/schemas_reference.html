@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant API - Schemas Reference</title>
+    <link rel="stylesheet" href="../resources/common.css">
+    <style>
+        .nav-container {
+            background: var(--panel);
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .search-box input {
+            width: 100%;
+            max-width: 600px;
+            padding: 0.6rem 1rem;
+            font-size: 0.95em;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            display: block;
+            margin: 0 auto;
+            background: var(--panel);
+            color: var(--fg);
+        }
+        .search-box input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-secondary);
+            font-size: 1.1em;
+        }
+        .error {
+            text-align: center;
+            padding: 3rem;
+            color: #e74c3c;
+            font-size: 1.1em;
+        }
+        .schema {
+            background: var(--panel);
+            margin-bottom: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            overflow: hidden;
+            scroll-margin-top: 100px;
+        }
+        .schema-header {
+            background: var(--primary);
+            color: var(--fg);
+            padding: 1rem 1.5rem;
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .schema-header:hover {
+            opacity: 0.95;
+        }
+        .schema-name {
+            font-size: 1.3em;
+            font-weight: 600;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+        .schema-expand-icon {
+            font-size: 1.2em;
+            transition: transform 0.3s;
+        }
+        .schema-expand-icon.expanded {
+            transform: rotate(180deg);
+        }
+        .schema-content {
+            padding: 1.5rem;
+            display: none;
+        }
+        .schema-content.show {
+            display: block;
+        }
+        .schema-description {
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            font-style: italic;
+        }
+        .properties-section {
+            margin-top: 1rem;
+        }
+        .properties-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            font-size: 1.1em;
+        }
+        .property {
+            background: var(--background);
+            padding: 0.75rem 1rem;
+            margin: 0.5rem 0;
+            border-radius: 6px;
+            border-left: 3px solid var(--primary);
+        }
+        .property-name {
+            font-family: 'Monaco', 'Courier New', monospace;
+            color: var(--primary);
+            font-weight: 600;
+            font-size: 1em;
+        }
+        .property-required {
+            display: inline-block;
+            background: #e74c3c;
+            color: #ffffff;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 0.5rem;
+        }
+        .property-optional {
+            display: inline-block;
+            background: #95a5a6;
+            color: #ffffff;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 0.5rem;
+        }
+        .property-nullable {
+            display: inline-block;
+            background: #f39c12;
+            color: #ffffff;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 0.5rem;
+        }
+        .property-type {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            margin-left: 0.5rem;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+        .property-description {
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+            font-size: 0.95em;
+        }
+        .type-link {
+            color: var(--primary);
+            text-decoration: none;
+            border-bottom: 1px dashed var(--primary);
+            transition: all 0.2s;
+        }
+        .type-link:hover {
+            opacity: 0.8;
+            border-bottom-color: transparent;
+        }
+        .hidden {
+            display: none;
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 1rem;
+            padding: 0.5rem 1rem;
+            background: var(--primary);
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+        .back-link:hover {
+            opacity: 0.9;
+        }
+        .openapi-link {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: #2e7d32;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+        .openapi-link:hover {
+            background: #1b5e20;
+        }
+        .enum-values {
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: var(--panel);
+            border-radius: 4px;
+        }
+        .enum-values-title {
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            margin-bottom: 0.25rem;
+        }
+        .enum-value {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            margin: 0.2rem;
+            background: var(--success-bg);
+            border: 1px solid var(--success-border);
+            border-radius: 4px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.85em;
+            color: var(--success);
+        }
+        .header .logo {
+            margin-bottom: 1rem;
+        }
+        .header .logo img {
+            width: 60px;
+            height: 60px;
+            object-fit: contain;
+        }
+        .array-type {
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">
+            <img src="/logo.png" alt="Music Assistant">
+        </div>
+        <h1>Schemas Reference</h1>
+        <p>Data models and types used in the Music Assistant API</p>
+    </div>
+
+    <div class="nav-container">
+        <div class="search-box">
+            <input type="text" id="search" placeholder="Search schemas..." />
+        </div>
+    </div>
+
+    <div class="container">
+        <a href="/api-docs" class="back-link">← Back to API Documentation</a>
+        <div id="schemas-container">
+            <div class="loading">Loading schemas...</div>
+        </div>
+        <div style="text-align: center; margin-top: 3rem; padding: 2rem 0;">
+            <a href="/api-docs/openapi.json" class="openapi-link" download>
+                Download OpenAPI Spec
+            </a>
+        </div>
+    </div>
+
+    <script>
+        // Fetch schemas from API and render them
+        async function loadSchemas() {
+            const container = document.getElementById('schemas-container');
+
+            try {
+                const response = await fetch('/api-docs/schemas.json');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const schemas = await response.json();
+
+                // Clear loading message
+                container.innerHTML = '';
+
+                // Render each schema
+                const sortedSchemaNames = Object.keys(schemas).sort();
+                sortedSchemaNames.forEach(schemaName => {
+                    const schemaElement = createSchemaElement(schemaName, schemas[schemaName]);
+                    container.appendChild(schemaElement);
+                });
+
+                // Handle deep linking after schemas are loaded
+                handleDeepLinking();
+
+            } catch (error) {
+                console.error('Error loading schemas:', error);
+                container.innerHTML = '<div class="error">Failed to load schemas. Please try again later.</div>';
+            }
+        }
+
+        function createSchemaElement(schemaName, schemaDef) {
+            const schemaDiv = document.createElement('div');
+            schemaDiv.className = 'schema';
+            schemaDiv.id = `schema-${schemaName}`;
+            schemaDiv.setAttribute('data-schema', schemaName);
+
+            // Schema header
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'schema-header';
+            headerDiv.onclick = function() { toggleSchema(this); };
+
+            const nameDiv = document.createElement('div');
+            nameDiv.className = 'schema-name';
+            nameDiv.textContent = schemaName;
+
+            const iconDiv = document.createElement('div');
+            iconDiv.className = 'schema-expand-icon';
+            iconDiv.textContent = '▼';
+
+            headerDiv.appendChild(nameDiv);
+            headerDiv.appendChild(iconDiv);
+            schemaDiv.appendChild(headerDiv);
+
+            // Schema content
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'schema-content';
+
+            // Add description if available
+            if (schemaDef.description) {
+                const descDiv = document.createElement('div');
+                descDiv.className = 'schema-description';
+                descDiv.textContent = schemaDef.description;
+                contentDiv.appendChild(descDiv);
+            }
+
+            // Add properties if available
+            if (schemaDef.properties) {
+                const propertiesSection = document.createElement('div');
+                propertiesSection.className = 'properties-section';
+
+                const propertiesTitle = document.createElement('div');
+                propertiesTitle.className = 'properties-title';
+                propertiesTitle.textContent = 'Properties:';
+                propertiesSection.appendChild(propertiesTitle);
+
+                const requiredFields = schemaDef.required || [];
+
+                Object.entries(schemaDef.properties).forEach(([propName, propDef]) => {
+                    const propertyDiv = createPropertyElement(propName, propDef, requiredFields);
+                    propertiesSection.appendChild(propertyDiv);
+                });
+
+                contentDiv.appendChild(propertiesSection);
+            }
+
+            schemaDiv.appendChild(contentDiv);
+            return schemaDiv;
+        }
+
+        function createPropertyElement(propName, propDef, requiredFields) {
+            const propertyDiv = document.createElement('div');
+            propertyDiv.className = 'property';
+
+            // Property name
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'property-name';
+            nameSpan.textContent = propName;
+            propertyDiv.appendChild(nameSpan);
+
+            // Check if field is required
+            const isRequired = requiredFields.includes(propName);
+
+            // Check if field is nullable
+            const isNullable = isPropertyNullable(propDef);
+
+            // Add required/optional badge
+            const badge = document.createElement('span');
+            badge.className = isRequired ? 'property-required' : 'property-optional';
+            badge.textContent = isRequired ? 'REQUIRED' : 'OPTIONAL';
+            propertyDiv.appendChild(badge);
+
+            // Add nullable badge if applicable
+            if (isNullable) {
+                const nullableBadge = document.createElement('span');
+                nullableBadge.className = 'property-nullable';
+                nullableBadge.textContent = 'NULLABLE';
+                propertyDiv.appendChild(nullableBadge);
+            }
+
+            // Add type
+            const typeSpan = document.createElement('span');
+            typeSpan.className = 'property-type';
+            typeSpan.innerHTML = formatPropertyType(propDef);
+            propertyDiv.appendChild(typeSpan);
+
+            // Add description
+            if (propDef.description) {
+                const descDiv = document.createElement('div');
+                descDiv.className = 'property-description';
+                descDiv.textContent = propDef.description;
+                propertyDiv.appendChild(descDiv);
+            }
+
+            // Add enum values if present
+            if (propDef.enum) {
+                const enumDiv = document.createElement('div');
+                enumDiv.className = 'enum-values';
+
+                const enumTitle = document.createElement('div');
+                enumTitle.className = 'enum-values-title';
+                enumTitle.textContent = 'Possible values:';
+                enumDiv.appendChild(enumTitle);
+
+                propDef.enum.forEach(enumVal => {
+                    const enumSpan = document.createElement('span');
+                    enumSpan.className = 'enum-value';
+                    enumSpan.textContent = enumVal;
+                    enumDiv.appendChild(enumSpan);
+                });
+
+                propertyDiv.appendChild(enumDiv);
+            }
+
+            return propertyDiv;
+        }
+
+        function isPropertyNullable(propDef) {
+            if (propDef.type === 'null') {
+                return true;
+            }
+            if (propDef.anyOf) {
+                return propDef.anyOf.some(item => item.type === 'null');
+            }
+            if (propDef.oneOf) {
+                return propDef.oneOf.some(item => item.type === 'null');
+            }
+            return false;
+        }
+
+        function formatPropertyType(propDef) {
+            // Handle simple types
+            if (propDef.type && propDef.type !== 'null') {
+                if (propDef.type === 'array' && propDef.items) {
+                    const itemType = formatPropertyType(propDef.items);
+                    return `<span class="array-type">array of ${itemType}</span>`;
+                }
+                return propDef.type;
+            }
+
+            // Handle $ref
+            if (propDef.$ref) {
+                const refType = propDef.$ref.split('/').pop();
+                return `<a href="#schema-${refType}" class="type-link">${refType}</a>`;
+            }
+
+            // Handle anyOf/oneOf
+            if (propDef.anyOf) {
+                const types = propDef.anyOf
+                    .filter(item => item.type !== 'null')
+                    .map(item => formatPropertyType(item));
+                return types.join(' | ');
+            }
+
+            if (propDef.oneOf) {
+                const types = propDef.oneOf
+                    .filter(item => item.type !== 'null')
+                    .map(item => formatPropertyType(item));
+                return types.join(' | ');
+            }
+
+            return 'any';
+        }
+
+        // Toggle schema details
+        function toggleSchema(header) {
+            const schema = header.parentElement;
+            const content = schema.querySelector('.schema-content');
+            const icon = header.querySelector('.schema-expand-icon');
+
+            content.classList.toggle('show');
+            icon.classList.toggle('expanded');
+        }
+
+        // Handle deep linking - expand and scroll to schema
+        function handleDeepLinking() {
+            const hash = window.location.hash;
+            if (hash && hash.startsWith('#schema-')) {
+                scrollToSchema(hash);
+            }
+        }
+
+        function scrollToSchema(hash) {
+            const schemaElement = document.querySelector(hash);
+            if (schemaElement) {
+                // Expand the schema
+                const content = schemaElement.querySelector('.schema-content');
+                const icon = schemaElement.querySelector('.schema-expand-icon');
+                if (content && icon) {
+                    content.classList.add('show');
+                    icon.classList.add('expanded');
+                }
+                // Scroll to it
+                setTimeout(() => {
+                    schemaElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    // Highlight temporarily
+                    schemaElement.style.transition = 'opacity 0.3s';
+                    const originalOpacity = schemaElement.style.opacity || '1';
+                    schemaElement.style.opacity = '0.5';
+                    setTimeout(() => {
+                        schemaElement.style.opacity = originalOpacity;
+                    }, 300);
+                    setTimeout(() => {
+                        schemaElement.style.opacity = originalOpacity;
+                    }, 600);
+                }, 100);
+            }
+        }
+
+        // Listen for hash changes (when user clicks a type link)
+        window.addEventListener('hashchange', function() {
+            const hash = window.location.hash;
+            if (hash && hash.startsWith('#schema-')) {
+                scrollToSchema(hash);
+            }
+        });
+
+        // Search functionality
+        document.getElementById('search').addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const schemas = document.querySelectorAll('.schema');
+
+            schemas.forEach(schema => {
+                const schemaName = schema.dataset.schema;
+                const schemaText = schema.textContent.toLowerCase();
+                const nameMatch = schemaName.toLowerCase().includes(searchTerm);
+                const textMatch = schemaText.includes(searchTerm);
+
+                if (nameMatch || textMatch) {
+                    schema.classList.remove('hidden');
+                    // Expand if search term is present and not just in the name
+                    if (searchTerm && textMatch) {
+                        const content = schema.querySelector('.schema-content');
+                        const icon = schema.querySelector('.schema-expand-icon');
+                        if (content && icon && !content.classList.contains('show')) {
+                            content.classList.add('show');
+                            icon.classList.add('expanded');
+                        }
+                    }
+                } else {
+                    schema.classList.add('hidden');
+                }
+            });
+        });
+
+        // Load schemas on page load
+        loadSchemas();
+    </script>
+</body>
+</html>

@@ -1,0 +1,350 @@
+/* Music Assistant - Common Styles
+ * Shared CSS variables and base styles used across all HTML pages
+ */
+
+/* CSS Variables for theming */
+:root {
+    --fg: #000000;
+    --background: #f5f5f5;
+    --overlay: #e7e7e7;
+    --panel: #ffffff;
+    --default: #ffffff;
+    --primary: #03a9f4;
+    --text-secondary: rgba(0, 0, 0, 0.6);
+    --text-tertiary: rgba(0, 0, 0, 0.4);
+    --border: rgba(0, 0, 0, 0.1);
+    --input-bg: rgba(0, 0, 0, 0.03);
+    --input-focus-bg: rgba(3, 169, 244, 0.05);
+    --primary-glow: rgba(3, 169, 244, 0.15);
+    --error-bg: rgba(244, 67, 54, 0.08);
+    --error-border: rgba(244, 67, 54, 0.2);
+    --error-text: #d32f2f;
+    --success: #4caf50;
+    --success-bg: rgba(76, 175, 80, 0.1);
+    --success-border: rgba(76, 175, 80, 0.3);
+    --code-bg: #2d2d2d;
+    --code-fg: #f8f8f2;
+    --code-comment: #75715e;
+    --code-string: #e6db74;
+    --code-keyword: #66d9ef;
+    --info-bg: rgba(3, 169, 244, 0.08);
+    --info-border: rgba(3, 169, 244, 0.3);
+}
+
+/* Dark mode color scheme */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --fg: #ffffff;
+        --background: #181818;
+        --overlay: #181818;
+        --panel: #232323;
+        --default: #000000;
+        --text-secondary: rgba(255, 255, 255, 0.7);
+        --text-tertiary: rgba(255, 255, 255, 0.4);
+        --border: rgba(255, 255, 255, 0.08);
+        --input-bg: rgba(255, 255, 255, 0.05);
+        --input-focus-bg: rgba(3, 169, 244, 0.08);
+        --primary-glow: rgba(3, 169, 244, 0.25);
+        --error-bg: rgba(244, 67, 54, 0.1);
+        --error-border: rgba(244, 67, 54, 0.25);
+        --error-text: #ff6b6b;
+        --success: #66bb6a;
+        --success-bg: rgba(102, 187, 106, 0.15);
+        --success-border: rgba(102, 187, 106, 0.4);
+        --code-bg: #1a1a1a;
+        --info-bg: rgba(3, 169, 244, 0.12);
+        --info-border: rgba(3, 169, 244, 0.4);
+    }
+}
+
+/* Base reset and body styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: var(--background);
+    color: var(--fg);
+    line-height: 1.6;
+}
+
+/* Common header styles */
+.header {
+    background: var(--panel);
+    color: var(--fg);
+    padding: 1.5rem 2rem;
+    text-align: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    border-bottom: 1px solid var(--border);
+}
+
+.header h1 {
+    font-size: 1.8em;
+    margin-bottom: 0.3rem;
+    font-weight: 600;
+}
+
+.header p {
+    font-size: 0.95em;
+    opacity: 0.9;
+}
+
+.header .logo {
+    margin-bottom: 1rem;
+}
+
+.header .logo img {
+    width: 60px;
+    height: 60px;
+    object-fit: contain;
+}
+
+/* Logo styles */
+.logo {
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+.logo img {
+    width: 72px;
+    height: 72px;
+    object-fit: contain;
+}
+
+/* Form elements */
+.form-group {
+    margin-bottom: 22px;
+}
+
+label {
+    display: block;
+    color: var(--fg);
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 8px;
+    letter-spacing: 0.2px;
+}
+
+input[type="text"],
+input[type="password"] {
+    width: 100%;
+    padding: 14px 16px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 15px;
+    color: var(--fg);
+    transition: all 0.2s ease;
+}
+
+input[type="text"]::placeholder,
+input[type="password"]::placeholder {
+    color: var(--text-tertiary);
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus {
+    outline: none;
+    border-color: var(--primary);
+    background: var(--input-focus-bg);
+    box-shadow: 0 0 0 3px var(--primary-glow);
+}
+
+input[type="text"]:disabled {
+    background: var(--overlay);
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+}
+
+/* Button styles */
+.btn {
+    width: 100%;
+    padding: 15px;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    letter-spacing: 0.3px;
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: white;
+}
+
+.btn-primary:hover {
+    filter: brightness(1.1);
+    box-shadow: 0 8px 24px var(--primary-glow);
+    transform: translateY(-1px);
+}
+
+.btn-primary:active {
+    transform: translateY(0);
+    filter: brightness(0.95);
+}
+
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+    filter: none;
+}
+
+.btn-secondary {
+    background: var(--input-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.btn-secondary:hover {
+    background: var(--input-focus-bg);
+    border-color: var(--primary);
+}
+
+/* Error and success messages */
+.error {
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    color: var(--error-text);
+    padding: 14px 16px;
+    border-radius: 10px;
+    margin-bottom: 22px;
+    font-size: 13px;
+    display: none;
+}
+
+.error.show {
+    display: block;
+}
+
+.error-message {
+    background: var(--error-bg);
+    color: var(--error-text);
+    padding: 14px 16px;
+    border-radius: 10px;
+    margin-bottom: 22px;
+    font-size: 13px;
+    display: none;
+    border: 1px solid var(--error-border);
+}
+
+.error-message.show {
+    display: block;
+}
+
+/* Container and panel styles */
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background: var(--panel);
+    border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--border);
+}
+
+.panel {
+    background: var(--panel);
+    border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--border);
+    padding: 48px 40px;
+}
+
+/* Loading indicator */
+.loading {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Code blocks */
+.code-block,
+.example {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 1rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-family: 'Monaco', 'Courier New', monospace;
+    font-size: 0.9em;
+    line-height: 1.6;
+}
+
+.example pre {
+    margin: 0;
+}
+
+/* Divider */
+.divider {
+    text-align: center;
+    margin: 28px 0;
+    position: relative;
+}
+
+.divider::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--border);
+}
+
+.divider span {
+    background: var(--panel);
+    padding: 0 16px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+    position: relative;
+}
+
+/* Link styles */
+.type-link {
+    color: var(--primary);
+    text-decoration: none;
+    border-bottom: 1px dashed var(--primary);
+    transition: all 0.2s;
+}
+
+.type-link:hover {
+    opacity: 0.8;
+    border-bottom-color: transparent;
+}
+
+.back-link {
+    display: inline-block;
+    margin-bottom: 1rem;
+    padding: 0.5rem 1rem;
+    background: var(--primary);
+    color: #ffffff;
+    text-decoration: none;
+    border-radius: 6px;
+    transition: background 0.2s;
+}
+
+.back-link:hover {
+    opacity: 0.9;
+}
+
+/* Utility classes */
+.hidden {
+    display: none;
+}

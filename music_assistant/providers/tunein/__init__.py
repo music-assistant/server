@@ -145,7 +145,7 @@ class TuneInProvider(MusicProvider):
         if not prov_radio_id.startswith("http"):
             if "--" in prov_radio_id:
                 # handle this for backwards compatibility
-                prov_radio_id = prov_radio_id.split("--")[0]
+                prov_radio_id = prov_radio_id.split("--", maxsplit=1)[0]
             params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
             result = await self.__get_data("Describe.ashx", **params)
             if result and result.get("body") and result["body"][0].get("children"):
@@ -182,7 +182,7 @@ class TuneInProvider(MusicProvider):
             preferred_stream = stream_info[0]
             radio = Radio(
                 item_id=details["preset_id"],
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 name=name,
                 provider_mappings={
                     ProviderMapping(
@@ -202,7 +202,7 @@ class TuneInProvider(MusicProvider):
             # custom url (no stream object present)
             radio = Radio(
                 item_id=details["URL"],
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 name=name,
                 provider_mappings={
                     ProviderMapping(
@@ -230,7 +230,7 @@ class TuneInProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=img,
-                        provider=self.lookup_key,
+                        provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
@@ -267,7 +267,7 @@ class TuneInProvider(MusicProvider):
         if item_id.startswith("http"):
             # custom url
             return StreamDetails(
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 item_id=item_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
@@ -280,13 +280,13 @@ class TuneInProvider(MusicProvider):
             )
         if "--" in item_id:
             # handle this for backwards compatibility
-            item_id = item_id.split("--")[0]
+            item_id = item_id.split("--", maxsplit=1)[0]
         if stream_info := await self._get_stream_info(item_id):
             # assuming here that the streams are sorted by quality (bitrate)
             # and the first one is the best quality
             preferred_stream = stream_info[0]
             return StreamDetails(
-                provider=self.lookup_key,
+                provider=self.instance_id,
                 item_id=item_id,
                 # set contenttype to unknown so ffmpeg can auto detect it
                 audio_format=AudioFormat(content_type=ContentType.UNKNOWN),

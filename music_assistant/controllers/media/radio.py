@@ -3,19 +3,29 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Radio, Track
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.media_items import ProviderMapping, Radio, Track
 
 from music_assistant.constants import DB_TABLE_RADIOS
-from music_assistant.helpers.compare import create_safe_string, loose_compare_strings
+from music_assistant.helpers.compare import (
+    compare_media_item,
+    compare_radio,
+    create_safe_string,
+    loose_compare_strings,
+)
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.playlists import generate_m3u, media_item_to_playlist_item
+from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.providers.builtin import BuiltinProvider
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -31,6 +41,25 @@ class RadioController(MediaControllerBase[Radio]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/radio_versions", self.versions)
+        self.mass.register_api_command(f"music/{api_base}/export_radios", self.export_radios)
+        self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
+
+    async def export_radios(self) -> str:
+        """Export all library radio stations to M3U8 format."""
+        radios = await self.library_items(limit=10000, offset=0)
+        items = [media_item_to_playlist_item(radio) for radio in radios]
+        return generate_m3u("Radio Stations", items)
+
+    async def import_radios(self, m3u_data: str) -> int:
+        """Import radio stations from M3U8 format.
+
+        :param m3u_data: The M3U8 data as a string.
+        """
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+        return await builtin_prov.import_radios(m3u_data)
 
     async def versions(
         self,
@@ -73,6 +102,7 @@ class RadioController(MediaControllerBase[Radio]):
                 "search_sort_name": create_safe_string(
                     item.sort_name if item.sort_name is not None else "", True, True
                 ),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -105,6 +135,9 @@ class RadioController(MediaControllerBase[Radio]):
                 ),
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -118,17 +151,77 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def radio_mode_base_tracks(
         self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        limit: int = 25,
+        item: Radio,
+        preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Radio to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
         msg = "Dynamic tracks not supported for Radio MediaItem"
         raise NotImplementedError(msg)
 
-    async def match_providers(self, db_item: Radio) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) item.
+    async def match_provider(
+        self, db_radio: Radio, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
+        """
+        Try to find match on (streaming) provider for the provided (database) radio.
 
         This is used to link objects of different providers/qualities together.
         """
-        raise NotImplementedError
+        self.logger.debug(
+            "Trying to match radio %s on provider %s",
+            db_radio.name,
+            provider.name,
+        )
+        matches: list[ProviderMapping] = []
+        search_str = db_radio.name
+        search_result = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_result:
+            if not search_result_item.available:
+                continue
+            if not compare_media_item(db_radio, search_result_item, strict=strict):
+                continue
+            # we must fetch the full radio version, search results can be simplified objects
+            prov_radio = await self.get_provider_item(
+                search_result_item.item_id,
+                search_result_item.provider,
+                fallback=search_result_item,
+            )
+            if compare_radio(db_radio, prov_radio, strict=strict):
+                # 100% match
+                matches.extend(prov_radio.provider_mappings)
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Radio %s on provider %s",
+                db_radio.name,
+                provider.name,
+            )
+        return matches
+
+    async def match_providers(self, db_radio: Radio) -> None:
+        """Try to find match on all (streaming) providers for the provided (database) radio.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        if db_radio.provider != "library":
+            return  # Matching only supported for database items
+
+        # try to find match on all providers
+        cur_provider_domains = {x.provider_domain for x in db_radio.provider_mappings}
+        for provider in self.mass.music.providers:
+            if provider.domain in cur_provider_domains:
+                continue
+            if ProviderFeature.SEARCH not in provider.supported_features:
+                continue
+            if not provider.library_supported(MediaType.RADIO):
+                continue
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
+                continue
+            if match := await self.match_provider(db_radio, provider):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_radio.item_id, match)
+                cur_provider_domains.add(provider.domain)

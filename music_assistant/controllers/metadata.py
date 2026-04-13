@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import collections
 import logging
 import os
+import pathlib
 import random
 import urllib.parse
 from base64 import b64encode
 from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING, cast
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import aiofiles
 from aiohttp import web
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
@@ -43,18 +44,32 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
-    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress,
+    update_current_task_progress_from_index,
+    update_current_task_progress_text,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.images import create_collage, get_image_thumb
+from music_assistant.helpers.datetime import local_clock_time_to_utc
+from music_assistant.helpers.images import (
+    cleanup_thumb_cache,
+    create_collage,
+    get_image_data,
+    get_image_thumb,
+)
+from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -62,6 +77,18 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
+
+
+def _detect_image_format(path: str) -> str:
+    """Detect image format from file path extension, defaulting to jpg."""
+    match pathlib.PurePath(path).suffix.lower():
+        case ".svg":
+            return "svg"
+        case ".png":
+            return "png"
+        case _:
+            return "jpg"
+
 
 LOCALES = {
     "af_ZA": "African",
@@ -104,14 +131,15 @@ LOCALES = {
 }
 
 DEFAULT_LANGUAGE = "en_US"
-REFRESH_INTERVAL_ARTISTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_ALBUMS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_TRACKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_AUDIOBOOKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PODCASTS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PLAYLISTS = 60 * 60 * 24 * 14  # 14 days
-PERIODIC_SCAN_INTERVAL = 60 * 60 * 6  # 6 hours
+REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
+MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
+PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
+THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup"
+METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
+METADATA_SCAN_BATCH_SIZE = 5
+CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
+DEFAULT_THUMB_CACHE_MAX_SIZE_MB = 500
 
 
 class MetaDataController(CoreController):
@@ -130,8 +158,6 @@ class MetaDataController(CoreController):
             "Music Assistant's core controller which handles all metadata for music."
         )
         self.manifest.icon = "book-information-variant"
-        self._lookup_jobs: MetadataLookupQueue = MetadataLookupQueue(100)
-        self._lookup_task: asyncio.Task[None] | None = None
         self._throttler = Throttler(1, 30)
 
     async def get_config_entries(
@@ -169,6 +195,16 @@ class MetaDataController(CoreController):
                 "in the background to not overload these free services with requests. "
                 "You can speedup the process by storing the images and other metadata locally.",
             ),
+            ConfigEntry(
+                key=CONF_THUMB_CACHE_MAX_SIZE,
+                type=ConfigEntryType.INTEGER,
+                label="Maximum thumbnail cache size (MB)",
+                required=False,
+                default_value=DEFAULT_THUMB_CACHE_MAX_SIZE_MB,
+                range=(50, 5000),
+                description="Maximum total size in megabytes for the on-disk thumbnail cache.\n\n"
+                "Oldest thumbnails are automatically removed when this limit is exceeded.",
+            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -181,12 +217,11 @@ class MetaDataController(CoreController):
         self._collage_images_dir = os.path.join(self.mass.cache_path, "collage_images")
         if not await asyncio.to_thread(os.path.exists, self._collage_images_dir):
             await asyncio.to_thread(os.mkdir, self._collage_images_dir)
+
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
-        # the lookup task is used to process metadata lookup jobs
-        self._lookup_task = self.mass.create_task(self._process_metadata_lookup_jobs())
-        # just run the scan for missing metadata once at startup
-        # background scan for missing metadata
-        self.mass.call_later(300, self._scan_missing_metadata)
+        self._register_maintenance_tasks()
         # migrate theaudiodb images to new url
         # they updated their cdn url to r2.theaudiodb.com
         # TODO: remove this after 2.7 release
@@ -195,20 +230,20 @@ class MetaDataController(CoreController):
             "REPLACE (metadata, 'https://www.theaudiodb.com', 'https://r2.theaudiodb.com') "
             "WHERE artists.metadata LIKE '%https://www.theaudiodb.com%'"
         )
-        if self.mass.music.database:
-            await self.mass.music.database.execute(query)
-            await self.mass.music.database.commit()
+        await self.mass.music.database.execute(query)
+        await self.mass.music.database.commit()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
-        if self._lookup_task and not self._lookup_task.done():
-            self._lookup_task.cancel()
         self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
-        return cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA))
+        return sorted(
+            cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA)),
+            key=lambda p: p.priority,
+        )
 
     @property
     def preferred_language(self) -> str:
@@ -226,7 +261,7 @@ class MetaDataController(CoreController):
     @api_command("metadata/set_default_preferred_language")
     def set_default_preferred_language(self, lang: str) -> None:
         """
-        Set the (default) preferred language.
+        Set the default preferred language.
 
         Reasoning behind this is that the backend can not make a wise choice for the default,
         so relies on some external source that knows better to set this info, like the frontend
@@ -235,6 +270,16 @@ class MetaDataController(CoreController):
         """
         if self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE):
             return  # already set
+        self.set_preferred_language(lang)
+
+    @api_command("metadata/set_preferred_language")
+    def set_preferred_language(self, lang: str) -> None:
+        """
+        Set the preferred language.
+
+        Note that this will not modify any existing metadata,
+        but will be used for future lookups.
+        """
         # prefer exact match
         if lang in LOCALES:
             self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
@@ -269,48 +314,57 @@ class MetaDataController(CoreController):
                     raise TypeError("Cannot update metadata on a BrowseFolder item.")
                 item = retrieved_item
 
-            if item.provider != "library":
-                # this shouldn't happen but just in case.
-                raise RuntimeError("Metadata can only be updated for library items")
+        if item.provider != "library":
+            # this shouldn't happen but just in case.
+            raise RuntimeError("Metadata can only be updated for library items")
 
-            # just in case it was in the queue, prevent duplicate lookups
-            if item.uri:
-                self._lookup_jobs.pop(item.uri)
-            async with self._throttler:
-                if item.media_type == MediaType.ARTIST:
-                    await self._update_artist_metadata(
-                        cast("Artist", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.ALBUM:
-                    await self._update_album_metadata(
-                        cast("Album", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.TRACK:
-                    await self._update_track_metadata(
-                        cast("Track", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.PLAYLIST:
-                    await self._update_playlist_metadata(
-                        cast("Playlist", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.AUDIOBOOK:
-                    await self._update_audiobook_metadata(
-                        cast("Audiobook", item), force_refresh=force_refresh
-                    )
-                if item.media_type == MediaType.PODCAST:
-                    await self._update_podcast_metadata(
-                        cast("Podcast", item), force_refresh=force_refresh
-                    )
-            return item
+        async with self._throttler:
+            if item.media_type == MediaType.ARTIST:
+                await self._update_artist_metadata(
+                    cast("Artist", item), force_refresh=force_refresh
+                )
+            if item.media_type == MediaType.ALBUM:
+                await self._update_album_metadata(cast("Album", item), force_refresh=force_refresh)
+            if item.media_type == MediaType.TRACK:
+                await self._update_track_metadata(cast("Track", item), force_refresh=force_refresh)
+            if item.media_type == MediaType.PLAYLIST:
+                await self._update_playlist_metadata(
+                    cast("Playlist", item), force_refresh=force_refresh
+                )
+            if item.media_type == MediaType.AUDIOBOOK:
+                await self._update_audiobook_metadata(
+                    cast("Audiobook", item), force_refresh=force_refresh
+                )
+            if item.media_type == MediaType.PODCAST:
+                await self._update_podcast_metadata(
+                    cast("Podcast", item), force_refresh=force_refresh
+                )
+        return item
 
-    def schedule_update_metadata(self, uri: str) -> None:
-        """Schedule metadata update for given MediaItem uri."""
-        if "library" not in uri:
+    def schedule_update_metadata(self, item: MediaItemType) -> None:
+        """Schedule metadata update for given MediaItem."""
+        if item.provider != "library":
+            # this shouldn't happen but just in case.
             return
-        if self._lookup_jobs.exists(uri):
+        last_refresh = item.metadata.last_refresh or 0
+        needs_update = (time() - last_refresh) > REFRESH_INTERVAL
+        if not needs_update:
             return
-        with suppress(asyncio.QueueFull):
-            self._lookup_jobs.put_nowait(uri)
+        assert item.uri is not None
+        task_id = self._get_metadata_lookup_task_id(item.uri)
+        _item = item
+
+        self.mass.tasks.run_background_task(
+            task_id=task_id,
+            name=f"Update metadata for {item.name}",
+            handler=lambda: self.update_metadata(_item),
+            translation_key="background_task.update_metadata",
+            translation_args=[item.name],
+            metadata={
+                "task_domain": "metadata_lookup",
+                "item_uri": item.uri,
+            },
+        )
 
     async def get_image_data_for_item(
         self,
@@ -344,7 +398,7 @@ class MetaDataController(CoreController):
             if media_item.image and media_item.image.type == img_type:
                 if media_item.image.remotely_accessible and resolve:
                     return self.get_image_url(media_item.image)
-                elif not media_item.image.remotely_accessible:
+                if not media_item.image.remotely_accessible:
                     return media_item.image.path
 
             # Only retrieve full item if we don't have the image we need
@@ -384,15 +438,24 @@ class MetaDataController(CoreController):
         image: MediaItemImage,
         size: int = 0,
         prefer_proxy: bool = False,
-        image_format: str = "png",
+        image_format: str | None = None,
+        prefer_stream_server: bool = False,
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
+        if image_format is None:
+            image_format = _detect_image_format(image.path)
+        if image_format == "svg":
+            # SVGs don't need resizing
+            size = 0
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote_plus(urllib.parse.quote_plus(image.path))
+            base_url = (
+                self.mass.streams.base_url if prefer_stream_server else self.mass.webserver.base_url
+            )
             return (
-                f"{self.mass.streams.base_url}/imageproxy?provider={image.provider}"
+                f"{base_url}/imageproxy?provider={image.provider}"
                 f"&size={size}&fmt={image_format}&path={encoded_url}"
             )
         return image.path
@@ -403,14 +466,25 @@ class MetaDataController(CoreController):
         provider: str,
         size: int | None = None,
         base64: bool = False,
-        image_format: str = "png",
+        image_format: str | None = None,
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             raise ProviderUnavailableError
+        if image_format is None:
+            image_format = _detect_image_format(path)
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
-            path = os.path.join(self._collage_images_dir, path.split("/collage/")[-1])
+            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
+            if not is_safe_path(collage_rel):
+                raise FileNotFoundError("Invalid collage path")
+            path = os.path.join(self._collage_images_dir, collage_rel)
+        if image_format == "svg":
+            svg_bytes = await get_image_data(self.mass, path, provider)
+            if base64:
+                enc_image = b64encode(svg_bytes).decode()
+                return f"data:image/svg+xml;base64,{enc_image}"
+            return svg_bytes
         thumbnail_bytes = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
         )
@@ -427,23 +501,37 @@ class MetaDataController(CoreController):
             # temporary for backwards compatibility
             provider = "builtin"
         size = int(request.query.get("size", "0"))
-        image_format = request.query.get("fmt", "png")
+        image_format = request.query.get("fmt", None)
+        if image_format is None:
+            image_format = _detect_image_format(path)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote_plus(path)
-        with suppress(FileNotFoundError):
+        try:
             image_data = await self.get_thumbnail(
                 path, size=size, provider=provider, image_format=image_format
             )
             # we set the cache header to 1 year (forever)
             # assuming that images do not/rarely change
+            content_type = "image/svg+xml" if image_format == "svg" else f"image/{image_format}"
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-                content_type=f"image/{image_format}",
+                content_type=content_type,
             )
+        except Exception as err:
+            # broadly catch all exceptions here to ensure we dont crash the request handler
+            if isinstance(err, FileNotFoundError):
+                self.logger.log(VERBOSE_LOG_LEVEL, "Image not found: %s", path)
+            else:
+                self.logger.warning(
+                    "Error while fetching image %s: %s",
+                    path,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
         return web.Response(status=404)
 
     async def create_collage_image(
@@ -485,11 +573,48 @@ class MetaDataController(CoreController):
             )
         return None
 
+    @api_command("metadata/get_track_lyrics")
+    async def get_track_lyrics(
+        self,
+        track: Track,
+    ) -> tuple[str | None, str | None]:
+        """
+        Get lyrics for given track from metadata providers.
+
+        Returns a tuple of (lyrics, lrc_lyrics) if found.
+        """
+        if track.metadata and track.metadata.lyrics:
+            return track.metadata.lyrics, track.metadata.lrc_lyrics
+
+        if track.provider == "library":
+            # try to update metadata first
+            await self._update_track_metadata(track, force_refresh=False)
+            return track.metadata.lyrics, track.metadata.lrc_lyrics
+
+        # prefer lyrics from the track's own provider
+        track_provider = self.mass.get_provider(track.provider, provider_type=MusicProvider)
+        if track_provider and ProviderFeature.LYRICS in track_provider.supported_features:
+            full_track = await self.mass.music.tracks.get_provider_item(
+                track.item_id, track.provider
+            )
+            if full_track.metadata and full_track.metadata.lyrics:
+                return full_track.metadata.lyrics, full_track.metadata.lrc_lyrics
+
+        # fallback to other metadata providers
+        for provider in self.providers:
+            if ProviderFeature.LYRICS not in provider.supported_features:
+                continue
+            if (metadata := await provider.get_track_metadata(track)) and (
+                metadata.lyrics or metadata.lrc_lyrics
+            ):
+                return metadata.lyrics, metadata.lrc_lyrics
+        return None, None
+
     async def _update_artist_metadata(self, artist: Artist, force_refresh: bool = False) -> None:
         """Get/update rich metadata for an artist."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL_ARTISTS
+        needs_refresh = (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
@@ -501,21 +626,22 @@ class MetaDataController(CoreController):
         if TYPE_CHECKING:
             local_provs = cast("set[str]", local_provs)
 
-        # ensure the item is matched to all providers
-        await self.mass.music.artists.match_providers(artist)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         for prov_mapping in sorted(
             artist.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.artists.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -550,29 +676,27 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an album."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL_ALBUMS
+        needs_refresh = (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
         self.logger.debug("Updating metadata for Album %s", album.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.albums.match_providers(album)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(album.provider_mappings, key=lambda x: x.priority, reverse=True):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.albums.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -605,28 +729,27 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a track."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL_TRACKS
+        needs_refresh = (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
         self.logger.debug("Updating metadata for Track %s", track.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.tracks.match_providers(track)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(track.provider_mappings, key=lambda x: x.priority, reverse=True):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.tracks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -635,7 +758,7 @@ class MetaDataController(CoreController):
 
         # collect metadata from all [metadata] providers
         # Only fetch metadata from these sources if force_refresh is set OR
-        # if the track needs a refresh (based on REFRESH_INTERVAL_TRACKS) AND
+        # if the track needs a refresh (based on REFRESH_INTERVAL) AND
         # online metadata is enabled.
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
@@ -660,9 +783,7 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a playlist."""
         # collect metadata + create collage images
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (
-            time() - (playlist.metadata.last_refresh or 0)
-        ) > REFRESH_INTERVAL_PLAYLISTS
+        needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
         self.logger.debug("Updating metadata for Playlist %s", playlist.name)
@@ -683,7 +804,12 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images.append(track.image)
             if track.metadata.genres:
                 genres = track.metadata.genres
-            elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
+            elif (
+                isinstance(track, Track)
+                and track.album
+                and isinstance(track.album, Album)
+                and track.album.metadata.genres
+            ):
                 genres = track.album.metadata.genres
             else:
                 genres = set()
@@ -733,33 +859,29 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an audiobook."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (
-            time() - (audiobook.metadata.last_refresh or 0)
-        ) > REFRESH_INTERVAL_AUDIOBOOKS
+        needs_refresh = (time() - (audiobook.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
         self.logger.debug("Updating metadata for Audiobook %s", audiobook.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.audiobooks.match_providers(audiobook)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(
             audiobook.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.audiobooks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -783,31 +905,29 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a podcast."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
-        needs_refresh = (time() - (podcast.metadata.last_refresh or 0)) > REFRESH_INTERVAL_PODCASTS
+        needs_refresh = (time() - (podcast.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
             return
 
         self.logger.debug("Updating metadata for Podcast %s", podcast.name)
 
-        # ensure the item is matched to all providers (will also get other quality versions)
-        await self.mass.music.podcasts.match_providers(podcast)
-
         # collect metadata from all [music] providers
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
-        local_provs = get_global_cache_value("non_streaming_providers")
-        if TYPE_CHECKING:
-            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(
             podcast.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+            prov = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if prov is None:
                 continue
-            if prov.lookup_key in unique_keys:
+            # prefer domain for streaming providers as the catalog is the same across instances
+            prov_key = prov.domain if prov.is_streaming_provider else prov.instance_id
+            if prov_key in unique_keys:
                 continue
-            if prov.lookup_key not in local_provs:
-                unique_keys.add(prov.lookup_key)
+            unique_keys.add(prov_key)
             with suppress(MediaNotFoundError):
                 prov_item = await self.mass.music.podcasts.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
@@ -875,99 +995,128 @@ class MetaDataController(CoreController):
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
         self.logger.debug(
-            "Unable to get musicbrainz ID for artist %s\n"
-            " - using lookup-album(s): %s\n"
-            " - using lookup-track(s): %s\n",
+            "Unable to get musicbrainz ID for artist %s (albums: %s, tracks: %s)",
             artist.name,
             ref_albums_str,
             ref_tracks_str,
         )
         return None
 
-    async def _process_metadata_lookup_jobs(self) -> None:
-        """Task to process metadata lookup jobs."""
-        # postpone the lookup for a while to allow the system to start up and providers initialized
-        await asyncio.sleep(60)
-        while True:
-            item_uri = await self._lookup_jobs.get()
-            self.logger.debug(f"Processing metadata lookup for {item_uri}")
+    def _register_maintenance_tasks(self) -> None:
+        """Register the recurring metadata maintenance background tasks."""
+        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
+        self.mass.tasks.register_scheduled_task(
+            task_id=MISSING_ARTIST_METADATA_SCAN_TASK_ID,
+            name="Scan missing artist metadata",
+            handler=self._scan_missing_artist_metadata,
+            schedule=desired_schedule,
+            translation_key="background_task.scan_missing_artist_metadata",
+            metadata={"task_domain": "metadata_missing_artist_metadata_scan"},
+            allow_retry=True,
+        )
+        self.mass.tasks.register_scheduled_task(
+            task_id=PLAYLIST_METADATA_SCAN_TASK_ID,
+            name="Refresh playlist metadata",
+            handler=self._refresh_playlist_metadata_batch,
+            schedule=desired_schedule,
+            translation_key="background_task.refresh_playlist_metadata",
+            metadata={"task_domain": "metadata_playlist_metadata_scan"},
+            allow_retry=True,
+        )
+        self.mass.tasks.register_scheduled_task(
+            task_id=THUMB_CACHE_CLEANUP_TASK_ID,
+            name="Cleanup thumbnail cache",
+            handler=self._cleanup_thumb_cache,
+            schedule=desired_schedule,
+            translation_key="background_task.cleanup_thumbnail_cache",
+            metadata={"task_domain": "metadata_thumb_cache_cleanup"},
+            allow_retry=True,
+        )
+
+    @staticmethod
+    def _get_metadata_lookup_task_id(uri: str) -> str:
+        """Return deterministic task id for a metadata lookup."""
+        return f"{METADATA_LOOKUP_TASK_ID_PREFIX}_{uuid5(NAMESPACE_URL, uri).hex}"
+
+    async def _scan_missing_artist_metadata(self) -> None:
+        """Scan for artists with missing metadata."""
+        update_current_task_progress_text("Searching for artists with missing metadata")
+        missing_images = (
+            f"(json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
+            f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
+        )
+        missing_description = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.description') ISNULL"
+        never_refreshed = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL"
+        query = f"({missing_images} OR {missing_description}) AND {never_refreshed}"
+        artists = await self.mass.music.artists.get_library_items_by_query(
+            limit=METADATA_SCAN_BATCH_SIZE,
+            order_by="random",
+            extra_query_parts=[query],
+        )
+        if not artists:
+            update_current_task_progress_text("No artists with missing metadata found")
+            return
+        for index, artist in enumerate(artists, 1):
             try:
-                item = await self.mass.music.get_item_by_uri(item_uri)
-                await self.update_metadata(cast("MediaItemType", item))
-            except MediaNotFoundError:
-                # this can happen when the item is removed from the library
-                pass
+                update_current_task_progress_from_index(
+                    index,
+                    len(artists),
+                    f"Refreshing metadata for artist {index}/{len(artists)}: {artist.name}",
+                )
+                await self._update_artist_metadata(artist, force_refresh=False)
             except Exception as err:
-                self.logger.error(
-                    "Error while updating metadata for %s: %s",
-                    item_uri,
+                report_current_task_failure(f"{artist.name}: {err}")
+                self.logger.warning(
+                    "Error while updating artist metadata for %s: %s",
+                    artist.name,
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
+        update_current_task_progress(100, f"Processed {len(artists)} artist(s)")
 
-    async def _scan_missing_metadata(self) -> None:
-        """Scanner for (missing) metadata, runs periodically in the background."""
-        # Scan for missing artist images
-        self.logger.debug("Start lookup for missing artist images...")
-        query = (
-            f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL "
-            f"AND (json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
-            f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
-        )
-        for artist in await self.mass.music.artists.library_items(
-            limit=5, order_by="random", extra_query=query
-        ):
-            if artist.uri:
-                self.schedule_update_metadata(artist.uri)
-            await asyncio.sleep(30)
-
-        # Scan for missing album images
-        self.logger.debug("Start lookup for missing album images...")
-        query = (
-            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
-            f"AND (json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') ISNULL "
-            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') = '[]')"
-        )
-        for album in await self.mass.music.albums.library_items(
-            limit=5, order_by="random", extra_query=query
-        ):
-            if album.uri:
-                self.schedule_update_metadata(album.uri)
-            await asyncio.sleep(30)
-
-        # Force refresh playlist metadata every refresh interval
-        # this will e.g. update the playlist image and genres if the tracks have changed
-        timestamp = int(time() - REFRESH_INTERVAL_PLAYLISTS)
+    async def _refresh_playlist_metadata_batch(self) -> None:
+        """Refresh metadata for a small batch of library playlists."""
+        update_current_task_progress_text("Searching for playlists needing metadata refresh")
+        refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
-            f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
+            f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before}"
         )
-        for playlist in await self.mass.music.playlists.library_items(
-            limit=5, order_by="random", extra_query=query
-        ):
-            if playlist.uri:
-                self.schedule_update_metadata(playlist.uri)
-            await asyncio.sleep(30)
+        playlists = await self.mass.music.playlists.get_library_items_by_query(
+            limit=METADATA_SCAN_BATCH_SIZE,
+            order_by="random",
+            extra_query_parts=[query],
+        )
+        if not playlists:
+            update_current_task_progress_text("No playlists require metadata refresh")
+            return
+        for index, playlist in enumerate(playlists, 1):
+            try:
+                update_current_task_progress_from_index(
+                    index,
+                    len(playlists),
+                    f"Refreshing playlist metadata {index}/{len(playlists)}: {playlist.name}",
+                )
+                await self._update_playlist_metadata(playlist, force_refresh=False)
+            except Exception as err:
+                report_current_task_failure(f"{playlist.name}: {err}")
+                self.logger.warning(
+                    "Error while refreshing playlist metadata for %s: %s",
+                    playlist.name,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+        update_current_task_progress(100, f"Processed {len(playlists)} playlist(s)")
 
-        # reschedule next scan
-        self.mass.call_later(PERIODIC_SCAN_INTERVAL, self._scan_missing_metadata)
-
-
-class MetadataLookupQueue(asyncio.Queue[str]):
-    """Representation of a queue for metadata lookups."""
-
-    def _init(self, maxlen: int) -> None:
-        self._queue: collections.deque[str] = collections.deque(maxlen=maxlen)
-
-    def _put(self, item: str) -> None:
-        if item not in self._queue:
-            self._queue.append(item)
-
-    def pop(self, item: str) -> None:
-        """Remove item from queue."""
-        if self.exists(item):
-            self._queue.remove(item)
-
-    def exists(self, item: str) -> bool:
-        """Check if item exists in queue."""
-        return item in self._queue
+    async def _cleanup_thumb_cache(self) -> None:
+        """Remove oldest thumbnails when the cache folder exceeds the configured limit."""
+        max_size_mb = (
+            try_parse_int(
+                self.config.get_value(CONF_THUMB_CACHE_MAX_SIZE), DEFAULT_THUMB_CACHE_MAX_SIZE_MB
+            )
+            or DEFAULT_THUMB_CACHE_MAX_SIZE_MB
+        )
+        removed = await cleanup_thumb_cache(self.mass.cache_path, max_size_mb * 1024 * 1024)
+        if removed:
+            self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)

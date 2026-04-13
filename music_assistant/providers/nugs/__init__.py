@@ -41,7 +41,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.util import infer_album_type
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -164,6 +164,16 @@ class NugsProvider(MusicProvider):
         response = await self._get_data("stash", endpoint)
         return self._parse_playlist(response["items"])
 
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id."""
+        cache_key = f"nugs_track_{prov_track_id}"
+        cached: Track | None = await self.mass.cache.get(
+            cache_key, provider=self.instance_id, base_class=Track
+        )
+        if cached:
+            return cached
+        raise MediaNotFoundError(f"Track {prov_track_id} not found")
+
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
@@ -175,11 +185,13 @@ class NugsProvider(MusicProvider):
             MediaType.ALBUM, album_data["containerID"], album_data["containerInfo"]
         )
         image = f"https://api.livedownloads.com{album_data['img']['url']}"
-        return [
+        tracks = [
             self._parse_track(item, artist=artist, album=album, image_url=image)
             for item in album_data["tracks"]
             if item["trackID"]
         ]
+        await self._cache_tracks(tracks)
+        return tracks
 
     @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -194,14 +206,26 @@ class NugsProvider(MusicProvider):
             track = self._parse_track(item)
             track.position = index
             result.append(track)
+        await self._cache_tracks(result)
         return result
+
+    async def _cache_tracks(self, tracks: list[Track]) -> None:
+        """Cache individual tracks persistently for later lookup by get_track."""
+        for track in tracks:
+            await self.mass.cache.set(
+                f"nugs_track_{track.item_id}",
+                track.to_dict(),
+                expiration=3600 * 24 * 14,
+                provider=self.instance_id,
+                persistent=True,
+            )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         stream_url = await self._get_stream_url(item_id)
         return StreamDetails(
             item_id=item_id,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=ContentType.UNKNOWN,
             ),
@@ -219,17 +243,17 @@ class NugsProvider(MusicProvider):
         popular_folder = RecommendationFolder(
             name="Most Popular",
             item_id="nugs_popular_shows",
-            provider=self.lookup_key,
+            provider=self.instance_id,
         )
         recommended_folder = RecommendationFolder(
             name="Recommended Shows",
             item_id="nugs_recommended_shows",
-            provider=self.lookup_key,
+            provider=self.instance_id,
         )
         recent_folder = RecommendationFolder(
             name="Recent Shows",
             item_id="nugs_recent_shows",
-            provider=self.lookup_key,
+            provider=self.instance_id,
         )
         popular_data = await self._get_data("catalog", popular, limit=20)
         for item in popular_data["items"]:
@@ -255,7 +279,7 @@ class NugsProvider(MusicProvider):
         artist_name = artist_obj.get("artistName") or artist_obj.get("name")
         artist = Artist(
             item_id=str(artist_id),
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=str(artist_name),
             provider_mappings={
                 ProviderMapping(
@@ -271,7 +295,7 @@ class NugsProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=artist_obj["avatarImage"]["url"],
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -281,11 +305,12 @@ class NugsProvider(MusicProvider):
         """Parse nugs release/show/album object to generic album layout."""
         item_id = album_obj.get("releaseId") or album_obj.get("id") or album_obj.get("containerID")
         title = album_obj.get("title") or album_obj.get("containerInfo")
+        name, version = parse_title_and_version(str(title))
         album = Album(
             item_id=str(item_id),
-            provider=self.lookup_key,
-            name=str(title),
-            # version=album_obj["type"],
+            provider=self.instance_id,
+            name=name,
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(item_id),
@@ -312,7 +337,7 @@ class NugsProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=path,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -327,7 +352,7 @@ class NugsProvider(MusicProvider):
             album.year = int(year)
 
         # No album type info in this provider so try and infer it
-        album.album_type = infer_album_type(album.name, "")
+        album.album_type = infer_album_type(album.name, album.version)
 
         return album
 
@@ -335,7 +360,7 @@ class NugsProvider(MusicProvider):
         """Parse nugs playlist object to generic layout."""
         return Playlist(
             item_id=playlist_obj["id"],
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=playlist_obj["name"],
             provider_mappings={
                 ProviderMapping(
@@ -350,7 +375,7 @@ class NugsProvider(MusicProvider):
                         MediaItemImage(
                             type=ImageType.THUMB,
                             path=playlist_obj["imageUrl"],
-                            provider=self.lookup_key,
+                            provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     ]
@@ -371,11 +396,13 @@ class NugsProvider(MusicProvider):
             track_obj.get("trackId") or track_obj.get("trackID") or track_obj.get("trackLabel")
         )
         track_name = track_obj.get("name") or track_obj.get("songTitle")
+        name, version = parse_title_and_version(str(track_name))
 
         track = Track(
             item_id=str(track_id),
-            provider=self.lookup_key,
-            name=str(track_name),
+            provider=self.instance_id,
+            name=name,
+            version=version,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(track_id),
@@ -411,7 +438,7 @@ class NugsProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=self.lookup_key,
+                    provider=self.instance_id,
                     remotely_accessible=True,
                 )
             )
@@ -458,7 +485,7 @@ class NugsProvider(MusicProvider):
         return ItemMapping(
             media_type=media_type,
             item_id=key,
-            provider=self.lookup_key,
+            provider=self.instance_id,
             name=name,
         )
 

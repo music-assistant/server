@@ -7,11 +7,12 @@ import contextlib
 import logging
 import os
 import os.path
-import time
 import urllib.parse
-from collections.abc import AsyncGenerator, Iterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from xml.parsers.expat import ExpatError
 
 import aiofiles
 import shortuuid
@@ -19,6 +20,7 @@ import xmltodict
 from aiofiles.os import wrap
 from music_assistant_models.enums import (
     ContentType,
+    EventType,
     ExternalID,
     ImageType,
     MediaType,
@@ -59,11 +61,15 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress_from_index,
+    update_current_task_progress_text,
+)
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, parse_tags, split_items
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
@@ -88,6 +94,8 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PATH,
+    CONF_ENTRY_PROPAGATE_GENRES,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
@@ -96,12 +104,12 @@ from .constants import (
     IsChapterFile,
 )
 from .helpers import (
-    IGNORE_DIRS,
     FileSystemItem,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
     get_relative_path,
+    recursive_iter,
     sorted_scandir,
 )
 
@@ -155,6 +163,7 @@ async def get_config_entries(
         CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
         CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
         CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+        CONF_ENTRY_PROPAGATE_GENRES,
     ]
     if instance_id is None or values is None:
         return (CONF_ENTRY_CONTENT_TYPE, *base_entries)
@@ -182,6 +191,8 @@ class LocalFileSystemProvider(MusicProvider):
         self.base_path: str = base_path
         self.write_access: bool = False
         self.sync_running: bool = False
+        self._sync_tracks: bool = True
+        self._sync_playlists: bool = True
         self.media_content_type = cast("str", config.get_value(CONF_ENTRY_CONTENT_TYPE.key))
 
     @property
@@ -193,6 +204,8 @@ class LocalFileSystemProvider(MusicProvider):
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
         music_features = {
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_ARTISTS,
             ProviderFeature.LIBRARY_TRACKS,
             ProviderFeature.LIBRARY_PLAYLISTS,
             *base_features,
@@ -230,39 +243,39 @@ class LocalFileSystemProvider(MusicProvider):
         # searching the filesystem is slow and unreliable,
         # so instead we just query the db...
         if media_types is None or MediaType.TRACK in media_types:
-            result.tracks = await self.mass.music.tracks._get_library_items_by_query(
-                search=search_query, provider=self.instance_id, limit=limit
+            result.tracks = await self.mass.music.tracks.get_library_items_by_query(
+                search=search_query, provider_filter=[self.instance_id], limit=limit
             )
 
         if media_types is None or MediaType.ALBUM in media_types:
-            result.albums = await self.mass.music.albums._get_library_items_by_query(
+            result.albums = await self.mass.music.albums.get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
 
         if media_types is None or MediaType.ARTIST in media_types:
-            result.artists = await self.mass.music.artists._get_library_items_by_query(
+            result.artists = await self.mass.music.artists.get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PLAYLIST in media_types:
-            result.playlists = await self.mass.music.playlists._get_library_items_by_query(
+            result.playlists = await self.mass.music.playlists.get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.AUDIOBOOK in media_types:
-            result.audiobooks = await self.mass.music.audiobooks._get_library_items_by_query(
+            result.audiobooks = await self.mass.music.audiobooks.get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         if media_types is None or MediaType.PODCAST in media_types:
-            result.podcasts = await self.mass.music.podcasts._get_library_items_by_query(
+            result.podcasts = await self.mass.music.podcasts.get_library_items_by_query(
                 search=search_query,
-                provider=self.instance_id,
+                provider_filter=[self.instance_id],
                 limit=limit,
             )
         return result
@@ -281,8 +294,7 @@ class LocalFileSystemProvider(MusicProvider):
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
-        abs_path = self.get_absolute_path(item_path)
-        for item in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True):
+        for item in await self._scandir(item_path):
             if not item.is_dir and ("." not in item.filename or not item.ext):
                 # skip system files and files without extension
                 continue
@@ -320,15 +332,29 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
+        if media_type in (MediaType.ARTIST, MediaType.ALBUM):
+            # artists and albums are synced as part of track sync
+            return
+        # check if any sync options are enabled for this content type
+        # the filesystem provider processes all file types in one scan,
+        # so we can return early if nothing needs syncing
+        if self.media_content_type == "music":
+            self._sync_tracks = bool(self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_TRACKS.key))
+            self._sync_playlists = bool(
+                self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key)
+            )
+            if not self._sync_tracks and not self._sync_playlists:
+                return
+        elif self.media_content_type == "audiobooks":
+            if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
+                return
+        elif self.media_content_type == "podcasts":
+            if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
+                return
         assert self.mass.music.database
-        start_time = time.time()
         if self.sync_running:
             self.logger.warning("Library sync already running for %s", self.name)
             return
-        self.logger.info(
-            "Started Library sync for %s",
-            self.name,
-        )
         file_checksums: dict[str, str] = {}
         # NOTE: we always run a scan of the entire library, as we need to detect changes
         # we ignore any given mediatype(s) and just scan all supported files
@@ -341,141 +367,166 @@ class LocalFileSystemProvider(MusicProvider):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # find all supported files in the base directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
-        cur_filenames = set()
+        cur_filenames: set[str] = set()
         prev_filenames = set(file_checksums.keys())
 
-        # NOTE: we do the entire traversing of the directory structure, including parsing tags
-        # in a single executor thread to save the overhead of having to spin up tons of tasks
-        def listdir(path: str) -> Iterator[FileSystemItem]:
-            """Recursively traverse directory entries."""
-            for item in os.scandir(path):
-                # ignore invalid filenames
-                if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
-                    continue
-                if item.is_dir(follow_symlinks=False):
-                    yield from listdir(item.path)
-                elif item.is_file(follow_symlinks=False):
-                    # skip files without extension
-                    if "." not in item.name:
-                        continue
-                    ext = item.name.rsplit(".", 1)[1].lower()
-                    if ext not in SUPPORTED_EXTENSIONS:
-                        # skip unsupported file extension
-                        continue
-                    yield FileSystemItem.from_dir_entry(item, self.base_path)
-
-        def run_sync() -> None:
-            """Run the actual sync (in an executor job)."""
-            self.sync_running = True
-            try:
-                for item in listdir(self.base_path):
-                    prev_checksum = file_checksums.get(item.relative_path)
-                    if self._process_item(item, prev_checksum):
-                        cur_filenames.add(item.relative_path)
-            finally:
-                self.sync_running = False
-
-        await asyncio.to_thread(run_sync)
-
-        end_time = time.time()
-        self.logger.info(
-            "Library sync for %s completed in %.2f seconds",
-            self.name,
-            end_time - start_time,
+        # Phase 1: Enumerate all files in an executor thread.
+        # This is fast (just filesystem metadata) and separates unchanged files
+        # from those that need processing.
+        items_to_process: list[tuple[FileSystemItem, str | None]] = []
+        ignore_album_playlists = self.media_content_type == "music" and self.config.get_value(
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key
         )
-        # work out deletions
+        # populated by recursive_iter when the provider's root base path cannot
+        # be scanned; sub-directory failures remain a silent skip as before
+        root_scan_errors: list[OSError] = []
+
+        def enumerate_files() -> None:
+            """Enumerate all files, collecting changed items for processing."""
+            scanned = 0
+            for item in recursive_iter(
+                self.base_path,
+                self.base_path,
+                SUPPORTED_EXTENSIONS,
+                self.logger,
+                scan_errors=root_scan_errors,
+            ):
+                scanned += 1
+                if scanned % 500 == 0:
+                    update_current_task_progress_text(f"Scanning files: {scanned} found")
+                # skip playlists in album directories if configured
+                if (
+                    item.ext in PLAYLIST_EXTENSIONS
+                    and ignore_album_playlists
+                    and len(item.relative_path.split("/")) > 2
+                ):
+                    continue
+                prev_checksum = file_checksums.get(item.relative_path)
+                if item.checksum == prev_checksum:
+                    # unchanged, just record it as still present
+                    cur_filenames.add(item.relative_path)
+                else:
+                    items_to_process.append((item, prev_checksum))
+
+        self.sync_running = True
+        try:
+            await asyncio.to_thread(enumerate_files)
+            total_items = len(items_to_process)
+            self.logger.info(
+                "Found %d changed/new items to process for %s",
+                total_items,
+                self.name,
+            )
+
+            # Phase 2: Process changed items concurrently.
+            # Using TaskManager with a concurrency limit to avoid overwhelming
+            # the filesystem (especially important for NFS/SMB mounts).
+            processed_count = 0
+
+            async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
+                nonlocal processed_count
+                if await self._process_item_async(item, prev_checksum):
+                    cur_filenames.add(item.relative_path)
+                processed_count += 1
+                if processed_count % 50 == 0 or processed_count == total_items:
+                    update_current_task_progress_from_index(
+                        processed_count,
+                        total_items,
+                        f"Processed {processed_count}/{total_items} files",
+                    )
+
+            async with TaskManager(self.mass, 16) as tm:
+                for item, prev_checksum in items_to_process:
+                    await tm.create_task_with_limit(_process(item, prev_checksum))
+        finally:
+            self.sync_running = False
+
+        # do not run deletions if the root base path could not be scanned
+        if root_scan_errors:
+            self.logger.error(
+                "Aborting sync for %s: %d root scan error(s)",
+                self.name,
+                len(root_scan_errors),
+            )
+            report_current_task_failure("Sync aborted: filesystem unavailable during scan")
+            self._set_available(False)
+            return
+
+        # do not run deletions on a clean but empty scan of a previously non-empty library
+        # (wrong share mounted, empty backup mount, ...)
+        if prev_filenames and not cur_filenames:
+            self.logger.error(
+                "Aborting sync for %s: scan found no files but %d were previously indexed",
+                self.name,
+                len(prev_filenames),
+            )
+            report_current_task_failure(
+                f"Sync aborted: scan found no files but {len(prev_filenames)} "
+                "were previously indexed"
+            )
+            return
+
         deleted_files = prev_filenames - cur_filenames
         await self._process_deletions(deleted_files)
-
-        # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
 
-    def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
-        """Process a single item. NOT async friendly."""
+        # flag provider as available again if an earlier sync had marked it down
+        self._set_available(True)
+
+    def _set_available(self, available: bool) -> None:
+        """Update the provider availability and notify listeners on change."""
+        if self.available == available:
+            return
+        self.available = available
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+
+    async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
+        """Process a single item asynchronously.
+
+        :param item: The filesystem item to process.
+        :param prev_checksum: Previous checksum from the database, or None for new items.
+        """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
 
-            # ignore playlists that are in album directories
-            # we need to run this check early because the setting may have changed
-            if (
-                item.ext in PLAYLIST_EXTENSIONS
-                and self.media_content_type == "music"
-                and self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
-            ):
-                # we assume this in a bit of a dumb way by just checking if the playlist
-                # is more than 1 level deep in the directory structure
-                if len(item.relative_path.split("/")) > 2:
-                    return False
-
-            # return early if the item did not change (checksum still the same)
-            if item.checksum == prev_checksum:
-                return True
-
             if item.ext in TRACK_EXTENSIONS and self.media_content_type == "music":
-                # handle track item
-                tags = parse_tags(item.absolute_path, item.file_size)
-
-                async def process_track() -> None:
-                    track = await self._parse_track(item, tags)
-                    # add/update track to db
-                    # note that filesystem items are always overwriting existing info
-                    # when they are detected as changed
-                    track.favorite = False  # TODO: implement favorite status based on rating ?
-                    await self.mass.music.tracks.add_item_to_library(
-                        track, overwrite_existing=prev_checksum is not None
-                    )
-
-                asyncio.run_coroutine_threadsafe(process_track(), self.mass.loop).result()
+                if not self._sync_tracks:
+                    return False
+                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                track = await self._parse_track(item, tags)
+                track.favorite = False  # TODO: implement favorite status based on rating ?
+                await self.mass.music.tracks.add_item_to_library(
+                    track, overwrite_existing=prev_checksum is not None
+                )
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
-                # handle audiobook item
-                tags = parse_tags(item.absolute_path, item.file_size)
-
-                async def process_audiobook() -> None:
-                    try:
-                        audiobook = await self._parse_audiobook(item, tags)
-                    except IsChapterFile:
-                        return
-                    # add/update audiobook to db
-                    # note that filesystem items are always overwriting existing info
-                    # when they are detected as changed
-                    await self.mass.music.audiobooks.add_item_to_library(
-                        audiobook, overwrite_existing=prev_checksum is not None
-                    )
-
-                asyncio.run_coroutine_threadsafe(process_audiobook(), self.mass.loop).result()
+                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                try:
+                    audiobook = await self._parse_audiobook(item, tags)
+                except IsChapterFile:
+                    return True
+                await self.mass.music.audiobooks.add_item_to_library(
+                    audiobook, overwrite_existing=prev_checksum is not None
+                )
                 return True
 
             if item.ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-                # handle podcast(episode) item
-                tags = parse_tags(item.absolute_path, item.file_size)
-
-                async def process_episode() -> None:
-                    episode = await self._parse_podcast_episode(item, tags)
-                    assert isinstance(episode.podcast, Podcast)
-                    # add/update episode to db
-                    # note that filesystem items are always overwriting existing info
-                    # when they are detected as changed
-                    await self.mass.music.podcasts.add_item_to_library(
-                        episode.podcast, overwrite_existing=prev_checksum is not None
-                    )
-
-                asyncio.run_coroutine_threadsafe(process_episode(), self.mass.loop).result()
+                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                episode = await self._parse_podcast_episode(item, tags)
+                assert isinstance(episode.podcast, Podcast)
+                await self.mass.music.podcasts.add_item_to_library(
+                    episode.podcast, overwrite_existing=prev_checksum is not None
+                )
                 return True
 
             if item.ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
-                # handle playlist item
-
-                async def process_playlist() -> None:
-                    playlist = await self.get_playlist(item.relative_path)
-                    # add/update playlist to db
-                    await self.mass.music.playlists.add_item_to_library(
-                        playlist,
-                        overwrite_existing=prev_checksum is not None,
-                    )
-
-                asyncio.run_coroutine_threadsafe(process_playlist(), self.mass.loop).result()
+                if not self._sync_playlists:
+                    return False
+                playlist = await self.get_playlist(item.relative_path)
+                await self.mass.music.playlists.add_item_to_library(
+                    playlist, overwrite_existing=prev_checksum is not None
+                )
                 return True
 
         except Exception as err:
@@ -486,6 +537,7 @@ class LocalFileSystemProvider(MusicProvider):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
+            report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
         return False
 
     async def _process_orphaned_albums_and_artists(self) -> None:
@@ -624,6 +676,15 @@ class LocalFileSystemProvider(MusicProvider):
         tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
         return await self._parse_track(file_item, tags=tags, full_album_metadata=True)
 
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get (full) podcast episode details by id."""
+        if not await self.exists(prov_episode_id):
+            msg = f"Episode path does not exist: {prov_episode_id}"
+            raise MediaNotFoundError(msg)
+        file_item = await self.resolve(prov_episode_id)
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        return await self._parse_podcast_episode(file_item, tags=tags)
+
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if not await self.exists(prov_playlist_id):
@@ -641,6 +702,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     details=file_item.checksum,
+                    in_library=True,
                 )
             },
         )
@@ -689,7 +751,6 @@ class LocalFileSystemProvider(MusicProvider):
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
 
-    @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -700,14 +761,28 @@ class LocalFileSystemProvider(MusicProvider):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
 
+        file_item = await self.resolve(prov_playlist_id)
+        # We are using the checksum of the playlist file here to invalidate the cache
+        # when a change has been made to the playlist file (ie track addition/deletion)
+        cache_checksum = file_item.checksum
+
+        cache_key = f"get_playlist_tracks.{prov_playlist_id}"
+        cached_data = await self.mass.cache.get(
+            cache_key,
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=0,
+            base_class=Track,
+        )
+        if cached_data is not None:
+            return cached_data  # type: ignore[no-any-return]
+
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
             # get playlist file contents
-            playlist_filename = self.get_absolute_path(prov_playlist_id)
-            async with aiofiles.open(playlist_filename, mode="rb") as _file:
-                playlist_data_raw = await _file.read()
-                encoding = await detect_charset(playlist_data_raw)
-                playlist_data = playlist_data_raw.decode(encoding, errors="replace")
+            playlist_data_raw = await self._read_file(prov_playlist_id)
+            encoding = await detect_charset(playlist_data_raw)
+            playlist_data = playlist_data_raw.decode(encoding, errors="replace")
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = parse_m3u(playlist_data)
@@ -730,6 +805,16 @@ class LocalFileSystemProvider(MusicProvider):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
+
+        await self.mass.cache.set(
+            key=cache_key,
+            data=[track.to_dict() for track in result],
+            expiration=3600 * 24 * 365,  # File timestamp checksum handles invalidation
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=0,
+        )
+
         return result
 
     async def get_podcast_episodes(
@@ -752,7 +837,7 @@ class LocalFileSystemProvider(MusicProvider):
                 episodes.append(episode)
 
         async with TaskManager(self.mass, 25) as tm:
-            for item in await asyncio.to_thread(sorted_scandir, self.base_path, prov_podcast_id):
+            for item in await self._scandir(prov_podcast_id):
                 if "." not in item.relative_path or item.is_dir:
                     continue
                 if item.ext not in PODCAST_EPISODE_EXTENSIONS:
@@ -835,7 +920,7 @@ class LocalFileSystemProvider(MusicProvider):
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
             await _file.write(new_playlist_data)
 
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         # creating a new playlist on the filesystem is as easy
         # as creating a new (empty) file with the m3u extension...
@@ -902,6 +987,11 @@ class LocalFileSystemProvider(MusicProvider):
             },
             disc_number=tags.disc or 0,
             track_number=tags.track or 0,
+            date_added=(
+                datetime.fromtimestamp(file_item.created_at, tz=UTC)
+                if file_item.created_at
+                else None
+            ),
         )
 
         if isrc_tags := tags.isrc:
@@ -913,7 +1003,11 @@ class LocalFileSystemProvider(MusicProvider):
 
         # album
         album = track.album = (
-            await self._parse_album(track_path=file_item.relative_path, track_tags=tags)
+            await self._parse_album(
+                track_path=file_item.relative_path,
+                track_tags=tags,
+                track_created_at=file_item.created_at,
+            )
             if tags.album
             else None
         )
@@ -993,10 +1087,17 @@ class LocalFileSystemProvider(MusicProvider):
         # synced lyrics are saved as "filename.lrc" by lrcget alongside
         # the actual file location - just change the file extension
         assert file_item.ext is not None  # for type checking
-        lrc_path = f"{file_item.absolute_path.removesuffix(file_item.ext)}lrc"
+        lrc_path = f"{file_item.relative_path.removesuffix(file_item.ext)}lrc"
         if await self.exists(lrc_path):
-            async with aiofiles.open(lrc_path) as lrc_file:
-                track.metadata.lrc_lyrics = await lrc_file.read()
+            try:
+                raw = await self._read_file(lrc_path)
+                track.metadata.lrc_lyrics = raw.decode("utf-8")
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to read lyrics file %s: %s",
+                    lrc_path,
+                    str(err),
+                )
 
         return track
 
@@ -1023,7 +1124,9 @@ class LocalFileSystemProvider(MusicProvider):
                 artist_path = foldermatch
             else:
                 # check if we have an existing item to retrieve the artist path
-                async for item in self.mass.music.artists.iter_library_items(search=name):
+                async for item in self.mass.music.artists.iter_library_items(
+                    search=name, provider=self.instance_id
+                ):
                     if not compare_strings(name, item.name):
                         continue
                     for prov_mapping in item.provider_mappings:
@@ -1038,10 +1141,13 @@ class LocalFileSystemProvider(MusicProvider):
         # prefer (short lived) cache for a bit more speed
         if artist_path and (
             cache := await self.cache.get(
-                key=artist_path, provider=self.instance_id, category=CACHE_CATEGORY_ARTIST_INFO
+                key=artist_path,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_ARTIST_INFO,
+                base_class=Artist,
             )
         ):
-            return cast("Artist", cache)
+            return cache  # type: ignore[no-any-return]
 
         prov_artist_id = artist_path or name
         artist = Artist(
@@ -1069,27 +1175,32 @@ class LocalFileSystemProvider(MusicProvider):
         if await self.exists(nfo_file):
             # found NFO file with metadata
             # https://kodi.wiki/view/NFO_files/Artists
-            nfo_file = self.get_absolute_path(nfo_file)
-            async with aiofiles.open(nfo_file) as _file:
-                data = await _file.read()
-            info = await asyncio.to_thread(xmltodict.parse, data)
-            info = info["artist"]
-            artist.name = info.get("title", info.get("name", name))
-            if sort_name := info.get("sortname"):
-                artist.sort_name = sort_name
-            if mbid := info.get("musicbrainzartistid"):
-                artist.mbid = mbid
-            if description := info.get("biography"):
-                artist.metadata.description = description
-            if genre := info.get("genre"):
-                artist.metadata.genres = set(split_items(genre))
+            try:
+                data = (await self._read_file(nfo_file)).decode("utf-8")
+                info = await asyncio.to_thread(xmltodict.parse, data)
+                info = info["artist"]
+                artist.name = info.get("title", info.get("name", name))
+                if sort_name := info.get("sortname"):
+                    artist.sort_name = sort_name
+                if mbid := info.get("musicbrainzartistid"):
+                    artist.mbid = mbid
+                if description := info.get("biography"):
+                    artist.metadata.description = description
+                if genre := info.get("genre"):
+                    artist.metadata.genres = set(split_items(genre))
+            except (ExpatError, KeyError) as err:
+                self.logger.warning(
+                    "Failed to parse artist NFO file %s: %s",
+                    nfo_file,
+                    str(err),
+                )
         # find local images
         if images := await self._get_local_images(artist_path, extra_thumb_names=("artist",)):
             artist.metadata.images = UniqueList(images)
 
         await self.cache.set(
             key=artist_path,
-            data=artist,
+            data=artist.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ARTIST_INFO,
             expiration=120,
@@ -1098,15 +1209,30 @@ class LocalFileSystemProvider(MusicProvider):
         return artist
 
     async def _parse_audiobook(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
-        """Parse full Audiobook details from file tags."""
-        # an audiobook can either be a single file with chapters embedded in the file
-        # or a folder with multiple files (each file being a chapter)
-        # we only scrape all tags from the first file in the folder
-        if tags.track and tags.track > 1:
-            raise IsChapterFile
-        # in case of a multi-file audiobook, the title is the chapter name
-        # and the album is the actual audiobook name
-        # so we prefer the album name as the audiobook name
+        """Parse Audiobook details from file tags.
+
+        Audiobooks can be single files with embedded chapters or multiple files per folder.
+        Only the first file (by track number or alphabetically) is processed as the audiobook.
+        """
+        # Skip files that aren't the first chapter
+        track_tag = tags.tags.get("track")
+        if track_tag:
+            track_num = try_parse_int(str(track_tag).split("/")[0], None)
+            if track_num and track_num > 1:
+                raise IsChapterFile
+        else:
+            # No track tag - only process the first file alphabetically
+            items = await self._scandir(file_item.parent_path)
+            # Sort by filename for alphabetical ordering
+            items.sort(key=lambda x: x.filename.lower())
+            for item in items:
+                if item.is_dir or item.ext not in AUDIOBOOK_EXTENSIONS:
+                    continue
+                if item.absolute_path != file_item.absolute_path:
+                    raise IsChapterFile
+                break
+
+        # For multi-file audiobooks, album tag is the book name, title is the chapter name
         if tags.album:
             book_name = tags.album
             sort_name = tags.album_sort
@@ -1163,7 +1289,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # parse other info
         audio_book.authors.set(tags.writers or tags.album_artists or tags.artists)
-        audio_book.metadata.genres = set(tags.genres)
+        audio_book.metadata.genres = (
+            set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
+        )
         audio_book.metadata.copyright = tags.get("copyright")
         audio_book.metadata.lyrics = tags.lyrics
         audio_book.metadata.description = tags.get("comment")
@@ -1176,8 +1304,7 @@ class LocalFileSystemProvider(MusicProvider):
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
             # try to get an image by traversing files in the same folder
-            abs_path = self.get_absolute_path(file_item.parent_path)
-            for _item in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path):
+            for _item in await self._scandir(file_item.parent_path):
                 if "." not in _item.relative_path or _item.is_dir:
                     continue
                 if _item.ext in IMAGE_EXTENSIONS and not audio_book.image:
@@ -1192,9 +1319,8 @@ class LocalFileSystemProvider(MusicProvider):
                 if _item.ext == "txt" and not audio_book.metadata.description:
                     # try to parse a description from a text file
                     try:
-                        async with aiofiles.open(_item.absolute_path, encoding="utf-8") as _file:
-                            description = await _file.read()
-                        audio_book.metadata.description = description
+                        raw = await self._read_file(_item.relative_path)
+                        audio_book.metadata.description = raw.decode("utf-8")
                     except Exception as err:
                         self.logger.warning(
                             "Could not read description from file %s: %s",
@@ -1221,7 +1347,7 @@ class LocalFileSystemProvider(MusicProvider):
         """Parse full PodcastEpisode details from file tags."""
         # ruff: noqa: PLR0915
         podcast_name = tags.album or file_item.parent_name
-        podcast_path = get_relative_path(self.base_path, file_item.parent_path)
+        podcast_path = file_item.relative_parent_path
         episode = PodcastEpisode(
             item_id=file_item.relative_path,
             provider=self.instance_id,
@@ -1256,6 +1382,7 @@ class LocalFileSystemProvider(MusicProvider):
                         item_id=podcast_path,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
+                        in_library=True,
                     )
                 },
             ),
@@ -1274,7 +1401,9 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             )
         # parse other info
-        episode.metadata.genres = set(tags.genres)
+        episode.metadata.genres = (
+            set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
+        )
         episode.metadata.copyright = tags.get("copyright")
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
@@ -1323,6 +1452,9 @@ class LocalFileSystemProvider(MusicProvider):
             episode.podcast.metadata.add_image(episode.image)
         elif not episode.image and episode.podcast.image:
             episode.metadata.add_image(episode.podcast.image)
+        # ensure podcast has a default genre if none set
+        if not episode.podcast.metadata.genres:
+            episode.podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
@@ -1337,8 +1469,15 @@ class LocalFileSystemProvider(MusicProvider):
             )
         return episode
 
-    async def _parse_album(self, track_path: str, track_tags: AudioTags) -> Album:
-        """Parse Album metadata from Track tags."""
+    async def _parse_album(
+        self, track_path: str, track_tags: AudioTags, track_created_at: int | None = None
+    ) -> Album:
+        """Parse Album metadata from Track tags.
+
+        :param track_path: Path to the track file.
+        :param track_tags: Audio tags from the track.
+        :param track_created_at: Creation timestamp of the track file (Unix epoch).
+        """
         assert track_tags.album
         # work out if we have an album and/or disc folder
         # track_dir is the folder level where the tracks are located
@@ -1352,9 +1491,10 @@ class LocalFileSystemProvider(MusicProvider):
                 key=album_dir,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_ALBUM_INFO,
+                base_class=Album,
             )
         ):
-            return cast("Album", cache)
+            return cache  # type: ignore[no-any-return]
 
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -1436,6 +1576,9 @@ class LocalFileSystemProvider(MusicProvider):
                     in_library=True,
                 )
             },
+            date_added=(
+                datetime.fromtimestamp(track_created_at, tz=UTC) if track_created_at else None
+            ),
         )
         if track_tags.barcode:
             album.external_ids.add((ExternalID.BARCODE, track_tags.barcode))
@@ -1459,27 +1602,32 @@ class LocalFileSystemProvider(MusicProvider):
             if await self.exists(nfo_file):
                 # found NFO file with metadata
                 # https://kodi.wiki/view/NFO_files/Artists
-                nfo_file = self.get_absolute_path(nfo_file)
-                async with aiofiles.open(nfo_file) as _file:
-                    data = await _file.read()
-                info = await asyncio.to_thread(xmltodict.parse, data)
-                info = info["album"]
-                album.name = info.get("title", info.get("name", name))
-                if sort_name := info.get("sortname"):
-                    album.sort_name = sort_name
-                if releasegroup_id := info.get("musicbrainzreleasegroupid"):
-                    album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
-                if album_id := info.get("musicbrainzalbumid"):
-                    album.add_external_id(ExternalID.MB_ALBUM, album_id)
-                if mb_artist_id := info.get("musicbrainzalbumartistid"):
-                    if album.artists and not album.artists[0].mbid:
-                        album.artists[0].mbid = mb_artist_id
-                if description := info.get("review"):
-                    album.metadata.description = description
-                if year := info.get("year"):
-                    album.year = int(year)
-                if genre := info.get("genre"):
-                    album.metadata.genres = set(split_items(genre))
+                try:
+                    data = (await self._read_file(nfo_file)).decode("utf-8")
+                    info = await asyncio.to_thread(xmltodict.parse, data)
+                    info = info["album"]
+                    album.name = info.get("title", info.get("name", name))
+                    if sort_name := info.get("sortname"):
+                        album.sort_name = sort_name
+                    if releasegroup_id := info.get("musicbrainzreleasegroupid"):
+                        album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
+                    if album_id := info.get("musicbrainzalbumid"):
+                        album.add_external_id(ExternalID.MB_ALBUM, album_id)
+                    if mb_artist_id := info.get("musicbrainzalbumartistid"):
+                        if album.artists and not album.artists[0].mbid:
+                            album.artists[0].mbid = mb_artist_id
+                    if description := info.get("review"):
+                        album.metadata.description = description
+                    if year := info.get("year"):
+                        album.year = int(year)
+                    if genre := info.get("genre"):
+                        album.metadata.genres = set(split_items(genre))
+                except (ExpatError, KeyError) as err:
+                    self.logger.warning(
+                        "Failed to parse album NFO file %s: %s",
+                        nfo_file,
+                        str(err),
+                    )
             # parse name/version
             album.name, album.version = parse_title_and_version(album.name)
             # find local images
@@ -1490,7 +1638,7 @@ class LocalFileSystemProvider(MusicProvider):
                     album.metadata.images += images
         await self.cache.set(
             key=album_dir,
-            data=album,
+            data=album.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ALBUM_INFO,
             expiration=120,
@@ -1503,15 +1651,17 @@ class LocalFileSystemProvider(MusicProvider):
         """Return local images found in a given folderpath."""
         if (
             cache := await self.cache.get(
-                key=folder, provider=self.instance_id, category=CACHE_CATEGORY_FOLDER_IMAGES
+                key=folder,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_FOLDER_IMAGES,
+                base_class=MediaItemImage,
             )
         ) is not None:
-            return cast("UniqueList[MediaItemImage]", cache)
+            return UniqueList(cache)
         if extra_thumb_names is None:
             extra_thumb_names = ()
         images: UniqueList[MediaItemImage] = UniqueList()
-        abs_path = self.get_absolute_path(folder)
-        folder_files = await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=False)
+        folder_files = await self._scandir(folder)
         for item in folder_files:
             if "." not in item.relative_path or item.is_dir or not item.ext:
                 continue
@@ -1548,7 +1698,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.cache.set(
             key=folder,
-            data=images,
+            data=[img.to_dict() for img in images],
             provider=self.instance_id,
             category=CACHE_CATEGORY_FOLDER_IMAGES,
             expiration=120,
@@ -1568,38 +1718,34 @@ class LocalFileSystemProvider(MusicProvider):
         except Exception as err:
             self.logger.debug("Write access disabled: %s", str(err))
 
-    async def resolve(
-        self,
-        file_path: str,
-    ) -> FileSystemItem:
+    async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
             if os.path.isdir(absolute_path):
                 return FileSystemItem(
-                    filename=os.path.basename(file_path),
+                    filename=Path(file_path).name,
                     relative_path=get_relative_path(self.base_path, file_path),
                     absolute_path=absolute_path,
                     is_dir=True,
                 )
-            stat = os.stat(absolute_path, follow_symlinks=False)
+            stat_info = Path(absolute_path).stat(follow_symlinks=False)
             return FileSystemItem(
-                filename=os.path.basename(file_path),
+                filename=Path(file_path).name,
                 relative_path=get_relative_path(self.base_path, file_path),
                 absolute_path=absolute_path,
                 is_dir=False,
-                checksum=str(int(stat.st_mtime)),
-                file_size=stat.st_size,
+                checksum=str(int(stat_info.st_mtime)),
+                file_size=stat_info.st_size,
             )
 
-        # run in thread because strictly taken this may be blocking IO
         return await asyncio.to_thread(_create_item)
 
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
-            return False  # guard
+            return False
         abs_path = self.get_absolute_path(file_path)
         return bool(await exists(abs_path))
 
@@ -1703,8 +1849,11 @@ class LocalFileSystemProvider(MusicProvider):
                 stream_type=StreamType.LOCAL_FILE,
                 duration=duration,
                 path=[
-                    MultiPartPath(path=self.get_absolute_path(path), duration=duration)
-                    for path, duration in file_based_chapters
+                    MultiPartPath(
+                        path=self._get_chapter_path(chapter_path),
+                        duration=chapter_duration,
+                    )
+                    for chapter_path, chapter_duration in file_based_chapters
                 ],
                 allow_seek=True,
             )
@@ -1724,15 +1873,62 @@ class LocalFileSystemProvider(MusicProvider):
             can_seek=True,
         )
 
+    def _get_chapter_path(self, relative_path: str) -> str:
+        """Return absolute path for a chapter file. Override for network storage."""
+        return self.get_absolute_path(relative_path)
+
     async def _get_chapters_for_audiobook(
         self, audiobook_file_item: FileSystemItem, tags: AudioTags
     ) -> tuple[int, list[MediaItemChapter]]:
-        """Return the chapters for an audiobook."""
+        """Return chapters for an audiobook.
+
+        Chapter sources in order of preference:
+        1. Multiple files with track tags - sorted by track number
+        2. Single file with embedded chapters - use embedded chapter markers
+        3. Multiple files without track tags - sorted alphabetically (fallback)
+        """
         chapters: list[MediaItemChapter] = []
         all_chapter_files: list[tuple[str, float]] = []
         total_duration = 0.0
-        if tags.chapters:
-            # The chapters are embedded in the file tags
+
+        # Scan folder for chapter files, separating tagged from untagged
+        chapter_file_items: list[tuple[FileSystemItem, AudioTags]] = []
+        untagged_file_items: list[tuple[FileSystemItem, AudioTags]] = []
+
+        items = await self._scandir(audiobook_file_item.parent_path)
+        # Sort by filename for consistent alphabetical ordering
+        items.sort(key=lambda x: x.filename.lower())
+
+        for item in items:
+            if "." not in item.relative_path or item.is_dir:
+                continue
+            if item.ext not in AUDIOBOOK_EXTENSIONS:
+                continue
+            item_tags = await async_parse_tags(item.absolute_path, item.file_size)
+            if not (tags.album == item_tags.album or (item_tags.tags.get("title") is None)):
+                continue
+            if item_tags.tags.get("track") is None:
+                untagged_file_items.append((item, item_tags))
+            else:
+                chapter_file_items.append((item, item_tags))
+
+        # Determine chapter source
+        use_embedded = False
+        use_alphabetical = False
+
+        if len(chapter_file_items) > 1:
+            chapter_file_items.sort(key=lambda x: (x[1].disc or 0, x[1].track or 0))
+        elif len(chapter_file_items) <= 1 and tags.chapters:
+            use_embedded = True
+        elif len(untagged_file_items) > 1:
+            use_alphabetical = True
+            chapter_file_items = untagged_file_items
+            self.logger.info(
+                "Audiobook files have no track tags, using alphabetical order: %s",
+                tags.album,
+            )
+
+        if use_embedded:
             chapters = [
                 MediaItemChapter(
                     position=chapter.chapter_id,
@@ -1743,31 +1939,25 @@ class LocalFileSystemProvider(MusicProvider):
                 for chapter in tags.chapters
             ]
             total_duration = try_parse_int(tags.duration) or 0
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Audiobook '%s': %d embedded chapters, duration=%d",
+                tags.album,
+                len(chapters),
+                int(total_duration),
+            )
         else:
-            # there could be multiple files for this audiobook in the same folder,
-            # where each file is a portion/chapter of the audiobook
-            # try to gather the chapters by traversing files in the same folder
-            chapter_file_tags: list[AudioTags] = []
-            abs_path = self.get_absolute_path(audiobook_file_item.parent_path)
-            for item in await asyncio.to_thread(
-                sorted_scandir, self.base_path, abs_path, sort=True
-            ):
-                if "." not in item.relative_path or item.is_dir:
+            for position, (chapter_item, chapter_tags) in enumerate(chapter_file_items, start=1):
+                if chapter_tags.duration is None:
+                    self.logger.warning(
+                        "Chapter file has no duration, skipping: %s",
+                        chapter_item.relative_path,
+                    )
                     continue
-                if item.ext not in AUDIOBOOK_EXTENSIONS:
-                    continue
-                item_tags = await async_parse_tags(item.absolute_path, item.file_size)
-                if not (tags.album == item_tags.album or (item_tags.tags.get("title") is None)):
-                    continue
-                if item_tags.track is None:
-                    continue
-                chapter_file_tags.append(item_tags)
-            chapter_file_tags.sort(key=lambda x: (x.disc or 0, x.track or 0))
-            for chapter_tags in chapter_file_tags:
-                assert chapter_tags.duration is not None
+                self.logger.debug("Chapter filename: %s", chapter_item.relative_path)
                 chapters.append(
                     MediaItemChapter(
-                        position=chapter_tags.track or 0,
+                        position=position,
                         name=chapter_tags.title,
                         start=total_duration,
                         end=total_duration + chapter_tags.duration,
@@ -1775,21 +1965,28 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 all_chapter_files.append(
                     (
-                        get_relative_path(self.base_path, chapter_tags.filename),
+                        chapter_item.relative_path,
                         chapter_tags.duration,
                     )
                 )
                 total_duration += chapter_tags.duration
-
-        # store chapter files in cache
-        # for easy access from streamdetails
+            sort_method = "alphabetical" if use_alphabetical else "track"
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Audiobook '%s': %d files (%s order), duration=%d",
+                tags.album,
+                len(chapters),
+                sort_method,
+                int(total_duration),
+            )
+        # Cache chapter files for streaming
         await self.cache.set(
             key=audiobook_file_item.relative_path,
             data=all_chapter_files,
             provider=self.instance_id,
             category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
         )
-        return (int(total_duration), chapters)
+        return int(total_duration), chapters
 
     async def _get_podcast_metadata(self, podcast_folder: str) -> dict[str, Any]:
         """Return metadata for a podcast."""
@@ -1805,9 +2002,8 @@ class LocalFileSystemProvider(MusicProvider):
         metadata_file = os.path.join(podcast_folder, "metadata.json")
         if await self.exists(metadata_file):
             # found json file with metadata
-            metadata_file = self.get_absolute_path(metadata_file)
-            async with aiofiles.open(metadata_file) as _file:
-                data.update(json_loads(await _file.read()))
+            raw = await self._read_file(metadata_file)
+            data.update(json_loads(raw.decode("utf-8")))
         await self.cache.set(
             key=podcast_folder,
             data=data,
@@ -1815,3 +2011,13 @@ class LocalFileSystemProvider(MusicProvider):
             category=CACHE_CATEGORY_PODCAST_METADATA,
         )
         return data
+
+    async def _scandir(self, path: str) -> list[FileSystemItem]:
+        """List directory contents."""
+        abs_path = self.get_absolute_path(path)
+        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path)
+
+    async def _read_file(self, path: str) -> bytes:
+        """Read file contents. Override for network storage."""
+        async with aiofiles.open(self.get_absolute_path(path), mode="rb") as f:
+            return cast("bytes", await f.read())

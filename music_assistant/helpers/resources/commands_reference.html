@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant API - Commands Reference</title>
+    <link rel="stylesheet" href="../resources/common.css">
+    <style>
+        .nav-container {
+            background: var(--panel);
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .search-box input {
+            width: 100%;
+            max-width: 600px;
+            padding: 0.6rem 1rem;
+            font-size: 0.95em;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            display: block;
+            margin: 0 auto;
+        }
+        .search-box input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .quick-nav {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+            padding-top: 0.5rem;
+            border-top: 1px solid var(--border);
+        }
+        .quick-nav a {
+            padding: 0.4rem 1rem;
+            background: var(--panel);
+            color: var(--primary);
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            transition: all 0.2s;
+        }
+        .quick-nav a:hover {
+            background: var(--primary);
+            color: var(--fg);
+        }
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 2rem;
+        }
+        .category {
+            background: var(--panel);
+            margin-bottom: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        .category-header {
+            background: var(--primary);
+            color: var(--fg);
+            padding: 1rem 1.5rem;
+            font-size: 1.2em;
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+        }
+        .category-header:hover {
+            background: var(--primary);
+        }
+        .command {
+            border-bottom: 1px solid var(--border);
+        }
+        .command:last-child {
+            border-bottom: none;
+        }
+        .command-header {
+            padding: 1rem 1.5rem;
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+            background: var(--input-bg);
+        }
+        .command-header:hover {
+            background: var(--input-focus-bg);
+        }
+        .command-title {
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+            flex: 1;
+        }
+        .command-name {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: var(--primary);
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+        .command-summary {
+            font-size: 0.9em;
+            color: var(--text-secondary);
+        }
+        .command-expand-icon {
+            color: var(--primary);
+            font-size: 1.2em;
+            transition: transform 0.3s;
+        }
+        .command-expand-icon.expanded {
+            transform: rotate(180deg);
+        }
+        .command-details {
+            padding: 0 1.5rem 1.5rem 1.5rem;
+            display: none;
+        }
+        .command-details.show {
+            display: block;
+        }
+        .command-description {
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+        }
+        .return-type {
+            background: #e8f5e9;
+            padding: 0.5rem 1rem;
+            margin: 1rem 0;
+            border-radius: 6px;
+            border-left: 3px solid #4caf50;
+        }
+        .return-type-label {
+            font-weight: 600;
+            color: #2e7d32;
+            margin-right: 0.5rem;
+        }
+        .return-type-value {
+            font-family: 'Monaco', 'Courier New', monospace;
+            color: #2e7d32;
+        }
+        .params-section {
+            margin: 1rem 0;
+        }
+        .params-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 0.5rem;
+        }
+        .param {
+            background: var(--panel);
+            padding: 0.5rem 1rem;
+            margin: 0.5rem 0;
+            border-radius: 6px;
+            border-left: 3px solid var(--primary);
+        }
+        .param-name {
+            font-family: 'Monaco', 'Courier New', monospace;
+            color: var(--primary);
+            font-weight: 600;
+        }
+        .param-required {
+            color: #e74c3c;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin-left: 0.5rem;
+        }
+        .param-type {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            margin-left: 0.5rem;
+        }
+        .param-description {
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
+        .example {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            overflow-x: auto;
+            position: relative;
+        }
+        .example-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 0.5rem;
+        }
+        .example pre {
+            margin: 0;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            background: var(--primary);
+            color: var(--fg);
+            border: none;
+            padding: 0.4rem 0.8rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+        }
+        .copy-btn:hover {
+            background: var(--primary);
+        }
+        .hidden {
+            display: none;
+        }
+        .tabs {
+            margin: 1rem 0;
+        }
+        .tab-buttons {
+            display: flex;
+            gap: 0.5rem;
+            border-bottom: 2px solid #ddd;
+            margin-bottom: 1rem;
+        }
+        .tab-btn {
+            background: none;
+            border: none;
+            padding: 0.8rem 1.5rem;
+            font-size: 1em;
+            cursor: pointer;
+            color: var(--text-secondary);
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+        .tab-btn:hover {
+            color: var(--primary);
+        }
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .try-it-section {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .json-input {
+            width: 100%;
+            min-height: 150px;
+            padding: 1rem;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            background: #2d2d2d;
+            color: #f8f8f2;
+            resize: vertical;
+        }
+        .json-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .try-btn {
+            align-self: flex-start;
+            background: var(--primary);
+            color: var(--fg);
+            border: none;
+            padding: 0.8rem 2rem;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .try-btn:hover {
+            background: var(--primary);
+        }
+        .try-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .response-output {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            min-height: 100px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            display: none;
+        }
+        .response-output.show {
+            display: block;
+        }
+        .response-output.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .response-output.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        .type-link {
+            color: var(--primary);
+            text-decoration: none;
+            border-bottom: 1px dashed var(--primary);
+            transition: all 0.2s;
+        }
+        .type-link:hover {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+        .type-union {
+            margin-top: 0.5rem;
+        }
+        .type-union-label {
+            font-weight: 600;
+            color: #4a5568;
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+        .type-union ul {
+            margin: 0.25rem 0 0 0;
+            padding-left: 1.5rem;
+            list-style-type: disc;
+        }
+        .type-union li {
+            margin: 0.25rem 0;
+            color: #2d3748;
+        }
+        .param-type-union {
+            display: block;
+            margin-top: 0.25rem;
+        }
+        .auth-section {
+            background: var(--panel);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border: 2px solid var(--border);
+        }
+        .auth-section.authenticated {
+            border-color: var(--success-border);
+            background: var(--success-bg);
+        }
+        .auth-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.8rem;
+            font-weight: 600;
+            color: var(--fg);
+        }
+        .auth-status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #f44336;
+        }
+        .auth-status-dot.authenticated {
+            background: var(--success);
+        }
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+        .auth-form input {
+            padding: 0.6rem;
+            border: 2px solid var(--border);
+            border-radius: 6px;
+            font-size: 0.95em;
+            background: var(--panel);
+            color: var(--fg);
+        }
+        .auth-form input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .auth-form button {
+            padding: 0.6rem 1.2rem;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .auth-form button:hover {
+            filter: brightness(1.1);
+        }
+        .auth-form button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .auth-user-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .auth-user-details {
+            font-size: 0.9em;
+            color: var(--text-secondary);
+        }
+        .auth-logout-btn {
+            padding: 0.5rem 1rem;
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .auth-logout-btn:hover {
+            filter: brightness(0.9);
+        }
+        .auth-error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 0.6rem;
+            border-radius: 6px;
+            font-size: 0.9em;
+            margin-top: 0.5rem;
+        }
+        .role-badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 0.5rem;
+            text-transform: uppercase;
+        }
+        .role-badge.admin {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .role-badge.user {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        .header .logo {
+            margin-bottom: 1rem;
+        }
+        .header .logo img {
+            width: 60px;
+            height: 60px;
+            object-fit: contain;
+        }
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            font-size: 1.2em;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">
+            <img src="../logo.png" alt="Music Assistant">
+        </div>
+        <h1>Commands Reference</h1>
+        <p>Complete list of Music Assistant API commands</p>
+    </div>
+
+    <div class="nav-container">
+        <div class="auth-section" id="authSection">
+            <div class="auth-status">
+                <span class="auth-status-dot" id="authDot"></span>
+                <span id="authStatusText">Not Authenticated</span>
+            </div>
+            <div id="authFormContainer">
+                <form class="auth-form" id="loginForm" onsubmit="return handleLogin(event)">
+                    <input type="text" id="username" placeholder="Username" required />
+                    <input type="password" id="password" placeholder="Password" required />
+                    <button type="submit" id="loginBtn">Login</button>
+                </form>
+                <div id="authError" class="auth-error" style="display: none;"></div>
+            </div>
+            <div id="authUserInfo" class="auth-user-info" style="display: none;">
+                <div class="auth-user-details">
+                    <div>Logged in as: <strong id="authUsername"></strong></div>
+                    <div>Role: <strong id="authRole"></strong></div>
+                </div>
+                <button class="auth-logout-btn" onclick="handleLogout()">Logout</button>
+            </div>
+        </div>
+        <div class="search-box">
+            <input type="text" id="search" placeholder="Search commands..." />
+        </div>
+        <div class="quick-nav" id="quickNav">
+            <!-- Navigation links will be generated dynamically -->
+        </div>
+    </div>
+
+    <div class="container" id="container">
+        <div class="loading">Loading commands...</div>
+    </div>
+
+    <script>
+        // Get server URL from current location
+        const SERVER_URL = window.location.origin;
+
+        // Authentication functionality
+        const TOKEN_STORAGE_KEY = 'ma_api_token';
+        const USER_STORAGE_KEY = 'ma_api_user';
+
+        // Check for existing token on page load
+        async function checkAuth() {
+            const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+            const userStr = localStorage.getItem(USER_STORAGE_KEY);
+
+            if (token && userStr) {
+                try {
+                    const user = JSON.parse(userStr);
+
+                    // Validate token by making a JSON-RPC call that requires auth
+                    const response = await fetch('/api', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({
+                            command: 'info'
+                        })
+                    });
+
+                    if (response.ok) {
+                        // Token is valid
+                        updateAuthUI(true, user);
+                    } else {
+                        // Token is invalid (revoked, expired, etc.)
+                        clearAuth();
+                    }
+                } catch (e) {
+                    // Network error or invalid JSON
+                    clearAuth();
+                }
+            }
+        }
+
+        // Handle login form submission
+        async function handleLogin(event) {
+            event.preventDefault();
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const loginBtn = document.getElementById('loginBtn');
+            const errorDiv = document.getElementById('authError');
+
+            // Disable button and show loading
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Logging in...';
+            errorDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        credentials: {
+                            username: username,
+                            password: password
+                        }
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success && result.token && result.user) {
+                    // Store token and user info
+                    localStorage.setItem(TOKEN_STORAGE_KEY, result.token);
+                    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(result.user));
+
+                    // Update UI
+                    updateAuthUI(true, result.user);
+
+                    // Clear form
+                    document.getElementById('loginForm').reset();
+                } else {
+                    // Show error
+                    errorDiv.textContent = result.error || 'Login failed';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Connection error: ' + error.message;
+                errorDiv.style.display = 'block';
+            } finally {
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Login';
+            }
+
+            return false;
+        }
+
+        // Handle logout
+        function handleLogout() {
+            clearAuth();
+        }
+
+        // Clear authentication
+        function clearAuth() {
+            localStorage.removeItem(TOKEN_STORAGE_KEY);
+            localStorage.removeItem(USER_STORAGE_KEY);
+            updateAuthUI(false, null);
+        }
+
+        // Update auth UI
+        function updateAuthUI(authenticated, user) {
+            const authSection = document.getElementById('authSection');
+            const authDot = document.getElementById('authDot');
+            const authStatusText = document.getElementById('authStatusText');
+            const authFormContainer = document.getElementById('authFormContainer');
+            const authUserInfo = document.getElementById('authUserInfo');
+
+            if (authenticated && user) {
+                authSection.classList.add('authenticated');
+                authDot.classList.add('authenticated');
+                authStatusText.textContent = 'Authenticated';
+                authFormContainer.style.display = 'none';
+                authUserInfo.style.display = 'flex';
+
+                document.getElementById('authUsername').textContent = user.username;
+                document.getElementById('authRole').textContent = user.role;
+
+                // Update cURL examples with actual token
+                updateCurlExamples();
+            } else {
+                authSection.classList.remove('authenticated');
+                authDot.classList.remove('authenticated');
+                authStatusText.textContent = 'Not Authenticated';
+                authFormContainer.style.display = 'block';
+                authUserInfo.style.display = 'none';
+
+                // Reset cURL examples to placeholder
+                updateCurlExamples();
+            }
+        }
+
+        // Update all cURL examples with actual token or placeholder
+        function updateCurlExamples() {
+            const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+            const curlBlocks = document.querySelectorAll('.example pre');
+
+            curlBlocks.forEach(block => {
+                const curlText = block.textContent;
+
+                // Only update if it contains an Authorization header
+                if (curlText.includes('Authorization: Bearer')) {
+                    if (token) {
+                        // Replace placeholder with actual token
+                        block.textContent = curlText.replace(
+                            /Authorization: Bearer YOUR_ACCESS_TOKEN/g,
+                            `Authorization: Bearer ${token}`
+                        );
+                    } else {
+                        // Replace actual token with placeholder
+                        block.textContent = curlText.replace(
+                            /Authorization: Bearer \S+/g,
+                            'Authorization: Bearer YOUR_ACCESS_TOKEN'
+                        );
+                    }
+                }
+            });
+        }
+
+        // Initialize auth on page load
+        checkAuth();
+
+        // Helper function to make type links
+        function makeTypeLinks(typeStr, asList = false) {
+            // Find all complex types (capitalized words that aren't basic types)
+            const excluded = ['Union', 'Optional', 'List', 'Dict', 'Array', 'None', 'NoneType'];
+
+            function replaceType(typeStr) {
+                return typeStr.replace(/\b[A-Z][a-zA-Z0-9_]*\b/g, (match) => {
+                    if (match[0] === match[0].toUpperCase() && !excluded.includes(match)) {
+                        const schemaUrl = `${SERVER_URL}/api-docs/schemas#schema-${match}`;
+                        return `<a href="${schemaUrl}" class="type-link">${match}</a>`;
+                    }
+                    return match;
+                });
+            }
+
+            // If it's a union type with multiple options and asList is true, format as bullet list
+            if (asList && typeStr.includes(' | ')) {
+                const parts = typeStr.split(' | ');
+                // Only use list format if there are 3+ options
+                if (parts.length >= 3) {
+                    let html = '<div class="type-union"><span class="type-union-label">Any of:</span><ul>';
+                    for (const part of parts) {
+                        const linkedPart = replaceType(part);
+                        html += `<li>${linkedPart}</li>`;
+                    }
+                    html += '</ul></div>';
+                    return html;
+                }
+            }
+
+            // Replace complex type names with links
+            return replaceType(typeStr);
+        }
+
+        // Helper function to escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Helper function to build example args
+        function buildExampleArgs(parameters) {
+            const exampleArgs = {};
+
+            for (const param of parameters) {
+                // Include optional params if few params
+                if (param.required || parameters.length <= 2) {
+                    const typeStr = param.type;
+
+                    if (typeStr === 'string') {
+                        exampleArgs[param.name] = 'example_value';
+                    } else if (typeStr === 'integer') {
+                        exampleArgs[param.name] = 0;
+                    } else if (typeStr === 'number') {
+                        exampleArgs[param.name] = 0.0;
+                    } else if (typeStr === 'boolean') {
+                        exampleArgs[param.name] = true;
+                    } else if (typeStr === 'object') {
+                        exampleArgs[param.name] = {};
+                    } else if (typeStr === 'null') {
+                        exampleArgs[param.name] = null;
+                    } else if (typeStr === 'ConfigValueType') {
+                        exampleArgs[param.name] = 'example_value';
+                    } else if (typeStr === 'MediaItemType') {
+                        exampleArgs[param.name] = { "_comment": "See MediaItemType schema for details" };
+                    } else if (typeStr.startsWith('Array of ')) {
+                        const itemType = typeStr.substring(9);
+                        if (['string', 'integer', 'number', 'boolean'].includes(itemType)) {
+                            exampleArgs[param.name] = [];
+                        } else {
+                            exampleArgs[param.name] = [{ "_comment": `See ${itemType} schema in Swagger UI` }];
+                        }
+                    } else {
+                        // Complex type - use placeholder object
+                        const primaryType = typeStr.includes(' | ') ? typeStr.split(' | ')[0] : typeStr;
+                        exampleArgs[param.name] = { "_comment": `See ${primaryType} schema in Swagger UI` };
+                    }
+                }
+            }
+
+            return exampleArgs;
+        }
+
+        // Render commands from JSON data
+        function renderCommands(commandsData) {
+            const container = document.getElementById('container');
+            const quickNav = document.getElementById('quickNav');
+
+            // Group commands by category
+            const categories = {};
+            for (const cmd of commandsData) {
+                if (!categories[cmd.category]) {
+                    categories[cmd.category] = [];
+                }
+                categories[cmd.category].push(cmd);
+            }
+
+            // Clear container
+            container.innerHTML = '';
+            quickNav.innerHTML = '';
+
+            // Add quick navigation links
+            const sortedCategories = Object.keys(categories).sort();
+            for (const category of sortedCategories) {
+                const categoryId = category.toLowerCase().replace(/\s+/g, '-');
+                const link = document.createElement('a');
+                link.href = `#${categoryId}`;
+                link.textContent = category;
+                quickNav.appendChild(link);
+            }
+
+            // Render each category
+            for (const category of sortedCategories) {
+                const commands = categories[category];
+                const categoryId = category.toLowerCase().replace(/\s+/g, '-');
+
+                const categoryDiv = document.createElement('div');
+                categoryDiv.className = 'category';
+                categoryDiv.id = categoryId;
+                categoryDiv.dataset.category = categoryId;
+
+                const categoryHeader = document.createElement('div');
+                categoryHeader.className = 'category-header';
+                categoryHeader.textContent = category;
+                categoryDiv.appendChild(categoryHeader);
+
+                const categoryContent = document.createElement('div');
+                categoryContent.className = 'category-content';
+
+                // Render each command in category
+                for (const cmd of commands) {
+                    const commandDiv = document.createElement('div');
+                    commandDiv.className = 'command';
+                    commandDiv.dataset.command = cmd.command;
+
+                    // Command header
+                    const commandHeader = document.createElement('div');
+                    commandHeader.className = 'command-header';
+                    commandHeader.onclick = function() { toggleCommand(this); };
+
+                    const commandTitle = document.createElement('div');
+                    commandTitle.className = 'command-title';
+
+                    const commandName = document.createElement('div');
+                    commandName.className = 'command-name';
+                    commandName.textContent = cmd.command;
+
+                    // Add role badge if required
+                    if (cmd.required_role) {
+                        const roleBadge = document.createElement('span');
+                        roleBadge.className = `role-badge ${cmd.required_role.toLowerCase()}`;
+                        roleBadge.textContent = cmd.required_role;
+                        commandName.appendChild(roleBadge);
+                    }
+
+                    commandTitle.appendChild(commandName);
+
+                    if (cmd.summary) {
+                        const commandSummary = document.createElement('div');
+                        commandSummary.className = 'command-summary';
+                        commandSummary.textContent = cmd.summary;
+                        commandTitle.appendChild(commandSummary);
+                    }
+
+                    commandHeader.appendChild(commandTitle);
+
+                    const expandIcon = document.createElement('div');
+                    expandIcon.className = 'command-expand-icon';
+                    expandIcon.textContent = '▼';
+                    commandHeader.appendChild(expandIcon);
+
+                    commandDiv.appendChild(commandHeader);
+
+                    // Command details
+                    const commandDetails = document.createElement('div');
+                    commandDetails.className = 'command-details';
+
+                    // Description
+                    if (cmd.description && cmd.description !== cmd.summary) {
+                        const descDiv = document.createElement('div');
+                        descDiv.className = 'command-description';
+                        descDiv.textContent = cmd.description;
+                        commandDetails.appendChild(descDiv);
+                    }
+
+                    // Return type
+                    const returnTypeDiv = document.createElement('div');
+                    returnTypeDiv.className = 'return-type';
+                    returnTypeDiv.innerHTML = `
+                        <span class="return-type-label">Returns:</span>
+                        <span class="return-type-value">${makeTypeLinks(cmd.return_type)}</span>
+                    `;
+                    commandDetails.appendChild(returnTypeDiv);
+
+                    // Parameters
+                    if (cmd.parameters && cmd.parameters.length > 0) {
+                        const paramsSection = document.createElement('div');
+                        paramsSection.className = 'params-section';
+
+                        const paramsTitle = document.createElement('div');
+                        paramsTitle.className = 'params-title';
+                        paramsTitle.textContent = 'Parameters:';
+                        paramsSection.appendChild(paramsTitle);
+
+                        for (const param of cmd.parameters) {
+                            const paramDiv = document.createElement('div');
+                            paramDiv.className = 'param';
+
+                            const typeHtml = makeTypeLinks(param.type, true);
+
+                            let paramHtml = `<span class="param-name">${escapeHtml(param.name)}</span>`;
+                            if (param.required) {
+                                paramHtml += '<span class="param-required">REQUIRED</span>';
+                            }
+
+                            // If it's a list format, display it differently
+                            if (typeHtml.includes('<ul>')) {
+                                paramHtml += `<div class="param-type-union">${typeHtml}</div>`;
+                            } else {
+                                paramHtml += `<span class="param-type">${typeHtml}</span>`;
+                            }
+
+                            if (param.description) {
+                                paramHtml += `<div class="param-description">${escapeHtml(param.description)}</div>`;
+                            }
+
+                            paramDiv.innerHTML = paramHtml;
+                            paramsSection.appendChild(paramDiv);
+                        }
+
+                        commandDetails.appendChild(paramsSection);
+                    }
+
+                    // Build example request body
+                    const exampleArgs = buildExampleArgs(cmd.parameters || []);
+                    const requestBody = { command: cmd.command };
+                    if (Object.keys(exampleArgs).length > 0) {
+                        requestBody.args = exampleArgs;
+                    }
+
+                    // Build cURL command
+                    let curlHeaders = '  -H "Content-Type: application/json"';
+                    if (cmd.authenticated) {
+                        curlHeaders += ' \\\n  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"';
+                    }
+
+                    const curlCmd = `curl -X POST ${SERVER_URL}/api \\\n${curlHeaders} \\\n  -d '${JSON.stringify(requestBody, null, 2)}'`;
+
+                    // Add tabs
+                    const tabsDiv = document.createElement('div');
+                    tabsDiv.className = 'tabs';
+
+                    const tabButtons = document.createElement('div');
+                    tabButtons.className = 'tab-buttons';
+
+                    const curlTabBtn = document.createElement('button');
+                    curlTabBtn.className = 'tab-btn active';
+                    curlTabBtn.textContent = 'cURL';
+                    curlTabBtn.onclick = function() { switchTab(this, `curl-${cmd.command.replace(/\//g, '-')}`); };
+                    tabButtons.appendChild(curlTabBtn);
+
+                    const tryitTabBtn = document.createElement('button');
+                    tryitTabBtn.className = 'tab-btn';
+                    tryitTabBtn.textContent = 'Try It';
+                    tryitTabBtn.onclick = function() { switchTab(this, `tryit-${cmd.command.replace(/\//g, '-')}`); };
+                    tabButtons.appendChild(tryitTabBtn);
+
+                    tabsDiv.appendChild(tabButtons);
+
+                    // cURL tab
+                    const curlTabContent = document.createElement('div');
+                    curlTabContent.id = `curl-${cmd.command.replace(/\//g, '-')}`;
+                    curlTabContent.className = 'tab-content active';
+
+                    const exampleDiv = document.createElement('div');
+                    exampleDiv.className = 'example';
+
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'copy-btn';
+                    copyBtn.textContent = 'Copy';
+                    copyBtn.onclick = function() { copyCode(this); };
+                    exampleDiv.appendChild(copyBtn);
+
+                    const pre = document.createElement('pre');
+                    pre.textContent = curlCmd;
+                    exampleDiv.appendChild(pre);
+
+                    curlTabContent.appendChild(exampleDiv);
+                    tabsDiv.appendChild(curlTabContent);
+
+                    // Try It tab
+                    const tryitTabContent = document.createElement('div');
+                    tryitTabContent.id = `tryit-${cmd.command.replace(/\//g, '-')}`;
+                    tryitTabContent.className = 'tab-content';
+
+                    const tryItSection = document.createElement('div');
+                    tryItSection.className = 'try-it-section';
+
+                    const jsonInput = document.createElement('textarea');
+                    jsonInput.className = 'json-input';
+                    jsonInput.value = JSON.stringify(requestBody, null, 2);
+                    tryItSection.appendChild(jsonInput);
+
+                    const tryBtn = document.createElement('button');
+                    tryBtn.className = 'try-btn';
+                    tryBtn.textContent = 'Execute';
+                    tryBtn.onclick = function() { tryCommand(this, cmd.command); };
+                    tryItSection.appendChild(tryBtn);
+
+                    const responseOutput = document.createElement('div');
+                    responseOutput.className = 'response-output';
+                    tryItSection.appendChild(responseOutput);
+
+                    tryitTabContent.appendChild(tryItSection);
+                    tabsDiv.appendChild(tryitTabContent);
+
+                    commandDetails.appendChild(tabsDiv);
+                    commandDiv.appendChild(commandDetails);
+                    categoryContent.appendChild(commandDiv);
+                }
+
+                categoryDiv.appendChild(categoryContent);
+                container.appendChild(categoryDiv);
+            }
+
+            // Update cURL examples if already authenticated
+            updateCurlExamples();
+        }
+
+        // Load commands from JSON endpoint
+        async function loadCommands() {
+            try {
+                const response = await fetch('/api-docs/commands.json');
+                if (!response.ok) {
+                    throw new Error('Failed to load commands');
+                }
+                const commandsData = await response.json();
+                renderCommands(commandsData);
+            } catch (error) {
+                document.getElementById('container').innerHTML =
+                    `<div class="loading">Error loading commands: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        // Search functionality
+        document.getElementById('search').addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const commands = document.querySelectorAll('.command');
+            const categories = document.querySelectorAll('.category');
+
+            commands.forEach(command => {
+                const commandName = command.dataset.command;
+                const commandText = command.textContent.toLowerCase();
+                if (commandName.includes(searchTerm) || commandText.includes(searchTerm)) {
+                    command.classList.remove('hidden');
+                } else {
+                    command.classList.add('hidden');
+                }
+            });
+
+            // Hide empty categories
+            categories.forEach(category => {
+                const visibleCommands = category.querySelectorAll('.command:not(.hidden)');
+                if (visibleCommands.length === 0) {
+                    category.classList.add('hidden');
+                } else {
+                    category.classList.remove('hidden');
+                }
+            });
+        });
+
+        // Toggle command details
+        function toggleCommand(header) {
+            const command = header.parentElement;
+            const details = command.querySelector('.command-details');
+            const icon = header.querySelector('.command-expand-icon');
+
+            details.classList.toggle('show');
+            icon.classList.toggle('expanded');
+        }
+
+        // Copy to clipboard
+        function copyCode(button) {
+            const code = button.nextElementSibling.textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                const originalText = button.textContent;
+                button.textContent = 'Copied!';
+                setTimeout(() => {
+                    button.textContent = originalText;
+                }, 2000);
+            });
+        }
+
+        // Tab switching
+        function switchTab(button, tabId) {
+            const tabButtons = button.parentElement;
+            const tabs = tabButtons.parentElement;
+
+            // Remove active class from all buttons and tabs
+            tabButtons.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            tabs.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+
+            // Add active class to clicked button and corresponding tab
+            button.classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        // Try command functionality
+        async function tryCommand(button, commandName) {
+            const section = button.parentElement;
+            const textarea = section.querySelector('.json-input');
+            const output = section.querySelector('.response-output');
+
+            // Disable button while processing
+            button.disabled = true;
+            button.textContent = 'Executing...';
+
+            // Clear previous output
+            output.className = 'response-output show';
+            output.textContent = 'Loading...';
+
+            try {
+                // Parse JSON from textarea
+                let requestBody;
+                try {
+                    requestBody = JSON.parse(textarea.value);
+                } catch (e) {
+                    throw new Error('Invalid JSON: ' + e.message);
+                }
+
+                // Get stored token
+                const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+
+                // Build headers
+                const headers = {
+                    'Content-Type': 'application/json',
+                };
+
+                // Add authorization header if token exists
+                if (token) {
+                    headers['Authorization'] = 'Bearer ' + token;
+                }
+
+                // Make API request
+                const response = await fetch('/api', {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(requestBody)
+                });
+
+                let result;
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    result = await response.json();
+                } else {
+                    const text = await response.text();
+                    result = { error: text };
+                }
+
+                // Display result
+                if (response.ok) {
+                    output.className = 'response-output show success';
+                    output.textContent = 'Success!\n\n' + JSON.stringify(result, null, 2);
+                } else {
+                    output.className = 'response-output show error';
+
+                    // Handle 401/403 - token invalid or revoked
+                    if (response.status === 401 || response.status === 403) {
+                        clearAuth();
+                        output.textContent = 'Authentication Error: Your session has expired '
+                            + 'or token was revoked. Please login again.';
+                    } else {
+                        // Try to extract a meaningful error message
+                        let errorMsg = 'Request failed';
+                        if (result.error) {
+                            errorMsg = result.error;
+                        } else if (result.message) {
+                            errorMsg = result.message;
+                        } else if (typeof result === 'string') {
+                            errorMsg = result;
+                        } else {
+                            errorMsg = JSON.stringify(result, null, 2);
+                        }
+                        output.textContent = 'Error: ' + errorMsg;
+                    }
+                }
+            } catch (error) {
+                output.className = 'response-output show error';
+                // Provide more user-friendly error messages
+                if (error.message.includes('Invalid JSON')) {
+                    output.textContent = 'JSON Syntax Error: Please check your request format. '
+                        + error.message;
+                } else if (error.message.includes('Failed to fetch')) {
+                    output.textContent = 'Connection Error: Unable to reach the API server. '
+                        + 'Please check if the server is running.';
+                } else {
+                    output.textContent = 'Error: ' + error.message;
+                }
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Execute';
+            }
+        }
+
+        // Load commands on page load
+        loadCommands();
+    </script>
+</body>
+</html>

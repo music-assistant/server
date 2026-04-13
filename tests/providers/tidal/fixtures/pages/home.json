@@ -1,0 +1,70 @@
+{
+    "rows": [
+        {
+            "modules": [
+                {
+                    "title": "My Playlists",
+                    "type": "PLAYLIST_LIST",
+                    "pagedList": {
+                        "items": [
+                            {
+                                "uuid": "aabbcc-1122-3344-5566",
+                                "title": "Test Playlist",
+                                "creator": {
+                                    "id": 99999
+                                },
+                                "image": "playlist-image-id"
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "modules": [
+                {
+                    "title": "New Albums",
+                    "type": "ALBUM_LIST",
+                    "pagedList": {
+                        "items": [
+                            {
+                                "id": 67890,
+                                "title": "Test Album",
+                                "artists": [
+                                    {
+                                        "id": 12345,
+                                        "name": "Test Artist"
+                                    }
+                                ],
+                                "type": "ALBUM"
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "modules": [
+                {
+                    "title": "My Mixes",
+                    "type": "MIX_LIST",
+                    "pagedList": {
+                        "items": [
+                            {
+                                "id": "mix_123",
+                                "title": "My Mix",
+                                "subTitle": "A mix for you",
+                                "images": {
+                                    "MEDIUM": {
+                                        "url": "http://example.com/mix.jpg"
+                                    }
+                                },
+                                "mixId": "mix_123"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, final
 
@@ -10,6 +11,7 @@ from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
@@ -21,6 +23,10 @@ if TYPE_CHECKING:
 
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
+
+    mass: MusicAssistant
+    manifest: ProviderManifest
+    config: ProviderConfig
 
     def __init__(
         self,
@@ -34,31 +40,16 @@ class Provider:
         self.manifest = manifest
         self.config = config
         self._supported_features = supported_features or set()
-        mass_logger = logging.getLogger(MASS_LOGGER_NAME)
-        self.logger = mass_logger.getChild(self.domain)
-        log_level = str(config.get_value(CONF_LOG_LEVEL))
-        if log_level == "GLOBAL":
-            self.logger.setLevel(mass_logger.level)
-        else:
-            self.logger.setLevel(log_level)
-        if logging.getLogger().level > self.logger.level:
-            # if the root logger's level is higher, we need to adjust that too
-            logging.getLogger().setLevel(self.logger.level)
-        self.logger.debug("Log level configured to %s", log_level)
+        self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
+        self.initialized = asyncio.Event()
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         # should not be overridden in normal circumstances
         return self._supported_features
-
-    @property
-    def lookup_key(self) -> str:
-        """Return instance_id if multi_instance capable or domain otherwise."""
-        # should not be overridden in normal circumstances
-        return self.instance_id if self.manifest.multi_instance else self.domain
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -74,10 +65,47 @@ class Provider:
         is_removed will be set to True when the provider is removed from the configuration.
         """
 
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """
+        Handle logic when the config is updated.
+
+        Override this method in your provider implementation if you need
+        to perform any additional setup logic after the provider is registered and
+        the self.config was loaded, and whenever the config changes.
+
+        The default implementation reloads the provider on any config change
+        (except log-level-only changes), since provider reloads are lightweight
+        and most providers cache config values at setup time.
+        """
+        # always update the stored config so dynamic reads pick up new values
+        self.config = config
+
+        # update log level if changed
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys or "name" in changed_keys:
+            self._set_log_level_from_config(config)
+
+        # reload if any non-log-level value keys changed
+        value_keys_changed = {
+            k for k in changed_keys if k.startswith("values/") and k != f"values/{CONF_LOG_LEVEL}"
+        }
+        if value_keys_changed:
+            self.logger.info(
+                "Config updated, reloading provider %s (instance_id=%s)",
+                self.domain,
+                self.instance_id,
+            )
+            task_id = f"provider_reload_{self.instance_id}"
+            self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
+
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+
+    async def on_upnp_service_discovered(
+        self, search_target: str, discovery_info: CaseInsensitiveDict
+    ) -> None:
+        """Handle UPNP/SSDP discovery callback."""
 
     @property
     @final
@@ -111,7 +139,8 @@ class Provider:
     def default_name(self) -> str:
         """Return a default friendly name for this provider instance."""
         # create default name based on instance count
-        instances = [x.instance_id for x in self.mass.music.providers if x.domain == self.domain]
+        prov_confs = self.mass.config.get("providers", {}).values()
+        instances = [x["instance_id"] for x in prov_confs if x["domain"] == self.domain]
         if len(instances) <= 1:
             # only one instance (or no instances yet at all) - return provider name
             return self.manifest.name
@@ -133,12 +162,6 @@ class Provider:
         """Return the stage of this provider."""
         return self.manifest.stage
 
-    def update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
-        """Update a config value."""
-        self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
-        # also update the cached copy within the provider instance
-        self.config.values[key].value = value
-
     def unload_with_error(self, error: str) -> None:
         """Unload provider with error message."""
         self.mass.call_later(1, self.mass.unload_provider, self.instance_id, error)
@@ -152,7 +175,7 @@ class Provider:
             "default_name": self.default_name,
             "instance_name_postfix": self.instance_name_postfix,
             "instance_id": self.instance_id,
-            "lookup_key": self.lookup_key,
+            "lookup_key": self.instance_id,  # include for backwards compatibility
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),
@@ -168,3 +191,29 @@ class Provider:
             raise UnsupportedFeaturedException(
                 f"Provider {self.name} does not support feature {feature.name}"
             )
+
+    def _update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
+        """Update a config value."""
+        self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
+        # also update the cached copy within the provider instance
+        self.config.values[key].value = value
+
+    def _set_log_level_from_config(self, config: ProviderConfig) -> None:
+        """Set log level from config."""
+        mass_logger = logging.getLogger(MASS_LOGGER_NAME)
+        # self.name is only available after async_init. Otherwise we run into a race condition.
+        # see https://github.com/music-assistant/support/issues/4801
+        logging_name = self.domain
+        if getattr(self, "available", False):
+            # async_init completed
+            logging_name = self.name
+        self.logger = mass_logger.getChild(logging_name)
+        log_level = str(config.get_value(CONF_LOG_LEVEL))
+        if log_level == "GLOBAL":
+            self.logger.setLevel(mass_logger.level)
+        else:
+            self.logger.setLevel(log_level)
+        if logging.getLogger().level > self.logger.level:
+            # if the root logger's level is higher, we need to adjust that too
+            logging.getLogger().setLevel(self.logger.level)
+        self.logger.debug("Log level configured to %s", log_level)

@@ -21,6 +21,8 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.util import parse_title_and_version
+
 from .const import (
     DOMAIN,
     ITEM_KEY_ALBUM,
@@ -65,10 +67,12 @@ def parse_album(
 ) -> Album:
     """Parse a Jellyfin Album response to an Album model object."""
     album_id = jellyfin_album[ITEM_KEY_ID]
+    name, version = parse_title_and_version(jellyfin_album[ITEM_KEY_NAME])
     album = Album(
         item_id=album_id,
         provider=DOMAIN,
-        name=jellyfin_album[ITEM_KEY_NAME],
+        name=name,
+        version=version,
         provider_mappings={
             ProviderMapping(
                 item_id=str(album_id),
@@ -174,11 +178,17 @@ def parse_artist(
 
 def audio_format(track: JellyTrack) -> AudioFormat:
     """Build an AudioFormat model from a Jellyfin track."""
-    stream = track[ITEM_KEY_MEDIA_STREAMS][0]
-    codec = stream[ITEM_KEY_MEDIA_CODEC]
+    # Defensive: Handle missing or empty MediaStreams array
+    streams = track.get(ITEM_KEY_MEDIA_STREAMS, [])
+    if not streams:
+        return AudioFormat(content_type=ContentType.UNKNOWN)
+
+    stream = streams[0]
+    codec = stream.get(ITEM_KEY_MEDIA_CODEC)
+
     return AudioFormat(
         content_type=(ContentType.try_parse(codec) if codec else ContentType.UNKNOWN),
-        channels=stream[ITEM_KEY_MEDIA_CHANNELS],
+        channels=stream.get(ITEM_KEY_MEDIA_CHANNELS, 2),
         sample_rate=stream.get("SampleRate", 44100),
         bit_rate=stream.get("BitRate"),
         bit_depth=stream.get("BitDepth", 16),
@@ -189,12 +199,13 @@ def parse_track(
     logger: Logger, instance_id: str, client: Connection, jellyfin_track: JellyTrack
 ) -> Track:
     """Parse a Jellyfin Track response to a Track model object."""
-    available = False
     available = jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
+    name, version = parse_title_and_version(jellyfin_track[ITEM_KEY_NAME])
     track = Track(
         item_id=jellyfin_track[ITEM_KEY_ID],
         provider=instance_id,
-        name=jellyfin_track[ITEM_KEY_NAME],
+        name=name,
+        version=version,
         provider_mappings={
             ProviderMapping(
                 item_id=jellyfin_track[ITEM_KEY_ID],

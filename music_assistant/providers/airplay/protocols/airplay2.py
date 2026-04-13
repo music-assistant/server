@@ -4,40 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import platform
+import time
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
-    CONF_READ_AHEAD_BUFFER,
+    CONF_AIRPLAY_CREDENTIALS,
+    CONF_AP2PASSWORD,
 )
-from music_assistant.providers.airplay.helpers import get_cli_binary, get_ntp_timestamp
+from music_assistant.providers.airplay.helpers import get_cli_binary
 
 from ._protocol import AirPlayProtocol
+
+if TYPE_CHECKING:
+    from music_assistant.providers.airplay.provider import AirPlayProvider
 
 
 class AirPlay2Stream(AirPlayProtocol):
     """
     AirPlay 2 Audio Streamer.
 
-    Python is not suitable for realtime audio streaming so we do the actual streaming
-    of audio using a small executable written in C based on owntones to do
-    the actual timestamped playback. It reads pcm audio from a named pipe
-    and we can send some interactive commands using another named pipe.
+    Uses cliap2 (C executable based on owntone) for timestamped playback.
+    Audio is fed via stdin, commands via a named pipe.
     """
-
-    _stderr_reader_task: asyncio.Task[None] | None = None
-
-    async def get_ntp(self) -> int:
-        """Get current NTP timestamp."""
-        # this can probably be removed now that we already get the ntp
-        # in python (within the stream session start)
-        return get_ntp_timestamp()
 
     @property
     def _cli_loglevel(self) -> int:
@@ -46,7 +39,6 @@ class AirPlay2Stream(AirPlayProtocol):
 
         Ensures that minimum level required for required cliap2 stderr output is respected.
         """
-        force_verbose: bool = False  # just for now
         mass_level: int = 0
         match self.prov.logger.level:
             case logging.CRITICAL:
@@ -61,36 +53,57 @@ class AirPlay2Stream(AirPlayProtocol):
                 mass_level = 4
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             mass_level = 5
-        if force_verbose:
-            mass_level = 5  # always use max log level for now to capture all stderr output
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
-    async def start(self, start_ntp: int, skip: int = 0) -> None:
-        """Initialize CLI process for a player."""
-        cli_binary = await get_cli_binary(self.player.protocol)
-        assert self.player.airplay_discovery_info is not None
+    @staticmethod
+    def _log_cli_output(logger: logging.Logger, line: str) -> None:
+        """Route a cliap2 stderr line to the appropriate log level."""
+        if "[FATAL]" in line:
+            logger.critical(line)
+        elif "[  LOG]" in line:
+            logger.error(line)
+        elif "[ INFO]" in line:
+            logger.info(line)
+        elif "[ WARN]" in line:
+            logger.warning(line)
+        elif "[DEBUG]" in line and "mass_timer_cb" in line:
+            logger.log(VERBOSE_LOG_LEVEL, line)
+        elif "[DEBUG]" in line:
+            logger.debug(line)
+        elif "[ SPAM]" in line:
+            logger.log(VERBOSE_LOG_LEVEL, line)
+        else:
+            logger.error(line)
 
+    async def start(self, start_ntp: int) -> None:
+        """Start cliap2 process."""
+        assert self.player.airplay_discovery_info is not None  # for type checker
+        cli_binary = await get_cli_binary(self.player.protocol)
         player_id = self.player.player_id
-        sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
-        assert isinstance(sync_adjust, int)
-        read_ahead = await self.mass.config.get_player_config_value(
-            player_id, CONF_READ_AHEAD_BUFFER
-        )
+        sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST)
+        assert isinstance(sync_adjust, int)  # for type checker
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
             txt_kv += f'"{key}={value}" '
 
-        # Note: skip parameter is accepted for API compatibility with base class
-        # but is not currently used by the cliap2 binary (AirPlay2 handles late joiners differently)
-
         # cliap2 is the binary that handles the actual streaming to the player
-        # this binary leverages from the AirPlay2 support in owntones
+        # this binary leverages from the AirPlay2 support in OwnTone
         # https://github.com/music-assistant/cliairplay
+
+        # Get AirPlay credentials if available (for Apple devices that require pairing)
+        airplay_credentials: str | None = None
+        airplay_password: str | None = None
+        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
+            airplay_credentials = str(creds)
+            if ap2_password := self.player.config.get_value(CONF_AP2PASSWORD):
+                airplay_password = str(ap2_password)
+
+        # Get the provider's DACP ID for remote control callbacks
+        prov = cast("AirPlayProvider", self.prov)
+
         cli_args = [
             cli_binary,
-            "--config",
-            os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf"),
             "--name",
             self.player.display_name,
             "--hostname",
@@ -103,92 +116,97 @@ class AirPlay2Stream(AirPlayProtocol):
             txt_kv,
             "--ntpstart",
             str(start_ntp),
-            "--latency",
-            str(read_ahead),
             "--volume",
             str(self.player.volume_level),
             "--loglevel",
             str(self._cli_loglevel),
+            "--dacp_id",
+            prov.dacp_id,
             "--pipe",
-            self.audio_named_pipe,
+            "-",  # Use stdin for audio input
+            "--command_pipe",
+            self.commands_pipe.path,
+            "--latency",
+            str(self.player.output_buffer_duration_ms),
         ]
+
+        # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
+        # Native HAP pairing format: 192 hex chars = client_private_key(128) + server_public_key(64)
+        if airplay_credentials:
+            if len(airplay_credentials) == 192:
+                cli_args += ["--auth", airplay_credentials]
+                if airplay_password:
+                    cli_args += ["--password", airplay_password]
+            else:
+                self.player.logger.warning(
+                    "Invalid credentials length: %d (expected 192)",
+                    len(airplay_credentials),
+                )
+
         self.player.logger.debug(
             "Starting cliap2 process for player %s with args: %s",
             player_id,
             cli_args,
         )
         self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=True, name="cliap2")
-        if platform.system() == "Darwin":
-            os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
         await self._cli_proc.start()
-        # read up to first num_lines lines of stderr to get the initial status
-        num_lines: int = 50
-        if self.prov.logger.level > logging.INFO:
-            num_lines *= 10
-        for _ in range(num_lines):
-            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
-            self.player.logger.debug(line)
-            if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
-                self.player.logger.info("AirPlay device connected. Starting playback.")
-                self._started.set()
-                # Open pipes now that cliraop is ready
-                await self._open_pipes()
-                break
-            if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
-                raise PlayerCommandFailed("Cannot connect to AirPlay device")
         # start reading the stderr of the cliap2 process from another task
-        self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
+        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIap2 process."""
         player = self.player
-        queue = self.mass.players.get_active_queue(player)
         logger = player.logger
-        lost_packets = 0
+        expected_eof = False
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
-            # TODO @bradkeifer make cliap2 work this way
-            if "elapsed milliseconds:" in line:
-                # this is received more or less every second while playing
-                # millis = int(line.split("elapsed milliseconds: ")[1])
-                # self.player.elapsed_time = (millis / 1000) - self.elapsed_time_correction
-                # self.player.elapsed_time_last_updated = time.time()
-                # NOTE: Metadata is now handled at the session level
-                pass
-            if "set pause" in line or "Pause at" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED)
-            if "Restarted at" in line or "restarting w/ pause" in line:
-                player.set_state_from_stream(state=PlaybackState.PLAYING)
-            if "restarting w/o pause" in line:
-                # streaming has started
-                player.set_state_from_stream(state=PlaybackState.PLAYING, elapsed_time=0)
-            if "lost packet out of backlog" in line:
-                lost_packets += 1
-                if lost_packets == 100 and queue:
-                    logger.error("High packet loss detected, restarting playback...")
-                    self.mass.create_task(self.mass.player_queues.resume(queue.queue_id, False))
+            if self._stopped:
+                break
+            if "player: event_play_start()" in line:
+                # successfully connected
+                self._connected.set()
+            if "Pause at" in line:
+                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+            elif "Restarted at" in line:
+                player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
+            elif "Starting at" in line:
+                # streaming has started - compute a fixed offset between the
+                # session start_time and this process start to handle dynamic
+                # leader switching where a new process starts mid-session.
+                if self._elapsed_time_offset is None and self.session:
+                    self._elapsed_time_offset = max(0, time.time() - self.session.start_time)
+                elapsed_time = self._elapsed_time_offset or 0
+                player.set_state_from_stream(
+                    state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
+                )
+            if "put delay detected" in line:
+                if "resetting all outputs" in line:
+                    logger.error(
+                        "Repeated output buffer low level detected, restarting playback..."
+                    )
+                    logger.info(
+                        "Recommended to increase 'Milliseconds of data to buffer' in player "
+                        "advanced settings"
+                    )
+                    self.mass.create_task(self.mass.players.cmd_resume(self.player.player_id))
                 else:
-                    logger.warning("Packet loss detected!")
+                    logger.warning("Output buffer low level detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
+                expected_eof = True
                 break
 
-            # log cli stderr output in alignment with mass logging level
-            if "[FATAL]" in line:
-                logger.critical(line)
-            elif "[  LOG]" in line:
-                logger.error(line)
-            elif "[ INFO]" in line:
-                logger.info(line)
-            elif "[ WARN]" in line:
-                logger.warning(line)
-            elif "[DEBUG]" in line:
-                logger.debug(line)
-            elif "[ SPAM]" in line:
-                logger.log(VERBOSE_LOG_LEVEL, line)
-            else:  # for now, log unknown lines as error
-                logger.error(line)
+            self._log_cli_output(logger, line)
+            await asyncio.sleep(0)  # Yield to event loop
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
-        await self.stop()
+        if not self._stopped:
+            self._stopped = True
+            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            if not expected_eof:
+                # CLI process died without reaching EOF — unsolicited stop.
+                # Ungroup so the player controller can handle leader switches
+                # and dissolve manual sync groups cleanly.
+                logger.warning("CLIap2 process stopped unexpectedly for %s", player.display_name)
+                self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))

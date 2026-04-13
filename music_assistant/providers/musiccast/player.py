@@ -3,22 +3,45 @@
 import asyncio
 import time
 from collections.abc import Callable, Coroutine
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp import ServerDisconnectedError
+from aiohttp.client_exceptions import ClientError
+from aiomusiccast.capabilities import BinarySensor as MCBinarySensor
+from aiomusiccast.capabilities import BinarySetter as MCBinarySetter
+from aiomusiccast.capabilities import NumberSensor as MCNumberSensor
+from aiomusiccast.capabilities import NumberSetter as MCNumberSetter
+from aiomusiccast.capabilities import OptionSetter as MCOptionSetter
+from aiomusiccast.capabilities import TextSensor as MCTextSensor
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
+from aiomusiccast.pyamaha import System as MCSystem
+from mashumaro import DataClassDictMixin
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
-from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
-from propcache import under_cached_property as cached_property
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+)
+from music_assistant_models.player import (
+    DeviceInfo,
+    PlayerMedia,
+    PlayerOption,
+    PlayerOptionEntry,
+    PlayerOptionType,
+    PlayerOptionValueType,
+    PlayerSoundMode,
+    PlayerSource,
+)
+from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.musiccast.avt_helpers import (
     avt_get_media_info,
     avt_next,
-    avt_pause,
     avt_play,
     avt_previous,
     avt_set_url,
@@ -26,12 +49,15 @@ from music_assistant.providers.musiccast.avt_helpers import (
     search_xml,
 )
 from music_assistant.providers.musiccast.constants import (
+    CONF_PLAYER_HANDLE_SOURCE_DISABLED,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
+    MC_CAPABILITIES,
     MC_CONTROL_SOURCE_IDS,
     MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     MC_POLL_INTERVAL,
+    MC_SOUND_MODE_FRIENDLY_NAMES,
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
     PLAYER_CONFIG_ENTRIES,
@@ -45,6 +71,42 @@ from music_assistant.providers.musiccast.musiccast import (
 
 if TYPE_CHECKING:
     from .provider import MusicCastProvider
+
+
+def get_player_option_translation_key(mc_key: str) -> str:
+    """Get translation key for player option.
+
+    MC key has format like 'zone_ENHANCER' or 'zone_TONE_CONTROL_bass'
+    """
+    mc_key = mc_key.lower().replace("zone_", "")
+    if mc_key == "tone_control_bass":
+        return "bass"
+    if mc_key == "tone_control_treble":
+        return "treble"
+    if mc_key == "surr_decoder_type":
+        return "surround_decoder_type"
+    return mc_key
+
+
+@dataclass
+class MusicCastMacAddresses(DataClassDictMixin):
+    """MusicCastMacAddresses.
+
+    The MAC addresses lack the colons.
+    """
+
+    wired_lan: str | None = None
+    wireless_lan: str | None = None
+    wireless_direct: str | None = None
+
+
+@dataclass
+class MusicCastNetworkStatus(DataClassDictMixin):
+    """Helper class to parse the relevant information from aiomusiccast."""
+
+    connection: str | None = None
+    ip_address: str | None = None
+    mac_address: MusicCastMacAddresses | None = None
 
 
 @dataclass(kw_only=True)
@@ -84,20 +146,24 @@ class MusicCastPlayer(Player):
 
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
-        self.set_static_attributes()
+        await self.set_static_attributes()
+        await self.set_dynamic_attributes(update_state=False)
 
-    def set_static_attributes(self) -> None:
+    async def set_static_attributes(self) -> None:
         """Set static properties."""
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,
+            PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
+            PlayerFeature.SELECT_SOUND_MODE,
+            PlayerFeature.OPTIONS,
         }
 
         self._attr_device_info = DeviceInfo(
@@ -105,6 +171,34 @@ class MusicCastPlayer(Player):
             model=self.physical_device.device.data.model_name or "unknown model",
             software_version=(self.physical_device.device.data.system_version or "unknown version"),
         )
+
+        if "zone" not in self.player_id:
+            # we do not add mac/ ip information to zone players to prevent false player merging
+            network_status = await self.physical_device.device.device.request_json(
+                MCSystem.get_network_status()
+            )
+            network_info = MusicCastNetworkStatus.from_dict(network_status)
+            mac_address: str | None = None
+
+            if network_info.connection is not None and network_info.mac_address is not None:
+                mac_address = getattr(network_info.mac_address, network_info.connection, None)
+
+            if device_ip := self.physical_device.device.device.ip:
+                self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device_ip)
+
+            if mac_address is not None:
+                mac = ":".join(mac_address[i : i + 2].upper() for i in range(0, 12, 2))
+                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+
+            if device_id := self.physical_device.device.data.device_id:
+                self._attr_device_info.add_identifier(IdentifierType.UUID, device_id)
+                # device_id is the MAC address (12 hex chars), format as XX:XX:XX:XX:XX:XX
+                if len(device_id) == 12 and mac_address is None:
+                    # fallback to device id for mac
+                    mac = ":".join(device_id[i : i + 2].upper() for i in range(0, 12, 2))
+                    # Only add MAC address if it's valid (not 00:00:00:00:00:00)
+                    if is_valid_mac_address(mac):
+                        self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
 
         # polling
         self._attr_needs_poll = True
@@ -115,7 +209,7 @@ class MusicCastPlayer(Player):
             self._attr_name = self.zone_device.zone_data.name
 
         # group
-        self._attr_can_group_with = {self.provider.lookup_key}
+        self._attr_can_group_with = {self.provider.instance_id}
 
         self._attr_available = True
 
@@ -134,7 +228,16 @@ class MusicCastPlayer(Player):
                 )
             )
 
-    async def set_dynamic_attributes(self) -> None:
+        # SOUND MODES
+        for source_id in self.zone_device.sound_mode_list:
+            friendly_name = MC_SOUND_MODE_FRIENDLY_NAMES.get(source_id) or " ".join(
+                [x.capitalize() for x in source_id.split("_")]
+            )
+            self._attr_sound_mode_list.append(
+                PlayerSoundMode(id=source_id, name=friendly_name, passive=False)
+            )
+
+    async def set_dynamic_attributes(self, update_state: bool = True) -> None:
         """Update Player attributes."""
         # ruff: noqa: PLR0915
         self._attr_available = True
@@ -187,7 +290,11 @@ class MusicCastPlayer(Player):
                 _xml_media_info = await avt_get_media_info(
                     self.mass.http_session, self.physical_device
                 )
-            except ServerDisconnectedError:
+            except ClientError:
+                # this is regularly called, we can ignore a failing update
+                self.logger.debug("Acquiring media info failed, trying again in 5s.")
+                if self.upnp_update_helper is not None:
+                    self.upnp_update_helper.last_poll = now
                 return
             _player_current_url = search_xml(_xml_media_info, "CurrentURI")
 
@@ -224,7 +331,9 @@ class MusicCastPlayer(Player):
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast("MusicCastPlayer | None", self.mass.players.get(_server_id))
+            _server_player = cast(
+                "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
+            )
             _server_update_helper: None | UpnpUpdateHelper = None
             if _server_player is not None:
                 _server_update_helper = _server_player.upnp_update_helper
@@ -258,13 +367,18 @@ class MusicCastPlayer(Player):
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
             _server_id = self._get_player_id_from_zone_device(_server)
-            _server_player = cast("MusicCastPlayer | None", self.mass.players.get(_server_id))
+            _server_player = cast(
+                "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
+            )
             if _server_player is not None and _server_player.upnp_update_helper is not None:
                 self._attr_active_source = (
                     self.zone_device.source_id
                     if not _server_player.upnp_update_helper.controlled_by_mass
                     else None
                 )
+
+        # SOUND MODE
+        self._attr_active_sound_mode = self.zone_device.sound_mode_id
 
         # GROUPING
         # A zone cannot be synced to another zone or main of the same device.
@@ -289,9 +403,101 @@ class MusicCastPlayer(Player):
                 self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
 
-        self.update_state()
+        # PLAYER OPTIONS
+        # see https://github.com/vigonotion/aiomusiccast/blob/main/aiomusiccast/capabilities.py
+        # capability can be any instance of OptionSetter, BinarySetter, NumberSetter, NumberSensor,
+        # BinarySensor, TextSensor
+        # the type hint of the lib's zone_data.capabilities is wrong (_not_ list[str])
+        self._attr_options = []
+        for capability in cast(
+            "list[MC_CAPABILITIES]",
+            zone_data.capabilities,
+        ):
+            if isinstance(capability, MCBinarySensor):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        translation_key=get_player_option_translation_key(capability.id),
+                        name=capability.name,
+                        type=PlayerOptionType.BOOLEAN,
+                        read_only=True,
+                        value=capability.current,
+                    )
+                )
+            elif isinstance(capability, MCBinarySetter):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        translation_key=get_player_option_translation_key(capability.id),
+                        name=capability.name,
+                        type=PlayerOptionType.BOOLEAN,
+                        value=capability.current,
+                        read_only=False,
+                    )
+                )
+            elif isinstance(capability, MCNumberSensor):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        translation_key=get_player_option_translation_key(capability.id),
+                        name=capability.name,
+                        type=PlayerOptionType.INTEGER,
+                        value=capability.current,
+                        read_only=True,
+                    )
+                )
+            elif isinstance(capability, MCNumberSetter):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        translation_key=get_player_option_translation_key(capability.id),
+                        name=capability.name,
+                        type=PlayerOptionType.INTEGER,
+                        value=capability.current,
+                        read_only=False,
+                        min_value=capability.value_range.minimum,
+                        max_value=capability.value_range.maximum,
+                        step=capability.value_range.step,
+                    )
+                )
+            elif isinstance(capability, MCTextSensor):
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        translation_key=get_player_option_translation_key(capability.id),
+                        name=capability.name,
+                        type=PlayerOptionType.STRING,
+                        value=capability.current,
+                        read_only=True,
+                    )
+                )
+            elif isinstance(capability, MCOptionSetter):
+                options = []
+                for option_key, option_name in capability.options.items():
+                    options.append(
+                        PlayerOptionEntry(
+                            key=str(option_key),  # aiomusiccast allows str and int.
+                            name=option_name,
+                            value=str(option_key),
+                            type=PlayerOptionType.STRING,
+                        )
+                    )
+                self._attr_options.append(
+                    PlayerOption(
+                        key=capability.id,
+                        translation_key=get_player_option_translation_key(capability.id),
+                        name=capability.name,
+                        type=PlayerOptionType.STRING,
+                        value=str(capability.current),
+                        read_only=False,
+                        options=UniqueList(options),
+                    )
+                )
 
-    @cached_property
+        if update_state:
+            self.update_state()
+
+    @property
     def synced_to(self) -> str | None:
         """
         Return the id of the player this player is synced to (sync leader).
@@ -328,6 +534,15 @@ class MusicCastPlayer(Player):
         # this is not this player's id
         player_id = self._get_player_id_from_zone_device(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
+
+        # skip zone handling if disabled.
+        if bool(
+            await self.mass.config.get_player_config_value(
+                player_id, CONF_PLAYER_HANDLE_SOURCE_DISABLED
+            )
+        ):
+            return
+
         _source = str(
             await self.mass.config.get_player_config_value(
                 player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
@@ -335,7 +550,7 @@ class MusicCastPlayer(Player):
         )
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
-        mass_player = self.mass.players.get(player_id)
+        mass_player = self.mass.players.get_player(player_id)
         if mass_player is None:
             # Do not assert here, should the player not yet exist
             return
@@ -392,7 +607,7 @@ class MusicCastPlayer(Player):
 
         # set other zone unavailable
         for zone_device in self.zone_device.other_zones:
-            if zone_device_player := self.mass.players.get(
+            if zone_device_player := self.mass.players.get_player(
                 self._get_player_id_from_zone_device(zone_device)
             ):
                 assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
@@ -415,7 +630,7 @@ class MusicCastPlayer(Player):
             except (MusicCastConnectionException, MusicCastGroupException):
                 await self._set_player_unavailable()
                 return
-            except ServerDisconnectedError:
+            except ClientError:
                 return
             await self.set_dynamic_attributes()
 
@@ -459,7 +674,9 @@ class MusicCastPlayer(Player):
     async def pause(self) -> None:
         """Pause command."""
         if self.upnp_update_helper is not None and self.upnp_update_helper.controlled_by_mass:
-            await avt_pause(self.mass.http_session, self.physical_device)
+            # if we are controlled by MA, i.e. upnp, send a stop, since
+            # pause appears to be unreliable/ not working
+            await avt_stop(self.mass.http_session, self.physical_device)
         else:
             await self._cmd_run(self.zone_device.pause)
 
@@ -491,6 +708,7 @@ class MusicCastPlayer(Player):
             # just in case
             if self.zone_device.source_id != "server":
                 await self.select_source("server")
+            media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
             await avt_play(self.mass.http_session, self.physical_device)
 
@@ -502,6 +720,7 @@ class MusicCastPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Enqueue next command."""
+        media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         await avt_set_url(
             self.mass.http_session,
             self.physical_device,
@@ -512,6 +731,46 @@ class MusicCastPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Select source command."""
         await self._cmd_run(self.zone_device.select_source, source)
+
+    async def select_sound_mode(self, sound_mode: str) -> None:
+        """Select sound Mode Command."""
+        await self._cmd_run(self.zone_device.select_sound_mode, sound_mode)
+
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
+        """Set player option."""
+        if self.zone_device.zone_data is None:
+            return
+        for capability in cast(
+            "list[MC_CAPABILITIES]",
+            self.zone_device.zone_data.capabilities,
+        ):
+            if str(capability.id) != option_key:
+                continue
+            if not isinstance(capability, MCBinarySetter | MCNumberSetter | MCOptionSetter):
+                self.logger.error(f"Option {capability.name} is read only!")
+                return
+            if isinstance(capability, MCBinarySetter):
+                await capability.set(bool(option_value))
+            elif isinstance(capability, MCNumberSetter):
+                min_value = capability.value_range.minimum
+                max_value = capability.value_range.maximum
+                if not min_value <= int(option_value) <= max_value:
+                    self.logger.error(
+                        f"Option {capability.name} has numeric range of"
+                        f"{min_value} <= value <= {max_value}"
+                    )
+                    return
+                await capability.set(int(option_value))
+            elif isinstance(capability, MCOptionSetter):
+                assert isinstance(option_value, str | int)  # for type checking
+                _option_value = option_value  # we may have an int in aiomusiccast as key
+                with suppress(ValueError):
+                    _option_value = int(_option_value)
+                if _option_value not in capability.options:
+                    self.logger.error(f"Option {_option_value} is not allowed for {option_key}")
+                    return
+                await capability.set(_option_value)
+            break
 
     async def ungroup(self) -> None:
         """Ungroup command."""
@@ -534,7 +793,7 @@ class MusicCastPlayer(Player):
         # Removing players
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
-                if player := self.mass.players.get(player_id):
+                if player := self.mass.players.get_player(player_id):
                     assert isinstance(player, MusicCastPlayer)  # for type checking
                     await player.ungroup()
 
@@ -545,7 +804,7 @@ class MusicCastPlayer(Player):
         children_zones: list[str] = []  # list[ma_player_id]
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
         for child_id in player_ids_to_add:
-            if child_player := self.mass.players.get(child_id):
+            if child_player := self.mass.players.get_player(child_id):
                 assert isinstance(child_player, MusicCastPlayer)  # for type checking
                 _other_zone_mc: MusicCastZoneDevice | None = None
                 for x in child_player.zone_device.other_zones:
@@ -564,7 +823,7 @@ class MusicCastPlayer(Player):
                     children.add(child_id)
 
         for child_id in children_zones:
-            child_player = self.mass.players.get(child_id)
+            child_player = self.mass.players.get_player(child_id)
             if TYPE_CHECKING:
                 child_player = cast("MusicCastPlayer", child_player)
             if child_player.zone_device.state == MusicCastPlayerState.OFF:
@@ -575,7 +834,7 @@ class MusicCastPlayer(Player):
 
         child_player_zone_devices: list[MusicCastZoneDevice] = []
         for child_id in children:
-            child_player = self.mass.players.get(child_id)
+            child_player = self.mass.players.get_player(child_id)
             if TYPE_CHECKING:
                 child_player = cast("MusicCastPlayer", child_player)
             child_player_zone_devices.append(child_player.zone_device)
@@ -610,6 +869,17 @@ class MusicCastPlayer(Player):
                 zone_entries = []
             else:
                 zone_entries = [
+                    ConfigEntry(
+                        key=CONF_PLAYER_HANDLE_SOURCE_DISABLED,
+                        type=ConfigEntryType.BOOLEAN,
+                        label="Disable zone handling completely.",
+                        default_value=False,
+                        description="This disables zone handling completely. Other options "
+                        "will be ignored. Enable should you encounter playback issues while "
+                        "e.g. playing to main. You can also hide the player from the UI "
+                        "by taking advantage of 'Hide the player in the user interface' "
+                        "dropdown.",
+                    ),
                     ConfigEntry(
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
                         label="Switch to this non-net source when leaving a group.",

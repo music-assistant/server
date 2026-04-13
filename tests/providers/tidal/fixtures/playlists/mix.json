@@ -1,0 +1,43 @@
+{
+    "id": "mix_123",
+    "title": "My Daily Discovery",
+    "subTitle": "A personalized mix just for you",
+    "mixType": "DISCOVERY_MIX",
+    "contentBehavior": "UNREPEATABLE",
+    "sharingImages": {
+        "SMALL": {
+            "width": 320,
+            "height": 320,
+            "url": "http://example.com/mix-small.jpg"
+        },
+        "MEDIUM": {
+            "width": 640,
+            "height": 640,
+            "url": "http://example.com/mix-medium.jpg"
+        },
+        "LARGE": {
+            "width": 1280,
+            "height": 1280,
+            "url": "http://example.com/mix-large.jpg"
+        }
+    },
+    "images": {
+        "SMALL": {
+            "width": 320,
+            "height": 320,
+            "url": "http://example.com/mix-small.jpg"
+        },
+        "MEDIUM": {
+            "width": 640,
+            "height": 640,
+            "url": "http://example.com/mix-medium.jpg"
+        },
+        "LARGE": {
+            "width": 1280,
+            "height": 1280,
+            "url": "http://example.com/mix-large.jpg"
+        }
+    },
+    "updated": "2023-06-15T00:00:00.000+0000",
+    "dateAdded": "2023-01-01T00:00:00.000+0000"
+}

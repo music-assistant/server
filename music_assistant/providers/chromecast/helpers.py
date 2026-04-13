@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import urllib.error
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 from pychromecast import dial
@@ -13,12 +13,13 @@ from pychromecast.const import CAST_TYPE_GROUP
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
 if TYPE_CHECKING:
-    from pychromecast.controllers.media import MediaStatus
-    from pychromecast.controllers.multizone import MultizoneManager
+    from pychromecast.controllers.media import MediaStatus, MediaStatusListener
+    from pychromecast.controllers.multizone import MultizoneManager, MultiZoneManagerListener
     from pychromecast.controllers.receiver import CastStatus
-    from pychromecast.models import CastInfo
-    from pychromecast.socket_client import ConnectionStatus
-    from zeroconf import ServiceInfo, Zeroconf
+    from pychromecast.controllers.receiver import CastStatusListener as ReceiverStatusListener
+    from pychromecast.models import CastInfo, HostServiceInfo, MDNSServiceInfo
+    from pychromecast.socket_client import ConnectionStatus, ConnectionStatusListener
+    from zeroconf import Zeroconf
 
     from .player import ChromecastPlayer
 
@@ -32,7 +33,7 @@ class ChromecastInfo:
     This also has the same attributes as the mDNS fields by zeroconf.
     """
 
-    services: set
+    services: set[HostServiceInfo | MDNSServiceInfo]
     uuid: UUID
     model_name: str
     friendly_name: str
@@ -43,6 +44,7 @@ class ChromecastInfo:
     is_dynamic_group: bool | None = None
     is_multichannel_group: bool = False  # group created for e.g. stereo pair
     is_multichannel_child: bool = False  # speaker that is part of multichannel setup
+    mac_address: str | None = None  # MAC address from eureka_info API
 
     @property
     def is_audio_group(self) -> bool:
@@ -71,7 +73,7 @@ class ChromecastInfo:
             # Manufacturer and cast type is not available in mDNS data,
             # get it over HTTP
             cast_info = dial.get_cast_type(
-                self,
+                cast("CastInfo", self),
                 zconf=zconf,
             )
             self.cast_type = cast_info.cast_type
@@ -91,11 +93,19 @@ class ChromecastInfo:
         ):
             self.is_multichannel_child = True
 
+        # Get MAC address for device matching (not available for groups)
+        if self.mac_address is None and self.cast_type != "group":
+            self.mac_address = get_mac_address(self.services, zconf)
 
-def get_multizone_info(services: list[ServiceInfo], zconf: Zeroconf, timeout=30):
+
+def get_multizone_info(
+    services: set[HostServiceInfo | MDNSServiceInfo],
+    zconf: Zeroconf,
+    timeout: int = 30,
+) -> tuple[set[UUID], set[UUID]]:
     """Get multizone info from eureka endpoint."""
-    dynamic_groups: set[str] = set()
-    multichannel_groups: set[str] = set()
+    dynamic_groups: set[UUID] = set()
+    multichannel_groups: set[UUID] = set()
     try:
         _, status = dial._get_status(
             services,
@@ -123,6 +133,37 @@ def get_multizone_info(services: list[ServiceInfo], zconf: Zeroconf, timeout=30)
     return (dynamic_groups, multichannel_groups)
 
 
+def get_mac_address(
+    services: set[HostServiceInfo | MDNSServiceInfo], zconf: Zeroconf, timeout: int = 10
+) -> str | None:
+    """Get MAC address from Chromecast eureka_info API.
+
+    :param services: Set of zeroconf service info.
+    :param zconf: Zeroconf instance.
+    :param timeout: Request timeout in seconds.
+    :return: MAC address string or None if not available.
+    """
+    try:
+        _, status = dial._get_status(
+            services,
+            zconf,
+            "/setup/eureka_info?options=detail",
+            True,
+            timeout,
+            None,
+        )
+        if mac_address := status.get("mac_address"):
+            # Normalize to uppercase with colons
+            mac = mac_address.upper().replace("-", ":")
+            # Ensure proper format
+            if ":" not in mac and len(mac) == 12:
+                mac = ":".join(mac[i : i + 2] for i in range(0, 12, 2))
+            return str(mac)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
+        pass
+    return None
+
+
 class CastStatusListener:
     """
     Helper class to handle pychromecast status callbacks.
@@ -136,7 +177,7 @@ class CastStatusListener:
         self,
         castplayer: ChromecastPlayer,
         mz_mgr: MultizoneManager,
-        mz_only=False,
+        mz_only: bool = False,
     ) -> None:
         """Initialize the status listener."""
         self.castplayer = castplayer
@@ -147,11 +188,15 @@ class CastStatusListener:
             self._mz_mgr.add_multizone(castplayer.cc)
         if mz_only:
             return
-        castplayer.cc.register_status_listener(self)
-        castplayer.cc.socket_client.media_controller.register_status_listener(self)
-        castplayer.cc.register_connection_listener(self)
+        castplayer.cc.register_status_listener(cast("ReceiverStatusListener", self))
+        castplayer.cc.socket_client.media_controller.register_status_listener(
+            cast("MediaStatusListener", self)
+        )
+        castplayer.cc.register_connection_listener(cast("ConnectionStatusListener", self))
         if not self.castplayer.cast_info.is_audio_group:
-            self._mz_mgr.register_listener(castplayer.cc.uuid, self)
+            self._mz_mgr.register_listener(
+                castplayer.cc.uuid, cast("MultiZoneManagerListener", self)
+            )
 
     def new_cast_status(self, status: CastStatus) -> None:
         """Handle updated CastStatus."""
@@ -171,14 +216,18 @@ class CastStatusListener:
             return
         self.castplayer.on_new_connection_status(status)
 
-    def added_to_multizone(self, group_uuid) -> None:
+    def added_to_multizone(self, group_uuid: str) -> None:
         """Handle the cast added to a group."""
         self.castplayer.logger.debug(
             "%s is added to multizone: %s", self.castplayer.display_name, group_uuid
         )
-        self.new_cast_status(self.castplayer.cc.status)
+        player_status = self.castplayer.cc.status
+        if player_status is None:
+            return
 
-    def removed_from_multizone(self, group_uuid) -> None:
+        self.new_cast_status(player_status)
+
+    def removed_from_multizone(self, group_uuid: str) -> None:
         """Handle the cast removed from a group."""
         if not self._valid:
             return
@@ -188,12 +237,16 @@ class CastStatusListener:
         self.castplayer.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.display_name, group_uuid
         )
-        self.new_cast_status(self.castplayer.cc.status)
+        player_status = self.castplayer.cc.status
+        if player_status is None:
+            return
 
-    def multizone_new_cast_status(self, group_uuid, cast_status) -> None:
+        self.new_cast_status(player_status)
+
+    def multizone_new_cast_status(self, group_uuid: str, cast_status: CastStatus) -> None:
         """Handle reception of a new CastStatus for a group."""
         mass = self.castplayer.mass
-        if group_player := mass.players.get(group_uuid):
+        if group_player := mass.players.get_player(group_uuid):
             if TYPE_CHECKING:
                 assert isinstance(group_player, ChromecastPlayer)
             if group_player.cc.media_controller.is_active:
@@ -207,9 +260,13 @@ class CastStatusListener:
             self.castplayer.display_name,
             group_uuid,
         )
-        self.new_cast_status(self.castplayer.cc.status)
+        player_status = self.castplayer.cc.status
+        if player_status is None:
+            return
 
-    def multizone_new_media_status(self, group_uuid, media_status) -> None:
+        self.new_cast_status(player_status)
+
+    def multizone_new_media_status(self, group_uuid: str, media_status: MediaStatus) -> None:
         """Handle reception of a new MediaStatus for a group."""
         if not self._valid:
             return
@@ -221,7 +278,7 @@ class CastStatusListener:
         )
         self.castplayer.on_new_media_status(media_status)
 
-    def load_media_failed(self, queue_item_id, error_code) -> None:
+    def load_media_failed(self, queue_item_id: int, error_code: int) -> None:
         """Call when media failed to load."""
         self.castplayer.logger.warning(
             "Load media failed: %s - error code: %s", queue_item_id, error_code
@@ -236,5 +293,5 @@ class CastStatusListener:
         if self.castplayer.cast_info.is_audio_group:
             self._mz_mgr.remove_multizone(self._uuid)
         else:
-            self._mz_mgr.deregister_listener(self._uuid, self)
+            self._mz_mgr.deregister_listener(self._uuid, cast("MultiZoneManagerListener", self))
         self._valid = False

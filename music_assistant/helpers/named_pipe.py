@@ -3,27 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import errno as errno_module
+import logging
 import os
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from pathlib import Path
 
-if TYPE_CHECKING:
-    from logging import Logger
+_LOGGER = logging.getLogger("named_pipe")
 
 
 class AsyncNamedPipeWriter:
-    """Simple async writer for named pipes using thread pool for blocking I/O."""
+    """Async writer for named pipes."""
 
-    def __init__(self, pipe_path: str, logger: Logger | None = None) -> None:
-        """Initialize named pipe writer.
-
-        Args:
-            pipe_path: Path to the named pipe
-            logger: Optional logger for debug/error messages
-        """
+    def __init__(self, pipe_path: str) -> None:
+        """Initialize named pipe writer."""
         self._pipe_path = pipe_path
-        self.logger = logger
+        self._write_fd: int | None = None
 
     @property
     def path(self) -> str:
@@ -31,52 +27,66 @@ class AsyncNamedPipeWriter:
         return self._pipe_path
 
     async def create(self) -> None:
-        """Create the named pipe (if it does not exist)."""
+        """Create the named pipe."""
 
         def _create() -> None:
-            with suppress(FileExistsError):
-                os.mkfifo(self._pipe_path)
+            pipe_path = Path(self._pipe_path)
+            if pipe_path.exists():
+                pipe_path.unlink()
+            os.mkfifo(self._pipe_path)
 
         await asyncio.to_thread(_create)
 
-    async def write(self, data: bytes, log_slow_writes: bool = True) -> None:
-        """Write data to the named pipe (blocking operation runs in thread).
+    def _ensure_write_fd(self) -> bool:
+        """Ensure we have a write fd open. Returns True if successful."""
+        if self._write_fd is not None:
+            return True
+        if not Path(self._pipe_path).exists():
+            return False
+        # Retry opening until reader is available (up to 1s)
+        for _ in range(20):
+            try:
+                self._write_fd = os.open(self._pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+                return True
+            except OSError as e:
+                if e.errno in (errno_module.ENXIO, errno_module.ENOENT):
+                    time.sleep(0.05)
+                    continue
+                raise
+        _LOGGER.warning("Could not open pipe %s: no reader after retries", self._pipe_path)
+        return False
 
-        Args:
-            data: Data to write to the pipe
-            log_slow_writes: Whether to log slow writes (>5s)
-
-        Raises:
-            RuntimeError: If pipe is not open
-        """
-        start_time = time.time()
+    async def write(self, data: bytes) -> None:
+        """Write data to the named pipe."""
 
         def _write() -> None:
-            with open(self._pipe_path, "wb") as pipe_file:
-                pipe_file.write(data)
+            if not self._ensure_write_fd():
+                return
+            try:
+                assert self._write_fd is not None
+                os.write(self._write_fd, data)
+            except OSError as e:
+                if e.errno == errno_module.EPIPE:
+                    # Reader closed, reset fd for next attempt
+                    if self._write_fd is not None:
+                        with suppress(Exception):
+                            os.close(self._write_fd)
+                        self._write_fd = None
+                else:
+                    raise
 
-        # Run blocking write in thread pool
         await asyncio.to_thread(_write)
 
-        if log_slow_writes:
-            elapsed = time.time() - start_time
-            # Only log if it took more than 5 seconds (real stall)
-            if elapsed > 5.0 and self.logger:
-                self.logger.error(
-                    "!!! STALLED PIPE WRITE: Took %.3fs to write %d bytes to %s",
-                    elapsed,
-                    len(data),
-                    self._pipe_path,
-                )
-
     async def remove(self) -> None:
-        """Remove the named pipe."""
-
-        def _remove() -> None:
+        """Close write fd and remove the pipe."""
+        if self._write_fd is not None:
             with suppress(Exception):
-                os.remove(self._pipe_path)
-
-        await asyncio.to_thread(_remove)
+                os.close(self._write_fd)
+            self._write_fd = None
+        pipe_path = Path(self._pipe_path)
+        if pipe_path.exists():
+            with suppress(Exception):
+                pipe_path.unlink()
 
     def __str__(self) -> str:
         """Return string representation."""

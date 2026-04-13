@@ -24,8 +24,24 @@ def load_config():
         return yaml.safe_load(f)
 
 
+def get_tag_date(repo, tag_name):
+    """Get the creation date of a tag (supports both annotated and lightweight tags)."""
+    try:
+        ref = repo.get_git_ref(f"tags/{tag_name}")
+        if ref.object.type == "tag":
+            tag_obj = repo.get_git_tag(ref.object.sha)
+            return tag_obj.tagger.date
+        # Lightweight tag - use the commit date
+        commit = repo.get_commit(ref.object.sha)
+        return commit.commit.committer.date
+    except GithubException as e:
+        print(f"Warning: Could not get date for tag {tag_name}: {e}")  # noqa: T201
+        return None
+
+
 def get_prs_between_tags(repo, previous_tag, current_branch):
     """Get all merged PRs between the previous tag and current HEAD."""
+    tag_date = None
     if not previous_tag:
         print("No previous tag specified, will include all PRs from branch history")  # noqa: T201
         # Get the first commit on the branch
@@ -34,6 +50,9 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
         commits = commits[:100]
     else:
         print(f"Finding PRs between {previous_tag} and {current_branch}")  # noqa: T201
+        tag_date = get_tag_date(repo, previous_tag)
+        if tag_date:
+            print(f"Previous tag date: {tag_date}")  # noqa: T201
         comparison = repo.compare(previous_tag, current_branch)
         commits = comparison.commits
         print(f"Found {comparison.total_commits} commits")  # noqa: T201
@@ -56,15 +75,25 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
 
     print(f"Found {len(pr_numbers)} unique PRs")  # noqa: T201
 
-    # Fetch the actual PR objects
+    # Fetch the actual PR objects, filtering out PRs merged before the previous tag
     prs = []
+    skipped = 0
     for pr_num in sorted(pr_numbers):
         try:
             pr = repo.get_pull(pr_num)
             if pr.merged:
+                if tag_date and pr.merged_at and pr.merged_at <= tag_date:
+                    skipped += 1
+                    print(  # noqa: T201
+                        f"  Skipping PR #{pr_num}: merged at {pr.merged_at}, before tag date {tag_date}"
+                    )
+                    continue
                 prs.append(pr)
         except GithubException as e:
             print(f"Warning: Could not fetch PR #{pr_num}: {e}")  # noqa: T201
+
+    if skipped:
+        print(f"Filtered out {skipped} PRs merged before {previous_tag}")  # noqa: T201
 
     return prs
 
@@ -175,6 +204,9 @@ def extract_frontend_changes(prs):
                     continue
                 if re.match(r"^[•\-\*]\s*Chore\(deps", stripped_line, re.IGNORECASE):
                     continue
+                # Skip "No changes" entries
+                if re.match(r"^[•\-\*]\s*No changes\s*$", stripped_line, re.IGNORECASE):
+                    continue
 
                 # Add the change
                 frontend_changes.append(stripped_line)
@@ -191,10 +223,27 @@ def extract_frontend_changes(prs):
 
 
 def generate_release_notes(  # noqa: PLR0915
-    config, categories, uncategorized, contributors, previous_tag, frontend_changes=None
+    config,
+    categories,
+    uncategorized,
+    contributors,
+    previous_tag,
+    frontend_changes=None,
+    important_notes=None,
 ):
     """Generate the formatted release notes."""
     lines = []
+
+    # Add important notes section first if provided
+    if important_notes and important_notes.strip():
+        lines.append("## ⚠️ Important Notes")
+        lines.append("")
+        # Convert literal \n to actual newlines and preserve existing newlines
+        formatted_notes = important_notes.strip().replace("\\n", "\n")
+        lines.append(formatted_notes)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
 
     # Add header if previous tag exists
     if previous_tag:
@@ -203,7 +252,8 @@ def generate_release_notes(  # noqa: PLR0915
             + "/"
             + os.environ["GITHUB_REPOSITORY"]
         )
-        channel = os.environ.get("CHANNEL", "").title()
+        channel_raw = os.environ.get("CHANNEL", "")
+        channel = "RC" if channel_raw == "rc" else channel_raw.title()
         if channel:
             lines.append(f"## 📦 {channel} Release")
             lines.append("")
@@ -310,6 +360,7 @@ def main():
     branch = os.environ.get("BRANCH")
     channel = os.environ.get("CHANNEL")
     repo_name = os.environ.get("GITHUB_REPOSITORY")
+    important_notes = os.environ.get("IMPORTANT_NOTES", "")
 
     if not all([github_token, version, branch, channel, repo_name]):
         print("Error: Missing required environment variables")  # noqa: T201
@@ -367,6 +418,7 @@ def main():
             contributors_list,
             previous_tag,
             frontend_changes_list,
+            important_notes,
         )
 
     # Output to GitHub Actions

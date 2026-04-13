@@ -1,0 +1,26 @@
+{
+  "searchId": "dummy-search-id-for-testing",
+  "totalCount": 1,
+  "hasNext": false,
+  "items": [
+    {
+      "id": 78597499,
+      "type": "mylist",
+      "title": "テストマイリスト68461151-78597499",
+      "description": "This is a dummy description for testing purposes.",
+      "thumbnailUrl": "https://resource.video.nimg.jp/web/img/series/no_thumbnail.png",
+      "videoCount": 1,
+      "owner": {
+        "ownerType": "user",
+        "type": "user",
+        "visibility": "visible",
+        "id": "68461151",
+        "name": "ゲスト",
+        "iconUrl": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg"
+      },
+      "isMuted": false,
+      "isFollowing": true,
+      "followerCount": 1
+    }
+  ]
+}

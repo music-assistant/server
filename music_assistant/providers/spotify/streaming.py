@@ -81,27 +81,25 @@ class LibrespotStreamer:
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
                         logger.warning("[librespot] %s", line)
+                        if "unable to" in line.lower() or "skipping" in line.lower():
+                            # if librespot reports a fatal error (e.g. unable to load
+                            # or read audio), terminate the process to avoid hanging
+                            # indefinitely as it won't produce any audio output.
+                            # NOTE: we terminate the underlying process directly instead
+                            # of calling close() because this task IS the stderr reader
+                            # and close() would try to await itself.
+                            if librespot_proc.proc and librespot_proc.proc.returncode is None:
+                                librespot_proc.proc.terminate()
+                            return
                     else:
                         logger.log(VERBOSE_LOG_LEVEL, "[librespot] %s", line)
 
             librespot_proc.attach_stderr_reader(asyncio.create_task(log_librespot_output()))
+            # yield from librespot's stdout
+            async for chunk in librespot_proc.iter_chunked():
+                yield chunk
 
-            try:
-                # yield from librespot's stdout
-                async for chunk in librespot_proc.iter_chunked():
-                    yield chunk
-
-                if librespot_proc.returncode != 0:
-                    raise AudioError(
-                        f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
-                    )
-
-            except Exception as ex:
-                log_lines_str = "\n".join(log_history)
-                logger.error(
-                    "Librespot streaming error for %s: %s\n%s",
-                    spotify_uri,
-                    ex,
-                    log_lines_str,
+            if librespot_proc.returncode != 0:
+                raise AudioError(
+                    f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
                 )
-                raise AudioError(f"Error streaming from librespot for {spotify_uri}: {ex}") from ex

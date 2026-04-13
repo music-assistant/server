@@ -138,6 +138,11 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     throttler: Throttler
 
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 20
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
@@ -207,14 +212,14 @@ class AudioDbMetadataProvider(MetadataProvider):
                             continue
                     elif not compare_strings(track_artist.name, item["strArtist"]):
                         continue
-                    if (  # noqa: SIM114
+                    if (
                         track.album
                         and (mb_rgid := track.album.get_external_id(ExternalID.MB_RELEASEGROUP))
                         # AudioDb swapped MB Album ID and ReleaseGroup ID ?!
                         and mb_rgid != item["strMusicBrainzAlbumID"]
                     ):
                         continue
-                    elif track.album and not compare_strings(
+                    if track.album and not compare_strings(
                         track.album.name, item["strAlbum"], strict=False
                     ):
                         continue
@@ -243,8 +248,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             desc := artist_obj.get(f"strBiography{lang_code.upper()}")
         ):
             metadata.description = desc
-        else:
+        elif artist_obj.get("strBiographyEN"):
             metadata.description = artist_obj.get("strBiographyEN")
+        else:
+            metadata.description = artist_obj.get("strBiography")
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata
@@ -256,7 +263,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                         MediaItemImage(
                             type=img_type,
                             path=img,
-                            provider=self.lookup_key,
+                            provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     )
@@ -290,8 +297,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             desc := adb_album.get(f"strDescription{lang_code.upper()}")
         ):
             metadata.description = desc
-        else:
+        elif adb_album.get("strDescriptionEN"):
             metadata.description = adb_album.get("strDescriptionEN")
+        else:
+            metadata.description = adb_album.get("strDescription")
         metadata.review = adb_album.get("strReview")
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
@@ -304,7 +313,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                         MediaItemImage(
                             type=img_type,
                             path=img,
-                            provider=self.lookup_key,
+                            provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     )
@@ -345,8 +354,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             desc := adb_track.get(f"strDescription{lang_code.upper()}")
         ):
             metadata.description = desc
-        else:
+        elif adb_track.get("strDescriptionEN"):
             metadata.description = adb_track.get("strDescriptionEN")
+        else:
+            metadata.description = adb_track.get("strDescription")
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata
@@ -358,7 +369,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                         MediaItemImage(
                             type=img_type,
                             path=img,
-                            provider=self.lookup_key,
+                            provider=self.instance_id,
                             remotely_accessible=True,
                         )
                     )

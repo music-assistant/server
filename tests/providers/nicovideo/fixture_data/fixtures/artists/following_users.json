@@ -1,0 +1,29 @@
+{
+  "items": [
+    {
+      "type": "relationship",
+      "relationships": {
+        "sessionUser": {
+          "isFollowing": true
+        },
+        "isMe": false
+      },
+      "isPremium": false,
+      "description": "This is a dummy description for testing purposes.",
+      "strippedDescription": "This is a dummy description for testing purposes.",
+      "shortDescription": "This is a dummy description for testing purposes.",
+      "id": 4,
+      "nickname": "中の",
+      "icons": {
+        "small": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank_s.jpg",
+        "large": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg"
+      }
+    }
+  ],
+  "summary": {
+    "followees": 1,
+    "followers": 0,
+    "hasNext": false,
+    "cursor": "cursorEnd"
+  }
+}

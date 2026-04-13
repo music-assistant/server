@@ -1,0 +1,25 @@
+{
+  "description": "This is a dummy description for testing purposes.",
+  "decoratedDescriptionHtml": "This is a dummy description for testing purposes.",
+  "strippedDescription": "This is a dummy description for testing purposes.",
+  "isPremium": false,
+  "registeredVersion": "(GINZA)",
+  "followeeCount": 1,
+  "followerCount": 1,
+  "userLevel": {
+    "currentLevel": 1,
+    "nextLevelThresholdExperience": 100,
+    "nextLevelExperience": 100,
+    "currentLevelExperience": 0
+  },
+  "userChannel": null,
+  "isNicorepoReadable": false,
+  "sns": [],
+  "coverImage": null,
+  "id": 68461151,
+  "nickname": "ゲスト",
+  "icons": {
+    "small": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank_s.jpg",
+    "large": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg"
+  }
+}
