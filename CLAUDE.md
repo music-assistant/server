@@ -2,6 +2,10 @@
 
 Music Assistant is an async Python music library manager that connects to streaming services and speakers, integrating with Home Assistant.
 
+## Behaviour
+
+- NEVER automatically reply on Github (PR's or Discussions) without explicit consent from the developer.
+
 ## Development Commands
 
 - `scripts/setup.sh` - Initial setup (venv, dependencies, pre-commit hooks). Re-run after pulling latest code.
