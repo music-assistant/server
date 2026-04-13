@@ -1213,6 +1213,33 @@ class MusicController(CoreController):
 
         return None
 
+    @api_command("music/reset_loudness")
+    async def reset_loudness(
+        self,
+        item_id: str | int,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Reset (EBU-R128) Integrated Loudness Measurement for a library item.
+
+        :param item_id: The library item ID.
+        :param media_type: The media type of the item.
+        """
+        ctrl = self.get_controller(media_type)
+        library_item = await ctrl.get_library_item(item_id)
+        for prov_mapping in library_item.provider_mappings:
+            if not (provider := self.mass.get_provider(prov_mapping.provider_instance)):
+                continue
+            prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+            await self.database.delete(
+                DB_TABLE_LOUDNESS_MEASUREMENTS,
+                {
+                    "item_id": prov_mapping.item_id,
+                    "media_type": media_type.value,
+                    "provider": prov_key,
+                },
+            )
+
     @api_command("music/mark_played")
     async def mark_item_played(
         self,
