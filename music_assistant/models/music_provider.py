@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -35,6 +35,7 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
     CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.tasks.context import (
@@ -48,8 +49,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.streamdetails import StreamDetails
-
-CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 
 
 class MusicProvider(Provider):
@@ -733,44 +732,41 @@ class MusicProvider(Provider):
         update_current_task_progress_text("Checking library deletions")
         controller = self.mass.music.get_controller(media_type)
         if self.library_sync_deletions_enabled():
-            prev_library_items: list[int] | None
-            if prev_library_items := await self.mass.cache.get(
-                key=media_type.value,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
-            ):
-                for db_id in prev_library_items:
-                    if db_id not in cur_db_ids:
-                        try:
-                            library_item = await controller.get_library_item(db_id)
-                        except MediaNotFoundError:
-                            # edge case: the item is (already) removed from MA library as well
-                            continue
-                        # check if we have other provider-mappings (marked as in-library)
-                        remaining_providers_in_library = {
-                            x.provider_instance
-                            for x in library_item.provider_mappings
-                            if x.provider_instance != self.instance_id and x.in_library
-                        }
-                        if not remaining_providers_in_library and library_item.favorite:
-                            # unmark as favorite since no providers have it in library anymore
-                            await controller.set_favorite(db_id, False)
-                        # unmark this provider mapping as in_library = False
-                        # we keep it in the library database so we can keep the metadata
-                        for prov_map in library_item.provider_mappings:
-                            if prov_map.provider_instance == self.instance_id:
-                                prov_map.in_library = False
-                        await controller.set_provider_mappings(
-                            db_id, library_item.provider_mappings
-                        )
-                        await asyncio.sleep(0)  # yield to eventloop
-        # store current list of id's in cache so we can track changes
-        await self.mass.cache.set(
-            key=media_type.value,
-            data=list(cur_db_ids),
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
-        )
+            db_rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT DISTINCT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                "WHERE provider_instance = :provider_instance "
+                "AND media_type = :media_type "
+                "AND in_library = 1",
+                {
+                    "provider_instance": self.instance_id,
+                    "media_type": media_type.value,
+                },
+                limit=0,
+            )
+            for db_row in db_rows:
+                db_id = int(db_row["item_id"])
+                if db_id not in cur_db_ids:
+                    try:
+                        library_item = await controller.get_library_item(db_id)
+                    except MediaNotFoundError:
+                        # edge case: the item is (already) removed from MA library as well
+                        continue
+                    # check if we have other provider-mappings (marked as in-library)
+                    remaining_providers_in_library = {
+                        x.provider_instance
+                        for x in library_item.provider_mappings
+                        if x.provider_instance != self.instance_id and x.in_library
+                    }
+                    if not remaining_providers_in_library and library_item.favorite:
+                        # unmark as favorite since no providers have it in library anymore
+                        await controller.set_favorite(db_id, False)
+                    # unmark this provider mapping as in_library = False
+                    # we keep it in the library database so we can keep the metadata
+                    for prov_map in library_item.provider_mappings:
+                        if prov_map.provider_instance == self.instance_id:
+                            prov_map.in_library = False
+                    await controller.set_provider_mappings(db_id, library_item.provider_mappings)
+                    await asyncio.sleep(0)  # yield to eventloop
         update_current_task_progress_text("Finalizing library sync")
 
     def _update_sync_task_item_status(
