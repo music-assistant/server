@@ -277,7 +277,9 @@ class YandexSmartHomePlugin(PluginProvider):
 
             if normalized == "/user/devices/query":
                 device_ids = [
-                    device_id for d in message.get("devices", []) if (device_id := d.get("id"))
+                    device_id
+                    for d in message.get("devices", [])
+                    if isinstance(d, dict) and (device_id := d.get("id"))
                 ]
                 states = await handle_devices_query(
                     self.mass, device_ids, exposed_ids=self._exposed_ids

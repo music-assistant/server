@@ -422,7 +422,7 @@ async def get_config_entries(
             depends_on_value=CONNECTION_TYPE_DIRECT,
             category="Fill in from Yandex.Dialogs",
         ),
-        # Skill ID (direct)
+        # Skill ID (cloud_plus and direct)
         ConfigEntry(
             key=CONF_SKILL_ID,
             type=ConfigEntryType.STRING,
@@ -433,10 +433,10 @@ async def get_config_entries(
             ),
             required=False,
             depends_on=CONF_CONNECTION_TYPE,
-            depends_on_value=[CONNECTION_TYPE_CLOUD_PLUS, CONNECTION_TYPE_DIRECT],
+            depends_on_value_not=CONNECTION_TYPE_CLOUD,
             category="Fill in from Yandex.Dialogs",
         ),
-        # Skill OAuth Token (direct)
+        # Skill OAuth Token (cloud_plus and direct)
         ConfigEntry(
             key=CONF_SKILL_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
@@ -444,7 +444,7 @@ async def get_config_entries(
             description="Paste the OAuth token obtained from the URL above.",
             required=False,
             depends_on=CONF_CONNECTION_TYPE,
-            depends_on_value=[CONNECTION_TYPE_CLOUD_PLUS, CONNECTION_TYPE_DIRECT],
+            depends_on_value_not=CONNECTION_TYPE_CLOUD,
             category="Fill in from Yandex.Dialogs",
         ),
         # --- Cloud Plus section (advanced) ---
