@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemChapter,
     MediaItemImage,
+    MediaItemSeries,
     ProviderMapping,
     UniqueList,
 )
@@ -221,7 +222,7 @@ def parse_podcast_episode(
 
 def parse_audiobook(
     *,
-    abs_audiobook: AbsLibraryItemExpandedBook | AbsLibraryItemMinifiedBook,
+    abs_audiobook: AbsLibraryItemExpandedBook,
     instance_id: str,
     domain: str,
     token: str | None,
@@ -265,6 +266,15 @@ def parse_audiobook(
             mass_audiobook.metadata.release_date = datetime(
                 year=int(abs_audiobook.media.metadata.published_year), month=1, day=1
             )
+
+    book_series: list[MediaItemSeries] = []
+    for abs_series_sequence in abs_audiobook.media.metadata.series:
+        book_series.append(
+            MediaItemSeries(title=abs_series_sequence.name, sequence=abs_series_sequence.sequence)
+        )
+
+    if book_series:
+        mass_audiobook.metadata.series = UniqueList(book_series)
 
     if abs_audiobook.media.metadata.genres is not None:
         mass_audiobook.metadata.genres = set(abs_audiobook.media.metadata.genres)
