@@ -557,10 +557,6 @@ class StreamsController(CoreController):
                 queue_item.uri,
                 queue.display_name,
             )
-            # NOTE: we do not trigger a queue advance here — the queue controller
-            # already skips unavailable/errored items during preload, so forcing
-            # a next() from the stream layer would be both a responsibility leak
-            # and a source of double-skips when the queue has already moved on.
         elif (
             bytes_sent > 0
             and queue_item.streamdetails
