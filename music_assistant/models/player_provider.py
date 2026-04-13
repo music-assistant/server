@@ -33,7 +33,7 @@ class PlayerProvider(Provider):
         """
         # TODO: promote this to a ProviderFeature on music_assistant_models so
         # providers can declare it via supported_features instead of overriding
-        # a Python property here.
+        # a property here.
         return False
 
     def on_player_enabled(self, player_id: str) -> None:

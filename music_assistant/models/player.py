@@ -993,6 +993,14 @@ class Player(ABC):
             and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
         ):
             old_target = protocol_player
+        # Guard: this operation requires that the provider actually supports
+        # removing the leader without tearing down the session. Callers should
+        # check the capability first, but enforce it defensively here too.
+        if not old_target.provider.supports_dynamic_leader_switching:
+            raise NotImplementedError(
+                f"Provider {old_target.provider.domain} does not support dynamic leader "
+                "switching; the sync session must be torn down and re-formed instead."
+            )
         # Step out of the live session (bypasses cmd_set_members self-dissolve).
         await old_target.set_members(player_ids_to_remove=[old_target.player_id])
         # Attach remaining members to the new leader via the normal controller
