@@ -40,7 +40,6 @@ SUPPORT_DYNAMIC_LEADER = {
     #  group.stop() when other clients remain.
 }
 
-
 EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
