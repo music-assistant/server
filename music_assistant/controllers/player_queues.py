@@ -2154,12 +2154,11 @@ class PlayerQueuesController(CoreController):
                         queue.display_name,
                     )
                     return
-                cur_index = self._queues[queue_id].current_index or 0
                 await self.load(
                     queue_id,
                     queue_items,
-                    insert_at_index=cur_index + 1,
-                    keep_remaining=False,
+                    insert_at_index=len(self._queue_items[queue_id]),
+                    keep_remaining=True,
                     keep_played=True,
                 )
             except MusicAssistantError as err:
