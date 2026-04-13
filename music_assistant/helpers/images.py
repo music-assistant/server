@@ -191,7 +191,8 @@ async def get_image_thumb(
     if image_format == "JPG":
         image_format = "JPEG"
     if image_format not in _ALLOWED_THUMB_FORMATS:
-        image_format = "JPEG"
+        msg = f"Unsupported thumbnail format: {image_format}"
+        raise ValueError(msg)
 
     thumb_hash = _create_thumb_hash(provider, path_or_url)
     cache_filename = _thumb_cache_filename(thumb_hash, size, image_format)
@@ -205,7 +206,8 @@ async def get_image_thumb(
     cache_filepath = os.path.join(thumb_dir, cache_filename)
     resolved = os.path.realpath(cache_filepath)
     if not resolved.startswith(os.path.realpath(thumb_dir) + os.sep):
-        raise FileNotFoundError("Cache path escapes thumbnail directory")
+        msg = f"Cache path escapes thumbnail directory: {cache_filepath}"
+        raise OSError(msg)
     if await asyncio.to_thread(os.path.isfile, cache_filepath):
         async with aiofiles.open(cache_filepath, "rb") as f:
             thumb_data = cast("bytes", await f.read())
