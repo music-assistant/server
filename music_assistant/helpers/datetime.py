@@ -37,11 +37,6 @@ def from_utc_timestamp(timestamp: float) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(timestamp, datetime.UTC)
 
 
-def from_utc_timestamp_to_local(timestamp: float) -> datetime.datetime:
-    """Convert UTC timestamp to datetime in local timezone."""
-    return from_utc_timestamp(timestamp).astimezone(LOCAL_TIMEZONE)
-
-
 def iso_from_utc_timestamp(timestamp: float) -> str:
     """Return ISO 8601 datetime string from UTC timestamp."""
     return from_utc_timestamp(timestamp).isoformat()
