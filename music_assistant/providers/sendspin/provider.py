@@ -47,6 +47,11 @@ class SendspinProvider(PlayerProvider):
     _client_event_task_counts: dict[str, int]
     _unloading: bool
 
+    @property
+    def supports_dynamic_leader_switching(self) -> bool:
+        """Return True: Sendspin supports removing the leader without stream teardown."""
+        return True
+
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:

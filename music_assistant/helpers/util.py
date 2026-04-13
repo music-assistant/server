@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
 import weakref
@@ -218,6 +219,20 @@ def try_parse_duration(duration_str: str) -> float:
     else:
         seconds = int(duration_parts[0])
     return seconds + milliseconds
+
+
+def normalize_unicode(value: str | None) -> str | None:
+    """Normalize Unicode strings to NFC form for consistent handling.
+
+    This ensures that Unicode characters like "é" are stored as single
+    codepoints rather than "e" + combining accent mark, which prevents
+    issues with string comparisons and memory bloat.
+
+    :param value: String to normalize, or None.
+    """
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", value)
 
 
 def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
