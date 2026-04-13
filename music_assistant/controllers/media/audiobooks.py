@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.api import AudiobookSeries
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import Audiobook, ProviderMapping, UniqueList
 
@@ -63,6 +64,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
+        self.mass.register_api_command(f"music/{api_base}/get_series", self.series)
 
     async def library_items(
         self,
@@ -362,3 +364,47 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 },
                 allow_replace=True,
             )
+
+    async def series(self) -> list[AudiobookSeries]:
+        """Get all available audiobook series."""
+        # key is the series' title
+        series: dict[str, list[Audiobook]] = {}
+        audiobooks_with_series = await self.get_library_items_by_query(
+            extra_query_parts=[
+                "WHERE json_extract(audiobooks.metadata, '$.series') IS NOT NULL "
+                "AND json_extract(audiobooks.metadata, '$.series') != '[]'",
+            ]
+        )
+        for audiobook in audiobooks_with_series:
+            if audiobook.metadata.series is None:
+                # this should never happen
+                continue
+            for series_info in audiobook.metadata.series:
+                audiobook_list = series.get(series_info.title, [])
+                audiobook_list.append(audiobook)
+                series[series_info.title] = audiobook_list
+
+        result: list[AudiobookSeries] = []
+        # Sort series, first by number then alphabetically
+        for series_title, audiobook_list in series.items():
+            audiobooks_with_number: list[tuple[Audiobook, float]] = []
+            audiobooks_with_string: list[tuple[Audiobook, str]] = []
+            audiobooks_with_none: list[Audiobook] = []
+            for audiobook in audiobook_list:
+                assert audiobook.metadata.series is not None  # for type checking
+                series_info = next(x for x in audiobook.metadata.series if x.title == series_title)
+                if series_info.sequence is None:
+                    audiobooks_with_none.append(audiobook)
+                    continue
+                try:
+                    sort_by = float(series_info.sequence)
+                    audiobooks_with_number.append((audiobook, sort_by))
+                except ValueError:
+                    audiobooks_with_string.append((audiobook, series_info.sequence))
+            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
+            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
+            final_list.extend(audiobooks_with_none)
+
+            result.append(AudiobookSeries(title=series_title, audiobooks=final_list))
+
+        return result
