@@ -51,6 +51,11 @@ class AirPlayProvider(PlayerProvider):
         """Return the Sendspin bridge manager."""
         return self._bridge_manager
 
+    @property
+    def supports_dynamic_leader_switching(self) -> bool:
+        """Return True: AirPlay supports removing the leader without stream teardown."""
+        return True
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # Initialize Sendspin bridge manager for protocol linking
@@ -277,6 +282,12 @@ class AirPlayProvider(PlayerProvider):
             )
             if not player:
                 return
+            if player.protocol_parent_id and (
+                parent := self.mass.players.get_player(player.protocol_parent_id)
+            ):
+                parent_player = parent
+            else:
+                parent_player = player
 
             player_id = player.player_id
             ignore_volume_report = (
@@ -365,10 +376,12 @@ class AirPlayProvider(PlayerProvider):
                             "Prevent playback command detected for player %s",
                             player.name,
                         )
-                        if player.state.synced_to or player.state.group_members:
-                            self.mass.create_task(self.mass.players.cmd_ungroup(player_id))
+                        if player.synced_to or parent_player.state.active_group:
+                            self.mass.create_task(
+                                self.mass.players.cmd_ungroup(parent_player.player_id)
+                            )
                         else:
-                            self.mass.create_task(player.stream.session.stop())
+                            self.mass.create_task(player.stream.stop())
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 # use a debounced reset to avoid race conditions where a quick

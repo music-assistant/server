@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.enums import ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
+    MediaItemImage,
+    MediaItemMetadata,
+    Playlist,
     ProviderMapping,
     Track,
     UniqueList,
@@ -92,6 +96,35 @@ def _make_playlist_item(
         length=length,
         metadata=metadata,
         providers=providers or [],
+    )
+
+
+def _make_playlist(name: str, image_url: str | None = None) -> Playlist:
+    """Build a Playlist for builtin provider tests."""
+    metadata = MediaItemMetadata()
+    if image_url:
+        metadata.images = UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider="builtin",
+                    remotely_accessible=True,
+                )
+            ]
+        )
+    return Playlist(
+        item_id="playlist_1",
+        provider="builtin",
+        name=name,
+        metadata=metadata,
+        provider_mappings={
+            ProviderMapping(
+                item_id="playlist_1",
+                provider_domain="builtin",
+                provider_instance="builtin",
+            )
+        },
     )
 
 
@@ -280,3 +313,60 @@ def test_export_radios_round_trip() -> None:
     assert parsed[1].path == "http://stream.example.com/radio2"
     assert parsed[1].title == "Classic Rock Radio"
     assert parse_m3u_playlist_name(m3u_data) == "Radio Stations"
+
+
+async def test_import_playlist_preserves_playlist_image() -> None:
+    """Test that importing an M3U keeps the playlist-level image."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any.create_playlist = AsyncMock(return_value=_make_playlist("Imported Playlist"))
+    prov_any.get_playlist = AsyncMock(
+        return_value=_make_playlist("Imported Playlist", "https://img.example.com/cover.jpg")
+    )
+    prov_any._write_m3u_file = AsyncMock()
+
+    m3u_data = generate_m3u(
+        "Imported Playlist",
+        [PlaylistItem(path="spotify://track/abc123", title="Test", length="120")],
+        "https://img.example.com/cover.jpg",
+    )
+
+    result = await prov.import_playlist(m3u_data)
+
+    assert prov_any._write_m3u_file.await_args is not None
+    args = prov_any._write_m3u_file.await_args.args
+    assert args[0] == "playlist_1"
+    assert args[1] == "Imported Playlist"
+    assert args[3] == "https://img.example.com/cover.jpg"
+    assert result.image is not None
+    assert result.image.path == "https://img.example.com/cover.jpg"
+
+
+async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
+    """Test that rewriting a playlist after track removal keeps the playlist image."""
+    prov = _make_provider()
+    prov._playlist_locks = {}
+    prov_any = cast("Any", prov)
+    prov_any._read_m3u_file = AsyncMock(
+        return_value=generate_m3u(
+            "My Playlist",
+            [
+                PlaylistItem(path="spotify://track/one", title="One", length="120"),
+                PlaylistItem(path="spotify://track/two", title="Two", length="180"),
+            ],
+            "https://img.example.com/cover.jpg",
+        )
+    )
+    prov_any.get_playlist = AsyncMock(
+        return_value=_make_playlist("My Playlist", "https://img.example.com/cover.jpg")
+    )
+    prov_any._write_m3u_file = AsyncMock()
+
+    await prov.remove_playlist_tracks("playlist_1", (1,))
+
+    assert prov_any._write_m3u_file.await_args is not None
+    args = prov_any._write_m3u_file.await_args.args
+    assert args[0] == "playlist_1"
+    assert args[1] == "My Playlist"
+    assert len(args[2]) == 1
+    assert args[3] == "https://img.example.com/cover.jpg"

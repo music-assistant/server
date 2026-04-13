@@ -1,0 +1,14 @@
+{
+  "type": "plugin",
+  "stage": "experimental",
+  "domain": "hue_entertainment",
+  "name": "Hue Lights Sync",
+  "description": "Sync Philips Hue lights to music using Entertainment Mode.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/plugins/hue-entertainment/",
+  "multi_instance": true,
+  "builtin": false,
+  "icon": "lightbulb-group",
+  "mdns_discovery": ["_hue._tcp.local."]
+}

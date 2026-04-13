@@ -5,7 +5,7 @@
   "name": "ListenBrainz Scrobbler",
   "description": "Scrobbles your listening history to ListenBrainz — an open, community-driven alternative to Last.fm.",
   "codeowners": ["@music-assistant"],
-  "credits": ["[liblistenbrainz](https://github.com/paramsingh/liblistenbrainz)"],
+  "credits": ["[liblistenbrainz](https://github.com/metabrainz/liblistenbrainz)"],
   "documentation": "https://music-assistant.io/plugins/listenbrainz_scrobble/",
   "multi_instance": true,
   "builtin": false,

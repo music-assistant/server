@@ -55,6 +55,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -1724,17 +1725,24 @@ class MusicController(CoreController):
         """Schedule Library sync for given provider."""
         if not (provider := self.mass.get_provider(provider_instance_id)):
             return
-        self.unschedule_provider_sync(provider.instance_id)
+        self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
         for media_type in MediaType:
             if not provider.library_supported(media_type):
                 continue
             await self._schedule_provider_mediatype_sync(provider, media_type, True)
 
-    def unschedule_provider_sync(self, provider_instance_id: str) -> None:
-        """Unschedule Library sync for given provider."""
+    def unschedule_provider_sync(
+        self, provider_instance_id: str, clear_persisted_state: bool = True
+    ) -> None:
+        """Unschedule Library sync for given provider.
+
+        :param provider_instance_id: The provider instance id to unschedule.
+        :param clear_persisted_state: Whether to remove persisted schedule state from config.
+        """
         for media_type in MediaType:
             self.mass.tasks.unregister_scheduled_task(
-                self._get_sync_task_id(provider_instance_id, media_type)
+                self._get_sync_task_id(provider_instance_id, media_type),
+                clear_persisted_state=clear_persisted_state,
             )
 
     def get_provider_sync_schedule(
@@ -3034,6 +3042,19 @@ class MusicController(CoreController):
                     [analysis_version] INTEGER DEFAULT 1,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     UNIQUE(item_id,provider,fragment));"""
+        )
+
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [analysis_data] json NOT NULL,
+                    [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
         )
 
         await self.database.commit()

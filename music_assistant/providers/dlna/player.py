@@ -42,7 +42,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
                 func.__name__,
                 self.display_name,
             )
-        if not self.available:
+        if not self.available and func.__name__ not in ("pause", "stop"):
             self.logger.warning("Device disappeared when trying to call %s", func.__name__)
             return None
         try:
@@ -348,7 +348,17 @@ class DLNAPlayer(Player):
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
-        self.set_current_media(uri=_device_uri, clear_all=True)
+        self.set_current_media(
+            uri=_device_uri,
+            clear_all=True,
+            title=self.device.media_title,
+            artist=self.device.media_artist,
+            album=self.device.media_album_name,
+            image_url=self.device.media_image_url,
+            duration=int(self.device.media_duration)
+            if self.device.media_duration is not None
+            else None,
+        )
 
         # Let player controller determine active source, only override for known external sources
         if _device_uri and _device_uri.startswith(self.mass.streams.base_url):
@@ -407,7 +417,14 @@ class DLNAPlayer(Player):
     async def stop(self) -> None:
         """Send STOP command to given player."""
         assert self.device is not None  # for type checking
-        await self.device.async_stop()
+        if self.device.can_stop:
+            await self.device.async_stop()
+            return
+        # Some devices report stale/empty CurrentTransportActions while still
+        # accepting AVTransport Stop. Force-call Stop when action exists.
+        action = self.device._action("AVT", "Stop")
+        if action is not None:
+            await action.async_call(InstanceID=0)
 
     @catch_request_errors
     async def play(self) -> None:
@@ -464,8 +481,16 @@ class DLNAPlayer(Player):
         assert self.device is not None  # for type checking
         if self.device.can_pause:
             await self.device.async_pause()
-        else:
-            await self.device.async_stop()
+            return
+        # Some devices expose Pause but report stale CurrentTransportActions.
+        # Force-call Pause when action exists; otherwise fallback to Stop.
+        pause_action = self.device._action("AVT", "Pause")
+        if pause_action is not None:
+            await pause_action.async_call(InstanceID=0)
+            return
+        stop_action = self.device._action("AVT", "Stop")
+        if stop_action is not None:
+            await stop_action.async_call(InstanceID=0)
 
     @catch_request_errors
     async def volume_set(self, volume_level: int) -> None:

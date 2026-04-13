@@ -24,7 +24,7 @@ def use_cache(
     category: int = 0,
     persistent: bool = False,
     cache_checksum: str | None = None,
-    allow_bypass: bool = True,
+    allow_bypass: bool | None = None,
     base_class: Any = None,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
@@ -42,6 +42,8 @@ def use_cache(
         Handles both single dicts and lists of dicts automatically.
         If not provided, falls back to type-annotation based reconstruction.
     """
+    if allow_bypass is None:
+        allow_bypass = not persistent
 
     def _decorator(
         func: Callable[Concatenate[ProviderT, P], Awaitable[R]],

@@ -12,8 +12,10 @@ import re
 import shutil
 import socket
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
+import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from functools import lru_cache
@@ -217,6 +219,20 @@ def try_parse_duration(duration_str: str) -> float:
     else:
         seconds = int(duration_parts[0])
     return seconds + milliseconds
+
+
+def normalize_unicode(value: str | None) -> str | None:
+    """Normalize Unicode strings to NFC form for consistent handling.
+
+    This ensures that Unicode characters like "é" are stored as single
+    codepoints rather than "e" + combining accent mark, which prevents
+    issues with string comparisons and memory bloat.
+
+    :param value: String to normalize, or None.
+    """
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", value)
 
 
 def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
@@ -1174,14 +1190,33 @@ _P = ParamSpec("_P")
 def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
-    """Call async function using a Lock."""
+    """Call async function using a per-instance Lock.
+
+    Each instance gets its own lock so that e.g. SyncGroupPlayer A
+    does not block SyncGroupPlayer B when both call set_members().
+    """
+    # Per-instance lock storage (weak refs so locks are GC'd with their instance)
+    instance_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+    # Fallback lock for non-method (no self) usage
+    fallback_lock: asyncio.Lock | None = None
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using a Lock."""
-        if not (func_lock := getattr(func, "lock", None)):
-            func_lock = asyncio.Lock()
-            func.lock = func_lock  # type: ignore[attr-defined]
+        """Call async function using a per-instance Lock."""
+        nonlocal fallback_lock
+        instance = args[0] if args else None
+        if instance is not None:
+            try:
+                func_lock = instance_locks.setdefault(instance, asyncio.Lock())
+            except TypeError:
+                # instance is not weakly referenceable, use fallback
+                if fallback_lock is None:
+                    fallback_lock = asyncio.Lock()
+                func_lock = fallback_lock
+        else:
+            if fallback_lock is None:
+                fallback_lock = asyncio.Lock()
+            func_lock = fallback_lock
         async with func_lock:
             return await func(*args, **kwargs)
 

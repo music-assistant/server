@@ -186,6 +186,8 @@ RUN set -x \
         liblzma5 \
         # Snapcast dependencies
         libasound2 \
+        # PortAudio for local audio output (sounddevice)
+        libportaudio2 \
         libvorbisidec1 \
         libflac12 \
         libavahi-client3 \
