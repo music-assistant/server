@@ -12,10 +12,10 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientConnectorError
-from aiosonos.api.models import ContainerType, MusicService, SonosCapability
+from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
@@ -51,6 +51,7 @@ from music_assistant.providers.sonos.const import (
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
+    from aiosonos.group import SonosGroup
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
     from .provider import SonosPlayerProvider
@@ -86,8 +87,16 @@ class SonosPlayer(Player):
         super().__init__(prov, player_id)
         self.discovery_info = discovery_info
         self.connected: bool = False
-        self._listen_task: asyncio.Task | None = None
+        self._listen_task: asyncio.Task[None] | None = None
         self.sonos_queue: SonosQueue = SonosQueue()
+
+    @property
+    def group_controller(self) -> SonosGroup:
+        """Get the group controller, raising if unavailable."""
+        if self.client.player.group is None:
+            msg = "Group controller unavailable"
+            raise RuntimeError(msg)
+        return self.client.player.group
 
     @property
     def synced_to(self) -> str | None:
@@ -106,6 +115,7 @@ class SonosPlayer(Player):
 
     async def setup(self) -> None:
         """Handle setup of the player."""
+        assert self.device_info.ip_address is not None  # for type checking
         # connect the player first so we can fail early
         self.client = SonosLocalApiClient(
             self.device_info.ip_address, self.mass.http_session_no_ssl
@@ -214,7 +224,7 @@ class SonosPlayer(Player):
         if self.client.player.is_passive:
             self.logger.debug("Ignore PLAY command: Player is synced to another player.")
             return
-        await self.client.player.group.play()
+        await self.group_controller.play()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -222,7 +232,7 @@ class SonosPlayer(Player):
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        await self.client.player.group.stop()
+        await self.group_controller.stop()
         self.update_state()
 
     async def pause(self) -> None:
@@ -235,7 +245,7 @@ class SonosPlayer(Player):
             self.logger.debug("Ignore PAUSE command: Player is synced to another player.")
             return
         active_source = self.state.active_source
-        if self.mass.player_queues.get(active_source):
+        if active_source and self.mass.player_queues.get(active_source):
             # Sonos seems to be bugged when playing our queue tracks and we send pause,
             # it can't resume the current track and simply aborts/skips it
             # so we stop the player instead.
@@ -244,10 +254,10 @@ class SonosPlayer(Player):
             # as I have the feeling the pause issue is related to seek support (=range requests)
             await self.stop()
             return
-        if not self.client.player.group.playback_actions.can_pause:
+        if not self.group_controller.playback_actions.can_pause:
             await self.stop()
             return
-        await self.client.player.group.pause()
+        await self.group_controller.pause()
 
     async def next_track(self) -> None:
         """
@@ -256,7 +266,7 @@ class SonosPlayer(Player):
         Will only be called if the player reports PlayerFeature.NEXT_PREVIOUS
         is supported and the player is not currently playing a MA queue.
         """
-        await self.client.player.group.skip_to_next_track()
+        await self.group_controller.skip_to_next_track()
 
     async def previous_track(self) -> None:
         """
@@ -265,7 +275,7 @@ class SonosPlayer(Player):
         Will only be called if the player reports PlayerFeature.NEXT_PREVIOUS
         is supported and the player is not currently playing a MA queue.
         """
-        await self.client.player.group.skip_to_previous_track()
+        await self.group_controller.skip_to_previous_track()
 
     async def seek(self, position: int) -> None:
         """
@@ -278,7 +288,7 @@ class SonosPlayer(Player):
         :param position: The position to seek to, in seconds.
         """
         # sonos expects milliseconds
-        await self.client.player.group.seek(position * 1000)
+        await self.group_controller.seek(position * 1000)
 
     async def play_media(
         self,
@@ -301,7 +311,7 @@ class SonosPlayer(Player):
             )
             raise PlayerCommandFailed(msg)
         # for now always reset the active session
-        self.client.player.group.active_session_id = None
+        self.group_controller.active_session_id = None
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
 
@@ -311,12 +321,12 @@ class SonosPlayer(Player):
             if not media.duration and media.custom_data:
                 announcement_url = media.custom_data.get("announcement_url", media.uri)
                 media_info = await async_parse_tags(announcement_url, require_duration=True)
-                media.duration = media_info.duration
+                media.duration = int(media_info.duration) if media_info.duration else None
             media.queue_item_id = "announcement"
             self.sonos_queue.items = [media]
             self.sonos_queue.last_updated = time.time()
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
-            await self.client.player.group.play_cloud_queue(
+            await self.group_controller.play_cloud_queue(
                 cloud_queue_url,
                 item_id=media.queue_item_id,
             )
@@ -328,7 +338,7 @@ class SonosPlayer(Player):
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
-            await self.client.player.group.play_cloud_queue(
+            await self.group_controller.play_cloud_queue(
                 cloud_queue_url,
                 item_id=media.queue_item_id,
             )
@@ -342,18 +352,23 @@ class SonosPlayer(Player):
             object_id = f"mass:{media.source_id}:{media.queue_item_id}"
         else:
             object_id = stream_url
-        await self.client.player.group.play_stream_url(
-            stream_url,
-            {
-                "name": media.title,
-                "type": "track",
-                "imageUrl": media.image_url,
-                "id": {
-                    "objectId": object_id,
-                },
-                "service": {"name": "Music Assistant", "id": "mass"},
+        container: Container = {
+            "_objectType": "container",
+            "name": media.title or "",
+            "type": "track",
+            "id": {
+                "_objectType": "id",
+                "objectId": object_id,
             },
-        )
+            "service": {
+                "_objectType": "service",
+                "name": "Music Assistant",
+                "id": "mass",
+            },
+        }
+        if media.image_url:
+            container["imageUrl"] = media.image_url
+        await self.group_controller.play_stream_url(stream_url, container)
 
     async def select_source(self, source: str) -> None:
         """
@@ -364,7 +379,7 @@ class SonosPlayer(Player):
         :param source: The source(id) to select, as defined in the source_list.
         """
         if source == SOURCE_LINE_IN:
-            await self.client.player.group.load_line_in(play_on_completion=True)
+            await self.group_controller.load_line_in(play_on_completion=True)
         elif source == SOURCE_TV:
             await self.client.player.load_home_theater_playback()
         else:
@@ -391,7 +406,7 @@ class SonosPlayer(Player):
         """
         if media.source_id:
             await self._set_sonos_queue_from_mass_queue(media.source_id)
-        if session_id := self.client.player.group.active_session_id:
+        if session_id := self.group_controller.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
 
     async def set_members(
@@ -411,7 +426,7 @@ class SonosPlayer(Player):
         player_ids_to_add = player_ids_to_add or []
         player_ids_to_remove = player_ids_to_remove or []
         if player_ids_to_add or player_ids_to_remove:
-            await self.client.player.group.modify_group_members(
+            await self.group_controller.modify_group_members(
                 player_ids_to_add=player_ids_to_add,
                 player_ids_to_remove=player_ids_to_remove,
             )
@@ -478,10 +493,11 @@ class SonosPlayer(Player):
             self._attr_volume_level = self.client.player.volume_level or 0
         self._attr_volume_muted = self.client.player.volume_muted
 
-        group_parent = None
+        group_parent: SonosPlayer | None = None
+        active_group: SonosGroup | None
         if self.client.player.is_coordinator:
             # player is group coordinator - always report native group members
-            active_group = self.client.player.group
+            active_group = self.group_controller
             if len(self.client.player.group_members) > 1:
                 self._attr_group_members = list(self.client.player.group_members)
             else:
@@ -489,8 +505,9 @@ class SonosPlayer(Player):
             self._attr_can_group_with = {self._provider.instance_id}
         else:
             # player is group child (synced to another player)
-            group_parent: SonosPlayer = self.mass.players.get_player(
-                self.client.player.group.coordinator_id
+            group_parent = cast(
+                "SonosPlayer | None",
+                self.mass.players.get_player(self.group_controller.coordinator_id),
             )
             if not group_parent or not group_parent.client or not group_parent.client.player:
                 # handle race condition where the group parent is not yet discovered
@@ -562,7 +579,7 @@ class SonosPlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
 
         # parse current media
-        self._attr_elapsed_time = self.client.player.group.position
+        self._attr_elapsed_time = active_group.position
         self._attr_elapsed_time_last_updated = time.time()
         current_media = None
         if (current_item := active_group.playback_metadata.get("currentItem")) and (
@@ -572,12 +589,12 @@ class SonosPlayer(Player):
             track_image_url = track_images[0].get("url") if track_images else None
             track_duration_millis = track.get("durationMillis")
             current_media = PlayerMedia(
-                uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
+                uri=track.get("id", {}).get("objectId") or track.get("mediaUrl") or "",
                 media_type=MediaType.TRACK,
                 title=track["name"],
                 artist=track.get("artist", {}).get("name"),
                 album=track.get("album", {}).get("name"),
-                duration=track_duration_millis / 1000 if track_duration_millis else None,
+                duration=int(track_duration_millis / 1000) if track_duration_millis else None,
                 image_url=track_image_url,
             )
             if active_service == MusicService.MUSIC_ASSISTANT:
@@ -588,7 +605,7 @@ class SonosPlayer(Player):
             images = container.get("images", [])
             image_url = images[0].get("url") if images else None
             current_media = PlayerMedia(
-                uri=container.get("id", {}).get("objectId"),
+                uri=container.get("id", {}).get("objectId") or "",
                 media_type=MediaType.RADIO,
                 title=active_group.playback_metadata["streamInfo"],
                 album=container["name"],
@@ -735,13 +752,13 @@ class SonosPlayer(Player):
         repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
         if not self.client.player.group:
             return
-        play_modes = self.client.player.group.play_modes
+        play_modes = self.group_controller.play_modes
         if (
             play_modes.repeat != repeat_all_enabled
             or play_modes.repeat_one != repeat_single_enabled
         ):
             try:
-                await self.client.player.group.set_play_modes(
+                await self.group_controller.set_play_modes(
                     repeat=repeat_all_enabled,
                     repeat_one=repeat_single_enabled,
                 )

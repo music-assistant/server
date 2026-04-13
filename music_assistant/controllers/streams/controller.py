@@ -68,6 +68,7 @@ from music_assistant.helpers.audio import (
     get_mime_type,
     store_content_length_in_cache,
 )
+from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
@@ -551,13 +552,11 @@ class StreamsController(CoreController):
                 break
         if queue_item.streamdetails.stream_error:
             self.logger.error(
-                "Error streaming QueueItem %s (%s) to %s - will try to skip to next item",
+                "Error streaming QueueItem %s (%s) to %s",
                 queue_item.name,
                 queue_item.uri,
                 queue.display_name,
             )
-            # try to skip to the next item in the queue after a short delay
-            self.mass.call_later(5, self.mass.player_queues.next(queue_id))
         elif (
             bytes_sent > 0
             and queue_item.streamdetails
@@ -856,6 +855,7 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         player_id: str | None = None,
         force_flow_mode: bool = False,
+        use_flow_stream_buffering: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -869,6 +869,9 @@ class StreamsController(CoreController):
             if flow mode should be used based on the player's capabilities.
         :param force_flow_mode: Force flow mode regardless of player capabilities.
             Used for multi-client streaming scenarios that require continuous streams.
+        :param use_flow_stream_buffering: Buffer the flow stream to provide headroom
+            during smart fades transitions. Use for consumers that read directly
+            (e.g. AirPlay, Snapcast) and can't tolerate stalls.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -935,9 +938,12 @@ class StreamsController(CoreController):
                     media.source_id, media.queue_item_id
                 )
                 assert start_queue_item
-                return self.audio.get_queue_flow_stream(
+                flow_stream = self.audio.get_queue_flow_stream(
                     queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
                 )
+                if use_flow_stream_buffering:
+                    return buffered(flow_stream, buffer_size=15, min_buffer_before_yield=1)
+                return flow_stream
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item

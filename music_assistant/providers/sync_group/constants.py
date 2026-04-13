@@ -19,17 +19,6 @@ CONF_ENTRY_SGP_NOTE = ConfigEntry(
 
 CONF_MEMBERS_FILTER: Final[str] = "members_filter"
 
-SUPPORT_DYNAMIC_LEADER = {
-    # providers that support dynamic leader selection in a syncgroup
-    # meaning that if you would remove the current leader from the group,
-    # the provider will automatically select a new leader from the remaining members
-    # and the music keeps playing uninterrupted.
-    "airplay",
-    "squeezelite",
-    "snapcast",
-    # TODO: Get this working with Sonos as well (need to handle range requests)
-}
-
 
 EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
     PlayerFeature.ENQUEUE,

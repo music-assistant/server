@@ -254,12 +254,14 @@ class TestUnregisterCleanup:
         controller._players = {"player_1": player}
         controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
         controller._player_command_locks = {
-            "set_members_player_1": asyncio.Lock(),
+            "playback_player_1": asyncio.Lock(),
+            "volume_player_1": asyncio.Lock(),
         }
 
         asyncio.run(controller.unregister("player_1"))
 
-        assert "set_members_player_1" not in controller._player_command_locks
+        assert "playback_player_1" not in controller._player_command_locks
+        assert "volume_player_1" not in controller._player_command_locks
 
     def test_other_players_state_untouched(self, mock_mass: MagicMock) -> None:
         """Unregistering one player does not affect another player's state."""
@@ -274,16 +276,16 @@ class TestUnregisterCleanup:
             "player_b": Throttler(1, 0.05),
         }
         controller._player_command_locks = {
-            "set_members_player_a": asyncio.Lock(),
-            "set_members_player_b": asyncio.Lock(),
+            "playback_player_a": asyncio.Lock(),
+            "playback_player_b": asyncio.Lock(),
         }
 
         asyncio.run(controller.unregister("player_a"))
 
         assert "player_b" in controller._player_throttlers
-        assert "set_members_player_b" in controller._player_command_locks
+        assert "playback_player_b" in controller._player_command_locks
         assert "player_a" not in controller._player_throttlers
-        assert "set_members_player_a" not in controller._player_command_locks
+        assert "playback_player_a" not in controller._player_command_locks
 
     def test_suffix_player_id_not_over_matched(self, mock_mass: MagicMock) -> None:
         """Removing player 'b' must not remove locks for player 'a_b' (no suffix matching)."""
@@ -298,14 +300,14 @@ class TestUnregisterCleanup:
             "a_b": Throttler(1, 0.05),
         }
         controller._player_command_locks = {
-            "set_members_b": asyncio.Lock(),
-            "set_members_a_b": asyncio.Lock(),
+            "playback_b": asyncio.Lock(),
+            "playback_a_b": asyncio.Lock(),
         }
 
         asyncio.run(controller.unregister("b"))
 
-        assert "set_members_a_b" in controller._player_command_locks
-        assert "set_members_b" not in controller._player_command_locks
+        assert "playback_a_b" in controller._player_command_locks
+        assert "playback_b" not in controller._player_command_locks
 
     def test_pending_protocol_evaluation_cancelled(self, mock_mass: MagicMock) -> None:
         """Unregistering a player cancels and removes its pending protocol evaluation."""

@@ -63,6 +63,7 @@ CONF_PARTY_NAME = "party_name"
 CONF_PARTY_QR_TEXT = "qr_text"
 CONF_HIDE_BACK_BUTTON = "hide_back_button"
 CONF_SHOW_PROGRESS_BAR = "show_progress_bar"
+CONF_PREVENT_DUPLICATE_TRACKS = "prevent_duplicate_tracks"
 # Actions
 CONF_ACTION_ENABLE_GUEST_ACCESS = "action_enable_guest_access"
 CONF_ACTION_DISABLE_GUEST_ACCESS = "action_disable_guest_access"
@@ -128,6 +129,7 @@ class PartyConfig(DataClassDictMixin):
     qr_text: str | None
     hide_back_button: bool
     show_progress_bar: bool
+    prevent_duplicate_tracks: bool
 
 
 async def setup(
@@ -184,7 +186,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PARTY_NAME,
             type=ConfigEntryType.STRING,
-            default_value="Party time!",
+            default_value="",
             required=False,
             label="Party Name",
             description=(
@@ -241,7 +243,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PARTY_QR_TEXT,
             type=ConfigEntryType.STRING,
-            default_value="Scan the QR code to join the party!",
+            default_value="",
             required=False,
             label="QR Code Text",
             description=(
@@ -335,6 +337,19 @@ async def get_config_entries(
                 "When disabled, guests cannot add songs to the queue at all."
             ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
+            advanced=True,
+            category="Guest Features",
+        ),
+        ConfigEntry(
+            key=CONF_PREVENT_DUPLICATE_TRACKS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Prevent Duplicate Tracks",
+            description=(
+                "Prevent guests from adding a track that is already in the queue. "
+                "When enabled, duplicate track requests will be rejected."
+            ),
+            depends_on=CONF_ENABLE_ADD_QUEUE,
             advanced=True,
             category="Guest Features",
         ),
@@ -669,6 +684,9 @@ class PartyPlugin(PluginProvider):
             qr_text=cast("str | None", self.config.get_value(CONF_PARTY_QR_TEXT)),
             hide_back_button=cast("bool", self.config.get_value(CONF_HIDE_BACK_BUTTON)),
             show_progress_bar=cast("bool", self.config.get_value(CONF_SHOW_PROGRESS_BAR)),
+            prevent_duplicate_tracks=cast(
+                "bool", self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS)
+            ),
         )
 
     # ==================== Guest Action API Commands ====================
@@ -721,6 +739,10 @@ class PartyPlugin(PluginProvider):
             # Queue is not playing — resolve the item, insert, and start playback.
             # Hold the lock so concurrent guests don't both start playback.
             async with self._queue_lock:
+                if self.config.get_value(
+                    CONF_PREVENT_DUPLICATE_TRACKS
+                ) and self._queue_contains_uri(self.mass.player_queues.items(queue_id), uri):
+                    raise InvalidDataError("This track is already in the queue")
                 media_item = await self.mass.music.get_item_by_uri(uri)
                 if not media_item or media_item.media_type not in (
                     MediaType.TRACK,
@@ -897,6 +919,10 @@ class PartyPlugin(PluginProvider):
         async with self._queue_lock:
             queue = self.mass.player_queues.get(queue_id)
             queue_items = self.mass.player_queues.items(queue_id)
+            if self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS) and self._queue_contains_uri(
+                queue_items, uri
+            ):
+                raise InvalidDataError("This track is already in the queue")
 
             # Use index_in_buffer when playing to avoid inserting before an already-buffered
             # track, which would cause the newly added song to be skipped
@@ -929,6 +955,11 @@ class PartyPlugin(PluginProvider):
         user = get_current_user()
         if not user or user.username != PARTY_GUEST_USER:
             raise InvalidDataError("This endpoint is only available to party guests")
+
+    @staticmethod
+    def _queue_contains_uri(queue_items: list[QueueItem], uri: str) -> bool:
+        """Return whether the queue already contains the given item URI."""
+        return any(queue_item.uri == uri for queue_item in queue_items)
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:

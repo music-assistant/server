@@ -62,6 +62,8 @@ class AudioAnalysisData(DataClassDictMixin):
     danceability: float | None = None
     # Musical mood: 0.0 = dark/sad, 1.0 = bright/happy.
     valence: float | None = None
+    # Intensity/activation: 0.0 = calm/relaxed, 1.0 = energetic/aggressive.
+    arousal: float | None = None
     # Speech presence: 0.0 = pure music, 1.0 = pure speech.
     speechiness: float | None = None
     # Vocal absence: 0.0 = prominent vocals, 1.0 = purely instrumental.
