@@ -672,9 +672,13 @@ class SyncGroupPlayer(Player):
     def _any_member_requires_protocol_domain(self, domain: str) -> bool:
         """Return True if any current member can only play via the given protocol domain.
 
-        A member "requires" the protocol when its own native provider matches the
-        domain and it has no linked output protocol on any other domain — i.e. the
-        domain is the only path that can reach that player.
+        A member "requires" the protocol when all of its available playback
+        paths are on that domain — i.e. it has no native playback path outside
+        this domain AND no linked output protocol outside this domain. This
+        covers plain protocol-domain players (e.g. AirPlay) as well as
+        UniversalPlayer wrappers whose native ``provider.domain`` is
+        ``universal_player`` but which can still only play via a single
+        linked protocol.
 
         :param domain: The protocol domain string (e.g. "airplay", "sonos").
         """
@@ -682,12 +686,18 @@ class SyncGroupPlayer(Player):
             member = self.mass.players.get_player(member_id)
             if member is None or not member.state.available:
                 continue
-            if member.provider.domain != domain:
+            # Collect the set of available playback path domains for this member.
+            paths: set[str] = set()
+            if member.is_native_player:
+                paths.add(member.provider.domain)
+            for protocol in member.linked_output_protocols:
+                if protocol.available:
+                    paths.add(protocol.protocol_domain)
+            if not paths:
+                # nothing available at all, skip rather than force a protocol
                 continue
-            if any(p.available for p in member.linked_output_protocols):
-                # has at least one alternative protocol available
-                continue
-            return True
+            if paths == {domain}:
+                return True
         return False
 
     def _active_protocol_supports_dynamic_leader_switching(self) -> bool:
