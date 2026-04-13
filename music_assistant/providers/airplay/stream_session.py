@@ -145,13 +145,27 @@ class AirPlayStreamSession:
             # The first byte in the buffer corresponds to this stream position
             first_byte_pos = self.seconds_streamed - buffer_seconds
             start_at = self.start_time + first_byte_pos
+
+            # If start_at is in the past (or too close to now), prepend silence
+            # to prime the pipeline while cliraop connects. The device will use
+            # NTP sync to discard past-due silence and start playing at the
+            # correct position — the silence just keeps the pipe fed.
+            min_headroom = 1.0
+            if start_at < now + min_headroom:
+                deficit = (now + min_headroom) - start_at
+                silence_bytes = int(deficit * pcm_sample_size)
+                frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
+                silence_bytes -= silence_bytes % frame_size
+                if silence_bytes > 0:
+                    buffered_pcm = b"\x00" * silence_bytes + buffered_pcm
+
             start_ntp = unix_time_to_ntp(start_at)
 
             self.prov.logger.debug(
                 "Late joiner %s: sending %.2fs of buffered audio, "
                 "stream_pos=%.2fs, first_byte_pos=%.2fs, start_at is %.2fs from now",
                 airplay_player.player_id,
-                buffer_seconds,
+                len(buffered_pcm) / pcm_sample_size,
                 self.seconds_streamed,
                 first_byte_pos,
                 start_at - now,

@@ -158,15 +158,16 @@ def _clear_qr_route(route_path: str | None) -> None:
 
 def _get_qr_route_path(values: dict[str, ConfigValueType]) -> str | None:
     """Resolve current session QR route path from config values."""
+    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
+    if qr_page_url:
+        parsed = urlparse(qr_page_url)
+        path = parsed.path or qr_page_url
+        if path and not path.startswith("/"):
+            path = f"/{path}"
+        if path.startswith("/auth/qqmusic/qr/"):
+            return path
     if session_id := values.get("session_id"):
         return f"/auth/qqmusic/qr/{session_id}"
-    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
-    if not qr_page_url:
-        return None
-    parsed = urlparse(qr_page_url)
-    path = parsed.path or qr_page_url
-    if path.startswith("/auth/qqmusic/qr/"):
-        return path
     return None
 
 
@@ -176,7 +177,7 @@ def _register_qr_auth_page(
     image_bytes: bytes,
     mime_type: str,
 ) -> str:
-    """Register a temporary web route for QR image and return relative URL."""
+    """Register a temporary web route for QR image and return client-safe URL."""
     if not getattr(mass, "webserver", None):
         b64 = b64encode(image_bytes).decode("ascii")
         return f"data:{mime_type};base64,{b64}"
@@ -193,7 +194,8 @@ def _register_qr_auth_page(
 
     unregister = mass.webserver.register_dynamic_route(route_path, _serve_qr, "GET")
     _QR_ROUTE_UNREGISTER[route_path] = unregister
-    return f"{route_path}?ts={int(time.time())}"
+    # Use a relative URL (without leading slash) so this also works behind HA Ingress.
+    return f"{route_path.lstrip('/')}?ts={int(time.time())}"
 
 
 async def setup(
