@@ -13,9 +13,15 @@ import uuid as _uuid
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
-from music_assistant_models.media_items import Playlist, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import PlaylistPlayableItem
@@ -349,9 +355,27 @@ class SmartPlaylistProvider(MusicProvider):
         )
         playlist.is_dynamic = rules.is_dynamic
         playlist.metadata = MediaItemMetadata(
-            description=f"[Smart Playlist] {rules.human_readable()}"
+            description=f"[Smart Playlist] {rules.human_readable()}",
+            images=UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path="icon.svg",
+                        provider=self.instance_id,
+                        remotely_accessible=False,
+                    )
+                ]
+            ),
         )
         return playlist
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Return the smart playlist provider icon as fallback image."""
+        if path == "icon.svg":
+            icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
+            async with asyncio.timeout(5):
+                return await asyncio.to_thread(lambda: open(icon_path, "rb").read())
+        return path
 
     def _validate_rules(self, rules: SmartPlaylistRules) -> None:
         """Delegate to module-level validate_rules helper."""
