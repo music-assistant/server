@@ -1618,9 +1618,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         volume_range = max_volume - min_volume
         if volume_range == 0:
             return 0
-        # Scale and clamp to 0-100
-        logical = ((device_volume - min_volume) * 100) // volume_range
-        return max(0, min(100, logical))
+        # Scale to 0-100 without clamping so that out-of-range device volumes
+        # produce distinct logical values, ensuring state change detection triggers
+        # volume limit enforcement
+        return ((device_volume - min_volume) * 100) // volume_range
 
     def _enforce_volume_limits(self, player: Player) -> None:
         """Clamp device volume to min/max range when changed externally."""
