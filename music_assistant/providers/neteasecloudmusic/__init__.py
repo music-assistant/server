@@ -1019,14 +1019,37 @@ class NeteaseCloudMusicProvider(MusicProvider):
                     if row_id:
                         details_by_id[row_id] = row
 
+        async def _fetch_quality(track_id: str) -> tuple[str, dict[str, Any] | None]:
+            try:
+                quality_obj = await self._get_song_music_detail(track_id)
+            except (InvalidDataError, ResourceTemporarilyUnavailable):
+                return track_id, None
+            return track_id, quality_obj if isinstance(quality_obj, dict) else None
+
+        semaphore = asyncio.Semaphore(8)
+
+        async def _bounded_fetch(track_id: str) -> tuple[str, dict[str, Any] | None]:
+            async with semaphore:
+                return await _fetch_quality(track_id)
+
+        quality_tasks = [
+            _bounded_fetch(track.item_id)
+            for track in tracks
+            if track.item_id and track.item_id in details_by_id
+        ]
+        quality_by_id = {
+            track_id: quality_obj
+            for track_id, quality_obj in (await asyncio.gather(*quality_tasks))
+            if isinstance(quality_obj, dict)
+        }
+
         for track in tracks:
             detail_obj = details_by_id.get(track.item_id)
             if not isinstance(detail_obj, dict):
                 continue
-            with suppress(InvalidDataError, ResourceTemporarilyUnavailable):
-                quality_obj = await self._get_song_music_detail(track.item_id)
-                if isinstance(quality_obj, dict):
-                    detail_obj = self._merge_quality_objects(detail_obj, quality_obj)
+            quality_obj = quality_by_id.get(track.item_id)
+            if isinstance(quality_obj, dict):
+                detail_obj = self._merge_quality_objects(detail_obj, quality_obj)
             if not track.metadata.images:
                 album_raw = detail_obj.get("al") or detail_obj.get("album")
                 if isinstance(album_raw, dict):
@@ -1174,6 +1197,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
         return self._parse_artist(artist_obj)
 
+    @use_cache(3600 * 24)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get all albums for an artist."""
         limit = 100
@@ -1208,6 +1232,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 break
         return albums
 
+    @use_cache(3600 * 24)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks for given artist."""
         payload = await self._client.get(
@@ -1241,7 +1266,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return self._parse_album(album_obj)
 
-    @use_cache(3600 * 24)
+    @use_cache()
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for album id."""
         payload = await self._client.get(
@@ -1261,7 +1286,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 tracks.append(self._parse_track(song_obj))
         return tracks
 
-    @use_cache(3600 * 24)
+    @use_cache()
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         songs = await self._get_song_detail(prov_track_id)
@@ -1313,12 +1338,12 @@ class NeteaseCloudMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
-            return self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "私人FM")
+            return self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "Personal FM")
         if heart_parts := self._parse_heart_mode_playlist_id(prov_playlist_id):
             seed_song_id, source_playlist_id = heart_parts
             return self._build_dynamic_playlist(
                 f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{source_playlist_id}",
-                "心动模式",
+                "Heart Mode",
             )
         if prov_playlist_id == _PLAYLIST_HEART_MODE_PREFIX:
             if playlist := await self._build_heart_mode_dynamic_playlist():
@@ -1335,6 +1360,34 @@ class NeteaseCloudMusicProvider(MusicProvider):
         if not isinstance(playlist_obj, dict):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return self._parse_playlist(playlist_obj)
+
+    @use_cache(3600 * 3)
+    async def _get_playlist_tracks_cached(
+        self,
+        prov_playlist_id: str,
+        page: int = 0,
+    ) -> Sequence[Track]:
+        """Get playlist tracks for static playlists (cached)."""
+        limit = 500
+        offset = page * limit
+        payload = await self._client.get(
+            "/playlist/track/all",
+            params={"id": prov_playlist_id, "limit": limit, "offset": offset},
+            cookie=self._cookie,
+        )
+        data = _extract_data(payload)
+        songs = data.get("songs")
+        if not isinstance(songs, list):
+            return []
+        result: list[Track] = []
+        for idx, song_obj in enumerate(songs, start=1):
+            if not isinstance(song_obj, dict):
+                continue
+            with suppress(InvalidDataError):
+                track = self._parse_track(song_obj)
+                track.position = offset + idx
+                result.append(track)
+        return result
 
     async def get_playlist_tracks(
         self,
@@ -1378,60 +1431,55 @@ class NeteaseCloudMusicProvider(MusicProvider):
                     return tracks
             return []
 
-        limit = 500
-        offset = page * limit
-        payload = await self._client.get(
-            "/playlist/track/all",
-            params={"id": prov_playlist_id, "limit": limit, "offset": offset},
-            cookie=self._cookie,
-        )
-        data = _extract_data(payload)
-        songs = data.get("songs")
-        if not isinstance(songs, list):
-            return []
-        result: list[Track] = []
-        for idx, song_obj in enumerate(songs, start=1):
-            if not isinstance(song_obj, dict):
-                continue
-            with suppress(InvalidDataError):
-                track = self._parse_track(song_obj)
-                track.position = offset + idx
-                result.append(track)
-        return result
+        return await self._get_playlist_tracks_cached(prov_playlist_id, page)
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve favorite artists from NCM."""
-        payload = await self._client.get(
-            "/artist/sublist",
-            params={"limit": 2000, "offset": 0},
-            cookie=self._cookie,
-        )
-        data = _extract_data(payload)
-        artists = data.get("data") or data.get("artists")
-        if not isinstance(artists, list):
-            artists = []
-        for artist_obj in artists:
-            if not isinstance(artist_obj, dict):
-                continue
-            with suppress(InvalidDataError):
-                yield self._parse_artist(artist_obj)
+        limit = 200
+        offset = 0
+        for _ in range(100):
+            payload = await self._client.get(
+                "/artist/sublist",
+                params={"limit": limit, "offset": offset},
+                cookie=self._cookie,
+            )
+            data = _extract_data(payload)
+            artists = data.get("data") or data.get("artists")
+            if not isinstance(artists, list) or not artists:
+                break
+            for artist_obj in artists:
+                if not isinstance(artist_obj, dict):
+                    continue
+                with suppress(InvalidDataError):
+                    yield self._parse_artist(artist_obj)
+            has_more = bool(data.get("more") or data.get("hasMore"))
+            offset += limit
+            if not has_more and len(artists) < limit:
+                break
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve favorite albums from NCM."""
-        payload = await self._client.get(
-            "/album/sublist",
-            params={"limit": 2000, "offset": 0},
-            cookie=self._cookie,
-        )
-        data = _extract_data(payload)
-        albums = data.get("data") or data.get("albums")
-        if not isinstance(albums, list):
-            albums = []
-        for album_obj in albums:
-            if not isinstance(album_obj, dict):
-                continue
-            with suppress(InvalidDataError):
-                yield self._parse_album(album_obj)
+        limit = 200
+        offset = 0
+        for _ in range(100):
+            payload = await self._client.get(
+                "/album/sublist",
+                params={"limit": limit, "offset": offset},
+                cookie=self._cookie,
+            )
+            data = _extract_data(payload)
+            albums = data.get("data") or data.get("albums")
+            if not isinstance(albums, list) or not albums:
+                break
+            for album_obj in albums:
+                if not isinstance(album_obj, dict):
+                    continue
+                with suppress(InvalidDataError):
+                    yield self._parse_album(album_obj)
+            has_more = bool(data.get("more") or data.get("hasMore"))
+            offset += limit
+            if not has_more and len(albums) < limit:
+                break
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve liked tracks from NCM."""
@@ -1614,7 +1662,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         seed_song_id, playlist_id = heart_parts
         return self._build_dynamic_playlist(
             f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{playlist_id}",
-            "心动模式",
+            "Heart Mode",
         )
 
     async def _pick_heart_mode_tracks(
@@ -1657,14 +1705,15 @@ class NeteaseCloudMusicProvider(MusicProvider):
         folder = RecommendationFolder(
             item_id="recommended_radios",
             provider=self.instance_id,
-            name="个性电台",
+            name="Personal Radio",
             icon="mdi:radio",
         )
-        folder.items.append(self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "私人FM"))
+        folder.items.append(self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "Personal FM"))
         if heart_playlist := await self._build_heart_mode_dynamic_playlist():
             folder.items.append(heart_playlist)
         return folder if folder.items else None
 
+    @use_cache(3600)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendation folders."""
         folders: list[RecommendationFolder] = []
@@ -1681,7 +1730,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="daily_songs",
                 provider=self.instance_id,
-                name="每日推荐",
+                name="Daily Picks",
                 icon="mdi:star",
             )
             for song_obj in daily_songs:
@@ -1704,7 +1753,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="recommended_new_songs",
                 provider=self.instance_id,
-                name="推荐新歌",
+                name="New Songs",
                 icon="mdi:music-note",
             )
             for item in raw_new_songs:
@@ -1730,7 +1779,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="recommended_playlists",
                 provider=self.instance_id,
-                name="推荐歌单",
+                name="Recommended Playlists",
                 icon="mdi:playlist-music",
             )
             for playlist_obj in raw_playlists:
