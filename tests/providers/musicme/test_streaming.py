@@ -127,7 +127,7 @@ class TestGetStreamDetails:
 
         assert details.item_id == "5034644330297-01_01"
         assert details.stream_type == StreamType.HTTP
-        assert details.audio_format.content_type == ContentType.AAC
+        assert details.audio_format.content_type == ContentType.MP4
         assert details.audio_format.sample_rate == 44100
         assert details.audio_format.channels == 2
         assert details.path == fake_url

@@ -162,7 +162,7 @@ class TestParseAlbum:
         """Test that audio format is AAC 44.1kHz."""
         album = provider._parse_album(ALBUM_OBJ)
         mapping = next(iter(album.provider_mappings))
-        assert mapping.audio_format.content_type == ContentType.AAC
+        assert mapping.audio_format.content_type == ContentType.MP4
         assert mapping.audio_format.sample_rate == 44100
 
     def test_album_without_streetdate(self, provider: MusicMeProvider) -> None:

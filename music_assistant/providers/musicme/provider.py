@@ -500,7 +500,8 @@ class MusicMeProvider(MusicProvider):
             item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=ContentType.AAC,
+                content_type=ContentType.MP4,
+                codec_type=ContentType.AAC,
                 sample_rate=44100,
                 bit_depth=16,
                 channels=2,
@@ -568,7 +569,8 @@ class MusicMeProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     available=album_obj.get("streamable", 0) == 2,
                     audio_format=AudioFormat(
-                        content_type=ContentType.AAC,
+                        content_type=ContentType.MP4,
+                        codec_type=ContentType.AAC,
                         sample_rate=44100,
                         bit_depth=16,
                     ),
@@ -608,7 +610,8 @@ class MusicMeProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     available=track_obj.get("streamable", 0) == 2,
                     audio_format=AudioFormat(
-                        content_type=ContentType.AAC,
+                        content_type=ContentType.MP4,
+                        codec_type=ContentType.AAC,
                         sample_rate=44100,
                         bit_depth=16,
                     ),
@@ -764,7 +767,7 @@ class MusicMeProvider(MusicProvider):
                     tracks = album_data.get("results", {}).get("tracks", [])
                     result.tracks = [
                         self._parse_track(t)
-                        for t in tracks
+                        for t in tracks[:limit]
                         if t.get("barcode") and t.get("streamable") == 2
                     ]
 
