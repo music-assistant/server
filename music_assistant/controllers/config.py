@@ -68,7 +68,6 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
-    CONF_ENTRY_LIBRARY_SYNC_SERIES,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
@@ -424,8 +423,6 @@ class ConfigController:
                     extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
             if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
-            if ProviderFeature.LIBRARY_SERIES in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_SERIES)
             if ProviderFeature.LIBRARY_PODCASTS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
             if ProviderFeature.LIBRARY_RADIOS in supported_features:

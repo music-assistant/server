@@ -27,7 +27,6 @@ from music_assistant_models.media_items import (
     Radio,
     RecommendationFolder,
     SearchResults,
-    Series,
     Track,
 )
 
@@ -123,11 +122,6 @@ class MusicProvider(Provider):
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_series(self) -> AsyncGenerator[Series, None]:
-        """Retrieve library/subscribed audiobooks from the provider."""
-        yield  # type: ignore[misc]
-        raise NotImplementedError
-
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from the provider."""
         yield  # type: ignore[misc]
@@ -191,13 +185,6 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
-    async def get_series(self, prov_series_id: str) -> Series:
-        """Get full audiobook details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_SERIES.
-        """
-        raise NotImplementedError
-
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id.
 
@@ -234,17 +221,6 @@ class MusicProvider(Provider):
         """Get all playlist tracks for given playlist id.
 
         Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
-        """
-        raise NotImplementedError
-
-    async def get_series_audiobooks(
-        self,
-        prov_series_id: str,
-        page: int = 0,
-    ) -> Sequence[Audiobook]:
-        """Get all audiobooks for given series id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_SERIES.
         """
         raise NotImplementedError
 
@@ -519,8 +495,6 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         if media_type == MediaType.AUDIOBOOK:
             return await self.get_audiobook(prov_item_id)
-        if media_type == MediaType.SERIES:
-            return await self.get_series(prov_item_id)
         if media_type == MediaType.PODCAST:
             return await self.get_podcast(prov_item_id)
         if media_type == MediaType.PODCAST_EPISODE:
@@ -741,8 +715,6 @@ class MusicProvider(Provider):
             cur_db_ids = await self._sync_library_radios()
         elif media_type == MediaType.AUDIOBOOK:
             cur_db_ids = await self._sync_library_audiobooks()
-        elif media_type == MediaType.SERIES:
-            cur_db_ids = await self._sync_library_series()
         else:
             # this should not happen but catch it anyways
             raise UnsupportedFeaturedException(f"Unexpected media type to sync: {media_type}")
@@ -1273,58 +1245,6 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.PODCAST, prov_item.uri, err)
         return cur_db_ids
 
-    async def _sync_library_series(self) -> set[int]:
-        """Sync Library Series to Music Assistant library."""
-        self.logger.debug("Start sync of Series to Music Assistant library.")
-        cur_db_ids: set[int] = set()
-        item_count = 0
-        async for prov_item in self.get_library_series():
-            item_count += 1
-            self._update_sync_task_item_status(MediaType.SERIES, item_count, prov_item.name)
-            library_item = await self.mass.music.series.get_library_item_by_prov_mappings(
-                prov_item.provider_mappings,
-            )
-            try:
-                if not library_item:
-                    # add item to the library
-                    for prov_map in prov_item.provider_mappings:
-                        prov_map.in_library = True
-                    library_item = await self.mass.music.series.add_item_to_library(prov_item)
-                elif not self._check_provider_mappings(library_item, prov_item, True):
-                    # existing library item but provider mapping doesn't match
-                    library_item = await self.mass.music.series.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                elif prov_item.date_added and library_item.date_added != prov_item.date_added:
-                    # update date_added if it changed
-                    library_item = await self.mass.music.series.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                if not library_item.favorite and prov_item.favorite:
-                    # existing library item not favorite but should be
-                    await self.mass.music.series.set_favorite(library_item.item_id, True)
-                fallback_genres = (
-                    set(prov_item.metadata.genres)
-                    if prov_item.metadata and prov_item.metadata.genres
-                    else None
-                )
-                await self._sync_item_genres(
-                    MediaType.SERIES,
-                    prov_item.item_id,
-                    int(library_item.item_id),
-                    fallback_genres,
-                )
-                cur_db_ids.add(int(library_item.item_id))
-                await asyncio.sleep(0)  # yield to eventloop
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Skipping sync of series %s - error details: %s",
-                    prov_item.uri,
-                    str(err),
-                )
-                self._report_sync_task_failure(MediaType.SERIES, prov_item.uri, err)
-        return cur_db_ids
-
     async def _sync_library_radios(self) -> set[int]:
         """Sync Library Radios to Music Assistant library."""
         self.logger.debug("Start sync of Radios to Music Assistant library.")
@@ -1383,8 +1303,6 @@ class MusicProvider(Provider):
             return ProviderFeature.LIBRARY_RADIOS in self.supported_features
         if media_type == MediaType.AUDIOBOOK:
             return ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features
-        if media_type == MediaType.SERIES:
-            return ProviderFeature.LIBRARY_SERIES in self.supported_features
         if media_type == MediaType.PODCAST:
             return ProviderFeature.LIBRARY_PODCASTS in self.supported_features
         return False
@@ -1480,8 +1398,6 @@ class MusicProvider(Provider):
             return self.get_library_audiobooks()
         if media_type == MediaType.PODCAST:
             return self.get_library_podcasts()
-        if media_type == MediaType.SERIES:
-            return self.get_library_series()
         raise NotImplementedError
 
     def _check_provider_mappings(

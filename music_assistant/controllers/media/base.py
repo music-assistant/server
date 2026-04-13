@@ -117,9 +117,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             FROM {self.db_table} """
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
         # register (base) api handlers
-        self.api_base = api_base = (
-            f"{self.media_type}s" if self.media_type != MediaType.SERIES else self.media_type
-        )
+        self.api_base = api_base = f"{self.media_type}s"
         self.mass.register_api_command(f"music/{api_base}/count", self.library_count)
         self.mass.register_api_command(f"music/{api_base}/library_items", self.library_items)
         self.mass.register_api_command(f"music/{api_base}/get", self.get)
