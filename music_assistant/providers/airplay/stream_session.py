@@ -121,15 +121,25 @@ class AirPlayStreamSession:
         """Add a sync client to the session as a late joiner.
 
         Uses the PCM ring buffer to prime the late joiner's pipeline so it
-        starts playing quickly.  All work happens under the lock to ensure
+        starts playing quickly. All work happens under the lock to ensure
         ``seconds_streamed`` and the buffer are consistent.
 
+        Devices generally cannot honour an NTP start anchor that is in the
+        past — they just play whatever the pipe gives them, trailing the
+        group by the deficit. To stay in sync we therefore push the late
+        joiner's ``start_at`` into the future (at least ``wait_start`` ahead
+        of now, with a small extra safety margin for connection setup) and
+        trim the corresponding amount from the head of the buffered PCM, so
+        the first sample we send maps to the correct future stream position.
+
         1. Snapshot the ring buffer and calculate how many seconds it holds.
-        2. NTP = ``start_time + (seconds_streamed - buffer_seconds)`` — the
-           first byte in the buffer maps to that stream position.
-        3. Start ffmpeg+CLI, write the buffer into ffmpeg (primes the pipe
-           while cliraop is still connecting), then add to sync_clients so
-           the audio streamer continues seamlessly from where the buffer ends.
+        2. Map the buffer's first byte to its stream position; if the
+           resulting NTP start is in the past, shift it forward to
+           ``now + min_headroom`` and trim that many seconds from the buffer
+           head so timing stays aligned with the rest of the group.
+        3. Start ffmpeg+CLI, write the (possibly trimmed) buffer into ffmpeg
+           to prime the pipe while cliraop is still connecting, then add to
+           sync_clients so the audio streamer continues seamlessly.
         """
         async with self._lock:
             if not self.sync_clients:
@@ -139,6 +149,7 @@ class AirPlayStreamSession:
                 return
             now = time.time()
             pcm_sample_size = self.pcm_format.pcm_sample_size
+            frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
             # Snapshot the buffer and calculate its duration
             buffered_pcm = bytes(self._pcm_buffer)
             buffer_seconds = len(buffered_pcm) / pcm_sample_size
@@ -146,35 +157,46 @@ class AirPlayStreamSession:
             first_byte_pos = self.seconds_streamed - buffer_seconds
             start_at = self.start_time + first_byte_pos
 
-            # If start_at is in the past (or too close to now), prepend silence
-            # to prime the pipeline while cliraop connects. The device will use
-            # NTP sync to discard past-due silence and start playing at the
-            # correct position — the silence just keeps the pipe fed.
-            # Scale the headroom with the configured AirPlay latency so devices
-            # with a longer wait_start still land with a positive start offset.
+            # The device needs at least ``wait_start`` of lead time after
+            # being told to start, plus a small safety margin for cliraop to
+            # connect / RAOP handshake. Anything below this and the device
+            # is effectively starting in the past.
             min_headroom = max(2.0, self.wait_start)
-            deficit = 0.0
-            if start_at < now + min_headroom:
-                deficit = (now + min_headroom) - start_at
-                silence_bytes = int(deficit * pcm_sample_size)
-                frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
-                silence_bytes -= silence_bytes % frame_size
-                if silence_bytes > 0:
-                    buffered_pcm = b"\x00" * silence_bytes + buffered_pcm
+            target_start_at = now + min_headroom
+            trim_seconds = 0.0
+            if start_at < target_start_at:
+                # Shift start_at forward so the device has time to prep, and
+                # trim the buffer head by the same amount so the first sample
+                # we send is the one that should play at the new start_at.
+                trim_seconds = target_start_at - start_at
+                trim_bytes = int(trim_seconds * pcm_sample_size)
+                trim_bytes -= trim_bytes % frame_size
+                if trim_bytes >= len(buffered_pcm):
+                    # Nothing left of the buffer after the trim. Drop it and
+                    # let the audio_streamer feed the late joiner from the
+                    # next chunk; align start_at to that chunk's first sample.
+                    buffered_pcm = b""
+                    start_at = self.start_time + self.seconds_streamed
+                else:
+                    buffered_pcm = buffered_pcm[trim_bytes:]
+                    start_at += trim_seconds
+                # Make sure start_at still leaves enough lead time for slow
+                # connections / very-far-behind joiners.
+                start_at = max(start_at, target_start_at)
 
             start_ntp = unix_time_to_ntp(start_at)
 
             self.prov.logger.debug(
                 "Late joiner %s: sending %.2fs of buffered audio, "
                 "stream_pos=%.2fs, first_byte_pos=%.2fs, "
-                "start_at is %.2fs from now (min_headroom=%.2fs, deficit=%.2fs)",
+                "start_at is %.2fs from now (min_headroom=%.2fs, trimmed=%.2fs)",
                 airplay_player.player_id,
                 len(buffered_pcm) / pcm_sample_size,
                 self.seconds_streamed,
                 first_byte_pos,
                 start_at - now,
                 min_headroom,
-                deficit,
+                trim_seconds,
             )
 
             # Start ffmpeg+CLI and immediately write the buffered PCM.
