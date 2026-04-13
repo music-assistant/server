@@ -970,14 +970,14 @@ class AppleMusicProvider(MusicProvider):
         )
         if artists := relationships.get("artists"):
             album.artists = UniqueList([self._parse_artist(artist) for artist in artists["data"]])
-        elif artist_name := attributes.get("artistName"):
+        elif artist_name := normalize_unicode(attributes.get("artistName")):
             album.artists = UniqueList(
                 [
                     ItemMapping(
                         media_type=MediaType.ARTIST,
                         provider=self.instance_id,
                         item_id=artist_name,
-                        name=normalize_unicode(artist_name),
+                        name=artist_name,
                     )
                 ]
             )
@@ -1074,13 +1074,13 @@ class AppleMusicProvider(MusicProvider):
             artists = relationships["artists"]
             track.artists = [self._parse_artist(artist) for artist in artists["data"]]
         # 'Similar tracks' do not provide full artist details
-        elif artist_name := attributes.get("artistName"):
+        elif artist_name := normalize_unicode(attributes.get("artistName")):
             track.artists = [
                 ItemMapping(
                     media_type=MediaType.ARTIST,
                     item_id=artist_name,
                     provider=self.instance_id,
-                    name=normalize_unicode(artist_name),
+                    name=artist_name,
                 )
             ]
         if albums := relationships.get("albums"):
