@@ -1967,6 +1967,26 @@ class PlayerQueuesController(CoreController):
             playlist.name,
         )
         force_refresh = playlist.is_dynamic
+        needs_sort = sort_by is not None and sort_by != "position"
+        # Fast path: no re-sort needed, skip-until-found in a single pass
+        # so we don't materialize huge playlists when starting near the end.
+        if not needs_sort:
+            start_item_found = False
+            async for playlist_track in self.mass.music.playlists.tracks(
+                playlist.item_id,
+                playlist.provider,
+                force_refresh=force_refresh,
+                allow_dynamic_tracks=playlist.is_dynamic,
+            ):
+                if not playlist_track.available:
+                    continue
+                if start_item in (playlist_track.item_id, playlist_track.uri):
+                    start_item_found = True
+                if start_item is not None and not start_item_found:
+                    continue
+                result.append(playlist_track)
+            return result
+        # Sort path: must materialize all tracks before sorting, then slice.
         async for playlist_track in self.mass.music.playlists.tracks(
             playlist.item_id,
             playlist.provider,
@@ -1976,8 +1996,7 @@ class PlayerQueuesController(CoreController):
             if not playlist_track.available:
                 continue
             result.append(playlist_track)
-        if sort_by and sort_by != "position":
-            result = self._sort_tracks(result, sort_by)
+        result = self._sort_tracks(result, cast("str", sort_by))
         if start_item is not None:
             for idx, track in enumerate(result):
                 if start_item in (track.item_id, track.uri):
