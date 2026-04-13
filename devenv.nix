@@ -5,12 +5,13 @@
   env.GREET = "devenv";
 
   # https://devenv.sh/packages/
-  packages = [ pkgs.git ];
+  packages = [ pkgs.git pkgs.ffmpeg_7 ];
 
   # https://devenv.sh/languages/
   languages.python = {
     enable = true;
     uv.enable = true;
+    version = "3.13";
   };
 
   # https://devenv.sh/scripts/
