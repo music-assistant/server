@@ -336,6 +336,9 @@ class SyncGroupPlayer(Player):
             # Use internal handler to target the sync leader directly,
             # bypassing group/sync redirect that would loop back to this player.
             await self.mass.players._handle_cmd_stop(sync_leader.player_id)
+        # Clear cached protocol domain so leader selection isn't biased
+        # if playback restarts before the group is dissolved.
+        self._active_protocol_domain = None
         # dissolve the sync group since we stopped playback
         self.mass.call_later(
             5, self._dissolve_syncgroup, task_id=f"syncgroup_dissolve_{self.player_id}"
@@ -573,6 +576,12 @@ class SyncGroupPlayer(Player):
                         sync_leader.player_id, [], sync_children
                     ),
                 )
+        # Clear the leader's active protocol so it doesn't persist
+        # after the sync group is dissolved. The controller's normal
+        # clearing (in _handle_cmd_stop) is skipped when the protocol
+        # player had multiple group members at stop time.
+        if sync_leader and sync_leader.state.playback_state != PlaybackState.PLAYING:
+            sync_leader.set_active_output_protocol(None)
         self.sync_leader = None
         self._active_protocol_domain = None
         self.update_state()
@@ -719,4 +728,13 @@ class SyncGroupPlayer(Player):
                 new_leader.display_name,
                 self.display_name,
             )
+            # Sync remaining members to the new leader at the protocol level.
+            # Without this, the new leader's protocol player won't know about
+            # the remaining group members, causing state tracking mismatches.
+            remaining_members = [m for m in self._attr_group_members if m != new_leader.player_id]
+            if remaining_members:
+                await self.mass.players.cmd_set_members(
+                    new_leader.player_id,
+                    player_ids_to_add=remaining_members,
+                )
         self.update_state()
