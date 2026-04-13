@@ -1912,6 +1912,7 @@ class PlayerQueuesController(CoreController):
             for idx, track in enumerate(result):
                 if start_item in (track.item_id, track.uri):
                     return result[idx:]
+            return []
         return result
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
@@ -1981,6 +1982,7 @@ class PlayerQueuesController(CoreController):
             for idx, track in enumerate(result):
                 if start_item in (track.item_id, track.uri):
                     return result[idx:]
+            return []
         return result
 
     @staticmethod
