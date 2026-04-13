@@ -11,6 +11,7 @@ import urllib.parse
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from aiohttp import ClientConnectionError, ClientResponseError
 from music_assistant_models.enums import (
     ContentType,
@@ -43,6 +44,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
@@ -66,6 +68,7 @@ class MusicMeProvider(MusicProvider):
     """Provider for the MusicMe streaming service."""
 
     _user_id: str | None = None
+    http_session: aiohttp.ClientSession
     throttler: ThrottlerManager
 
     async def handle_async_init(self) -> None:
@@ -73,8 +76,16 @@ class MusicMeProvider(MusicProvider):
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
             msg = "Missing MusicMe email or password"
             raise SetupFailedError(msg)
+        # Dedicated session with its own cookie jar to support multi-instance
+        # (each instance has its own MusicMe login cookies)
+        self.http_session = create_clientsession(self.mass, cookie_jar=aiohttp.CookieJar())
         self.throttler = ThrottlerManager(rate_limit=1, period=1)
         await self._login()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        if hasattr(self, "http_session") and not self.http_session.closed:
+            await self.http_session.close()
 
     # ---- search ----
 
@@ -432,12 +443,14 @@ class MusicMeProvider(MusicProvider):
         if not data:
             return []
         albums = data.get("results", {}).get("albums", [])
+        streamable_barcodes = [
+            a["barcode"] for a in albums if a.get("barcode") and a.get("streamable", 0) == 2
+        ]
+        album_results = await asyncio.gather(
+            *(self._api_get(f"/album/{bc}?resources=tracks") for bc in streamable_barcodes)
+        )
         top_tracks: list[Track] = []
-        for album_obj in albums:
-            barcode = album_obj.get("barcode")
-            if not barcode or album_obj.get("streamable", 0) != 2:
-                continue
-            album_data = await self._api_get(f"/album/{barcode}?resources=tracks")
+        for album_data in album_results:
             if not album_data:
                 continue
             for t in album_data.get("results", {}).get("tracks", []):
@@ -709,7 +722,7 @@ class MusicMeProvider(MusicProvider):
         url = f"{WEB_BASE}/search.php?ambsearch={encoded}&mmz=all"
 
         try:
-            async with self.mass.http_session.get(url, allow_redirects=True) as resp:
+            async with self.http_session.get(url, allow_redirects=True) as resp:
                 if resp.status != 200:
                     return None
                 raw_bytes = await resp.read()
@@ -763,7 +776,7 @@ class MusicMeProvider(MusicProvider):
         password = self.config.get_value(CONF_PASSWORD)
 
         try:
-            async with self.mass.http_session.post(
+            async with self.http_session.post(
                 LOGIN_URL,
                 data={
                     "email": email,
@@ -779,7 +792,7 @@ class MusicMeProvider(MusicProvider):
             raise LoginFailed(msg) from err
 
         try:
-            async with self.mass.http_session.get(f"{WEB_BASE}/?f=1") as resp:
+            async with self.http_session.get(f"{WEB_BASE}/?f=1") as resp:
                 resp.raise_for_status()
                 raw_bytes = await resp.read()
                 content = raw_bytes.decode("latin-1", errors="replace")
@@ -822,7 +835,7 @@ class MusicMeProvider(MusicProvider):
 
         self.logger.debug("GET %s", endpoint.split("?", maxsplit=1)[0])
         try:
-            async with self.mass.http_session.get(url) as response:
+            async with self.http_session.get(url) as response:
                 if response.status == 429:
                     try:
                         backoff = min(int(response.headers.get("Retry-After", 10)), 300)
