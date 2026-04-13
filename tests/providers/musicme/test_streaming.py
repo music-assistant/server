@@ -2,31 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 
-from music_assistant.providers.musicme.constants import PARTNER_ID, STREAM_BASE, SUPPORTED_FEATURES
+from music_assistant.providers.musicme.constants import PARTNER_ID, STREAM_BASE
 from music_assistant.providers.musicme.provider import MusicMeProvider
-
-
-@pytest.fixture
-def provider() -> MusicMeProvider:
-    """Create a real MusicMeProvider with mocked dependencies."""
-    mass = Mock()
-    manifest = Mock()
-    manifest.domain = "musicme"
-    config = Mock()
-    config.instance_id = "musicme--test123"
-    config.name = "MusicMe Test"
-    config.enabled = True
-    config.get_value.side_effect = lambda key, default=None: {
-        "log_level": "GLOBAL",
-    }.get(key, default)
-    return MusicMeProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
 
 # ---------------------------------------------------------------------------
 # _get_stream_url

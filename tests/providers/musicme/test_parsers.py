@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import Mock
 
-import pytest
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Radio, Track
 
-from music_assistant.providers.musicme.constants import SUPPORTED_FEATURES, WEB_BASE
+from music_assistant.providers.musicme.constants import WEB_BASE
 from music_assistant.providers.musicme.provider import MusicMeProvider
 
 # ---------------------------------------------------------------------------
@@ -71,26 +69,7 @@ RADIO_OBJ: dict[str, Any] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Provider stub
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def provider() -> MusicMeProvider:
-    """Create a real MusicMeProvider with mocked dependencies."""
-    mass = Mock()
-    manifest = Mock()
-    manifest.domain = "musicme"
-    config = Mock()
-    config.instance_id = "musicme--test123"
-    config.name = "MusicMe Test"
-    config.enabled = True
-    config.get_value.side_effect = lambda key, default=None: {
-        "log_level": "GLOBAL",
-    }.get(key, default)
-    return MusicMeProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
+# Provider fixture is provided by conftest.py
 
 # ---------------------------------------------------------------------------
 # Artist parsing

@@ -35,8 +35,14 @@ def decrypt(encrypted: str) -> str:
     for j in range(sec_length):
         chars[j] = test[first_length + j]
 
+    chars_len = len(chars)
+    if chars_len == 0:
+        raise ValueError("Encrypted payload is empty after processing")
+    if chars_len % 2 != 0:
+        msg = f"Encrypted payload has odd hex length after processing ({chars_len})"
+        raise ValueError(msg)
     decrypted_chars: list[int] = []
-    for i in range(len(chars) // 2):
+    for i in range(chars_len // 2):
         hex_str = chars[2 * i] + chars[2 * i + 1]
         b = int(hex_str, 16)
         decrypted_chars.append(b ^ 0xAA)

@@ -29,12 +29,11 @@ class TestDecrypt:
             decrypt("ABC")
 
     def test_decrypt_exactly_20_chars(self) -> None:
-        """Test edge case: exactly 20 characters (minimum length)."""
+        """Test edge case: exactly 20 characters results in empty payload after processing."""
         # After stripping 10+8=18 chars, only 2 chars remain.
-        # The marker search may or may not find a match, but the function
-        # should not crash — it will return an empty or minimal string.
-        result = decrypt("A" * 20)
-        assert isinstance(result, str)
+        # The marker search + offset leaves an empty string, which is now rejected.
+        with pytest.raises(ValueError, match="empty after processing"):
+            decrypt("A" * 20)
 
     def test_decrypt_marker_at_odd_index(self) -> None:
         """Test that the marker detection works for '8' and 'B' at odd indices."""
