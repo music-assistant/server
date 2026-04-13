@@ -557,8 +557,28 @@ class StreamsController(CoreController):
                 queue_item.uri,
                 queue.display_name,
             )
+
+            async def _skip_errored_item() -> None:
+                # Re-check state at fire time: if the queue has already advanced
+                # to a different item (e.g. the next track was preloaded and
+                # started playing via the player's own enqueue handoff), the
+                # "skip" is already done and a forced next() here would be a
+                # second skip. Only advance when this errored item is still the
+                # current one.
+                current_queue = self.mass.player_queues.get(queue_id)
+                if current_queue is None:
+                    return
+                current = current_queue.current_item
+                if current is None or current.queue_item_id != queue_item.queue_item_id:
+                    self.logger.debug(
+                        "Skip on stream_error for %s suppressed: queue already advanced",
+                        queue_item.name,
+                    )
+                    return
+                await self.mass.player_queues.next(queue_id)
+
             # try to skip to the next item in the queue after a short delay
-            self.mass.call_later(5, self.mass.player_queues.next(queue_id))
+            self.mass.call_later(5, _skip_errored_item)
         elif (
             bytes_sent > 0
             and queue_item.streamdetails

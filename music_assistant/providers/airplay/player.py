@@ -144,6 +144,11 @@ class AirPlayPlayer(Player):
         return True
 
     @property
+    def supports_dynamic_leader_switching(self) -> bool:
+        """Return True: AirPlay supports removing the leader without stream teardown."""
+        return True
+
+    @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of this player."""
         features = set(BASE_PLAYER_FEATURES)

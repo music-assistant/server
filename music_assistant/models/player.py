@@ -953,6 +953,52 @@ class Player(ABC):
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
 
     @property
+    def supports_dynamic_leader_switching(self) -> bool:
+        """
+        Return if the player supports dynamic leader switching within a sync group.
+
+        If a sync group removes its current leader while playing, providers that
+        return True keep the remaining members playing uninterrupted (a new
+        leader is selected without tearing down the stream session). Providers
+        that return False require the full sync group to be dissolved and
+        re-formed with a new leader on leader removal.
+        """
+        # TODO: promote this to a PlayerFeature (or ProviderFeature) on
+        # music_assistant_models so providers can declare it via
+        # supported_features instead of overriding a Python property here.
+        return False
+
+    async def handoff_sync_leadership(self) -> None:
+        """
+        Hand off sync leadership so the rest of the group keeps playing without this player.
+
+        Call on the current sync leader when it should step down and leave the
+        remaining members playing uninterrupted — for example when the leader is
+        removed from a sync group while playback is active, and another member
+        will take over. This only performs the "leader steps out" half of the
+        handoff: the caller is responsible for selecting the next leader and
+        re-syncing the remaining members to it.
+
+        The operation is dispatched on whichever player owns the live sync session
+        — the active output protocol player if a non-native protocol is in use,
+        otherwise this native player itself — and intentionally bypasses
+        ``cmd_set_members`` on the controller, which would otherwise interpret
+        self-removal as "dissolve the entire group".
+
+        Only safe to call when :attr:`supports_dynamic_leader_switching` is True
+        on the target player; otherwise the entire sync session must be torn down
+        and re-formed with the new leader.
+        """
+        target: Player = self
+        if (
+            self.active_output_protocol
+            and self.active_output_protocol != "native"
+            and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
+        ):
+            target = protocol_player
+        await target.set_members(player_ids_to_remove=[target.player_id])
+
+    @property
     @final
     def state(self) -> PlayerState:
         """Return the current (and FINAL) PlayerState of the player."""
@@ -1471,13 +1517,16 @@ class Player(ABC):
         elapsed_time_last_updated: float | None
 
         # If an output protocol is active (and not native), use the protocol player's state
+        # as the source of truth — including when the protocol player is IDLE. Falling
+        # through to the parent/group when the protocol is IDLE creates a circular
+        # dependency (group state derives from sync leader → sync leader → group), which
+        # strands the player in PLAYING forever when the protocol's stream actually ended.
         if (
             self.__attr_active_output_protocol
             and self.__attr_active_output_protocol != "native"
             and (
                 protocol_player := self.mass.players.get_player(self.__attr_active_output_protocol)
             )
-            and protocol_player.playback_state != PlaybackState.IDLE
         ):
             playback_state = protocol_player.state.playback_state
             elapsed_time = protocol_player.state.elapsed_time

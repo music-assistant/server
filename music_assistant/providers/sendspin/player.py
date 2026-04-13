@@ -397,6 +397,11 @@ class SendspinPlayer(SendspinBasePlayer):
         """Return if the player requires flow mode."""
         return True
 
+    @property
+    def supports_dynamic_leader_switching(self) -> bool:
+        """Return True: Sendspin supports removing the leader without stream teardown."""
+        return True
+
     def __init__(
         self,
         provider: SendspinProvider,

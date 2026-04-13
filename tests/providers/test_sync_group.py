@@ -288,6 +288,7 @@ class TestProtocolSwitchCleanup:
             provider_domain="sonos",
             active_output_protocol="ap_old",
         )
+        old_leader.handoff_sync_leadership = AsyncMock()
         new_leader = _make_mock_player("new_leader", provider_domain="sonos")
         ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
         ap_protocol.set_members = AsyncMock()

@@ -20,7 +20,6 @@ from .constants import (
     CONF_ENTRY_SGP_NOTE,
     CONF_MEMBERS_FILTER,
     EXTRA_FEATURES_FROM_MEMBERS,
-    SUPPORT_DYNAMIC_LEADER,
 )
 
 if TYPE_CHECKING:
@@ -457,9 +456,8 @@ class SyncGroupPlayer(Player):
         if self.sync_leader and leader_removed and self._attr_group_members:
             # we removed the current sync leader, but we still have members in the group
             old_leader_id = self.sync_leader.player_id
-            protocol_domain = self._get_leader_protocol_domain()
 
-            if was_playing and protocol_domain in SUPPORT_DYNAMIC_LEADER:
+            if was_playing and self._active_protocol_supports_dynamic_leader_switching():
                 # protocol supports dynamic leader switching: remove only the departing
                 # leader from the stream session, remaining members keep playing
                 await self._dynamic_leader_switch(old_leader_id)
@@ -506,9 +504,24 @@ class SyncGroupPlayer(Player):
                 player_ids_to_add=final_players_to_add,
                 player_ids_to_remove=final_players_to_remove,
             )
-            # update protocol domain (may have changed due to protocol switch)
-            if final_players_to_add:
-                self._update_active_protocol()
+            # update protocol domain (may have changed due to protocol switch
+            # on add, or because the last protocol-requiring member was removed).
+            if final_players_to_add or final_players_to_remove:
+                # If the currently cached protocol domain is no longer required by
+                # any remaining member, clear it so the next play re-selects a
+                # native-capable leader instead of staying biased to the old protocol.
+                if self._active_protocol_domain and not self._any_member_requires_protocol_domain(
+                    self._active_protocol_domain
+                ):
+                    self.logger.info(
+                        "No remaining member requires protocol %s on group %s, "
+                        "clearing cached active protocol so the group can downshift",
+                        self._active_protocol_domain,
+                        self.display_name,
+                    )
+                    self._active_protocol_domain = None
+                else:
+                    self._update_active_protocol()
         # NOTE: If we weren't playing before, we don't need to do anything else,
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(self.player_id)
@@ -656,6 +669,40 @@ class SyncGroupPlayer(Player):
                 return True
         return False
 
+    def _any_member_requires_protocol_domain(self, domain: str) -> bool:
+        """Return True if any current member can only play via the given protocol domain.
+
+        A member "requires" the protocol when its own native provider matches the
+        domain and it has no linked output protocol on any other domain — i.e. the
+        domain is the only path that can reach that player.
+
+        :param domain: The protocol domain string (e.g. "airplay", "sonos").
+        """
+        for member_id in self._attr_group_members:
+            member = self.mass.players.get_player(member_id)
+            if member is None or not member.state.available:
+                continue
+            if member.provider.domain != domain:
+                continue
+            if any(p.available for p in member.linked_output_protocols):
+                # has at least one alternative protocol available
+                continue
+            return True
+        return False
+
+    def _active_protocol_supports_dynamic_leader_switching(self) -> bool:
+        """Return True if the current leader's active output supports leader switching."""
+        if not self.sync_leader:
+            return False
+        if (
+            self.sync_leader.active_output_protocol
+            and self.sync_leader.active_output_protocol != "native"
+        ):
+            protocol_player = self.mass.players.get_player(self.sync_leader.active_output_protocol)
+            if protocol_player is not None:
+                return protocol_player.supports_dynamic_leader_switching
+        return self.sync_leader.supports_dynamic_leader_switching
+
     def _update_active_protocol(self) -> None:
         """Update the cached active protocol domain from the sync leader."""
         self._active_protocol_domain = self._get_leader_protocol_domain()
@@ -692,19 +739,9 @@ class SyncGroupPlayer(Player):
             self.display_name,
         )
 
-        # Remove the old leader directly at the protocol level, bypassing the
-        # controller's cmd_set_members which would interpret self-removal as
-        # "dissolve the entire group" (rewriting the removal list).
-        group_target = old_leader
-        remove_id = old_leader_id
-        if (
-            old_leader.active_output_protocol
-            and old_leader.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get_player(old_leader.active_output_protocol))
-        ):
-            group_target = protocol_player
-            remove_id = protocol_player.player_id
-        await group_target.set_members(player_ids_to_remove=[remove_id])
+        # Step the old leader out of the live sync session; remaining members
+        # keep playing and we promote a new leader below.
+        await old_leader.handoff_sync_leadership()
 
         # Remove the old leader from our group members
         if old_leader_id in self._attr_group_members:
