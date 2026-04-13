@@ -14,10 +14,13 @@ from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
 )
-from music_assistant.helpers.util import lock
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
-from .constants import CONF_ENTRY_SGP_NOTE, CONF_MEMBERS_FILTER, EXTRA_FEATURES_FROM_MEMBERS
+from .constants import (
+    CONF_ENTRY_SGP_NOTE,
+    CONF_MEMBERS_FILTER,
+    EXTRA_FEATURES_FROM_MEMBERS,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerSource
@@ -87,17 +90,25 @@ class SyncGroupPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
         # by default we don't have any features, except play_media
-        # but we can gain some features based on the capabilities of the sync leader
+        # but we can gain some features based on the capabilities of the members
         # set_members is only supported if it's a dynamic group
         base_features: set[PlayerFeature] = {PlayerFeature.PLAY_MEDIA}
         if self.is_dynamic:
             base_features.add(PlayerFeature.SET_MEMBERS)
-        if not self.sync_leader:
-            return base_features
-        # add features supported by the sync leader
-        for feature in EXTRA_FEATURES_FROM_MEMBERS:
-            if feature in self.sync_leader.state.supported_features:
-                base_features.add(feature)
+        if self.sync_leader:
+            # add features supported by the sync leader
+            for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                if feature in self.sync_leader.state.supported_features:
+                    base_features.add(feature)
+        else:
+            # derive features from all (configured) group members
+            # so that features like volume control are always advertised
+            for member_id in self._attr_group_members:
+                member_player = self.mass.players.get_player(member_id)
+                if member_player and member_player.state.available:
+                    for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                        if feature in member_player.state.supported_features:
+                            base_features.add(feature)
         return base_features
 
     @property
@@ -216,21 +227,20 @@ class SyncGroupPlayer(Player):
             if self.is_dynamic
             else []
         )
-        # if we already have a sync leader, we use its can_group_with as reference
-        if self.sync_leader:
-            return {
-                self.sync_leader.player_id,
-                *self.sync_leader.state.can_group_with.difference(members_filter),
-            }
-        # If we have no syncleader, but we do have group members
-        # grab 'can_group_with' from the first available member
-        for member_id in self._attr_group_members:
-            if member_id in members_filter:
-                continue
-            member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
-                can_group_with = {member_player.player_id, *member_player.state.can_group_with}
-                return can_group_with.difference(members_filter)
+        # Aggregate can_group_with from ALL current group members (not just the leader).
+        # A sync group can accommodate protocol switches, so a player compatible with
+        # ANY current member is a valid candidate to join.
+        member_ids = self._attr_group_members if self._attr_group_members else []
+        if member_ids:
+            can_group_with: set[str] = set()
+            for member_id in member_ids:
+                if member_id in members_filter:
+                    continue
+                member_player = self.mass.players.get_player(member_id)
+                if member_player and member_player.state.available:
+                    can_group_with.add(member_player.player_id)
+                    can_group_with.update(member_player.state.can_group_with)
+            return can_group_with.difference(members_filter)
         # Empty dynamic groups can potentially group with any compatible players
         # Actual compatibility is validated when adding members
         can_group_with: set[str] = set()  # type: ignore[no-redef]
@@ -248,14 +258,12 @@ class SyncGroupPlayer(Player):
 
     @property
     def group_members(self) -> list[str]:
-        """Return the list of player id's that are part of this sync group."""
+        """Return the list of parent player id's that are part of this sync group."""
         if (sync_leader := self.sync_leader) and sync_leader.state.group_members:
-            # prefer the group members as reported by the sync leader,
-            # since that is the source of truth for the actual active group members
-            # as the user may have decided to (temporarily) join/unjoin some members
-            # to/from the group, which would cause our internal list to be out of
-            # sync with the actual group members
-            return sync_leader.state.group_members
+            # The sync leader's group_members may contain protocol IDs (e.g. apc...)
+            # when playing via a protocol. Translate back to parent IDs so callers
+            # always get protocol-independent IDs.
+            return self._translate_to_parent_ids(sync_leader.state.group_members)
         return self._attr_group_members
 
     async def get_config_entries(
@@ -323,8 +331,8 @@ class SyncGroupPlayer(Player):
         """Send STOP command to given player."""
         self._attr_current_media = None
         if sync_leader := self.sync_leader:
-            # Use internal handler to bypass group redirect logic and avoid infinite loop
-            # (sync_leader is part of this group, so redirect would loop back here)
+            # Use internal handler to target the sync leader directly,
+            # bypassing group/sync redirect that would loop back to this player.
             await self.mass.players._handle_cmd_stop(sync_leader.player_id)
         # dissolve the sync group since we stopped playback
         self.mass.call_later(
@@ -333,7 +341,7 @@ class SyncGroupPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
-        await self.mass.players._handle_cmd_resume(
+        await self.mass.players.cmd_resume(
             self.player_id, self._attr_active_source, self._attr_current_media
         )
 
@@ -342,9 +350,9 @@ class SyncGroupPlayer(Player):
         self._attr_current_media = media
         self._attr_active_source = media.source_id or None
         await self._form_syncgroup()
-        # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
-            # Use internal handler to bypass group redirect logic and preserve protocol selection
+            # Use internal handler to target the sync leader directly,
+            # bypassing group/sync redirect that would loop back to this player.
             await self.mass.players._handle_play_media(sync_leader.player_id, media)
             self.update_state()
         else:
@@ -360,17 +368,26 @@ class SyncGroupPlayer(Player):
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
 
-    @lock
-    async def set_members(  # noqa: PLR0915
+    async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
+        await self._set_members(player_ids_to_add, player_ids_to_remove)
+
+    async def _set_members(  # noqa: PLR0915
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Handle SET_MEMBERS command (serialized by controller's play lock)."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
             )
+        # Cancel any pending dissolve from a previous stop() call
+        self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
         sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
         was_playing = self.playback_state == PlaybackState.PLAYING
 
@@ -433,28 +450,45 @@ class SyncGroupPlayer(Player):
 
         if self.sync_leader and leader_removed and self._attr_group_members:
             # we removed the current sync leader, but we still have members in the group
-            # we need to select a new leader and re-form the syncgroup with it
             old_leader_id = self.sync_leader.player_id
-            self.logger.info(
-                "Removing current sync leader %s from group %s while it is active, "
-                "dissolving the current syncgroup and will re-form it with a new leader",
-                self.sync_leader.display_name,
-                self.display_name,
+            session_player = self._active_session_player()
+            supports_handoff = (
+                session_player is not None
+                and session_player.provider.supports_dynamic_leader_switching
             )
-            await self.mass.players.wait_for_player_update(
-                self.sync_leader.player_id,
-                timeout=5,
-                action=self.mass.players._handle_cmd_stop(self.sync_leader.player_id),
-            )
-            await self._dissolve_syncgroup()
-            # remove the old leader from the group members list so it won't be re-selected
-            if old_leader_id in self._attr_group_members:
-                self._attr_group_members.remove(old_leader_id)
-            if was_playing and self._attr_group_members:
-                await self.play()
+
+            if was_playing and supports_handoff:
+                # protocol supports dynamic leader switching: remove only the departing
+                # leader from the stream session, remaining members keep playing
+                await self._dynamic_leader_switch(old_leader_id)
+            else:
+                # protocol doesn't support dynamic leader switching or not playing:
+                # dissolve the entire syncgroup and re-form with a new leader
+                self.logger.info(
+                    "Removing current sync leader %s from group %s while it is active, "
+                    "dissolving the current syncgroup and will re-form it with a new leader",
+                    self.sync_leader.display_name,
+                    self.display_name,
+                )
+                # Use internal handler to stop the sync leader directly,
+                # bypassing group redirect that would loop back to this player.
+                await self.mass.players.wait_for_player_update(
+                    self.sync_leader.player_id,
+                    timeout=5,
+                    action=self.mass.players._handle_cmd_stop(self.sync_leader.player_id),
+                )
+                await self._dissolve_syncgroup()
+                # remove the old leader from the group members list
+                # so it won't be re-selected
+                if old_leader_id in self._attr_group_members:
+                    self._attr_group_members.remove(old_leader_id)
+                if was_playing and self._attr_group_members:
+                    await self.play()
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
+            # Use internal handler to stop the sync leader directly,
+            # bypassing group redirect that would loop back to this player.
             await self.mass.players.wait_for_player_update(
                 self.sync_leader.player_id,
                 timeout=5,
@@ -464,7 +498,10 @@ class SyncGroupPlayer(Player):
 
         elif self.sync_leader:
             # just a regular member(s) added/removed action,
-            # we can simply update the syncgroup members on the sync leader
+            # we can simply update the syncgroup members on the sync leader.
+            # `active_protocol_domain` is derived from live state, so the
+            # group will naturally downshift on the next leader selection if
+            # the last protocol-requiring member was removed.
             await self.mass.players.cmd_set_members(
                 self.sync_leader.player_id,
                 player_ids_to_add=final_players_to_add,
@@ -474,10 +511,15 @@ class SyncGroupPlayer(Player):
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(self.player_id)
 
-    @lock
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
         self.mass.cancel_timer(f"syncgroup_dissolve_{self.player_id}")
+        self.logger.debug(
+            "Forming syncgroup %s, _attr_group_members=%s, sync_leader=%s",
+            self.display_name,
+            self._attr_group_members,
+            self.sync_leader.display_name if self.sync_leader else None,
+        )
         # always ensure static members are part of the group members,
         # even if they were (temporarily) removed by un unjoin
         self._attr_group_members = [
@@ -498,20 +540,24 @@ class SyncGroupPlayer(Player):
             self.sync_leader.player_id,
             *[x for x in self._attr_group_members if x != self.sync_leader.player_id],
         ]
+        # Translate the leader's group_members (may be protocol IDs) to parent IDs
+        # so we can compare against our _attr_group_members (always parent IDs)
+        already_synced = set(self._translate_to_parent_ids(self.sync_leader.state.group_members))
         members_to_sync = [
             x
             for x in self._attr_group_members
-            if x != self.sync_leader.player_id and x not in self.sync_leader.state.group_members
+            if x != self.sync_leader.player_id and x not in already_synced
         ]
         if members_to_sync:
             # If the sync leader is playing something independently, stop it first
             # to prevent protocol switching from trying to resume the previous playback
             # (we're about to start new playback on the syncgroup)
+            # Use internal handler to stop the sync leader directly,
+            # bypassing group redirect that would loop back to this player.
             if self.sync_leader.state.playback_state == PlaybackState.PLAYING:
                 await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
 
-    @lock
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
         if sync_leader := self.sync_leader:
@@ -528,16 +574,57 @@ class SyncGroupPlayer(Player):
                         sync_leader.player_id, [], sync_children
                     ),
                 )
+        # Clear the leader's active protocol so it doesn't persist
+        # after the sync group is dissolved. The controller's normal
+        # clearing (in _handle_cmd_stop) is skipped when the protocol
+        # player had multiple group members at stop time.
+        if sync_leader and sync_leader.state.playback_state != PlaybackState.PLAYING:
+            sync_leader.set_active_output_protocol(None)
         self.sync_leader = None
         self.update_state()
 
-    def _select_sync_leader(self, new_members: list[str] | None = None) -> Player | None:
-        """Select a (new) sync leader."""
+    def _select_sync_leader(
+        self,
+        new_members: list[str] | None = None,
+        preferred_protocol_domain: str | None = None,
+    ) -> Player | None:
+        """Select a (new) sync leader, preferring protocol continuity.
+
+        :param new_members: Optional list of newly added member ids to consider
+            when no current/static members are available.
+        :param preferred_protocol_domain: If provided, prefer members that
+            support this protocol domain so the live session can keep playing
+            on the same protocol. Typically a snapshot of
+            :attr:`active_protocol_domain` taken before the old leader is
+            cleared.
+        """
         if self.group_members and self.sync_leader and self.sync_leader.state.available:
             # current leader is still available, no need to select a new one
             return self.sync_leader
         # with selecting a new leader, we prioritize the static group members
         group_members = self.static_group_members or self.group_members or new_members or []
+
+        # if a preferred protocol is given, prefer members that support it
+        if preferred_protocol_domain:
+            for member_id in group_members:
+                member_player = self.mass.players.get_player(member_id)
+                if (
+                    member_player
+                    and member_player.state.available
+                    and self._member_supports_protocol_domain(
+                        member_player, preferred_protocol_domain
+                    )
+                ):
+                    self.logger.debug(
+                        "Auto-selected %s as sync leader for group %s "
+                        "(supports active protocol %s)",
+                        member_player.display_name,
+                        self.display_name,
+                        preferred_protocol_domain,
+                    )
+                    return member_player
+
+        # fallback: pick any available member
         for member_id in group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:
@@ -547,3 +634,159 @@ class SyncGroupPlayer(Player):
                 )
                 return member_player
         return None
+
+    def _translate_to_parent_ids(self, player_ids: list[str]) -> list[str]:
+        """Translate a list of (possibly protocol) player IDs to parent player IDs.
+
+        Protocol players (e.g. AirPlay `apc...`) are translated to their parent
+        (e.g. Sonos `RINCON_...`). Non-protocol IDs pass through unchanged.
+
+        :param player_ids: List of player IDs that may be protocol or parent IDs.
+        """
+        result: list[str] = []
+        for pid in player_ids:
+            if player := self.mass.players.get_player(pid):
+                parent_id = player.protocol_parent_id or pid
+                if parent_id not in result:
+                    result.append(parent_id)
+            elif pid not in result:
+                result.append(pid)
+        return result
+
+    def _member_supports_protocol_domain(self, player: Player, domain: str) -> bool:
+        """Check if a player supports the given protocol domain.
+
+        :param player: The player to check.
+        :param domain: The protocol domain string (e.g. "airplay", "sonos").
+        """
+        if player.provider.domain == domain:
+            return True
+        for protocol in player.linked_output_protocols:
+            if protocol.protocol_domain == domain and protocol.available:
+                return True
+        return False
+
+    def _any_member_requires_protocol_domain(self, domain: str) -> bool:
+        """Return True if any current member can only play via the given protocol domain.
+
+        A member "requires" the protocol when all of its available playback
+        paths are on that domain — i.e. it has no native playback path outside
+        this domain AND no linked output protocol outside this domain. This
+        covers plain protocol-domain players (e.g. AirPlay) as well as
+        UniversalPlayer wrappers whose native ``provider.domain`` is
+        ``universal_player`` but which can still only play via a single
+        linked protocol.
+
+        :param domain: The protocol domain string (e.g. "airplay", "sonos").
+        """
+        for member_id in self._attr_group_members:
+            member = self.mass.players.get_player(member_id)
+            if member is None or not member.state.available:
+                continue
+            # Collect the set of available playback path domains for this member.
+            paths: set[str] = set()
+            if member.is_native_player:
+                paths.add(member.provider.domain)
+            for protocol in member.linked_output_protocols:
+                if protocol.available:
+                    paths.add(protocol.protocol_domain)
+            if not paths:
+                # nothing available at all, skip rather than force a protocol
+                continue
+            if paths == {domain}:
+                return True
+        return False
+
+    def _active_session_player(self) -> Player | None:
+        """Return the player that owns the live sync session.
+
+        If the current sync leader has a non-native active output protocol,
+        returns the protocol player that carries the stream; otherwise returns
+        the native sync leader itself. Returns ``None`` if there is no leader.
+        """
+        if not self.sync_leader:
+            return None
+        if (
+            self.sync_leader.active_output_protocol
+            and self.sync_leader.active_output_protocol != "native"
+            and (
+                protocol_player := self.mass.players.get_player(
+                    self.sync_leader.active_output_protocol
+                )
+            )
+        ):
+            return protocol_player
+        return self.sync_leader
+
+    @property
+    def active_protocol_domain(self) -> str | None:
+        """Derive the active protocol domain for this sync group on the fly.
+
+        Returns the domain of the protocol currently carrying the live stream
+        session, EXCEPT when no remaining member actually requires that
+        non-native protocol — in which case the group should downshift and
+        this returns the leader's native provider domain. Always computed
+        from live state so it cannot drift from reality.
+        """
+        session_player = self._active_session_player()
+        if session_player is None or self.sync_leader is None:
+            return None
+        domain = session_player.provider.domain
+        native_domain = self.sync_leader.provider.domain
+        # If a non-native protocol is in use, only keep it as "active" for
+        # leader-selection purposes when some member still requires it.
+        if domain != native_domain and not self._any_member_requires_protocol_domain(domain):
+            return native_domain
+        return domain
+
+    async def _dynamic_leader_switch(self, old_leader_id: str) -> None:
+        """Switch the sync leader without tearing down the stream session.
+
+        Used when the provider supports dynamic leader selection (e.g. AirPlay,
+        Snapcast). The old leader is removed from the live session and the
+        remaining members keep playing uninterrupted on a newly selected leader.
+
+        :param old_leader_id: The player_id of the leader being removed.
+        """
+        old_leader = self.sync_leader
+        assert old_leader is not None
+
+        self.logger.info(
+            "Dynamic leader switch: removing %s from group %s, remaining members keep playing",
+            old_leader.display_name,
+            self.display_name,
+        )
+
+        # Snapshot the currently active protocol so the new leader selection
+        # can bias toward a member supporting it.
+        preferred_domain = self.active_protocol_domain
+
+        # Remove the old leader from our group members list
+        if old_leader_id in self._attr_group_members:
+            self._attr_group_members.remove(old_leader_id)
+
+        # Pick a new leader preferring one that supports the currently active
+        # protocol so the session continuation is seamless.
+        self.sync_leader = None
+        new_leader = self._select_sync_leader(preferred_protocol_domain=preferred_domain)
+
+        if not new_leader:
+            self.update_state()
+            return
+
+        self.sync_leader = new_leader
+        # Ensure the new leader is first in the members list
+        self._attr_group_members = [
+            new_leader.player_id,
+            *[x for x in self._attr_group_members if x != new_leader.player_id],
+        ]
+        self.logger.info(
+            "Dynamic leader switch complete: %s is now leader of group %s",
+            new_leader.display_name,
+            self.display_name,
+        )
+        # Hand off the session in one call: old leader steps out, remaining
+        # members get grouped onto the new leader.
+        remaining_members = [m for m in self._attr_group_members if m != new_leader.player_id]
+        await old_leader.handoff_sync_leadership(new_leader, remaining_members)
+        self.update_state()

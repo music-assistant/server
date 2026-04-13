@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.errors import SetupFailedError
@@ -15,7 +17,12 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.heos.constants import HEOS_PASSIVE_SOURCES
 
-from .constants import CONF_TIMEOUT
+from .constants import (
+    CONF_TIMEOUT,
+    CONNECT_INITIAL_RETRY_DELAY,
+    CONNECT_MAX_ATTEMPTS,
+    CONNECT_RETRY_BACKOFF_FACTOR,
+)
 from .player import HeosPlayer
 
 if TYPE_CHECKING:
@@ -58,10 +65,9 @@ class HeosPlayerProvider(PlayerProvider):
                 auto_failover=True,
             )
         )
+        await self._connect_controller(controller_ip)
 
         try:
-            await self._heos.connect()
-
             self.logger.debug("HEOS controller connected, checking preferred setup")
             system_info = await self._heos.get_system_info()
             preferred_ips: list[str] | None = [
@@ -78,19 +84,57 @@ class HeosPlayerProvider(PlayerProvider):
                     return await self._setup_controller(preferred_ips[0], connect_preferred=False)
 
                 # Just log a warning, it still works but might be less reliable
-                self.logger.warning(f"Configured IP {controller_ip} is not a preferred HEOS host")
-        except HeosError as e:
-            self.logger.error(f"Failed to connect to HEOS controller: {e}")
-            raise SetupFailedError("Failed to connect to HEOS controller") from e
+                self.logger.warning("Configured IP %s is not a preferred HEOS host", controller_ip)
+        except HeosError as err:
+            self.logger.error("Failed to verify HEOS controller health: %s", err)
+            raise SetupFailedError("Failed to verify HEOS controller health") from err
 
-        # Initialize library values
         try:
             self._heos.add_on_controller_event(self._handle_controller_event)
             await self._populate_sources()
+        except HeosError as err:
+            self.logger.error("Unexpected error setting up HEOS controller: %s", err)
+            raise SetupFailedError("Unexpected error setting up HEOS controller") from err
 
-        except HeosError as e:
-            self.logger.error(f"Unexpected error setting up HEOS controller: {e}")
-            raise SetupFailedError("Unexpected error setting up HEOS controller") from e
+    async def _connect_controller(self, controller_ip: str) -> None:
+        """Connect to the HEOS controller with a few retries for early mDNS announcements."""
+        assert self._heos is not None
+
+        for attempt in range(1, CONNECT_MAX_ATTEMPTS + 1):
+            try:
+                await self._heos.connect()
+            except HeosError as err:
+                if attempt == CONNECT_MAX_ATTEMPTS:
+                    self.logger.error(
+                        "Failed to connect to HEOS controller at %s after %d attempts: %s",
+                        controller_ip,
+                        CONNECT_MAX_ATTEMPTS,
+                        err,
+                    )
+                    raise SetupFailedError("Failed to connect to HEOS controller") from err
+
+                retry_delay = CONNECT_INITIAL_RETRY_DELAY * (
+                    CONNECT_RETRY_BACKOFF_FACTOR ** (attempt - 1)
+                )
+                self.logger.debug(
+                    "HEOS controller connection attempt %d/%d failed for %s: %s. Retrying in %.1fs",
+                    attempt,
+                    CONNECT_MAX_ATTEMPTS,
+                    controller_ip,
+                    err,
+                    retry_delay,
+                )
+                await self._heos.disconnect()
+                await asyncio.sleep(retry_delay)
+            else:
+                if attempt > 1:
+                    self.logger.debug(
+                        "Connected to HEOS controller at %s on attempt %d/%d",
+                        controller_ip,
+                        attempt,
+                        CONNECT_MAX_ATTEMPTS,
+                    )
+                return
 
     async def _handle_controller_event(
         self, event: str, result: PlayerUpdateResult | None = None
@@ -205,6 +249,14 @@ class HeosPlayerProvider(PlayerProvider):
         try:
             await self._setup_controller(device_ip, True)
         except SetupFailedError:
-            self.logger.error("Failed to set up HEOS controller at %s discovered via mDNS")
+            self.logger.error(
+                "Failed to set up HEOS controller at %s discovered via mDNS", device_ip
+            )
+            if self._heos:
+                with suppress(Exception):
+                    await self._heos.disconnect()
+                self._heos = None
         finally:
             self._controller_discovery_running = False
+
+        await self.discover_players()

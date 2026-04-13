@@ -160,6 +160,7 @@ DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
+DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
@@ -861,6 +862,7 @@ DEFAULT_STREAM_HEADERS = {
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Accept-Ranges": "none",
+    "Connection": "close",
     "icy-name": APPLICATION_NAME,
 }
 
@@ -968,6 +970,8 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.MULTI_DEVICE_DSP,
     PlayerFeature.PAUSE,
 }
+
+PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
 
 DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once

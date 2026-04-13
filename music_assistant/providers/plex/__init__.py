@@ -1284,7 +1284,8 @@ class PlexProvider(MusicProvider):
             ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
         )
         media_part: PlexMediaPart = media.parts[0]
-        audio_stream: PlexAudioStream = media_part.audioStreams()[0]
+        audio_streams = media_part.audioStreams()
+        audio_stream: PlexAudioStream | None = audio_streams[0] if audio_streams else None
 
         stream_details = StreamDetails(
             item_id=plex_track.key,
@@ -1300,17 +1301,18 @@ class PlexProvider(MusicProvider):
             allow_seek=True,
         )
 
+        download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
+
         if content_type != ContentType.M4A:
-            stream_details.path = self._plex_server.url(media_part.key, True)
-            if audio_stream.samplingRate:
+            stream_details.path = download_url
+            if audio_stream and audio_stream.samplingRate:
                 stream_details.audio_format.sample_rate = audio_stream.samplingRate
-            if audio_stream.bitDepth:
+            if audio_stream and audio_stream.bitDepth:
                 stream_details.audio_format.bit_depth = audio_stream.bitDepth
 
         else:
-            url = plex_track.getStreamURL()
-            media_info = await async_parse_tags(url)
-            stream_details.path = url
+            media_info = await async_parse_tags(download_url)
+            stream_details.path = download_url
             stream_details.audio_format.channels = media_info.channels
             stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
             stream_details.audio_format.sample_rate = media_info.sample_rate

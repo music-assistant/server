@@ -32,11 +32,16 @@ CONF_ENABLE_ARTIST_IMAGES = "enable_artist_images"
 CONF_ENABLE_ALBUM_IMAGES = "enable_album_images"
 CONF_CLIENT_KEY = "client_key"
 
-IMG_MAPPING = {
+ARTIST_IMG_MAPPING = {
     "artistthumb": ImageType.THUMB,
     "hdmusiclogo": ImageType.LOGO,
     "musicbanner": ImageType.BANNER,
     "artistbackground": ImageType.FANART,
+}
+
+ALBUM_IMG_MAPPING = {
+    "albumcover": ImageType.THUMB,
+    "cdart": ImageType.DISCART,
 }
 
 
@@ -91,6 +96,11 @@ class FanartTvMetadataProvider(MetadataProvider):
 
     throttler: Throttler
 
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 10
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
@@ -109,7 +119,7 @@ class FanartTvMetadataProvider(MetadataProvider):
         self.logger.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
         if data := await self._get_data(f"music/{artist.mbid}"):
             metadata = MediaItemMetadata()
-            for key, img_type in IMG_MAPPING.items():
+            for key, img_type in ARTIST_IMG_MAPPING.items():
                 items = data.get(key)
                 if not items:
                     continue
@@ -122,6 +132,18 @@ class FanartTvMetadataProvider(MetadataProvider):
                             remotely_accessible=True,
                         )
                     )
+            if metadata.images:
+                self.logger.debug(
+                    "Found %d image(s) for Artist %s on Fanart.tv",
+                    len(metadata.images),
+                    artist.name,
+                )
+            else:
+                self.logger.debug(
+                    "No images found for Artist %s on Fanart.tv (available keys: %s)",
+                    artist.name,
+                    list(data.keys()),
+                )
             return metadata
         return None
 
@@ -134,11 +156,11 @@ class FanartTvMetadataProvider(MetadataProvider):
         self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
         if data := await self._get_data(f"music/albums/{mbid}"):
             if data and data.get("albums"):
-                if album := data["albums"][mbid]:
+                if album_data := data["albums"].get(mbid):
                     metadata = MediaItemMetadata()
                     metadata.images = UniqueList()
-                    for key, img_type in IMG_MAPPING.items():
-                        items = album.get(key)
+                    for key, img_type in ALBUM_IMG_MAPPING.items():
+                        items = album_data.get(key)
                         if not items:
                             continue
                         for item in items:
@@ -150,6 +172,18 @@ class FanartTvMetadataProvider(MetadataProvider):
                                     remotely_accessible=True,
                                 )
                             )
+                    if metadata.images:
+                        self.logger.debug(
+                            "Found %d image(s) for Album %s on Fanart.tv",
+                            len(metadata.images),
+                            album.name,
+                        )
+                    else:
+                        self.logger.debug(
+                            "No images found for Album %s on Fanart.tv (available keys: %s)",
+                            album.name,
+                            list(album_data.keys()),
+                        )
                     return metadata
         return None
 
