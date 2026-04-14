@@ -109,7 +109,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 37
+DB_SCHEMA_VERSION: Final[int] = 38
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -2688,6 +2688,17 @@ class MusicController(CoreController):
             # audio analysis providers and stored in the audio_analysis table.
             await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
 
+        if prev_version <= 37:
+            # add artist_type column to artist table, and make
+            # "artist the default, as this was the only artist type supported
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_ARTISTS} ADD COLUMN artist_type TEXT DEFAULT 'artist' NOT NULL"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
         # save changes
         await self._database.commit()
 
@@ -2761,7 +2772,8 @@ class MusicController(CoreController):
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [artist_type] TEXT NOT NULL
             );"""
         )
         await self.database.execute(

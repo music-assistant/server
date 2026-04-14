@@ -331,6 +331,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "artist_type": item.artist_type,
             },
         )
         # update/set provider_mappings table
