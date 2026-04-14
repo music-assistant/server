@@ -20,7 +20,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from types import NoneType
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, TypeVar, cast
 
 import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -84,6 +84,8 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia
+
+_SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -500,6 +502,7 @@ class PlayerQueuesController(CoreController):
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
         username: str | None = None,
+        sort_by: str | None = None,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -513,12 +516,15 @@ class PlayerQueuesController(CoreController):
             Setting the username allows for overriding the logged-in user
             to account for playback history per user when the play_media is
             called from a shared context (like a web hook or automation).
+        :param sort_by: Optional sort key to order tracks before applying start_item.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # Lock is acquired by the @handle_play_action decorator on the internal handler
-        await self._handle_play_media(queue_id, media, option, radio_mode, start_item, username)
+        await self._handle_play_media(
+            queue_id, media, option, radio_mode, start_item, username, sort_by
+        )
 
     @api_command("player_queues/move_item")
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -1242,6 +1248,7 @@ class PlayerQueuesController(CoreController):
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
         username: str | None = None,
+        sort_by: str | None = None,
     ) -> None:
         """Handle play media without acquiring the queue lock."""
         # cancel any pending play_index calls for this queue to prevent conflicts
@@ -1365,7 +1372,11 @@ class PlayerQueuesController(CoreController):
                     elif start_item is not None:
                         start_item_uri = start_item.uri
                     media_items += await self._resolve_media_items(
-                        media_item, start_item_uri, userid=queue.userid, queue_id=queue_id
+                        media_item,
+                        start_item_uri,
+                        userid=queue.userid,
+                        queue_id=queue_id,
+                        sort_by=sort_by,
                     )
 
             except MusicAssistantError as err:
@@ -1877,7 +1888,9 @@ class PlayerQueuesController(CoreController):
             return all_tracks
         return []
 
-    async def get_album_tracks(self, album: Album, start_item: str | None) -> list[Track]:
+    async def get_album_tracks(
+        self, album: Album, start_item: str | None, sort_by: str | None = None
+    ) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
@@ -1885,7 +1898,6 @@ class PlayerQueuesController(CoreController):
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
         result: list[Track] = []
-        start_item_found = False
         self.logger.info(
             "Fetching tracks to play for album %s",
             album.name,
@@ -1897,11 +1909,14 @@ class PlayerQueuesController(CoreController):
         ):
             if not album_track.available:
                 continue
-            if start_item in (album_track.item_id, album_track.uri):
-                start_item_found = True
-            if start_item is not None and not start_item_found:
-                continue
             result.append(album_track)
+        if sort_by and sort_by != "track_number":
+            result = self._sort_tracks(result, sort_by)
+        if start_item is not None:
+            for idx, track in enumerate(result):
+                if start_item in (track.item_id, track.uri):
+                    return result[idx:]
+            return []
         return result
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
@@ -1944,17 +1959,38 @@ class PlayerQueuesController(CoreController):
         return result
 
     async def get_playlist_tracks(
-        self, playlist: Playlist, start_item: str | None
+        self,
+        playlist: Playlist,
+        start_item: str | None,
+        sort_by: str | None = None,
     ) -> list[PlaylistPlayableItem]:
         """Return tracks for given playlist, based on user preference."""
         result: list[PlaylistPlayableItem] = []
-        start_item_found = False
         self.logger.info(
             "Fetching tracks to play for playlist %s",
             playlist.name,
         )
         force_refresh = playlist.is_dynamic
-        # TODO: Handle other sort options etc.
+        needs_sort = sort_by is not None and sort_by != "position"
+        # Fast path: no re-sort needed, skip-until-found in a single pass
+        # so we don't materialize huge playlists when starting near the end.
+        if not needs_sort:
+            start_item_found = False
+            async for playlist_track in self.mass.music.playlists.tracks(
+                playlist.item_id,
+                playlist.provider,
+                force_refresh=force_refresh,
+                allow_dynamic_tracks=playlist.is_dynamic,
+            ):
+                if not playlist_track.available:
+                    continue
+                if start_item in (playlist_track.item_id, playlist_track.uri):
+                    start_item_found = True
+                if start_item is not None and not start_item_found:
+                    continue
+                result.append(playlist_track)
+            return result
+        # Sort path: must materialize all tracks before sorting, then slice.
         async for playlist_track in self.mass.music.playlists.tracks(
             playlist.item_id,
             playlist.provider,
@@ -1963,12 +1999,51 @@ class PlayerQueuesController(CoreController):
         ):
             if not playlist_track.available:
                 continue
-            if start_item in (playlist_track.item_id, playlist_track.uri):
-                start_item_found = True
-            if start_item is not None and not start_item_found:
-                continue
             result.append(playlist_track)
+        result = self._sort_tracks(result, cast("str", sort_by))
+        if start_item is not None:
+            for idx, track in enumerate(result):
+                if start_item in (track.item_id, track.uri):
+                    return result[idx:]
+            return []
         return result
+
+    @staticmethod
+    def _sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
+        """Sort tracks by the given sort key."""
+        key_map: dict[str, tuple[Any, bool]] = {
+            "position_desc": (lambda t: getattr(t, "position", 0) or 0, True),
+            "name": (lambda t: (t.sort_name or t.name or "").lower(), False),
+            "artist": (
+                lambda t: (
+                    (t.artists[0].sort_name or t.artists[0].name).lower()
+                    if hasattr(t, "artists") and t.artists
+                    else ""
+                ),
+                False,
+            ),
+            "album": (
+                lambda t: (
+                    (t.album.sort_name or t.album.name).lower()
+                    if hasattr(t, "album") and t.album
+                    else ""
+                ),
+                False,
+            ),
+            "duration": (lambda t: getattr(t, "duration", 0) or 0, False),
+            "duration_desc": (lambda t: getattr(t, "duration", 0) or 0, True),
+            "track_number": (
+                lambda t: (
+                    getattr(t, "disc_number", 0) or 0,
+                    getattr(t, "track_number", 0) or 0,
+                ),
+                False,
+            ),
+        }
+        if sort_by in key_map:
+            key_fn, reverse = key_map[sort_by]
+            return sorted(tracks, key=key_fn, reverse=reverse)
+        return list(tracks)
 
     async def get_audiobook_resume_point(
         self, audio_book: Audiobook, chapter: str | int | None = None, userid: str | None = None
@@ -2310,6 +2385,7 @@ class PlayerQueuesController(CoreController):
         start_item: str | None = None,
         userid: str | None = None,
         queue_id: str | None = None,
+        sort_by: str | None = None,
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
         # resolve Itemmapping to full media item
@@ -2324,7 +2400,7 @@ class PlayerQueuesController(CoreController):
                     media_item, userid=userid, queue_id=queue_id, user_initiated=True
                 )
             )
-            return list(await self.get_playlist_tracks(media_item, start_item))
+            return list(await self.get_playlist_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
             self.mass.create_task(
@@ -2340,7 +2416,7 @@ class PlayerQueuesController(CoreController):
                     media_item, userid=userid, queue_id=queue_id, user_initiated=True
                 )
             )
-            return list(await self.get_album_tracks(media_item, start_item))
+            return list(await self.get_album_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
             self.mass.create_task(
