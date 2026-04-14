@@ -490,19 +490,6 @@ class SyncGroupPlayer(Player):
                 player_ids_to_add=final_players_to_add,
                 player_ids_to_remove=final_players_to_remove,
             )
-            # If the leader is now the only member left (all children removed),
-            # dissolve the syncgroup bookkeeping so the leader isn't treated as
-            # a group anymore. The leader keeps playing — it just continues as
-            # a solo player from here.
-            remaining = [m for m in self._attr_group_members if m != self.sync_leader.player_id]
-            if not remaining and final_players_to_remove:
-                self.logger.info(
-                    "All members removed from group %s, dissolving (leader %s keeps playing)",
-                    self.display_name,
-                    self.sync_leader.display_name,
-                )
-                self.sync_leader = None
-                self.update_state()
         # NOTE: If we weren't playing before, we don't need to do anything else,
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(self.player_id)
