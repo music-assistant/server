@@ -832,7 +832,19 @@ class SyncGroupPlayer(Player):
         new_leader = self._select_sync_leader(preferred_protocol_domain=preferred_domain)
 
         if not new_leader:
-            self.update_state()
+            # No remaining members to take over — stop the old leader's
+            # session and dissolve the group entirely.
+            self.logger.info(
+                "No remaining members for group %s after removing %s, stopping",
+                self.display_name,
+                old_leader.display_name,
+            )
+            await self.mass.players.wait_for_player_update(
+                old_leader.player_id,
+                timeout=5,
+                action=self.mass.players._handle_cmd_stop(old_leader.player_id),
+            )
+            await self._dissolve_syncgroup()
             return
 
         # A seamless handoff requires the new leader to already be a
