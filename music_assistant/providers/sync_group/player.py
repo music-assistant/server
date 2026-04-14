@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -792,6 +793,18 @@ class SyncGroupPlayer(Player):
         if old_leader_id in self._attr_group_members:
             self._attr_group_members.remove(old_leader_id)
         if resume_playback and self._attr_group_members:
+            # Wait for the remaining members to report as unsynced before
+            # re-forming. Providers like Sonos propagate group state
+            # asynchronously — the children can still report synced_to for
+            # a few seconds after the leader's ungroup command returns.
+            for _ in range(10):
+                if all(
+                    (player := self.mass.players.get_player(m)) is not None
+                    and player.synced_to is None
+                    for m in self._attr_group_members
+                ):
+                    break
+                await asyncio.sleep(0.5)
             await self.play()
 
     async def _dynamic_leader_switch(self, old_leader_id: str) -> None:
