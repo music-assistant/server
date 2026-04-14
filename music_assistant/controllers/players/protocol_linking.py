@@ -606,6 +606,29 @@ class ProtocolLinkingMixin:
             if not self._identifiers_match(universal_player, player, ""):
                 continue
 
+            # Do not merge if both UPs have protocols from the same domain.
+            # Multiple instances of the same protocol on one host (e.g., several
+            # squeezelite players on the same VM) are separate devices that happen
+            # to share an IP. Merging them would orphan one instance's protocol.
+            domains_a = {
+                link.protocol_domain
+                for link in universal_player.linked_output_protocols
+                if link.protocol_domain
+            }
+            domains_b = {
+                link.protocol_domain
+                for link in player.linked_output_protocols
+                if link.protocol_domain
+            }
+            if domains_a & domains_b:
+                self.logger.debug(
+                    "Skipping merge of %s and %s: shared protocol domain(s) %s",
+                    universal_player.player_id,
+                    player.player_id,
+                    domains_a & domains_b,
+                )
+                continue
+
             # Determine which player absorbs the other (more protocols wins)
             keep, remove = (
                 (universal_player, player)
