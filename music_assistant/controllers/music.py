@@ -683,12 +683,14 @@ class MusicController(CoreController):
 
         # An audiobook can be part of the library, in contrast to podcast episodes.
         # We then need to check the provider mappings table.
+        one_week_ago = int(utc_timestamp()) - (7 * 86400)
         query = (
             "SELECT p.item_id, p.media_type, p.name, p.image, p.provider "
             f"FROM {DB_TABLE_PLAYLOG} p "
             "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
             "AND p.fully_played = 0 "
             "AND p.seconds_played > 0 "
+            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago}) "
         )
         query += (
             "AND ( "
