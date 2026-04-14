@@ -1,7 +1,9 @@
 """All constants for Music Assistant."""
 
 import json
+import os
 import pathlib
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -970,17 +972,19 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PAUSE,
 }
 
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
-    ("airplay", False),
-    ("chromecast", False),
-    ("dlna", False),
-    ("sonos", True),
-    ("bluesound", True),
-    ("heos", True),
-    ("party", False),
+    # the callable is a precondition that must return True for the provider to be setup
+    ("airplay", False, lambda: True),
+    ("chromecast", False, lambda: True),
+    ("dlna", False, lambda: True),
+    ("sonos", True, lambda: True),
+    ("bluesound", True, lambda: True),
+    ("heos", True, lambda: True),
+    ("party", False, lambda: True),
+    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

@@ -8,7 +8,6 @@
   "credits": ["[Beat This!](https://github.com/CPJKU/beat_this)", "[skey](https://github.com/deezer/skey)"],
   "documentation": "https://github.com/CPJKU/beat_this",
   "multi_instance": false,
-  "builtin": true,
-  "allow_disable": true,
+  "builtin": false,
   "icon": "waveform"
 }
