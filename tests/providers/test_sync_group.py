@@ -257,7 +257,7 @@ class TestDynamicLeaderSwitch:
 
     @pytest.mark.asyncio
     async def test_dynamic_leader_switch_hands_off_to_new_leader(self) -> None:
-        """Dynamic leader switch removes the old leader and picks a new one."""
+        """When the new leader IS in the live session, seamless handoff is used."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
 
@@ -269,6 +269,9 @@ class TestDynamicLeaderSwitch:
         )
         ap_only.is_native_player = False
 
+        # new_leader's AirPlay protocol player (must be in the session for handoff)
+        ap_new = _make_mock_player("ap_new", provider_domain="airplay")
+
         old_leader = _make_mock_player(
             "old_leader",
             provider_domain="sonos",
@@ -277,15 +280,24 @@ class TestDynamicLeaderSwitch:
         )
         old_leader.handoff_sync_leadership = AsyncMock()
         new_leader = _make_mock_player(
-            "new_leader", provider_domain="sonos", protocol_domains=["airplay"]
+            "new_leader",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_new",
         )
         ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
+        # Set up the live session with new_leader's protocol player in sync_clients
+        mock_session = MagicMock()
+        mock_session.sync_clients = [ap_protocol, ap_new, ap_only]
+        ap_protocol.stream = MagicMock()
+        ap_protocol.stream.session = mock_session
 
         mass.players.get_player = _player_lookup(
             {
                 "old_leader": old_leader,
                 "new_leader": new_leader,
                 "ap_old": ap_protocol,
+                "ap_new": ap_new,
                 "ap_only": ap_only,
             }
         )
@@ -303,3 +315,51 @@ class TestDynamicLeaderSwitch:
         call_args = old_leader.handoff_sync_leadership.await_args
         assert call_args.args[0] == new_leader
         assert "ap_only" in call_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_dynamic_leader_switch_dissolves_when_new_leader_not_in_session(
+        self,
+    ) -> None:
+        """When the new leader is NOT in the live session, fall back to dissolve+reform."""
+        mass = _make_mock_mass()
+        mass.players.cmd_resume = AsyncMock()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            active_output_protocol="ap_old",
+            protocol_domains=["airplay"],
+        )
+        old_leader.handoff_sync_leadership = AsyncMock()
+        # Freshly-added player — NOT in the live session
+        fresh_player = _make_mock_player(
+            "fresh_player", provider_domain="sonos", protocol_domains=["airplay"]
+        )
+        ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
+        # Session does NOT contain fresh_player's protocol player
+        mock_session = MagicMock()
+        mock_session.sync_clients = [ap_protocol]
+        ap_protocol.stream = MagicMock()
+        ap_protocol.stream.session = mock_session
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "fresh_player": fresh_player,
+                "ap_old": ap_protocol,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "fresh_player"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        # handoff_sync_leadership should NOT have been called
+        old_leader.handoff_sync_leadership.assert_not_awaited()
+        # Instead, dissolve+reform happened: wait_for_player_update was called
+        # with the old leader's player_id (which internally stops the session)
+        mass.players.wait_for_player_update.assert_awaited()
+        assert "old_leader" not in sgp._attr_group_members
