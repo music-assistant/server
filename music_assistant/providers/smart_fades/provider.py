@@ -126,13 +126,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         # Per-chunk VQT for key detection (skip short tail chunks)
         if len(pcm_mono) >= data.input_audio_format.sample_rate:
-            if data.input_audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
-                chunk_22k = soxr.resample(
-                    pcm_mono, data.input_audio_format.sample_rate, ANALYSIS_SAMPLE_RATE
-                )
-            else:
-                chunk_22k = pcm_mono
-            await asyncio.to_thread(self._compute_musical_key_features, chunk_22k, data)
+            await asyncio.to_thread(
+                self._compute_musical_key_features,
+                pcm_mono,
+                data.input_audio_format.sample_rate,
+                data,
+            )
 
         data.pcm_buffer.append(pcm_mono)
         data.pcm_samples += len(pcm_mono)
@@ -335,9 +334,13 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if len(centroid_frames) > 0:
             data.centroid_chunks.append(centroid_frames.astype(np.float32))
 
-    def _compute_musical_key_features(self, pcm_22k: np.ndarray, data: SmartFadesData) -> None:
+    def _compute_musical_key_features(
+        self, pcm_mono: np.ndarray, sample_rate: int, data: SmartFadesData
+    ) -> None:
         """Extract VQT features for S-KEY key detection."""
-        pcm_tensor = torch.from_numpy(pcm_22k)
+        if sample_rate != ANALYSIS_SAMPLE_RATE:
+            pcm_mono = soxr.resample(pcm_mono, sample_rate, ANALYSIS_SAMPLE_RATE)
+        pcm_tensor = torch.from_numpy(pcm_mono)
         with torch.inference_mode():
             vqt_input = pcm_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, samples)
             vqt_out = self._skey_vqt(vqt_input)  # (1, 1, n_bins, T)
