@@ -28,7 +28,6 @@ class BluesoundDiscoveryInfo(TypedDict):
     port: str
     mac: str
     model: str
-    zs: bool
 
 
 class BluesoundPlayerProvider(PlayerProvider):
@@ -96,7 +95,6 @@ class BluesoundPlayerProvider(PlayerProvider):
             port=str(port),
             mac=mac_address,
             model=info.decoded_properties.get("model", ""),
-            zs=info.decoded_properties.get("zs", False),
         )
 
         # Create BluOS player
