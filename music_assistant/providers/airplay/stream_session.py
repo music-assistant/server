@@ -231,39 +231,37 @@ class AirPlayStreamSession:
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Stream audio to all players."""
         stream_error: BaseException | None = None
-        pcm_sample_size = self.pcm_format.pcm_sample_size
-        buffer_low_threshold = 2.0  # seconds
-        buffer_low_logged = False
+        # Track inter-chunk timing to detect slow audio sources.
+        # Flow streams yield ~1s chunks; gaps > threshold indicate source stalls.
+        chunk_gap_threshold = 5.0
+        last_chunk_time = time.time()
+        source_slow_logged = False
         try:
             async for chunk in audio_source:
                 if not self.sync_clients:
                     break
+
+                now = time.time()
+                chunk_gap = now - last_chunk_time
+                last_chunk_time = now
 
                 has_running_clients = await self._write_chunk_to_all_players(chunk)
                 if not has_running_clients:
                     self.prov.logger.debug("No running clients remaining, stopping audio streamer")
                     break
 
-                # Detect slow audio source / buffer underrun
-                if self.seconds_streamed > 30:
-                    buffer_seconds = len(self._pcm_buffer) / pcm_sample_size
-                    if buffer_seconds < buffer_low_threshold:
-                        if not buffer_low_logged:
-                            self.prov.logger.warning(
-                                "Audio source buffer low: %.2fs buffered "
-                                "(threshold=%.1fs, streamed=%.1fs). "
-                                "Source may be too slow.",
-                                buffer_seconds,
-                                buffer_low_threshold,
-                                self.seconds_streamed,
-                            )
-                            buffer_low_logged = True
-                    elif buffer_low_logged:
-                        self.prov.logger.debug(
-                            "Audio source buffer recovered: %.2fs buffered",
-                            buffer_seconds,
-                        )
-                        buffer_low_logged = False
+                # Detect slow audio source (e.g. smart fades processing stall)
+                if self.seconds_streamed > 30 and chunk_gap > chunk_gap_threshold:
+                    self.prov.logger.warning(
+                        "Slow audio source: %.1fs gap between chunks "
+                        "(expected ~1s, streamed=%.1fs)",
+                        chunk_gap,
+                        self.seconds_streamed,
+                    )
+                    source_slow_logged = True
+                elif source_slow_logged and chunk_gap < 2.0:
+                    self.prov.logger.debug("Audio source delivery recovered")
+                    source_slow_logged = False
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
@@ -312,14 +310,20 @@ class AirPlayStreamSession:
             write_tasks = [self._write_chunk_to_player(x, chunk) for x in sync_clients if x.stream]
             results = await asyncio.gather(*write_tasks, return_exceptions=True)
 
-            # Check for write errors
+            # Check for write errors or timeouts
             players_to_remove: list[AirPlayPlayer] = []
             for i, result in enumerate(results):
                 if i >= len(sync_clients):
                     continue
                 player = sync_clients[i]
 
-                if isinstance(result, Exception):
+                if isinstance(result, TimeoutError):
+                    self.prov.logger.warning(
+                        "Removing player %s from session: stopped reading data (write timeout)",
+                        player.player_id,
+                    )
+                    players_to_remove.append(player)
+                elif isinstance(result, Exception):
                     self.prov.logger.warning(
                         "Removing player %s from session due to write error: %s",
                         player.player_id,
@@ -340,7 +344,7 @@ class AirPlayStreamSession:
         if ffmpeg := self._player_ffmpeg.get(player_id):
             if ffmpeg.closed:
                 return
-            await ffmpeg.write(chunk)
+            await asyncio.wait_for(ffmpeg.write(chunk), timeout=35.0)
 
     async def _write_eof_to_player(self, airplay_player: AirPlayPlayer) -> None:
         """Write EOF to a specific player."""
@@ -351,29 +355,28 @@ class AirPlayStreamSession:
                 await airplay_player.stream.write_audio_eof()
 
     async def _stall_watchdog(self) -> None:
-        """Monitor sync clients for stalled playback and kill stuck pipelines.
+        """
+        Monitor sync clients for stalled CLI processes and kill stuck pipelines.
 
-        Checks each client's stream last_stderr_activity (updated on every stderr
-        line from cliraop/cliap2). If a client's CLI process hasn't produced any
-        stderr output for STALL_THRESHOLD seconds and it has been connected long
-        enough (GRACE_PERIOD), its ffmpeg process is killed to unblock any pending
-        writes in the audio streamer.
+        Supplements the per-chunk write timeout with proactive detection based on
+        CLI stderr activity. Runs as a background task alongside the audio streamer.
         """
         stall_threshold = 30.0
         grace_period = 45.0
         check_interval = 5.0
+        clients_removing: set[str] = set()
         try:
             while self.sync_clients:
                 await asyncio.sleep(check_interval)
                 now = time.time()
                 for client in list(self.sync_clients):
+                    if client.player_id in clients_removing:
+                        continue
                     if not client.stream or not client.stream.running:
                         continue
-                    # Don't check clients that just joined (grace period for startup)
                     added_time = self._client_added_time.get(client.player_id, now)
                     if now - added_time < grace_period:
                         continue
-                    # Check when this client's CLI process last produced stderr output
                     last_activity = client.stream.last_stderr_activity
                     if not last_activity:
                         continue
@@ -392,11 +395,10 @@ class AirPlayStreamSession:
                             cli_alive,
                             client.stream.running,
                         )
-                        # Kill ffmpeg to unblock any pending write in the streamer
+                        clients_removing.add(client.player_id)
                         ffmpeg = self._player_ffmpeg.get(client.player_id)
                         if ffmpeg and not ffmpeg.closed:
                             await ffmpeg.kill()
-                        # Schedule client removal (will be detected by write error)
                         self.mass.create_task(self.remove_client(client))
         except asyncio.CancelledError:
             pass
