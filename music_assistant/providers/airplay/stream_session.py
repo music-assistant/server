@@ -114,9 +114,16 @@ class AirPlayStreamSession:
 
         :param airplay_player: The player whose processes should be stopped.
         """
+        stream = airplay_player.stream
         await self.stop_client(airplay_player)
-        airplay_player.set_state_from_stream(PlaybackState.IDLE)
-        if not self.sync_clients:
+        # Only set IDLE if the player's stream still belongs to this session,
+        # otherwise a re-add to a new session may have already set a new state.
+        if stream is not None:
+            airplay_player.set_state_from_stream(PlaybackState.IDLE, stream=stream)
+        # Re-check sync_clients under the lock to avoid racing with add_client.
+        async with self._lock:
+            should_stop = not self.sync_clients
+        if should_stop:
             await self.stop()
 
     async def stop_client(self, airplay_player: AirPlayPlayer) -> None:
