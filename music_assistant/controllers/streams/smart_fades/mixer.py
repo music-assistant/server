@@ -11,9 +11,8 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     StandardCrossFade,
 )
 from music_assistant.helpers.audio import align_audio_to_frame_boundary, strip_silence
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.smart_fades import (
-    SmartFadesAnalysis,
-    SmartFadesAnalysisFragment,
     SmartFadesMode,
 )
 
@@ -82,45 +81,26 @@ class SmartFadesMixer:
                 yield chunk
             return
 
-        # Attempt smart crossfade with analysis data
-        fade_out_analysis: SmartFadesAnalysis | None
-        if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
+        # Attempt smart crossfade with analysis data from audio analysis providers
+        fade_out_analysis: (
+            AudioAnalysisData | None
+        ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_out_streamdetails.item_id,
             fade_out_streamdetails.provider,
-            SmartFadesAnalysisFragment.OUTRO,
-        ):
-            fade_out_analysis = stored_analysis
-        else:
-            fade_out_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
-                fade_out_streamdetails.item_id,
-                fade_out_streamdetails.provider,
-                SmartFadesAnalysisFragment.OUTRO,
-                fade_out_part,
-                pcm_format,
-            )
-
-        fade_in_analysis: SmartFadesAnalysis | None
-        if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
+        )
+        fade_in_analysis: (
+            AudioAnalysisData | None
+        ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_in_streamdetails.item_id,
             fade_in_streamdetails.provider,
-            SmartFadesAnalysisFragment.INTRO,
-        ):
-            fade_in_analysis = stored_analysis
-        else:
-            # analysis not cached, need full bytes for beat analysis
-            fade_in_part = await self._ensure_bytes(fade_in_part)
-            fade_in_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
-                fade_in_streamdetails.item_id,
-                fade_in_streamdetails.provider,
-                SmartFadesAnalysisFragment.INTRO,
-                fade_in_part,
-                pcm_format,
-            )
+        )
         if (
             fade_out_analysis
             and fade_in_analysis
-            and fade_out_analysis.confidence > 0.3
-            and fade_in_analysis.confidence > 0.3
+            and fade_out_analysis.bpm
+            and fade_in_analysis.bpm
+            and fade_out_analysis.beats is not None
+            and fade_in_analysis.beats is not None
             and mode == SmartFadesMode.SMART_CROSSFADE
         ):
             try:

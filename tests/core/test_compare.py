@@ -369,6 +369,23 @@ def test_compare_track() -> None:  # noqa: PLR0915
         (ExternalID.MB_RECORDING, "abcd"),
     }
     assert compare.compare_track(track_a, track_b) is False
+    # test multi-disc: same album, same external IDs, different disc numbers should NOT match
+    track_a.external_ids = {(ExternalID.MB_RECORDING, "same-recording-id")}
+    track_b.external_ids = {(ExternalID.MB_RECORDING, "same-recording-id")}
+    track_a.album = media_items.ItemMapping(item_id="1", provider="test1", name="Album A")
+    track_b.album = media_items.ItemMapping(item_id="1", provider="test1", name="Album A")
+    track_a.disc_number = 1
+    track_b.disc_number = 2
+    track_a.track_number = 3
+    track_b.track_number = 3
+    assert compare.compare_track(track_a, track_b) is False
+    # same disc number should still match via external ID
+    track_b.disc_number = 1
+    assert compare.compare_track(track_a, track_b) is True
+    # different disc but different albums should still match via external ID
+    track_b.disc_number = 2
+    track_b.album = media_items.ItemMapping(item_id="2", provider="test1", name="Album B")
+    assert compare.compare_track(track_a, track_b) is True
 
 
 def test_compare_strings_case_insensitive_fuzzy() -> None:

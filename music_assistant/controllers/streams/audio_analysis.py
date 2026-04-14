@@ -99,7 +99,10 @@ class AudioAnalysisController:
                 await queue.put(None)
                 self.mass.create_task(_finalize_session())
                 return
-            await queue.put(pcm_data)
+            try:
+                await asyncio.wait_for(queue.put(pcm_data), timeout=CHUNK_PROCESS_TIMEOUT)
+            except (TimeoutError, asyncio.QueueFull):
+                return
 
         async def _finalize_session() -> None:
             """Await the worker, then dispatch finalize to each provider."""
