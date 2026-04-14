@@ -681,7 +681,7 @@ class SendspinPlayer(Player):
             elapsed_time = current_media.corrected_elapsed_time
         if elapsed_time is None:
             elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
-        track_progress = int(elapsed_time * 1000) if elapsed_time is not None else 0
+        track_progress = max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
 
         metadata = Metadata(
             title=current_media.title,
