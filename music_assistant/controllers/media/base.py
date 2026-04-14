@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
@@ -81,8 +82,8 @@ SORT_KEYS = {
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
-    "artist_name": "artists.search_name ASC",
-    "artist_name_desc": "artists.search_name DESC",
+    "artist_name": "artists.search_name ASC, year DESC",
+    "artist_name_desc": "artists.search_name DESC, year DESC",
     "random": "RANDOM()",
     "random_play_count": "RANDOM(), play_count ASC",
 }
@@ -203,6 +204,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             library_item.uri,
             library_item,
         )
+        # notify providers of the update so they can sync their own storage
+        for prov_mapping in library_item.provider_mappings:
+            if provider := self.mass.get_provider(prov_mapping.provider_instance):
+                provider = cast("MusicProvider", provider)
+                await provider.on_item_updated(library_item)
         return library_item
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
@@ -238,6 +244,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
+            # cleanup loudness measurements for this provider mapping
+            for prov_key in (prov_mapping.provider_domain, prov_mapping.provider_instance):
+                await self.mass.music.database.delete(
+                    DB_TABLE_LOUDNESS_MEASUREMENTS,
+                    {
+                        "media_type": self.media_type.value,
+                        "item_id": prov_mapping.item_id,
+                        "provider": prov_key,
+                    },
+                )
         # delete genre exclusions for this media item
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,

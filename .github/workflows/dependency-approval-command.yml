@@ -18,7 +18,7 @@ jobs:
     if: github.event.issue.pull_request
     steps:
       - name: Check for approval command
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const comment = context.payload.comment;

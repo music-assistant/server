@@ -22,16 +22,16 @@ dependencies = [
   "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
-  "cryptography==46.0.6",
+  "cryptography==46.0.7",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
-  "mashumaro==3.18",
-  "music-assistant-frontend==2.17.140",
-  "music-assistant-models==1.1.110",
+  "mashumaro==3.20",
+  "music-assistant-frontend==2.17.147",
+  "music-assistant-models==1.1.115",
   "mutagen==1.47.0",
   "orjson==3.11.6",
-  "pillow==12.1.1",
+  "pillow==12.2.0",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
@@ -42,6 +42,8 @@ dependencies = [
   "uv>=0.8.0",
   "librosa==0.11.0",
   "numpy==2.3.5",  # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
+  "torch==2.7.1",
+  "torchaudio==2.7.1",
   "gql[all]==4.0.0",
   "aiortc>=1.6.0",
   "pyjwt[crypto]>=2.10.1",
@@ -76,6 +78,7 @@ ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
+NOTICE,\
 """
 
 [tool.setuptools]
@@ -139,7 +142,6 @@ exclude = [
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
-  '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
 extra_checks = false
@@ -265,6 +267,15 @@ known-first-party = ["music_assistant"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
 
 [build-system]
 requires = ["setuptools>=61"]

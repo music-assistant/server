@@ -1,7 +1,9 @@
 """All constants for Music Assistant."""
 
 import json
+import os
 import pathlib
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -159,7 +161,7 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
-DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
+DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
@@ -858,11 +860,29 @@ def create_sample_rates_config_entry(
 DEFAULT_STREAM_HEADERS = {
     "Server": APPLICATION_NAME,
     "transferMode.dlna.org": "Streaming",
-    "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+    "Accept-Ranges": "none",
+    "Connection": "close",
     "icy-name": APPLICATION_NAME,
 }
+
+# DLNA contentFeatures header values for different stream types.
+# ORG_OP=00: no time-seek, no byte-seek (we encode on-the-fly, unknown size).
+# ORG_FLAGS bit layout (hex, first 8 chars of 32-char field):
+#   bit 31 (0x80000000): Sender Paced - server controls data rate
+#   bit 24 (0x01000000): Streaming Transfer Mode
+#   bit 22 (0x00400000): Background Transfer Mode
+#   bit 21 (0x00200000): HTTP Connection Stalling permitted
+#   bit 20 (0x00100000): DLNA V1.5
+#
+# Bufferable streams (tracks, flow mode): player may buffer aggressively.
+# Flags: 0x01700000 = Streaming + Background + Connection Stalling + V1.5
+DLNA_CONTENT_FEATURES = "DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+# Realtime streams (radio, plugin sources): server controls data rate,
+# player should not try to buffer ahead faster than the server delivers.
+# Flags: 0x81700000 = Sender Paced + Streaming + Background + Connection Stalling + V1.5
+DLNA_CONTENT_FEATURES_REALTIME = "DLNA.ORG_OP=00;DLNA.ORG_FLAGS=81700000000000000000000000000000"
 ICY_HEADERS = {
     "icy-name": APPLICATION_NAME,
     "icy-description": f"{APPLICATION_NAME} - Your personal music assistant",
@@ -952,17 +972,20 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PAUSE,
 }
 
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
-    ("airplay", False),
-    ("chromecast", False),
-    ("dlna", False),
-    ("sonos", True),
-    ("bluesound", True),
-    ("heos", True),
-    ("party", False),
+    # the callable is a precondition that must return True for the provider to be setup
+    ("airplay", False, lambda: True),
+    ("chromecast", False, lambda: True),
+    ("dlna", False, lambda: True),
+    ("sonos", True, lambda: True),
+    ("bluesound", True, lambda: True),
+    ("heos", True, lambda: True),
+    ("party", False, lambda: True),
+    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

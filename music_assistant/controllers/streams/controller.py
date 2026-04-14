@@ -44,12 +44,15 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
     DEFAULT_STREAM_HEADERS,
+    DLNA_CONTENT_FEATURES,
+    DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     CONF_BUFFER_SIZE,
@@ -58,13 +61,13 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_PORT,
     BufferSize,
 )
-from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.helpers.audio import (
     calculate_content_length,
     get_content_length,
     get_mime_type,
     store_content_length_in_cache,
 )
+from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
@@ -106,7 +109,12 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
-        self._smart_fades_analyzer = SmartFadesAnalyzer(self)
+        self._audio_analysis = AudioAnalysisController(self)
+
+    @property
+    def audio_analysis(self) -> AudioAnalysisController:
+        """Return the AudioAnalysisController instance."""
+        return self._audio_analysis
 
     @property
     def base_url(self) -> str:
@@ -117,11 +125,6 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
-
-    @property
-    def smart_fades_analyzer(self) -> SmartFadesAnalyzer:
-        """Return the SmartFadesAnalyzer instance."""
-        return self._smart_fades_analyzer
 
     async def get_config_entries(
         self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
@@ -319,7 +322,7 @@ class StreamsController(CoreController):
         :param media: The PlayerMedia object for which to resolve the stream URL.
         :return: The resolved stream URL as a string.
         """
-        if media.media_type == MediaType.ANNOUNCEMENT:
+        if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
         if media.media_type == MediaType.PLUGIN_SOURCE:
             if media.custom_data and (source_id := media.custom_data.get("source_id")):
@@ -409,16 +412,22 @@ class StreamsController(CoreController):
             player=player,
             content_sample_rate=pcm_format.sample_rate,
             content_bit_depth=pcm_format.bit_depth,
+            media_type=queue_item.media_type,
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
         # icy-name is sanitized to avoid a "Potential header injection attack" exception by aiohttp
         # see https://github.com/music-assistant/support/issues/4913
+        # use realtime DLNA flags for radio (sender-paced) since the source delivers slowly
+        dlna_features = (
+            DLNA_CONTENT_FEATURES_REALTIME
+            if queue_item.media_type != MediaType.TRACK
+            else DLNA_CONTENT_FEATURES
+        )
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",
-            "Accept-Ranges": "none",
+            "contentFeatures.dlna.org": dlna_features,
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
 
@@ -536,17 +545,16 @@ class StreamsController(CoreController):
                 break
         if queue_item.streamdetails.stream_error:
             self.logger.error(
-                "Error streaming QueueItem %s (%s) to %s - will try to skip to next item",
+                "Error streaming QueueItem %s (%s) to %s",
                 queue_item.name,
                 queue_item.uri,
                 queue.display_name,
             )
-            # try to skip to the next item in the queue after a short delay
-            self.mass.call_later(5, self.mass.player_queues.next(queue_id))
         elif (
             bytes_sent > 0
             and queue_item.streamdetails
             and queue_item.streamdetails.seconds_streamed
+            and queue_item.duration
         ):
             # cache the actual encoded bytes-per-second for this URI + output format
             # so future content_length estimates are near-exact
@@ -584,6 +592,7 @@ class StreamsController(CoreController):
             player=player,
             content_sample_rate=flow_pcm_format.sample_rate,
             content_bit_depth=flow_pcm_format.bit_depth,
+            media_type=start_queue_item.media_type,
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
@@ -598,8 +607,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
-            "Accept-Ranges": "none",
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
         if enable_icy:
@@ -640,8 +648,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            # allow buffer ahead of 6 seconds and read rest in realtime
-            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "6"],
+            # allow buffer ahead of a few seconds and read rest in (near) realtime
+            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         ):
             try:
@@ -774,12 +782,12 @@ class StreamsController(CoreController):
             player=player,
             content_sample_rate=plugin_source.audio_format.sample_rate,
             content_bit_depth=plugin_source.audio_format.bit_depth,
+            media_type=MediaType.PLUGIN_SOURCE,
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
+            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "icy-name": plugin_source.name,
-            "Accept-Ranges": "none",
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
 
@@ -840,6 +848,7 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         player_id: str | None = None,
         force_flow_mode: bool = False,
+        use_flow_stream_buffering: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -853,6 +862,9 @@ class StreamsController(CoreController):
             if flow mode should be used based on the player's capabilities.
         :param force_flow_mode: Force flow mode regardless of player capabilities.
             Used for multi-client streaming scenarios that require continuous streams.
+        :param use_flow_stream_buffering: Buffer the flow stream to provide headroom
+            during smart fades transitions. Use for consumers that read directly
+            (e.g. AirPlay, Snapcast) and can't tolerate stalls.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -919,9 +931,12 @@ class StreamsController(CoreController):
                     media.source_id, media.queue_item_id
                 )
                 assert start_queue_item
-                return self.audio.get_queue_flow_stream(
+                flow_stream = self.audio.get_queue_flow_stream(
                     queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
                 )
+                if use_flow_stream_buffering:
+                    return buffered(flow_stream, buffer_size=15, min_buffer_before_yield=1)
+                return flow_stream
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
@@ -1133,8 +1148,6 @@ class StreamsController(CoreController):
         """Set up smart fades logger level."""
         log_level = str(config.get_value(CONF_SMART_FADES_LOG_LEVEL))
         if log_level == "GLOBAL":
-            self.smart_fades_analyzer.logger.setLevel(self.logger.level)
             self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
-            self.smart_fades_analyzer.logger.setLevel(log_level)
             self.audio.smart_fades_mixer.logger.setLevel(log_level)

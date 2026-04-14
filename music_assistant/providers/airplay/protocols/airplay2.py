@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
@@ -53,6 +54,26 @@ class AirPlay2Stream(AirPlayProtocol):
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             mass_level = 5
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
+
+    @staticmethod
+    def _log_cli_output(logger: logging.Logger, line: str) -> None:
+        """Route a cliap2 stderr line to the appropriate log level."""
+        if "[FATAL]" in line:
+            logger.critical(line)
+        elif "[  LOG]" in line:
+            logger.error(line)
+        elif "[ INFO]" in line:
+            logger.info(line)
+        elif "[ WARN]" in line:
+            logger.warning(line)
+        elif "[DEBUG]" in line and "mass_timer_cb" in line:
+            logger.log(VERBOSE_LOG_LEVEL, line)
+        elif "[DEBUG]" in line:
+            logger.debug(line)
+        elif "[ SPAM]" in line:
+            logger.log(VERBOSE_LOG_LEVEL, line)
+        else:
+            logger.error(line)
 
     async def start(self, start_ntp: int) -> None:
         """Start cliap2 process."""
@@ -136,6 +157,7 @@ class AirPlay2Stream(AirPlayProtocol):
         """Monitor stderr for the running CLIap2 process."""
         player = self.player
         logger = player.logger
+        expected_eof = False
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
@@ -149,9 +171,14 @@ class AirPlay2Stream(AirPlayProtocol):
             elif "Restarted at" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
             elif "Starting at" in line:
-                # streaming has started
+                # streaming has started - compute a fixed offset between the
+                # session start_time and this process start to handle dynamic
+                # leader switching where a new process starts mid-session.
+                if self._elapsed_time_offset is None and self.session:
+                    self._elapsed_time_offset = max(0, time.time() - self.session.start_time)
+                elapsed_time = self._elapsed_time_offset or 0
                 player.set_state_from_stream(
-                    state=PlaybackState.PLAYING, elapsed_time=0, stream=self
+                    state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
                 )
             if "put delay detected" in line:
                 if "resetting all outputs" in line:
@@ -167,29 +194,19 @@ class AirPlay2Stream(AirPlayProtocol):
                     logger.warning("Output buffer low level detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
+                expected_eof = True
                 break
 
-            # log cli stderr output in alignment with mass logging level
-            if "[FATAL]" in line:
-                logger.critical(line)
-            elif "[  LOG]" in line:
-                logger.error(line)
-            elif "[ INFO]" in line:
-                logger.info(line)
-            elif "[ WARN]" in line:
-                logger.warning(line)
-            elif "[DEBUG]" in line and "mass_timer_cb" in line:
-                # mass_timer_cb is very spammy, reduce it to verbose
-                logger.log(VERBOSE_LOG_LEVEL, line)
-            elif "[DEBUG]" in line:
-                logger.debug(line)
-            elif "[ SPAM]" in line:
-                logger.log(VERBOSE_LOG_LEVEL, line)
-            else:  # for now, log unknown lines as error
-                logger.error(line)
+            self._log_cli_output(logger, line)
             await asyncio.sleep(0)  # Yield to event loop
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
         if not self._stopped:
             self._stopped = True
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            if not expected_eof:
+                # CLI process died without reaching EOF — unsolicited stop.
+                # Ungroup so the player controller can handle leader switches
+                # and dissolve manual sync groups cleanly.
+                logger.warning("CLIap2 process stopped unexpectedly for %s", player.display_name)
+                self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))

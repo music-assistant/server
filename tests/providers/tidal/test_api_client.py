@@ -11,7 +11,6 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 
-from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.tidal.api_client import TidalAPIClient
 
 
@@ -34,11 +33,7 @@ def provider_mock() -> Mock:
 @pytest.fixture
 def api_client(provider_mock: Mock) -> TidalAPIClient:
     """Return a TidalAPIClient instance."""
-    client = TidalAPIClient(provider_mock)
-    # The class-level throttler is shared across all test instances; replace it with a
-    # fast instance-level one so tests don't accumulate real throttle delays.
-    client.throttler = ThrottlerManager(rate_limit=1000, period=0.001)
-    return client
+    return TidalAPIClient(provider_mock)
 
 
 async def test_get_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
@@ -88,7 +83,8 @@ async def test_get_404_error(api_client: TidalAPIClient, provider_mock: Mock) ->
 
 async def test_get_429_error(api_client: TidalAPIClient, provider_mock: Mock) -> None:
     """Test GET request with 429 error."""
-    response = AsyncMock(spec=ClientResponse)
+    with patch("asyncio.sleep"):
+        response = AsyncMock(spec=ClientResponse)
     response.status = 429
     response.headers = {"Retry-After": "10"}
 
@@ -96,14 +92,7 @@ async def test_get_429_error(api_client: TidalAPIClient, provider_mock: Mock) ->
     request_ctx.__aenter__.return_value = response
     provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
 
-    # Patch sleep in the throttle_retry module so retries don't cause real delays.
-    with (
-        patch(
-            "music_assistant.helpers.throttle_retry.asyncio.sleep",
-            new_callable=AsyncMock,
-        ),
-        pytest.raises(RetriesExhausted),
-    ):
+    with pytest.raises(RetriesExhausted):
         await api_client.get("test/endpoint")
 
 
