@@ -4727,6 +4727,82 @@ class TestUniversalPlayerMerging:
         assert "dlna_cached" in keep._protocol_player_ids
         assert config_store["players/dlna_cached/values/protocol_parent_id"] == "up_keep"
 
+    def test_no_merge_same_domain_protocols_on_same_ip(self, mock_mass: MagicMock) -> None:
+        """Test that UPs with same-domain protocols on the same IP are NOT merged.
+
+        Scenario: 3 squeezelite instances on the same VM (same IP, different real MACs).
+        Each gets its own universal player. The merge check must NOT merge them,
+        because merging would combine protocols from the same domain.
+
+        Reproduces: https://github.com/music-assistant/support/issues/5266
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        # Create 3 universal players, each with one squeezelite protocol
+        squeeze_provider = MockProvider("squeezelite", mass=mock_mass)
+        ups = []
+        protocols = []
+        for i in range(1, 4):
+            mac = f"00:00:00:00:00:{i:02X}"
+            up = UniversalPlayer(
+                provider=up_provider,
+                player_id=f"up00000000000{i}",
+                name=f"Zone {i}",
+                device_info=DeviceInfo(model="Squeezelite", manufacturer="Test"),
+                protocol_player_ids=[mac],
+            )
+            up._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+            up._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, "192.168.1.50")
+            up._cache.clear()
+            up.update_state(signal_event=False)
+            up.set_initialized()
+            ups.append(up)
+
+            proto = MockPlayer(
+                squeeze_provider,
+                mac,
+                f"squeezeplay: {mac}",
+                player_type=PlayerType.PROTOCOL,
+                identifiers={
+                    IdentifierType.MAC_ADDRESS: mac,
+                    IdentifierType.IP_ADDRESS: "192.168.1.50",
+                },
+            )
+            proto.set_initialized()
+            protocols.append(proto)
+
+        controller._players = {}
+        for up in ups:
+            controller._players[up.player_id] = up
+        for proto in protocols:
+            controller._players[proto.player_id] = proto
+        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
+
+        # Link each protocol to its UP
+        for up, proto in zip(ups, protocols, strict=True):
+            controller._add_protocol_link(up, proto, "squeezelite")
+
+        # Verify initial state: each protocol linked to its own UP
+        for up, proto in zip(ups, protocols, strict=True):
+            assert proto.protocol_parent_id == up.player_id
+
+        # Now run merge check on each UP - none should merge
+        with patch.object(controller, "_save_universal_player_data"):
+            for up in ups:
+                controller._check_merge_universal_players(up)
+
+        # All 3 UPs must still exist with their original protocol links
+        for up, proto in zip(ups, protocols, strict=True):
+            assert proto.protocol_parent_id == up.player_id, (
+                f"Protocol {proto.player_id} should still be linked to {up.player_id}, "
+                f"but is linked to {proto.protocol_parent_id}"
+            )
+            assert len(up.linked_output_protocols) == 1, (
+                f"UP {up.player_id} should have exactly 1 protocol, "
+                f"but has {len(up.linked_output_protocols)}"
+            )
+
 
 class TestUniversalPlayerReplacement:
     """Tests for replacing a universal player with a native player."""
