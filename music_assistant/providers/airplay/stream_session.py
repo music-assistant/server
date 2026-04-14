@@ -107,12 +107,17 @@ class AirPlayStreamSession:
                 return
             self.sync_clients.remove(airplay_player)
         self._client_added_time.pop(airplay_player.player_id, None)
+        await self._cleanup_after_removal(airplay_player)
+
+    async def _cleanup_after_removal(self, airplay_player: AirPlayPlayer) -> None:
+        """Clean up processes and state after a client has been removed from sync_clients.
+
+        :param airplay_player: The player whose processes should be stopped.
+        """
         await self.stop_client(airplay_player)
         airplay_player.set_state_from_stream(PlaybackState.IDLE)
-        # If this was the last client, stop the session
         if not self.sync_clients:
             await self.stop()
-            return
 
     async def stop_client(self, airplay_player: AirPlayPlayer) -> None:
         """
@@ -254,7 +259,7 @@ class AirPlayStreamSession:
                     airplay_player.player_id,
                     time.time() - now,
                 )
-                self.mass.create_task(self.remove_client(airplay_player))
+                await self.remove_client(airplay_player)
 
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Stream audio to all players."""
@@ -359,10 +364,17 @@ class AirPlayStreamSession:
                     )
                     players_to_remove.append(player)
 
+            # Remove failed players from sync_clients immediately under the lock
+            # so they are excluded from future write cycles. Only defer process
+            # cleanup (_cleanup_after_removal) — this prevents fire-and-forget
+            # remove_client calls from racing with a subsequent add_client when
+            # a player is being moved between groups.
             for player in players_to_remove:
-                self.mass.create_task(self.remove_client(player))
+                if player in self.sync_clients:
+                    self.sync_clients.remove(player)
+                self._client_added_time.pop(player.player_id, None)
+                self.mass.create_task(self._cleanup_after_removal(player))
 
-            # Return False if all clients were removed (or scheduled for removal)
             remaining_clients = len(sync_clients) - len(players_to_remove)
             return remaining_clients > 0
 
@@ -427,7 +439,7 @@ class AirPlayStreamSession:
                         ffmpeg = self._player_ffmpeg.get(client.player_id)
                         if ffmpeg and not ffmpeg.closed:
                             await ffmpeg.kill()
-                        self.mass.create_task(self.remove_client(client))
+                        await self.remove_client(client)
         except asyncio.CancelledError:
             pass
 
