@@ -25,6 +25,8 @@ def _make_session(
     pcm_format = MagicMock()
     pcm_format.pcm_sample_size = PCM_SAMPLE_SIZE
     pcm_format.sample_rate = 44100
+    pcm_format.bit_depth = 16
+    pcm_format.channels = 2
 
     leader = MagicMock()
     leader.stream = MagicMock()
@@ -92,10 +94,12 @@ async def test_late_join_empty_buffer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_join_with_buffered_pcm() -> None:
-    """Test that with a non-empty buffer, start_at accounts for buffer duration."""
+async def test_late_join_with_buffered_pcm_in_future() -> None:
+    """Late join with start_at already in the future leaves start_at unmodified."""
     now = time.time()
-    start_time = now - 10
+    # Place start_at well in the future: start_time = now + 5, buffer = 0 →
+    # start_at = now + 5 + (seconds_streamed - 0) = now + 17.5 (>> min_headroom)
+    start_time = now + 5
     seconds_streamed = 12.5
     session = _make_session(start_time, seconds_streamed)
     # Fill the ring buffer with 3 seconds of PCM
@@ -120,10 +124,10 @@ async def test_late_join_with_buffered_pcm() -> None:
         await session.add_client(player)
 
     assert captured_start_at, "unix_time_to_ntp was never called"
-    # NTP should be start_time + (seconds_streamed - 3.0)
+    # start_at should remain at start_time + (seconds_streamed - 3.0) — already in future
     expected = start_time + (seconds_streamed - 3.0)
     assert abs(captured_start_at[0] - expected) < 0.1, (
-        f"start_at should account for buffer, expected {expected}, got {captured_start_at[0]}"
+        f"start_at should match buffer position, expected {expected}, got {captured_start_at[0]}"
     )
 
 
@@ -160,3 +164,94 @@ async def test_late_join_no_running_session() -> None:
         await session.add_client(player)
         mock_start.assert_not_called()
         assert player not in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
+    """When start_at would be in the past, trim from buffer head and shift start_at forward."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    start_time = now - 0.5
+    seconds_streamed = 5.0
+    session = _make_session(start_time, seconds_streamed)
+    # Fill ring buffer with 5 seconds of non-silent PCM (so trim has something to take)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner(wait_start_ms=2000)
+
+    written_chunks: list[bytes] = []
+    captured_start_at: list[float] = []
+
+    def capture_ntp(unix_ts: float) -> int:
+        captured_start_at.append(unix_ts)
+        return 1
+
+    async def capture_write(_player: Any, chunk: bytes) -> None:
+        written_chunks.append(chunk)
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            side_effect=capture_ntp,
+        ),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+    # start_at should be pushed to now + min_headroom (session.wait_start = 2.0)
+    assert captured_start_at, "unix_time_to_ntp was never called"
+    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01), (
+        f"start_at should be at now + min_headroom, got offset {captured_start_at[0] - now:.4f}s"
+    )
+
+    # Buffer should have been trimmed: 2.5s out of 5s (start_at shifted from -0.5 to +2.0)
+    assert written_chunks, "No data was written to the player"
+    written = written_chunks[0]
+    remaining_seconds = len(written) / PCM_SAMPLE_SIZE
+    assert remaining_seconds == pytest.approx(2.5, abs=0.01), (
+        f"expected 2.5s remaining, got {remaining_seconds:.4f}s"
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
+    """When the required trim exceeds the buffer, the buffer is dropped entirely."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    # start_at = now - 4.0 (way in the past). With 3s buffer the required trim
+    # is 6s but buffer only holds 3s → buffer fully consumed.
+    start_time = now - 4.0
+    seconds_streamed = 3.0
+    session = _make_session(start_time, seconds_streamed)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 3)
+    player = _make_late_joiner(wait_start_ms=2000)
+
+    written_chunks: list[bytes] = []
+    captured_start_at: list[float] = []
+
+    def capture_ntp(unix_ts: float) -> int:
+        captured_start_at.append(unix_ts)
+        return 1
+
+    async def capture_write(_player: Any, chunk: bytes) -> None:
+        written_chunks.append(chunk)
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            side_effect=capture_ntp,
+        ),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+    # No bytes should be written (buffer fully trimmed)
+    assert written_chunks == [], "Buffer should have been dropped entirely"
+    # start_at should be exactly now + min_headroom (since the next-chunk anchor would
+    # have landed at now - 1.0, which is below the target).
+    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01)

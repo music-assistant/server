@@ -3044,16 +3044,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             else:
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
-        # handle protocol player power control
-        elif protocol_player := self.get_player(player.state.power_control):
-            self.logger.debug(
-                "Redirecting power command to protocol player %s",
-                protocol_player.provider.manifest.name,
-            )
-            await self._handle_cmd_power(protocol_player.player_id, powered, True)
-            if powered:
-                await wait_for_power_on(self.logger, protocol_player)
-
         # always trigger a state update to update the UI
         player.update_state()
 

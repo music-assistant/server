@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
@@ -10,7 +10,7 @@ from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
 
-from .constants import CONF_QUALITY, QUALITY_HIGH, QUALITY_STANDARD
+from .constants import CONF_QUALITY, CONF_TAKEOVER_ACTION, QUALITY_HIGH, QUALITY_STANDARD
 from .provider import PandoraProvider
 
 if TYPE_CHECKING:
@@ -56,6 +56,11 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return configuration entries for this provider."""
     # ruff: noqa: ARG001
+    if action == CONF_TAKEOVER_ACTION and instance_id:
+        provider = cast("PandoraProvider|None", mass.get_provider(instance_id))
+        if provider is not None:
+            await provider.takeover_stream()
+
     return (
         ConfigEntry(
             key=CONF_USERNAME,
@@ -97,5 +102,17 @@ async def get_config_entries(
             required=False,
             default_value="",
             advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_TAKEOVER_ACTION,
+            type=ConfigEntryType.ACTION,
+            label="Take over stream",
+            description=(
+                "Pandora only allows one active stream at a time per account. You can request that "
+                "Pandora terminate any existing stream on other devices and allow streaming here. "
+                "You must manually restart playback after performing this action."
+            ),
+            action=CONF_TAKEOVER_ACTION,
+            required=False,
         ),
     )

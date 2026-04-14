@@ -20,6 +20,22 @@ class PlayerProvider(Provider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 
+    @property
+    def supports_dynamic_leader_switching(self) -> bool:
+        """
+        Return if players from this provider support dynamic leader switching.
+
+        If a sync group removes its current leader while playing, providers that
+        return True keep the remaining members playing uninterrupted (a new
+        leader is selected without tearing down the stream session). Providers
+        that return False require the full sync group to be dissolved and
+        re-formed with a new leader on leader removal.
+        """
+        # TODO: promote this to a ProviderFeature on music_assistant_models so
+        # providers can declare it via supported_features instead of overriding
+        # a property here.
+        return False
+
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
         # default implementation: trigger discovery - feel free to override

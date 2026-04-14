@@ -1596,6 +1596,10 @@ class PlayerQueuesController(CoreController):
             fade_in=fade_in,
             prefer_album_loudness=bool(playing_album_tracks),
         )
+        # update queue_item.duration from streamdetails if we got a better value
+        if queue_item.streamdetails.duration and not queue_item.duration:
+            queue_item.duration = queue_item.streamdetails.duration
+            self.signal_update(queue_id, items_changed=True)
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
@@ -2150,12 +2154,11 @@ class PlayerQueuesController(CoreController):
                         queue.display_name,
                     )
                     return
-                cur_index = self._queues[queue_id].current_index or 0
                 await self.load(
                     queue_id,
                     queue_items,
-                    insert_at_index=cur_index + 1,
-                    keep_remaining=False,
+                    insert_at_index=len(self._queue_items[queue_id]),
+                    keep_remaining=True,
                     keep_played=True,
                 )
             except MusicAssistantError as err:
