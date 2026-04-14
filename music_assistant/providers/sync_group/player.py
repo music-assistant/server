@@ -458,32 +458,15 @@ class SyncGroupPlayer(Player):
             )
 
             if was_playing and supports_handoff:
-                # protocol supports dynamic leader switching: remove only the departing
-                # leader from the stream session, remaining members keep playing
+                # protocol supports dynamic leader switching: try to remove
+                # only the departing leader and keep remaining members playing.
+                # _dynamic_leader_switch will fall back to dissolve+reform
+                # automatically if the chosen new leader isn't already part of
+                # the live session (e.g. a freshly-added player).
                 await self._dynamic_leader_switch(old_leader_id)
             else:
-                # protocol doesn't support dynamic leader switching or not playing:
-                # dissolve the entire syncgroup and re-form with a new leader
-                self.logger.info(
-                    "Removing current sync leader %s from group %s while it is active, "
-                    "dissolving the current syncgroup and will re-form it with a new leader",
-                    self.sync_leader.display_name,
-                    self.display_name,
-                )
-                # Use internal handler to stop the sync leader directly,
-                # bypassing group redirect that would loop back to this player.
-                await self.mass.players.wait_for_player_update(
-                    self.sync_leader.player_id,
-                    timeout=5,
-                    action=self.mass.players._handle_cmd_stop(self.sync_leader.player_id),
-                )
-                await self._dissolve_syncgroup()
-                # remove the old leader from the group members list
-                # so it won't be re-selected
-                if old_leader_id in self._attr_group_members:
-                    self._attr_group_members.remove(old_leader_id)
-                if was_playing and self._attr_group_members:
-                    await self.play()
+                # protocol doesn't support dynamic leader switching or not playing
+                await self._dissolve_and_reform(old_leader_id)
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
@@ -739,12 +722,76 @@ class SyncGroupPlayer(Player):
             return native_domain
         return domain
 
+    def _is_player_in_session(self, player: Player, session_player: Player | None) -> bool:
+        """Return True if ``player`` is already a sync_client of the live session.
+
+        A seamless leader handoff only works when the candidate's resolved
+        protocol player is already in the active ``AirPlayStreamSession`` (or
+        equivalent). If not (e.g. a freshly-added player that has never played
+        anything), we must fall back to dissolve + reform.
+
+        :param player: The candidate new leader.
+        :param session_player: The protocol player that owns the live session
+            (snapshot taken before the old leader was cleared via
+            ``_active_session_player()``).
+        """
+        if session_player is None:
+            return False
+        session = getattr(getattr(session_player, "stream", None), "session", None)
+        if session is None:
+            return False
+        # Resolve player to the protocol player that would own the session
+        target: Player = player
+        if (
+            player.active_output_protocol
+            and player.active_output_protocol != "native"
+            and (p := self.mass.players.get_player(player.active_output_protocol))
+        ):
+            target = p
+        return target in session.sync_clients
+
+    async def _dissolve_and_reform(
+        self, old_leader_id: str, leader_to_stop: Player | None = None
+    ) -> None:
+        """Stop the current sync session, dissolve the syncgroup, and re-form on a new leader.
+
+        Used when a seamless handoff isn't possible (e.g. the new leader is not
+        part of the live session). Accepts a brief audio gap in exchange for
+        correctness: the old session is fully torn down before a fresh one starts.
+
+        :param old_leader_id: The player_id of the departing leader.
+        :param leader_to_stop: The player to stop before dissolving. Defaults
+            to ``self.sync_leader`` but callers should pass the old leader
+            explicitly when ``self.sync_leader`` has already been cleared.
+        """
+        leader_to_stop = leader_to_stop or self.sync_leader
+        if leader_to_stop:
+            self.logger.info(
+                "Dissolving syncgroup %s (leader %s) and re-forming with a new leader",
+                self.display_name,
+                leader_to_stop.display_name,
+            )
+            await self.mass.players.wait_for_player_update(
+                leader_to_stop.player_id,
+                timeout=5,
+                action=self.mass.players._handle_cmd_stop(leader_to_stop.player_id),
+            )
+        await self._dissolve_syncgroup()
+        if old_leader_id in self._attr_group_members:
+            self._attr_group_members.remove(old_leader_id)
+        if self._attr_group_members:
+            await self.play()
+
     async def _dynamic_leader_switch(self, old_leader_id: str) -> None:
         """Switch the sync leader without tearing down the stream session.
 
         Used when the provider supports dynamic leader selection (e.g. AirPlay,
         Snapcast). The old leader is removed from the live session and the
         remaining members keep playing uninterrupted on a newly selected leader.
+
+        If the selected new leader is not already part of the live session (e.g.
+        a freshly-added player), a seamless handoff isn't possible. In that case
+        we fall back to dissolve + reform, accepting a brief audio gap.
 
         :param old_leader_id: The player_id of the leader being removed.
         """
@@ -757,9 +804,11 @@ class SyncGroupPlayer(Player):
             self.display_name,
         )
 
-        # Snapshot the currently active protocol so the new leader selection
-        # can bias toward a member supporting it.
+        # Snapshot the currently active protocol and session before clearing
+        # the leader — we need both for new-leader selection and for the
+        # handoff-eligibility check.
         preferred_domain = self.active_protocol_domain
+        session_player = self._active_session_player()
 
         # Remove the old leader from our group members list
         if old_leader_id in self._attr_group_members:
@@ -772,6 +821,18 @@ class SyncGroupPlayer(Player):
 
         if not new_leader:
             self.update_state()
+            return
+
+        # A seamless handoff requires the new leader to already be a
+        # sync_client of the live session. If it's a freshly-added player
+        # with no existing stream, fall back to dissolve + reform.
+        if not self._is_player_in_session(new_leader, session_player):
+            self.logger.info(
+                "New leader %s is not in the live session; dissolving and re-forming syncgroup %s",
+                new_leader.display_name,
+                self.display_name,
+            )
+            await self._dissolve_and_reform(old_leader_id, leader_to_stop=old_leader)
             return
 
         self.sync_leader = new_leader
