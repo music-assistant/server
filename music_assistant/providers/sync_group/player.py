@@ -466,7 +466,7 @@ class SyncGroupPlayer(Player):
                 await self._dynamic_leader_switch(old_leader_id)
             else:
                 # protocol doesn't support dynamic leader switching or not playing
-                await self._dissolve_and_reform(old_leader_id)
+                await self._dissolve_and_reform(old_leader_id, resume_playback=was_playing)
         elif self.sync_leader and (leader_removed or not self._attr_group_members):
             # we removed the current sync leader, and we have no members left in the group
             # or we just removed the last member from the group, so we dissolve the syncgroup
@@ -751,9 +751,12 @@ class SyncGroupPlayer(Player):
         return target in session.sync_clients
 
     async def _dissolve_and_reform(
-        self, old_leader_id: str, leader_to_stop: Player | None = None
+        self,
+        old_leader_id: str,
+        leader_to_stop: Player | None = None,
+        resume_playback: bool = True,
     ) -> None:
-        """Stop the current sync session, dissolve the syncgroup, and re-form on a new leader.
+        """Stop the current sync session, dissolve the syncgroup, and optionally re-form.
 
         Used when a seamless handoff isn't possible (e.g. the new leader is not
         part of the live session). Accepts a brief audio gap in exchange for
@@ -763,6 +766,9 @@ class SyncGroupPlayer(Player):
         :param leader_to_stop: The player to stop before dissolving. Defaults
             to ``self.sync_leader`` but callers should pass the old leader
             explicitly when ``self.sync_leader`` has already been cleared.
+        :param resume_playback: If True, call ``play()`` after dissolving to
+            restart playback on the new leader. Pass False when the group was
+            not actively playing (e.g. paused or idle).
         """
         leader_to_stop = leader_to_stop or self.sync_leader
         if leader_to_stop:
@@ -779,7 +785,7 @@ class SyncGroupPlayer(Player):
         await self._dissolve_syncgroup()
         if old_leader_id in self._attr_group_members:
             self._attr_group_members.remove(old_leader_id)
-        if self._attr_group_members:
+        if resume_playback and self._attr_group_members:
             await self.play()
 
     async def _dynamic_leader_switch(self, old_leader_id: str) -> None:

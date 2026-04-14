@@ -181,7 +181,9 @@ class AirPlayStreamSession:
                     start_at = self.start_time + self.seconds_streamed
                 else:
                     buffered_pcm = buffered_pcm[trim_bytes:]
-                    start_at += trim_seconds
+                    # Advance start_at by exactly the trimmed duration so the
+                    # NTP anchor matches the first sample we actually send.
+                    start_at += trim_bytes / pcm_sample_size
                 # Make sure start_at still leaves enough lead time for slow
                 # connections / very-far-behind joiners.
                 start_at = max(start_at, target_start_at)
