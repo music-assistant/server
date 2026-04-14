@@ -31,6 +31,31 @@ We removed support for devcontainers because we do not have anyone willing to ma
 It also is not very convenient due to all the port requirements, binaries etc.
 If somebody is willing to create and maintain a devcontainer with host networking and based on our base alpine image, we will add the support back. Until then: Develop with Python venv on a Linux or macOS machine (see above).
 
+### Using devenv (Nix-based)
+If you prefer a reproducible, Nix-based development environment, this repository includes support for devenv 2 (latest). Devenv builds a per-project development environment (using Nix) that provides the exact tools and packages you need without changing your global system.
+
+- What it is: devenv uses Nix to create isolated, reproducible dev shells that contain system packages (ffmpeg, git, build tools) and language runtimes (Python, Node, etc.). It helps avoid "it works on my machine" problems.
+- Install: follow the official guide for installing Nix and devenv for your OS: https://devenv.sh/getting-started/
+- Quick start (from the repository root):
+
+  ```sh
+  # build the environment and enter an interactive shell
+  devenv up
+
+  # alternatively: enter an environment shell if already built
+  devenv shell
+
+  # run a single command inside the environment without opening a shell
+  devenv run -- scripts/setup.sh
+  ```
+
+- Inside the devenv shell you can run the usual project commands (for example `scripts/setup.sh`, `python -m music_assistant --log-level debug` or the test runner). When finished, exit the shell with `exit`.
+- Files: This repo contains `devenv.nix` and `devenv.yaml` at the repository root which declare the packages and dev actions used by the environment — inspect them if you need to add or change tools.
+
+Notes:
+- If you are new to Nix, the getting-started link above includes details about single-user vs multi-user installs and common troubleshooting steps.
+- Using devenv does not prevent using the provided `scripts/setup.sh` (the script creates a Python venv inside the environment if you prefer that workflow).
+
 ### Developing on the Music Assistant Server Models
 
 If you're working on core Music Assistant features, you may need to modify the shared data models. The **Python models which are shared between client and server** are located in the [`music-assistant/models`](https://github.com/music-assistant/models) repository, while the corresponding **client-side TypeScript interfaces** are in [`interfaces.ts`](https://github.com/music-assistant/frontend/blob/main/src/plugins/api/interfaces.ts) in the [Frontend repository](https://github.com/music-assistant/frontend).
