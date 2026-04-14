@@ -771,7 +771,7 @@ class SendspinPlaybackSession:
                     )
                 commit_start_us = await push_stream.commit_audio()
                 await push_stream.sleep_to_limit_buffer(_PRODUCER_BUFFER_LIMIT_US)
-                commit_now_us = int(time.monotonic_ns() / 1000)
+                commit_now_us = push_stream.now_us()
                 committed_history_chunk = _HistoryChunk(
                     start_time_us=int(commit_start_us),
                     duration_us=pending.duration_us,
