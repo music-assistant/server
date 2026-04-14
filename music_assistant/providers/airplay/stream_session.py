@@ -128,9 +128,9 @@ class AirPlayStreamSession:
         past — they just play whatever the pipe gives them, trailing the
         group by the deficit. To stay in sync we therefore push the late
         joiner's ``start_at`` into the future (at least ``wait_start`` ahead
-        of now, with a small extra safety margin for connection setup) and
-        trim the corresponding amount from the head of the buffered PCM, so
-        the first sample we send maps to the correct future stream position.
+        of now) and trim the corresponding amount from the head of the
+        buffered PCM, so the first sample we send maps to the correct future
+        stream position.
 
         1. Snapshot the ring buffer and calculate how many seconds it holds.
         2. Map the buffer's first byte to its stream position; if the

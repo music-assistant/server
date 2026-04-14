@@ -755,7 +755,13 @@ class SyncGroupPlayer(Player):
             return False
         session = getattr(getattr(session_player, "stream", None), "session", None)
         if session is None:
-            return False
+            # No session object (e.g. Snapcast, Sendspin) — assume handoff is
+            # safe if the provider declared support for it.
+            return True
+        sync_clients = getattr(session, "sync_clients", None)
+        if sync_clients is None:
+            # Session exists but doesn't expose sync_clients — same assumption.
+            return True
         # Resolve player to the protocol player that would own the session
         target: Player = player
         if (
@@ -764,7 +770,7 @@ class SyncGroupPlayer(Player):
             and (p := self.mass.players.get_player(player.active_output_protocol))
         ):
             target = p
-        return target in session.sync_clients
+        return target in sync_clients
 
     async def _dissolve_and_reform(
         self,
