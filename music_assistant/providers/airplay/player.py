@@ -833,7 +833,10 @@ class AirPlayPlayer(Player):
                 # add new child to the existing stream (RAOP or AirPlay2) session (if any)
                 self._attr_group_members.append(player_id)
                 if stream_session and child_player_to_add is not None:
-                    await stream_session.add_client(child_player_to_add)
+                    # Skip add_client if the player is already streaming in this session
+                    # (e.g. after a dynamic leader switch where the stream continues)
+                    if child_player_to_add not in stream_session.sync_clients:
+                        await stream_session.add_client(child_player_to_add)
 
             # Ensure group leader includes itself in group_members when it has members
             # This is required for the synced_to property to work correctly
@@ -864,7 +867,7 @@ class AirPlayPlayer(Player):
             return
 
         cur_volume = self.volume_level or 0
-        if abs(cur_volume - volume) > 3 or (time.time() - self.last_command_sent) > 3:
+        if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
             self.mass.create_task(self.volume_set(volume))
         else:
             self._attr_volume_level = volume

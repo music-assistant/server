@@ -27,6 +27,7 @@ from aiosendspin.models.types import AudioCodec
 from music_assistant_models.enums import EventType, IdentifierType
 
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
+from music_assistant.providers.chromecast.constants import get_cast_model_static_delay
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -36,8 +37,8 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     BRIDGE_PREFIX,
-    CONF_SENDSPIN_SYNC_DELAY,
-    DEFAULT_SENDSPIN_SYNC_DELAY,
+    CONF_SENDSPIN_STATIC_DELAY,
+    DEFAULT_SENDSPIN_STATIC_DELAY,
 )
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
@@ -284,16 +285,6 @@ class SendspinChromecastBridge:
                 err,
             )
 
-    def _get_sync_delay(self) -> int:
-        """Get the sync delay from the Sendspin player's config."""
-        return int(
-            self.mass.config.get_raw_player_config_value(
-                self._bridge_client_id,
-                CONF_SENDSPIN_SYNC_DELAY,
-                DEFAULT_SENDSPIN_SYNC_DELAY,
-            )
-        )
-
     async def _send_sendspin_config_with_retry(self, max_attempts: int = 3) -> None:
         """Send the Sendspin config to the Cast app, retrying on failure.
 
@@ -325,7 +316,7 @@ class SendspinChromecastBridge:
                     )
 
     async def push_runtime_config_update(self) -> None:
-        """Push updated runtime config (including sync delay) to active Cast app."""
+        """Push updated runtime config to active Cast app."""
         await self._send_sendspin_config_with_retry()
 
     async def _send_sendspin_config(self) -> None:
@@ -338,7 +329,13 @@ class SendspinChromecastBridge:
         # the MA webserver or streams server. Use publish_ip directly.
         publish_ip = cast("str", self.mass.streams.publish_ip)
         server_url = f"ws://{format_ip_for_url(publish_ip)}:8927/sendspin"
-        sync_delay = self._get_sync_delay()
+        sync_delay = int(
+            self.mass.config.get_raw_player_config_value(
+                self._bridge_client_id,
+                CONF_SENDSPIN_STATIC_DELAY,
+                DEFAULT_SENDSPIN_STATIC_DELAY,
+            )
+        )
         # The Cast receiver JS reads playerId (not clientId) from the config.
         # It uses this as the client_id in its hello message to the Sendspin server,
         # allowing the server to match it to the bridge's pre-registered external client.
@@ -486,6 +483,16 @@ class SendspinBridgeManager:
                     bridge_client_id,
                     {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)},
                 )
+                # Write default value if no (user) saved delay exists.
+                raw_delay = self.mass.config.get_raw_player_config_value(
+                    bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
+                )
+                if raw_delay is None:
+                    model_default = get_cast_model_static_delay(manufacturer, model)
+                    if model_default != DEFAULT_SENDSPIN_STATIC_DELAY:
+                        self.mass.config.set_raw_player_config_value(
+                            bridge_client_id, CONF_SENDSPIN_STATIC_DELAY, model_default
+                        )
 
             try:
                 await bridge.start()
@@ -536,8 +543,6 @@ class SendspinBridgeManager:
 
     async def _on_player_config_updated(self, event: MassEvent) -> None:
         """Handle player config updates for bridged Sendspin Chromecast players."""
-        # NOTE: This is a temporary solution for updating the sync delay until https://github.com/Sendspin/spec/pull/67
-        # is implemented in aiosendspin, sendspin-js, and the cast app
         if not event.object_id:
             return
 

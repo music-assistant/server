@@ -27,7 +27,7 @@ jobs:
 
       - name: Determine workflow trigger and context
         id: trigger
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             // Determine if this is a push or label event
@@ -48,7 +48,7 @@ jobs:
 
       - name: Get merged PR info
         id: prinfo
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const isPushEvent = '${{ steps.trigger.outputs.is_push_event }}' === 'true';
@@ -192,7 +192,7 @@ jobs:
 
       - name: Create or update backport PR with cherry-picked commits
         if: steps.checklabel.outputs.should_backport == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const pr_number = process.env.pr_number;
