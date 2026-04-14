@@ -400,9 +400,11 @@ class AudioBuffer:
             else SmartFadesMode.DISABLED
         )
         if smart_fades_mode != SmartFadesMode.DISABLED:
-            ready_threshold = 10
+            ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
-            ready_threshold = 5
+            # radio streams are continuous so the normalization will converge quickly,
+            # use a lower threshold to reduce startup latency
+            ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5
         else:
             ready_threshold = 2
 
@@ -437,7 +439,7 @@ class AudioBuffer:
             # smart fades analysis only when enabled and only for music tracks
             if (
                 streamdetails.media_type == MediaType.TRACK
-                and smart_fades_mode != SmartFadesMode.DISABLED
+                and smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
             ):
                 mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
             # audio analysis providers (beat tracking, key detection, etc.)
