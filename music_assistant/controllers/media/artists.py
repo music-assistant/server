@@ -129,7 +129,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id, provider_instance_id_or_domain
         )
         if library_artist and library_artist.artist_type != ArtistType.ARTIST:
-            raise MusicAssistantError("Tracks are only available for artist_type artist.")
+            self.logger.debug(
+                "Ignoring tracks request for artist of type %s", library_artist.artist_type
+            )
+            return []
         if not library_artist:
             return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
         db_items = await self.get_library_artist_tracks(library_artist.item_id)
@@ -175,7 +178,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id, provider_instance_id_or_domain
         )
         if library_artist and library_artist.artist_type != ArtistType.ARTIST:
-            raise MusicAssistantError("Tracks are only available for artist_type artist.")
+            self.logger.debug(
+                "Ignoring album request for artist of type %s", library_artist.artist_type
+            )
+            return []
         if not library_artist:
             return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
         db_items = await self.get_library_artist_albums(library_artist.item_id)
@@ -258,6 +264,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id,
             provider_instance_id_or_domain,
         ):
+            if db_artist.artist_type != ArtistType.ARTIST:
+                self.logger.debug("Top tracks only available for artists of type ARTIST")
+                return []
             db_artist_id = int(db_artist.item_id)  # ensure integer
             subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
             query = f"tracks.item_id in ({subquery})"
@@ -274,6 +283,10 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return all tracks for an artist in the library/db."""
         db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.ARTIST:
+            self.logger.debug("Tracks only available for artists of type ARTIST")
+            return []
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
         query = f"tracks.item_id in ({subquery})"
         return await self.mass.music.tracks.get_library_items_by_query(
@@ -298,6 +311,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id,
             provider_instance_id_or_domain,
         ):
+            if db_artist.artist_type != ArtistType.ARTIST:
+                self.logger.debug("Albums only available for artists of type ARTIST")
+                return []
             db_artist_id = int(db_artist.item_id)  # ensure integer
             subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
             query = f"albums.item_id in ({subquery})"
@@ -314,6 +330,10 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
         db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.ARTIST:
+            self.logger.debug("Albums only available for artists of type ARTIST")
+            return []
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
         query = f"albums.item_id in ({subquery})"
         return await self.mass.music.albums.get_library_items_by_query(
@@ -416,6 +436,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item: The Artist to get base tracks for.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
         """
+        if item.artist_type != ArtistType.ARTIST:
+            raise MusicAssistantError("Radio mode tracks only exists for artists of type ARTIST.")
         return await self.tracks(
             item.item_id,
             item.provider,
