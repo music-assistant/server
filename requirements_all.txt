@@ -25,6 +25,7 @@ auntie-sounds==1.1.7
 av==16.1.0
 awesomeversion>=24.6.0
 bandcamp-async-api==0.1.1
+beat-this==1.1.0
 bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
@@ -35,7 +36,6 @@ defusedxml==0.7.1
 deno==2.7.4
 duration-parser==1.0.1
 getmac==0.9.5
-git+https://github.com/CPJKU/beat_this@c8c320e84f1a4e5b291327debe754734ea802afc
 gql[all]==4.0.0
 hass-client==1.2.3
 ibroadcastaio==0.5.0
