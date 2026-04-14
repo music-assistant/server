@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.api import AudiobookSeries
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import Audiobook, ProviderMapping, UniqueList
+from music_assistant_models.media_items.helpers import AudiobookSeries
 
 from music_assistant.constants import DB_TABLE_AUDIOBOOKS, DB_TABLE_PLAYLOG
 from music_assistant.controllers.media.base import MediaControllerBase
@@ -418,7 +418,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                     sort_by = float(series_info.sequence)
                     audiobooks_with_number.append((audiobook, sort_by))
                 except ValueError:
-                    audiobooks_with_string.append((audiobook, series_info.sequence))
+                    audiobooks_with_string.append((audiobook, str(series_info.sequence)))
             final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
             final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
             final_list.extend(audiobooks_with_none)
