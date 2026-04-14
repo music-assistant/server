@@ -36,6 +36,7 @@ from aiosendspin.server.roles import (
     MetadataGroupRole,
 )
 from aiosendspin.server.roles.metadata.state import Metadata
+from aiosendspin.server.roles.player.events import StaticDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
@@ -54,7 +55,10 @@ from PIL import Image
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
-from .constants import CONF_SENDSPIN_SYNC_DELAY, DEFAULT_SENDSPIN_SYNC_DELAY
+from .constants import (
+    CONF_SENDSPIN_STATIC_DELAY,
+    DEFAULT_SENDSPIN_STATIC_DELAY,
+)
 from .helpers import mac_from_bridge_client_id
 from .playback import SendspinPlaybackSession
 
@@ -506,6 +510,15 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._attr_volume_level = volume
                 self._attr_volume_muted = muted
                 self.update_state()
+            case StaticDelayChangedEvent(static_delay_ms=delay_ms):
+                self.logger.debug("Static delay changed to %d ms", delay_ms)
+                current = self.config.get_value(
+                    CONF_SENDSPIN_STATIC_DELAY, DEFAULT_SENDSPIN_STATIC_DELAY
+                )
+                if current != delay_ms:
+                    self.mass.config.set_raw_player_config_value(
+                        self.player_id, CONF_SENDSPIN_STATIC_DELAY, delay_ms
+                    )
             case _:
                 super().event_cb(client, event)
 
@@ -620,6 +633,7 @@ class SendspinPlayer(SendspinBasePlayer):
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
         await self._apply_preferred_format()
+        await self._apply_static_delay()
 
     async def _apply_preferred_format(self) -> None:
         """Read config and set/clear the players preferred format."""
@@ -653,6 +667,18 @@ class SendspinPlayer(SendspinBasePlayer):
                 audio_format,
                 self.display_name,
             )
+
+    async def _apply_static_delay(self) -> None:
+        """Read config and send set_static_delay command if supported."""
+        player_role = self._player_role
+        if player_role is None:
+            return
+
+        config_value = cast(
+            "int",
+            self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, DEFAULT_SENDSPIN_STATIC_DELAY),
+        )
+        player_role.set_static_delay(config_value)
 
     async def set_members(
         self,
@@ -806,7 +832,7 @@ class SendspinPlayer(SendspinBasePlayer):
             elapsed_time = current_media.corrected_elapsed_time
         if elapsed_time is None:
             elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
-        track_progress = int(elapsed_time * 1000) if elapsed_time is not None else 0
+        track_progress = max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
 
         metadata = Metadata(
             title=current_media.title,
@@ -834,24 +860,6 @@ class SendspinPlayer(SendspinBasePlayer):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
-        # Only show the sync delay setting for Chromecast Bridge players
-        if self.device_info.model == "Chromecast Bridge":
-            entries.append(
-                ConfigEntry(
-                    key=CONF_SENDSPIN_SYNC_DELAY,
-                    type=ConfigEntryType.INTEGER,
-                    label="Sync delay (ms)",
-                    description="Static delay in milliseconds to adjust audio synchronization. "
-                    "Positive values delay playback, negative values advance it. "
-                    "Use this to compensate for device-specific audio latency.",
-                    required=False,
-                    default_value=DEFAULT_SENDSPIN_SYNC_DELAY,
-                    range=(-1000, 1000),
-                    immediate_apply=True,
-                    advanced=True,
-                ),
-            )
-
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
         if player_role is not None:
@@ -882,6 +890,30 @@ class SendspinPlayer(SendspinBasePlayer):
                         advanced=True,
                     )
                 )
+
+        if (
+            player_role is not None
+            and PlayerCommand.SET_STATIC_DELAY in player_role.state_supported_commands
+        ):
+            entries.append(
+                ConfigEntry(
+                    key=CONF_SENDSPIN_STATIC_DELAY,
+                    type=ConfigEntryType.INTEGER,
+                    label="Static playback delay (ms)",
+                    description=(
+                        "Offset in milliseconds to keep this player in sync with other players. "
+                        "Increase if audio plays too late, for example to compensate for latency "
+                        "from an amp, active speakers, or the OS."
+                    ),
+                    required=False,
+                    default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
+                    range=(0, 5000),
+                    immediate_apply=True,
+                    # Not a advanced option since this will only show up for players where it is likely
+                    # necessary to adjust the delay.
+                    advanced=False,
+                )
+            )
 
         return entries
 

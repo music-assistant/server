@@ -981,7 +981,16 @@ class Player(ABC):
         set to True; otherwise the entire sync session must be torn down and
         re-formed with the new leader.
 
+        The ``new_leader`` must already be part of the live sync session (i.e.
+        its resolved protocol player must be a ``sync_client`` of the current
+        session). If it's a freshly-added player with no existing stream, this
+        method's ``cmd_set_members`` call will be a no-op at the protocol level
+        and the old session remains orphaned. The caller (typically
+        ``SyncGroupPlayer._dynamic_leader_switch``) should verify this
+        precondition before calling.
+
         :param new_leader: The player that should take over as sync leader.
+            Must already be a sync_client of the current session.
         :param remaining_members: Parent player ids (excluding ``new_leader``)
             that should be grouped onto ``new_leader`` after the handoff.
         """

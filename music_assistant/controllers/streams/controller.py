@@ -61,7 +61,6 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_PORT,
     BufferSize,
 )
-from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.helpers.audio import (
     calculate_content_length,
     get_content_length,
@@ -110,7 +109,6 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
-        self._smart_fades_analyzer = SmartFadesAnalyzer(self)
         self._audio_analysis = AudioAnalysisController(self)
 
     @property
@@ -127,11 +125,6 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
-
-    @property
-    def smart_fades_analyzer(self) -> SmartFadesAnalyzer:
-        """Return the SmartFadesAnalyzer instance."""
-        return self._smart_fades_analyzer
 
     async def get_config_entries(
         self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
@@ -1155,8 +1148,6 @@ class StreamsController(CoreController):
         """Set up smart fades logger level."""
         log_level = str(config.get_value(CONF_SMART_FADES_LOG_LEVEL))
         if log_level == "GLOBAL":
-            self.smart_fades_analyzer.logger.setLevel(self.logger.level)
             self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
-            self.smart_fades_analyzer.logger.setLevel(log_level)
             self.audio.smart_fades_mixer.logger.setLevel(log_level)

@@ -14,7 +14,6 @@ from itertools import zip_longest
 from math import inf
 from typing import TYPE_CHECKING, Any, Final, cast
 
-import numpy as np
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -67,13 +66,11 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
-    DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
-from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -90,7 +87,6 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAnalysisFragment
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -113,7 +109,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 36
+DB_SCHEMA_VERSION: Final[int] = 37
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -684,12 +680,14 @@ class MusicController(CoreController):
 
         # An audiobook can be part of the library, in contrast to podcast episodes.
         # We then need to check the provider mappings table.
+        one_week_ago = int(utc_timestamp()) - (7 * 86400)
         query = (
             "SELECT p.item_id, p.media_type, p.name, p.image, p.provider "
             f"FROM {DB_TABLE_PLAYLOG} p "
             "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
             "AND p.fully_played = 0 "
             "AND p.seconds_played > 0 "
+            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago}) "
         )
         query += (
             "AND ( "
@@ -1118,71 +1116,6 @@ class MusicController(CoreController):
         if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
-
-    async def set_smart_fades_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        analysis: SmartFadesAnalysis,
-    ) -> None:
-        """Store Smart Fades BPM analysis for a track in db."""
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return
-        if (
-            analysis.duration <= 0.75 * SMART_CROSSFADE_DURATION
-            or analysis.bpm <= 0
-            or analysis.confidence < 0
-        ):
-            # skip invalid values, we skip analysis that were performed on
-            # a short amount of audio as those are often unreliable
-            return
-        beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
-        downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        values = {
-            "fragment": analysis.fragment.value,
-            "item_id": item_id,
-            "provider": prov_key,
-            "bpm": analysis.bpm,
-            "beats": beats_json,
-            "downbeats": downbeats_json,
-            "confidence": analysis.confidence,
-            "duration": analysis.duration,
-        }
-        await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
-
-    async def get_smart_fades_analysis(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        fragment: SmartFadesAnalysisFragment,
-    ) -> SmartFadesAnalysis | None:
-        """Get Smart Fades BPM analysis for a track from db."""
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return None
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        db_row = await self.database.get_row(
-            DB_TABLE_SMART_FADES_ANALYSIS,
-            {
-                "item_id": item_id,
-                "provider": prov_key,
-                "fragment": fragment.value,
-            },
-        )
-        if db_row and db_row["bpm"] > 0:
-            beats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["beats"])))
-            downbeats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["downbeats"])))
-            return SmartFadesAnalysis(
-                fragment=SmartFadesAnalysisFragment(db_row["fragment"]),
-                bpm=float(db_row["bpm"]),
-                beats=beats,
-                downbeats=downbeats,
-                confidence=float(db_row["confidence"]),
-                duration=float(db_row["duration"]),
-            )
-        return None
 
     async def get_loudness(
         self,
@@ -2333,7 +2266,7 @@ class MusicController(CoreController):
 
         if prev_version <= 21:
             # drop table for smart fades analysis - it will be recreated with needed columns
-            await self._database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}")
+            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
             await self.__create_database_tables()
 
         if prev_version <= 22:
@@ -2633,7 +2566,8 @@ class MusicController(CoreController):
             # Smart fades analyses were previously computed on silence-stripped audio,
             # so beat timestamps are misaligned with the unstripped buffers now passed
             # to the crossfade mixer. Truncate the table so all analyses are re-computed.
-            await self._database.execute(f"DELETE FROM {DB_TABLE_SMART_FADES_ANALYSIS}")
+            with suppress(Exception):
+                await self._database.execute("DELETE FROM smart_fades_analysis")
 
         if prev_version <= 30:
             # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},
@@ -2748,6 +2682,11 @@ class MusicController(CoreController):
                 f"  AND provider_item_id LIKE 'ra.%'"
                 f")"
             )
+
+        if prev_version <= 36:
+            # drop legacy smart_fades_analysis table — analysis is now handled by
+            # audio analysis providers and stored in the audio_analysis table.
+            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
 
         # save changes
         await self._database.commit()
@@ -3029,22 +2968,6 @@ class MusicController(CoreController):
         )
 
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [fragment] INTEGER NOT NULL,
-                    [bpm] REAL NOT NULL,
-                    [beats] TEXT NOT NULL,
-                    [downbeats] TEXT NOT NULL,
-                    [confidence] REAL NOT NULL,
-                    [duration] REAL,
-                    [analysis_version] INTEGER DEFAULT 1,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,fragment));"""
-        )
-
-        await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
                     [id] INTEGER PRIMARY KEY AUTOINCREMENT,
                     [media_type] TEXT NOT NULL,
@@ -3162,11 +3085,6 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
             f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
-        )
-        # index on smart fades analysis table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
-            f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider,fragment);"
         )
         # indexes on genre_media_item_mapping table
         await self.database.execute(
