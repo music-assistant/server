@@ -176,7 +176,9 @@ class AirPlayStreamSession:
                 if trim_bytes >= len(buffered_pcm):
                     # Nothing left of the buffer after the trim. Drop it and
                     # let the audio_streamer feed the late joiner from the
-                    # next chunk; align start_at to that chunk's first sample.
+                    # next chunk. Set start_at to the current live position;
+                    # the clamp below may still move it later to preserve
+                    # the required headroom.
                     buffered_pcm = b""
                     start_at = self.start_time + self.seconds_streamed
                 else:

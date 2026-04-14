@@ -200,7 +200,7 @@ async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    # start_at should be pushed to exactly now + min_headroom (max(2.0, wait_start) = 2.0)
+    # start_at should be pushed to now + min_headroom (session.wait_start = 2.0)
     assert captured_start_at, "unix_time_to_ntp was never called"
     assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01), (
         f"start_at should be at now + min_headroom, got offset {captured_start_at[0] - now:.4f}s"

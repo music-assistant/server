@@ -833,7 +833,9 @@ class SyncGroupPlayer(Player):
 
         if not new_leader:
             # No remaining members to take over — stop the old leader's
-            # session and dissolve the group entirely.
+            # session and dissolve the group entirely. Restore sync_leader
+            # so _dissolve_syncgroup can properly ungroup protocol members.
+            self.sync_leader = old_leader
             self.logger.info(
                 "No remaining members for group %s after removing %s, stopping",
                 self.display_name,
@@ -856,6 +858,9 @@ class SyncGroupPlayer(Player):
                 new_leader.display_name,
                 self.display_name,
             )
+            # Restore sync_leader so _dissolve_and_reform -> _dissolve_syncgroup
+            # can properly ungroup protocol-level members.
+            self.sync_leader = old_leader
             await self._dissolve_and_reform(old_leader_id, leader_to_stop=old_leader)
             return
 
