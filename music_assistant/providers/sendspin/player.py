@@ -899,10 +899,11 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key=CONF_SENDSPIN_STATIC_DELAY,
                     type=ConfigEntryType.INTEGER,
-                    label="Sync delay (ms)",
+                    label="Static playback delay (ms)",
                     description=(
-                        "Delay in milliseconds to compensate for "
-                        "device-specific audio latency (e.g., amplifiers, system delay)."
+                        "Offset in milliseconds to keep this player in sync with other players. "
+                        "Increase if audio plays too late, for example to compensate for latency "
+                        "from an amp, active speakers, or the OS."
                     ),
                     required=False,
                     default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
