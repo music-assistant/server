@@ -75,6 +75,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        without_series: bool | None = None,
         **kwargs: Any,
     ) -> list[Audiobook]:
         """Get in-database audiobooks.
@@ -86,9 +87,16 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param without_series: Do not return audiobooks which are part of a series
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
+        self.logger.error(without_series)
+        if without_series:
+            extra_query_parts = [
+                "WHERE json_extract(audiobooks.metadata, '$.series') IS NULL "
+                "OR json_extract(audiobooks.metadata, '$.series') = '[]'",
+            ]
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -365,28 +373,38 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 allow_replace=True,
             )
 
-    async def series(self) -> list[AudiobookSeries]:
-        """Get all available audiobook series."""
+    async def series(
+        self,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[AudiobookSeries]:
+        """Get all available audiobook series.
+
+        :param limit: Maximum number of items to return.
+        :param offset: Number of items to skip.
+        """
         # key is the series' title
-        series: dict[str, list[Audiobook]] = {}
+        series_dict: dict[str, list[Audiobook]] = {}
         audiobooks_with_series = await self.get_library_items_by_query(
+            limit=limit,
+            offset=offset,
             extra_query_parts=[
                 "WHERE json_extract(audiobooks.metadata, '$.series') IS NOT NULL "
                 "AND json_extract(audiobooks.metadata, '$.series') != '[]'",
-            ]
+            ],
         )
         for audiobook in audiobooks_with_series:
             if audiobook.metadata.series is None:
                 # this should never happen
                 continue
             for series_info in audiobook.metadata.series:
-                audiobook_list = series.get(series_info.title, [])
+                audiobook_list = series_dict.get(series_info.title, [])
                 audiobook_list.append(audiobook)
-                series[series_info.title] = audiobook_list
+                series_dict[series_info.title] = audiobook_list
 
         result: list[AudiobookSeries] = []
         # Sort series, first by number then alphabetically
-        for series_title, audiobook_list in series.items():
+        for series_title, audiobook_list in series_dict.items():
             audiobooks_with_number: list[tuple[Audiobook, float]] = []
             audiobooks_with_string: list[tuple[Audiobook, str]] = []
             audiobooks_with_none: list[Audiobook] = []
