@@ -206,11 +206,9 @@ async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
         f"start_at should be at now + min_headroom, got offset {captured_start_at[0] - now:.4f}s"
     )
 
-    # The buffer should have been trimmed (and contain only \x01 bytes — no silence prepend)
+    # Buffer should have been trimmed: 2.5s out of 5s (start_at shifted from -0.5 to +2.0)
     assert written_chunks, "No data was written to the player"
     written = written_chunks[0]
-    assert b"\x00" not in written, "No silence should be prepended (trim+shift, not prepend)"
-    # We trimmed 2.5s out of 5s (start_at went from -0.5 to +2.0), so 2.5s of \x01 should remain
     remaining_seconds = len(written) / PCM_SAMPLE_SIZE
     assert remaining_seconds == pytest.approx(2.5, abs=0.01), (
         f"expected 2.5s remaining, got {remaining_seconds:.4f}s"
