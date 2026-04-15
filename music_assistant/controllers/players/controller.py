@@ -2703,23 +2703,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if self.mass.closing:
             return
 
-        async def _update_all_players() -> None:
-            if self.mass.closing:
-                return
-
-            for player in self.all_players(
-                return_unavailable=True,
-                return_disabled=False,
-                return_protocol_players=True,
-            ):
-                # Use call_soon to schedule updates without blocking
-                # This spreads the updates across event loop iterations
-                self.mass.loop.call_soon(player.update_state)
-
-        # Use mass.call_later with task_id for automatic debouncing
-        # Each call resets the timer, so rapid registrations only trigger one update
-        task_id = "update_all_players_on_registration"
-        self.mass.call_later(delay, _update_all_players, task_id=task_id)
+        for player in self.all_players(
+            return_unavailable=True,
+            return_disabled=False,
+            return_protocol_players=True,
+        ):
+            self.trigger_player_update(player.player_id, debounce_delay=delay)
 
     async def _auto_ungroup_if_synced(self, player: Player, log_context: str) -> None:
         """
