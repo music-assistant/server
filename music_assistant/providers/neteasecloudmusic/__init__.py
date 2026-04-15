@@ -1338,12 +1338,12 @@ class NeteaseCloudMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
-            return self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "Personal FM")
+            return self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "私人 FM")
         if heart_parts := self._parse_heart_mode_playlist_id(prov_playlist_id):
             seed_song_id, source_playlist_id = heart_parts
             return self._build_dynamic_playlist(
                 f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{source_playlist_id}",
-                "Heart Mode",
+                "心动模式",
             )
         if prov_playlist_id == _PLAYLIST_HEART_MODE_PREFIX:
             if playlist := await self._build_heart_mode_dynamic_playlist():
@@ -1662,7 +1662,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         seed_song_id, playlist_id = heart_parts
         return self._build_dynamic_playlist(
             f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{playlist_id}",
-            "Heart Mode",
+            "心动模式",
         )
 
     async def _pick_heart_mode_tracks(
@@ -1705,10 +1705,10 @@ class NeteaseCloudMusicProvider(MusicProvider):
         folder = RecommendationFolder(
             item_id="recommended_radios",
             provider=self.instance_id,
-            name="Personal Radio",
+            name="私人电台",
             icon="mdi:radio",
         )
-        folder.items.append(self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "Personal FM"))
+        folder.items.append(self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "私人 FM"))
         if heart_playlist := await self._build_heart_mode_dynamic_playlist():
             folder.items.append(heart_playlist)
         return folder if folder.items else None
@@ -1730,7 +1730,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="daily_songs",
                 provider=self.instance_id,
-                name="Daily Picks",
+                name="每日推荐",
                 icon="mdi:star",
             )
             for song_obj in daily_songs:
@@ -1753,7 +1753,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="recommended_new_songs",
                 provider=self.instance_id,
-                name="New Songs",
+                name="推荐新歌",
                 icon="mdi:music-note",
             )
             for item in raw_new_songs:
@@ -1779,7 +1779,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="recommended_playlists",
                 provider=self.instance_id,
-                name="Recommended Playlists",
+                name="推荐歌单",
                 icon="mdi:playlist-music",
             )
             for playlist_obj in raw_playlists:
