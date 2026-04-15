@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -80,12 +79,10 @@ class SmartFade(ABC):
         :param fade_in_part: Raw PCM bytes or async generator for the incoming track's head.
         :param pcm_format: Audio format of both input parts and the output.
         """
-        _phase0_entry = time.perf_counter()
         # Write the fade_out_part to a temporary file
         fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
             await outfile.write(fade_out_part)
-        _phase0_after_write = time.perf_counter()
 
         args = [
             "ffmpeg",
@@ -147,32 +144,16 @@ class SmartFade(ABC):
         got_output = False
         stderr_lines: list[str] = []
         try:
-            _phase0_spawn_start = time.perf_counter()
             proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="smartfade")
             async with proc:
-                _phase0_spawn_end = time.perf_counter()
-                _phase0_spawn_ms = (_phase0_spawn_end - _phase0_spawn_start) * 1000
 
                 async def _feed_stdin() -> None:
-                    _phase0_feed_start = time.perf_counter()
-                    _phase0_bytes_written = 0
                     if isinstance(fade_in_part, bytes):
                         await proc.write(fade_in_part)
-                        _phase0_bytes_written = len(fade_in_part)
                     else:
                         async for fade_chunk in fade_in_part:
                             await proc.write(fade_chunk)
-                            _phase0_bytes_written += len(fade_chunk)
-                    _phase0_feed_write_done = time.perf_counter()
                     await proc.write_eof()
-                    _phase0_feed_eof_done = time.perf_counter()
-                    self.logger.warning(
-                        "[PHASE0] %s.apply stdin: write=%.1fms eof=%.1fms bytes=%d",
-                        type(self).__name__,
-                        (_phase0_feed_write_done - _phase0_feed_start) * 1000,
-                        (_phase0_feed_eof_done - _phase0_feed_write_done) * 1000,
-                        _phase0_bytes_written,
-                    )
 
                 async def _drain_stderr() -> None:
                     """Read stderr to prevent pipe deadlock."""
@@ -182,32 +163,9 @@ class SmartFade(ABC):
                 feed_task = asyncio.create_task(_feed_stdin())
                 stderr_task = asyncio.create_task(_drain_stderr())
                 try:
-                    _phase0_first_chunk_logged = False
-                    _phase0_first = 0.0
                     async for chunk in proc.iter_any():
-                        if not _phase0_first_chunk_logged:
-                            _phase0_first_chunk_logged = True
-                            _phase0_first = time.perf_counter()
-                            self.logger.warning(
-                                "[PHASE0] %s.apply async: spawn=%.1fms "
-                                "first_chunk_after_spawn=%.1fms tmp_write=%.1fms "
-                                "fade_out_bytes=%d",
-                                type(self).__name__,
-                                _phase0_spawn_ms,
-                                (_phase0_first - _phase0_spawn_end) * 1000,
-                                (_phase0_after_write - _phase0_entry) * 1000,
-                                len(fade_out_part),
-                            )
                         got_output = True
                         yield chunk
-                    if _phase0_first_chunk_logged:
-                        _phase0_last = time.perf_counter()
-                        self.logger.warning(
-                            "[PHASE0] %s.apply async: first_to_last=%.1fms total_from_spawn=%.1fms",
-                            type(self).__name__,
-                            (_phase0_last - _phase0_first) * 1000,
-                            (_phase0_last - _phase0_spawn_start) * 1000,
-                        )
                 finally:
                     if not feed_task.done():
                         feed_task.cancel()

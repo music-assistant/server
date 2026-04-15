@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -83,31 +82,17 @@ class SmartFadesMixer:
             return
 
         # Attempt smart crossfade with analysis data from audio analysis providers
-        _phase0_t0 = time.perf_counter()
         fade_out_analysis: (
             AudioAnalysisData | None
         ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_out_streamdetails.item_id,
             fade_out_streamdetails.provider,
         )
-        _phase0_t1 = time.perf_counter()
         fade_in_analysis: (
             AudioAnalysisData | None
         ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_in_streamdetails.item_id,
             fade_in_streamdetails.provider,
-        )
-        _phase0_t2 = time.perf_counter()
-        self.logger.warning(
-            "[PHASE0] mixer analysis lookup: fade_out=%.1fms fade_in=%.1fms "
-            "total=%.1fms (%s/%s -> %s/%s)",
-            (_phase0_t1 - _phase0_t0) * 1000,
-            (_phase0_t2 - _phase0_t1) * 1000,
-            (_phase0_t2 - _phase0_t0) * 1000,
-            fade_out_streamdetails.provider,
-            fade_out_streamdetails.item_id,
-            fade_in_streamdetails.provider,
-            fade_in_streamdetails.item_id,
         )
         if (
             fade_out_analysis

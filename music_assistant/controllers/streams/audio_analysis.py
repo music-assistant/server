@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderType
@@ -149,9 +148,7 @@ class AudioAnalysisController:
         ):
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        _phase0_t0 = time.perf_counter()
         data_json = json_dumps(analysis.to_dict())
-        _phase0_t1 = time.perf_counter()
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_AUDIO_ANALYSIS,
             {
@@ -162,16 +159,6 @@ class AudioAnalysisController:
                 "analysis_data": data_json,
                 "analysis_version": analysis_version,
             },
-        )
-        _phase0_t2 = time.perf_counter()
-        self.logger.warning(
-            "[PHASE0] set_audio_analysis(%s/%s/%s): encode=%.1fms db=%.1fms blob=%dKB",
-            prov_key,
-            item_id,
-            aa_provider_domain,
-            (_phase0_t1 - _phase0_t0) * 1000,
-            (_phase0_t2 - _phase0_t1) * 1000,
-            len(data_json) // 1024,
         )
 
     async def get_audio_analysis(
@@ -197,7 +184,6 @@ class AudioAnalysisController:
         ):
             return None
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        _phase0_t0 = time.perf_counter()
         rows = await self.mass.music.database.get_rows(
             DB_TABLE_AUDIO_ANALYSIS,
             {
@@ -207,21 +193,13 @@ class AudioAnalysisController:
             },
             order_by="timestamp_created ASC",
         )
-        _phase0_t1 = time.perf_counter()
         if not rows:
-            self.logger.warning(
-                "[PHASE0] get_audio_analysis(%s/%s): db=%.1fms rows=0 (miss)",
-                prov_key,
-                item_id,
-                (_phase0_t1 - _phase0_t0) * 1000,
-            )
             return None
 
         available_aa_domains = {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         }
 
-        _phase0_total_blob = sum(len(row["analysis_data"]) for row in rows)
         merged = AudioAnalysisData()
         found = False
         for row in rows:
@@ -230,17 +208,6 @@ class AudioAnalysisController:
             row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
             merged.update(row_data)
             found = True
-        _phase0_t2 = time.perf_counter()
-        self.logger.warning(
-            "[PHASE0] get_audio_analysis(%s/%s): db=%.1fms decode=%.1fms rows=%d blob=%dKB%s",
-            prov_key,
-            item_id,
-            (_phase0_t1 - _phase0_t0) * 1000,
-            (_phase0_t2 - _phase0_t1) * 1000,
-            len(rows),
-            _phase0_total_blob // 1024,
-            "" if found else " (no available aa provider)",
-        )
         return merged if found else None
 
     async def get_audio_analysis_version(
