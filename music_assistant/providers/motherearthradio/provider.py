@@ -21,7 +21,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.models.music_provider import MusicProvider
 
 from . import parsers
-from .constants import MER_CHANNELS, NOWPLAYING_API_URL
+from .constants import MER_BIT_DEPTH, MER_CHANNELS, MER_SAMPLE_RATE, NOWPLAYING_API_URL
 
 
 class MotherEarthRadioProvider(MusicProvider):
@@ -91,6 +91,8 @@ class MotherEarthRadioProvider(MusicProvider):
             provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=channel_info["content_type"],
+                sample_rate=MER_SAMPLE_RATE,
+                bit_depth=MER_BIT_DEPTH,
                 channels=2,
             ),
             media_type=MediaType.RADIO,
