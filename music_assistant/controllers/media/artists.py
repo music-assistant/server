@@ -53,6 +53,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
         self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
+        self.mass.register_api_command(f"music/{api_base}/artist_audiobooks", self.audiobooks)
 
     async def library_count(
         self,
