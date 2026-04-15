@@ -9,7 +9,13 @@ from music_assistant_models.enums import ProviderFeature
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album, Artist, MediaItemMetadata, Track
+    from music_assistant_models.media_items import (
+        Album,
+        Artist,
+        MediaItemMetadata,
+        RecommendationFolder,
+        Track,
+    )
 
 
 class MetadataProvider(Provider):
@@ -49,3 +55,14 @@ class MetadataProvider(Provider):
         a string with an http(s) URL or local path that is accessible from the server.
         """
         return path
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's recommendations.
+
+        Returns an actual (and often personalised) list of recommendations
+        from this provider for the user/account.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return []
