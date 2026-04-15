@@ -163,6 +163,7 @@ class AirPlay2Stream(AirPlayProtocol):
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
+            self.last_stderr_activity = time.time()
             if "player: event_play_start()" in line:
                 # successfully connected
                 self._connected.set()

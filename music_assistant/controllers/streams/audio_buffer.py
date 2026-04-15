@@ -295,12 +295,13 @@ class AudioBuffer:
             with suppress(asyncio.CancelledError):
                 await self._inactivity_task
 
-        # signal cancel to cancel callbacks before clearing them
-        for callback in list(self._cancel_callbacks):
-            try:
-                callback()
-            except Exception:
-                LOGGER.exception("Cancel callback failed during clear")
+        # signal cancel callbacks only if the stream did not complete normally
+        if not self._eof_received:
+            for callback in list(self._cancel_callbacks):
+                try:
+                    callback()
+                except Exception:
+                    LOGGER.exception("Cancel callback failed during clear")
 
         async with self._lock:
             self._chunks = deque()
