@@ -71,10 +71,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
-        self.mass.register_api_command(f"music/{api_base}/authors", self.authors)
-        self.mass.register_api_command(f"music/{api_base}/author_books", self.author_books)
-        self.mass.register_api_command(f"music/{api_base}/narrators", self.narrators)
-        self.mass.register_api_command(f"music/{api_base}/narrator_books", self.narrator_books)
 
     async def library_items(
         self,
