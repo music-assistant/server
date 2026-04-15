@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from asyncio import TaskGroup
 from datetime import datetime
+from hashlib import md5
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+from urllib.parse import urlencode
 
 from libopensonic import AsyncConnection as SonicConnection
 from libopensonic.errors import (
@@ -621,6 +624,28 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Failed to remove songs from {prov_playlist_id}, check your permissions."
             raise ProviderPermissionDenied(msg) from ex
 
+    def _build_stream_url(self, item_id: str) -> str:
+        """Build a signed HTTP URL for the raw (untranscoded) stream endpoint."""
+        conn = self.conn
+        qdict: dict[str, str] = {
+            "f": "json",
+            "v": conn.api_version,
+            "c": conn.app_name,
+            "id": item_id,
+            "format": "raw",
+        }
+        if conn.api_key:
+            qdict["apiKey"] = conn.api_key
+        else:
+            qdict["u"] = conn.username
+            if conn.legacy_auth:
+                qdict["p"] = "enc:" + "".join(f"{ord(c):02X}" for c in conn.password)
+            else:
+                salt = md5(os.urandom(100)).hexdigest()[:16]
+                qdict["s"] = salt
+                qdict["t"] = md5((conn.password + salt).encode("utf-8")).hexdigest()
+        return f"{conn.base_url}:{conn.port}/{conn.server_path}/stream.view?{urlencode(qdict)}"
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get the details needed to process a specified track."""
         item: SonicItem | SonicEpisode
@@ -631,19 +656,15 @@ class OpenSonicProvider(MusicProvider):
                 msg = f"Item {item_id} not found"
                 raise MediaNotFoundError(msg) from e
 
-            mime_type = item.transcoded_content_type or item.content_type
-
             self.logger.debug(
                 "Fetching stream details for id %s '%s' with format '%s'",
                 item.id,
                 item.title,
-                mime_type,
+                item.content_type,
             )
 
         elif media_type == MediaType.PODCAST_EPISODE:
             item = await self._get_podcast_episode(item_id)
-
-            mime_type = item.transcoded_content_type or item.content_type
 
             self.logger.debug(
                 "Fetching stream details for podcast episode '%s' with format '%s'",
@@ -654,32 +675,29 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Unsupported media type encountered '{media_type}'"
             raise UnsupportedFeaturedException(msg)
 
-        if mime_type and mime_type.endswith("mp4"):
+        if item.content_type and item.content_type.endswith("mp4"):
             self.logger.warning(
                 "Due to the streaming method used by the subsonic API, M4A files "
                 "may fail. See provider documentation for more information."
             )
 
-        # We believe that reporting the container type here is causing playback problems and ffmpeg
-        # should be capable of guessing the correct container type for any media supported by
-        # OpenSubsonic servers. Better to let ffmpeg figure things out than tell it something
-        # confusing. We still go through the effort of figuring out what the server thinks the
-        # container is to warn about M4A files.
-        mime_type = "?"
-
+        # Let ffmpeg figure out the container type from the raw stream — it's better at
+        # this than trusting the server's reported MIME type, which has historically
+        # caused playback problems.
         return StreamDetails(
             item_id=item.id,
             provider=self.instance_id,
             allow_seek=True,
-            can_seek=False,
+            can_seek=True,
             media_type=media_type,
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(mime_type),
+                content_type=ContentType.UNKNOWN,
                 sample_rate=item.sampling_rate or 44100,
                 bit_depth=item.bit_depth or 16,
                 channels=item.channel_count or 2,
             ),
-            stream_type=StreamType.CUSTOM,
+            stream_type=StreamType.HTTP,
+            path=self._build_stream_url(item.id),
             duration=item.duration or 0,
         )
 
@@ -765,27 +783,6 @@ class OpenSonicProvider(MusicProvider):
                 )
         # If we get here, there is no bookmark
         return (False, 0, None)
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Provide a generator for the stream data."""
-        # Always request the raw (untranscoded) source file and let MA's core stream
-        # pipeline handle decoding, seeking and any optional re-encoding. Server-side
-        # transcoding with timeOffset is unreliable across OpenSubsonic implementations
-        # (e.g. Navidrome ignores timeOffset for direct-passthrough codecs like opus).
-        self.logger.debug("Streaming %s", streamdetails.item_id)
-        try:
-            resp = await self.conn.stream(streamdetails.item_id, tformat="raw")
-        except DataNotFoundError as err:
-            msg = f"Item '{streamdetails.item_id}' not found"
-            raise MediaNotFoundError(msg) from err
-        self.logger.debug("starting stream of item '%s'", streamdetails.item_id)
-        async with resp:
-            async for chunk in resp.content.iter_chunked(40960):
-                yield bytes(chunk)
-
-        self.logger.debug("Done streaming %s", streamdetails.item_id)
 
     async def _get_podcast_channel_async(self, chan_id: str) -> PodcastChannel | None:
         if cache := await self.mass.cache.get(
