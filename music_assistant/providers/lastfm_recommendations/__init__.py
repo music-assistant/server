@@ -11,7 +11,6 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import RecommendationFolder
 
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
@@ -22,6 +21,7 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.media_items import RecommendationFolder
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -205,24 +205,16 @@ class LastFMRecommendationsProvider(MetadataProvider):
         self.mbid_resolver = MBIDResolver(self)
         self.recommendations_manager = LastFMRecommendationManager(self)
 
-        # Load cached folders so recommendations survive a provider reload.
-        cache_key = f"recommendation_folders_{self.instance_id}"
-        cached_folders = await self.mass.cache.get(cache_key, base_class=RecommendationFolder)
+        self._recommendation_folders: list[RecommendationFolder] = []
+        self._recommendations_populated = False
 
-        if cached_folders and isinstance(cached_folders, list):
-            self._recommendation_folders: list[RecommendationFolder] = cached_folders
-            self._recommendations_populated = True
-            self.logger.debug("Loaded %d recommendation folders from cache", len(cached_folders))
-        else:
-            self._recommendation_folders = []
-            self._recommendations_populated = False
-            # Delay the initial populate so other providers (e.g. Spotify) finish loading first;
-            # without this, resolution fails when no streaming providers are available yet.
-            self.mass.call_later(
-                20,
-                self._populate_recommendations,
-                task_id=f"lastfm_recommendations_initial_populate_{self.instance_id}",
-            )
+        # Delay the initial populate so other providers (e.g. Spotify) finish loading first;
+        # without this, resolution fails when no streaming providers are available yet.
+        self.mass.call_later(
+            20,
+            self._populate_recommendations,
+            task_id=f"lastfm_recommendations_initial_populate_{self.instance_id}",
+        )
 
         self._schedule_refresh()
 
@@ -264,13 +256,6 @@ class LastFMRecommendationsProvider(MetadataProvider):
             self.logger.info(
                 "Last.fm recommendations built (%d folders)",
                 len(self._recommendation_folders),
-            )
-
-            cache_key = f"recommendation_folders_{self.instance_id}"
-            await self.mass.cache.set(
-                cache_key,
-                [folder.to_dict() for folder in self._recommendation_folders],
-                expiration=60 * 60 * 24,
             )
         except MusicAssistantError as err:
             self.logger.warning("Failed to populate recommendations: %s", err)

@@ -62,9 +62,6 @@ class LastFMRecommendationManager:
 
         await self.mass.cache.clear(category_filter=CACHE_CATEGORY_RESOLVED_ITEMS)
 
-        cache_key = f"recommendation_folders_{self.provider.instance_id}"
-        await self.mass.cache.delete(cache_key)
-
         self.provider._recommendation_folders.clear()
         self.provider._recommendations_populated = False
 
