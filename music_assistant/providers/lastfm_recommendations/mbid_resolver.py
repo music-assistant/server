@@ -40,6 +40,7 @@ class MBIDResolver:
         cached = await self.mass.cache.get(
             key=cache_key,
             category=CACHE_CATEGORY_MBID_ISRC,
+            provider=self.provider.instance_id,
         )
 
         if cached is not None:
@@ -60,6 +61,7 @@ class MBIDResolver:
                 key=cache_key,
                 data={"isrcs": isrcs},
                 category=CACHE_CATEGORY_MBID_ISRC,
+                provider=self.provider.instance_id,
                 expiration=self.CACHE_EXPIRATION,
             )
 
@@ -72,6 +74,7 @@ class MBIDResolver:
                 key=cache_key,
                 data={"isrcs": []},
                 category=CACHE_CATEGORY_MBID_ISRC,
+                provider=self.provider.instance_id,
                 expiration=self.CACHE_EXPIRATION,
             )
 

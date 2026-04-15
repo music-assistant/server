@@ -60,12 +60,41 @@ class LastFMRecommendationManager:
         """Clear in-memory and persistent recommendation caches."""
         self._resolved_cache.clear()
 
-        await self.mass.cache.clear(category_filter=CACHE_CATEGORY_RESOLVED_ITEMS)
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider_filter=self.provider.instance_id,
+        )
 
         self.provider._recommendation_folders.clear()
         self.provider._recommendations_populated = False
 
         self.logger.info("Cleared all recommendation caches (in-memory and persistent)")
+
+    async def build_recommendation_folders(self) -> list[RecommendationFolder]:
+        """Build all recommendation folders based on current config."""
+        folders: list[RecommendationFolder] = []
+
+        personalized = await self._get_personalized_recommendations()
+        if personalized:
+            folders.extend(personalized)
+            self.logger.debug("Added %d personalized recommendation folder(s)", len(personalized))
+
+        global_recs = await self._get_global_recommendations()
+        if global_recs:
+            folders.extend(global_recs)
+            self.logger.debug("Added %d global recommendation folder(s)", len(global_recs))
+
+        genre = await self._get_genre_based_recommendations()
+        if genre:
+            folders.extend(genre)
+            self.logger.debug("Added %d genre-based recommendation folder(s)", len(genre))
+
+        geo = await self._get_geo_based_recommendations()
+        if geo:
+            folders.extend(geo)
+            self.logger.debug("Added %d geography-based recommendation folder(s)", len(geo))
+
+        return folders
 
     async def _is_in_library(self, item_data: dict[str, Any], media_type: MediaType) -> bool:
         """Return True if the Last.fm item already exists in the MA library.
@@ -161,6 +190,7 @@ class LastFMRecommendationManager:
         cached_artist = await self.mass.cache.get(
             key=persistent_cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
             base_class=Artist,
         )
         if isinstance(cached_artist, Artist):
@@ -174,6 +204,7 @@ class LastFMRecommendationManager:
                 persistent_cache_key,
                 artist.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
+                provider=self.provider.instance_id,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
         return artist
@@ -204,6 +235,7 @@ class LastFMRecommendationManager:
         cached_track = await self.mass.cache.get(
             key=persistent_cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
             base_class=Track,
         )
         if isinstance(cached_track, Track):
@@ -219,6 +251,7 @@ class LastFMRecommendationManager:
                 persistent_cache_key,
                 track.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
+                provider=self.provider.instance_id,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
         return track
@@ -249,6 +282,7 @@ class LastFMRecommendationManager:
         cached_album = await self.mass.cache.get(
             key=persistent_cache_key,
             category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider=self.provider.instance_id,
             base_class=Album,
         )
         if isinstance(cached_album, Album):
@@ -262,6 +296,7 @@ class LastFMRecommendationManager:
                 persistent_cache_key,
                 album.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
+                provider=self.provider.instance_id,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
         return album

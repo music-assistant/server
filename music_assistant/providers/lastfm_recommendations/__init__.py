@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -31,8 +32,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
 }
 
-# Config action constants
 CONF_ACTION_CLEAR_CACHE = "clear_cache"
+REFRESH_TASK_ID = "lastfm_recommendations_refresh"
 
 # Curated list of popular countries for Last.fm geo charts
 # Last.fm API expects full country names (not ISO codes)
@@ -101,7 +102,7 @@ async def get_config_entries(
         provider = mass.get_provider(instance_id)
         if isinstance(provider, LastFMRecommendationsProvider):
             await provider.recommendations_manager.clear_cache()
-            mass.create_task(provider._populate_recommendations())
+            mass.create_task(provider._refresh_recommendations())
 
     return (
         ConfigEntry(
@@ -119,15 +120,6 @@ async def get_config_entries(
             required=False,
             description="Your Last.fm username for genre-based recommendations (optional)",
             value=values.get("username") if values else None,
-        ),
-        ConfigEntry(
-            key="refresh_interval",
-            type=ConfigEntryType.INTEGER,
-            label="Refresh Interval (hours)",
-            default_value=6,
-            description="How often to refresh recommendations (0 to disable automatic refresh)",
-            category="Recommendations",
-            range=(0, 168),  # 0 to 1 week
         ),
         ConfigEntry(
             key="enable_personalized",
@@ -182,13 +174,13 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_CACHE,
             type=ConfigEntryType.ACTION,
-            label="Clear Recommendation Cache",
+            label="Refresh Recommendations",
             description=(
-                "Clear all cached recommendations. "
-                "Use if a provider was removed or recommendations are stale."
+                "Rebuild recommendations immediately instead of waiting for the next "
+                "scheduled refresh."
             ),
             action=CONF_ACTION_CLEAR_CACHE,
-            action_label="Clear Cache",
+            action_label="Refresh Now",
             category="Recommendations",
             advanced=True,
             required=False,
@@ -208,91 +200,40 @@ class LastFMRecommendationsProvider(MetadataProvider):
         self._recommendation_folders: list[RecommendationFolder] = []
         self._recommendations_populated = False
 
-        # Delay the initial populate so other providers (e.g. Spotify) finish loading first;
-        # without this, resolution fails when no streaming providers are available yet.
-        self.mass.call_later(
-            20,
-            self._populate_recommendations,
-            task_id=f"lastfm_recommendations_initial_populate_{self.instance_id}",
+        # Register recurring refresh task (default: every 6 hours).
+        # Initial delay of 20s allows streaming providers to finish loading first.
+        self.mass.tasks.register_scheduled_task(
+            task_id=f"{REFRESH_TASK_ID}_{self.instance_id}",
+            name="Refresh Last.fm recommendations",
+            handler=self._refresh_recommendations,
+            schedule=TaskSchedule.hourly(every=6),
+            initial_delay=20,
+            translation_key="background_task.refresh_lastfm_recommendations",
         )
 
-        self._schedule_refresh()
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider."""
+        self.mass.tasks.unregister_scheduled_task(
+            f"{REFRESH_TASK_ID}_{self.instance_id}",
+            clear_persisted_state=is_removed,
+        )
 
-    async def _populate_recommendations(self) -> None:
-        """Populate recommendation folders in the background."""
+    async def _refresh_recommendations(self) -> None:
+        """Rebuild recommendation folders."""
+        self._recommendation_folders.clear()
+        self._recommendations_populated = False
+
         try:
             self.logger.info("Building Last.fm recommendations")
-
-            # Build folders incrementally so each category appears as soon as it's ready.
-            personalized_folders = (
-                await self.recommendations_manager._get_personalized_recommendations()
-            )
-            if personalized_folders:
-                self._recommendation_folders.extend(personalized_folders)
-                self.logger.debug(
-                    "Added %d personalized recommendation folder(s)", len(personalized_folders)
-                )
-
-            global_folders = await self.recommendations_manager._get_global_recommendations()
-            if global_folders:
-                self._recommendation_folders.extend(global_folders)
-                self.logger.debug("Added %d global recommendation folder(s)", len(global_folders))
-
-            genre_folders = await self.recommendations_manager._get_genre_based_recommendations()
-            if genre_folders:
-                self._recommendation_folders.extend(genre_folders)
-                self.logger.debug(
-                    "Added %d genre-based recommendation folder(s)", len(genre_folders)
-                )
-
-            geo_folders = await self.recommendations_manager._get_geo_based_recommendations()
-            if geo_folders:
-                self._recommendation_folders.extend(geo_folders)
-                self.logger.debug(
-                    "Added %d geography-based recommendation folder(s)", len(geo_folders)
-                )
-
+            folders = await self.recommendations_manager.build_recommendation_folders()
+            self._recommendation_folders.extend(folders)
             self._recommendations_populated = True
             self.logger.info(
                 "Last.fm recommendations built (%d folders)",
                 len(self._recommendation_folders),
             )
-            # TODO: signal the frontend to refresh the Discover view once a suitable
-            # event exists upstream (e.g. a RECOMMENDATIONS_UPDATED EventType).
         except MusicAssistantError as err:
-            self.logger.warning("Failed to populate recommendations: %s", err)
-
-    def _schedule_refresh(self) -> None:
-        """Schedule the next periodic refresh of recommendations."""
-        refresh_interval_value = self.config.get_value("refresh_interval")
-        if isinstance(refresh_interval_value, (int, float)):
-            refresh_interval_hours = int(refresh_interval_value)
-        else:
-            refresh_interval_hours = 6
-        if refresh_interval_hours <= 0:
-            self.logger.debug("Automatic refresh disabled (interval set to 0)")
-            return
-
-        refresh_interval_seconds = float(refresh_interval_hours * 3600)
-
-        self.mass.call_later(
-            refresh_interval_seconds,
-            self._refresh_recommendations,
-            task_id=f"lastfm_recommendations_refresh_{self.instance_id}",
-        )
-        self.logger.debug(
-            "Scheduled next recommendations refresh in %d hours", refresh_interval_hours
-        )
-
-    async def _refresh_recommendations(self) -> None:
-        """Re-populate recommendations and reschedule the next refresh."""
-        try:
-            self.logger.debug("Refreshing Last.fm recommendations (scheduled)")
-            await self._populate_recommendations()
-        except MusicAssistantError as err:
-            self.logger.warning("Failed to refresh recommendations: %s", err)
-        finally:
-            self._schedule_refresh()
+            self.logger.warning("Failed to build recommendations: %s", err)
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """Return this provider's recommendation folders.
