@@ -9,9 +9,7 @@ AZURACAST_BASE_URL = "https://stream.motherearthradio.de"
 NOWPLAYING_API_URL = f"{AZURACAST_BASE_URL}/api/nowplaying"
 
 # Station icon URL
-STATION_ICON_URL = (
-    "https://motherearthradio.de/wp-content/uploads/2025/12/mer-logo-cube-bold-1x-512.png"
-)
+STATION_ICON_URL = "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/public/assets/icons/motherearthradio-icon.png"
 
 
 class MerChannel(TypedDict):

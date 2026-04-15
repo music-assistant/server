@@ -1,7 +1,9 @@
 """All constants for Music Assistant."""
 
 import json
+import os
 import pathlib
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -28,7 +30,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 29
+API_SCHEMA_VERSION: Final[int] = 30
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -159,7 +161,6 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
-DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
@@ -972,18 +973,19 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
-
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
-    ("airplay", False),
-    ("chromecast", False),
-    ("dlna", False),
-    ("sonos", True),
-    ("bluesound", True),
-    ("heos", True),
-    ("party", False),
+    # the callable is a precondition that must return True for the provider to be setup
+    ("airplay", False, lambda: True),
+    ("chromecast", False, lambda: True),
+    ("dlna", False, lambda: True),
+    ("sonos", True, lambda: True),
+    ("bluesound", True, lambda: True),
+    ("heos", True, lambda: True),
+    ("party", False, lambda: True),
+    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

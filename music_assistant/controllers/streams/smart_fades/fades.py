@@ -24,9 +24,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
 )
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
-from music_assistant.models.smart_fades import (
-    SmartFadesAnalysis,
-)
+from music_assistant.models.audio_analysis import AudioAnalysisData
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -202,31 +200,54 @@ class SmartCrossFade(SmartFade):
     def __init__(
         self,
         logger: logging.Logger,
-        fade_out_analysis: SmartFadesAnalysis,
-        fade_in_analysis: SmartFadesAnalysis,
+        fade_out_analysis: AudioAnalysisData,
+        fade_in_analysis: AudioAnalysisData,
     ) -> None:
         """Initialize SmartFades with analysis data.
 
-        Args:
-            fade_out_analysis: Analysis data for the outgoing track
-            fade_in_analysis: Analysis data for the incoming track
-            logger: Optional logger for debug output
+        :param logger: Logger for debug output.
+        :param fade_out_analysis: Analysis data for the outgoing track.
+        :param fade_in_analysis: Analysis data for the incoming track.
         """
+        if (
+            fade_out_analysis.bpm is None
+            or fade_in_analysis.bpm is None
+            or fade_out_analysis.beats is None
+            or fade_in_analysis.beats is None
+        ):
+            raise ValueError("AudioAnalysisData must have bpm and beats set for smart crossfade")
         self.fade_out_analysis = fade_out_analysis
         self.fade_in_analysis = fade_in_analysis
+        # Store validated non-optional fields for type narrowing
+        self.fade_out_bpm: float = fade_out_analysis.bpm
+        self.fade_in_bpm: float = fade_in_analysis.bpm
+        self.fade_in_beats: npt.NDArray[np.float32] = fade_in_analysis.beats
+        self.fade_in_downbeats: npt.NDArray[np.float32] = (
+            fade_in_analysis.downbeats
+            if fade_in_analysis.downbeats is not None
+            else fade_in_analysis.beats
+        )
+        # Shift fade-out beats from full-track to buffer-local coordinates
+        buffer_offset = max(0.0, (fade_out_analysis.duration or 0.0) - SMART_CROSSFADE_DURATION)
+        self.fade_out_beats: npt.NDArray[np.float32] = fade_out_analysis.beats - buffer_offset
+        self.fade_out_downbeats: npt.NDArray[np.float32] = (
+            fade_out_analysis.downbeats - buffer_offset
+            if fade_out_analysis.downbeats is not None
+            else np.array([], dtype=np.float32)
+        )
         super().__init__(logger)
 
     def _build(self) -> None:
         """Build the smart fades filter chain."""
         # Calculate tempo factor for time stretching
-        bpm_ratio = self.fade_in_analysis.bpm / self.fade_out_analysis.bpm
+        bpm_ratio = self.fade_in_bpm / self.fade_out_bpm
         bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
 
         # Extrapolate downbeats for better bar calculation
         self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
-            self.fade_out_analysis.downbeats,
+            self.fade_out_downbeats,
             tempo_factor=1.0,
-            bpm=self.fade_out_analysis.bpm,
+            bpm=self.fade_out_bpm,
         )
 
         # Additional verbose logging to debug rare failures
@@ -254,9 +275,9 @@ class SmartCrossFade(SmartFade):
             self.filters.append(TimeStretchFilter(logger=self.logger, stretch_ratio=bpm_ratio))
             # Re-extrapolate downbeats with actual tempo factor for time-stretched audio
             self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
-                self.fade_out_analysis.downbeats,
+                self.fade_out_downbeats,
                 tempo_factor=bpm_ratio,
-                bpm=self.fade_out_analysis.bpm,
+                bpm=self.fade_out_bpm,
             )
 
         if fadein_start_pos and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION:
@@ -277,7 +298,7 @@ class SmartCrossFade(SmartFade):
         )
 
         # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
-        avg_bpm = (self.fade_out_analysis.bpm + self.fade_in_analysis.bpm) / 2
+        avg_bpm = (self.fade_out_bpm + self.fade_in_bpm) / 2
         crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
 
         # Adjust for BPM mismatch
@@ -339,7 +360,7 @@ class SmartCrossFade(SmartFade):
         """Calculate final crossfade duration based on musical bars and BPM."""
         # Calculate crossfade duration based on incoming track's BPM
         beats_per_bar = 4
-        seconds_per_beat = 60.0 / self.fade_in_analysis.bpm
+        seconds_per_beat = 60.0 / self.fade_in_bpm
         musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
 
         # Apply buffer constraint
@@ -358,8 +379,8 @@ class SmartCrossFade(SmartFade):
 
     def _calculate_optimal_crossfade_bars(self) -> int:
         """Calculate optimal crossfade bars that fit in available buffer."""
-        bpm_in = self.fade_in_analysis.bpm
-        bpm_out = self.fade_out_analysis.bpm
+        bpm_in = self.fade_in_bpm
+        bpm_out = self.fade_out_bpm
         bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
 
         # Calculate ideal bars based on BPM compatibility
@@ -399,8 +420,8 @@ class SmartCrossFade(SmartFade):
         beats_per_bar = 4
 
         def calculate_beat_positions(
-            fade_out_beats: npt.NDArray[np.float64],
-            fade_in_beats: npt.NDArray[np.float64],
+            fade_out_beats: npt.NDArray[np.float32],
+            fade_in_beats: npt.NDArray[np.float32],
             num_beats: int,
         ) -> float | None:
             """Calculate start positions from beat arrays."""
@@ -412,17 +433,17 @@ class SmartCrossFade(SmartFade):
 
         # Try downbeats first for most musical timing
         downbeat_positions = calculate_beat_positions(
-            self.extrapolated_fadeout_downbeats, self.fade_in_analysis.downbeats, crossfade_bars
+            self.extrapolated_fadeout_downbeats, self.fade_in_downbeats, crossfade_bars
         )
-        if downbeat_positions:
+        if downbeat_positions is not None:
             return downbeat_positions
 
         # Try regular beats if downbeats insufficient
         required_beats = crossfade_bars * beats_per_bar
         beat_positions = calculate_beat_positions(
-            self.fade_out_analysis.beats, self.fade_in_analysis.beats, required_beats
+            self.fade_out_beats, self.fade_in_beats, required_beats
         )
-        if beat_positions:
+        if beat_positions is not None:
             return beat_positions
 
         # Fallback: No beat alignment possible
@@ -579,11 +600,11 @@ def get_bpm_diff_percentage(bpm1: float, bpm2: float) -> float:
 
 
 def extrapolate_downbeats(
-    downbeats: npt.NDArray[np.float64],
+    downbeats: npt.NDArray[np.float32],
     tempo_factor: float,
     buffer_size: float = SMART_CROSSFADE_DURATION,
     bpm: float | None = None,
-) -> npt.NDArray[np.float64]:
+) -> npt.NDArray[np.float32]:
     """Extrapolate downbeats based on actual intervals when detection is incomplete.
 
     This is needed when we want to perform beat alignment in an 'atmospheric' outro
