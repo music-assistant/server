@@ -77,7 +77,6 @@ if TYPE_CHECKING:
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
-CONF_OVERRIDE_OFFSET = "override_transcode_offest"
 CONF_RECO_FAVES = "recommend_favorites"
 CONF_NEW_ALBUMS = "recommend_new"
 CONF_PLAYED_ALBUMS = "recommend_played"
@@ -96,8 +95,6 @@ class OpenSonicProvider(MusicProvider):
 
     conn: SonicConnection
     _enable_podcasts: bool = True
-    _seek_support: bool = False
-    _ignore_offset: bool = False
     _show_faves: bool = True
     _show_new: bool = True
     _show_played: bool = True
@@ -131,16 +128,13 @@ class OpenSonicProvider(MusicProvider):
             )
             raise LoginFailed(msg) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
-        self._ignore_offset = bool(self.config.get_value(CONF_OVERRIDE_OFFSET))
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
-                if entry.name == "transcodeOffset" and not self._ignore_offset:
-                    self._seek_support = True
                 if entry.name == "songLyrics":
                     self._id_lyrics = True
         except OSError:
-            self.logger.info("Server does not support transcodeOffset, seeking in player provider")
+            self.logger.debug("Server does not advertise OpenSubsonic extensions")
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
@@ -677,7 +671,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=item.id,
             provider=self.instance_id,
             allow_seek=True,
-            can_seek=self._seek_support,
+            can_seek=False,
             media_type=media_type,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(mime_type),
@@ -776,16 +770,13 @@ class OpenSonicProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Provide a generator for the stream data."""
-        # ignore seek position if the server does not support it
-        # in that case we let the core handle seeking
-        if not self._seek_support:
-            seek_position = 0
-
+        # Always request the raw (untranscoded) source file and let MA's core stream
+        # pipeline handle decoding, seeking and any optional re-encoding. Server-side
+        # transcoding with timeOffset is unreliable across OpenSubsonic implementations
+        # (e.g. Navidrome ignores timeOffset for direct-passthrough codecs like opus).
         self.logger.debug("Streaming %s", streamdetails.item_id)
         try:
-            resp = await self.conn.stream(
-                streamdetails.item_id, time_offset=seek_position, estimate_length=True
-            )
+            resp = await self.conn.stream(streamdetails.item_id, tformat="raw")
         except DataNotFoundError as err:
             msg = f"Item '{streamdetails.item_id}' not found"
             raise MediaNotFoundError(msg) from err

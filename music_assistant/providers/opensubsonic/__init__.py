@@ -14,7 +14,6 @@ from .sonic_provider import (
     CONF_ENABLE_LEGACY_AUTH,
     CONF_ENABLE_PODCASTS,
     CONF_NEW_ALBUMS,
-    CONF_OVERRIDE_OFFSET,
     CONF_PAGE_SIZE,
     CONF_PLAYED_ALBUMS,
     CONF_RECO_FAVES,
@@ -116,15 +115,6 @@ async def get_config_entries(
             label="Enable Legacy Auth",
             required=True,
             description='Enable OpenSubsonic "legacy" auth support',
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_OVERRIDE_OFFSET,
-            type=ConfigEntryType.BOOLEAN,
-            label="Force Player Provider Seek",
-            required=True,
-            description="Some Subsonic implementations advertise that they support seeking when "
-            "they do not always. If seeking does not work for you, enable this.",
             default_value=False,
         ),
         ConfigEntry(
