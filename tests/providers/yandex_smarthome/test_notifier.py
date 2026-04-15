@@ -80,7 +80,6 @@ def _make_mass(players: list[MockPlayer] | None = None) -> MagicMock:
         def __await__(self):  # type: ignore[no-untyped-def]
             if self._cancelled:
                 raise asyncio.CancelledError
-            return
             yield
 
     mass.create_task = MagicMock(return_value=_MockTask())
