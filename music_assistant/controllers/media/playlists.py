@@ -130,9 +130,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             if library_item is None:
                 with suppress(ProviderUnavailableError, MediaNotFoundError, NotImplementedError):
-                    provider_item = cast(
-                        "Playlist",
-                        await self.get_provider_item(item_id, provider_instance_id_or_domain),
+                    provider_item = await self.get_provider_item(
+                        item_id, provider_instance_id_or_domain
                     )
 
         # Dynamic playlists always need fresh tracks from the provider.
