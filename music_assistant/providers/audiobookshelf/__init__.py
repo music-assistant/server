@@ -83,6 +83,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
+    Artist,
     Audiobook,
     AudioFormat,
     BrowseFolder,
@@ -100,6 +101,8 @@ from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
+    parse_author,
+    parse_narrator,
     parse_playlist,
     parse_podcast,
     parse_podcast_episode,
@@ -140,6 +143,9 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    # ProviderFeature.LIBRARY_ARTISTS,  # authors/ narrators
+    # ProviderFeature.AUTHOR_AUDIOBOOKS,
+    # ProviderFeature.NARRATOR_AUDIOBOOKS,
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
 }
@@ -457,6 +463,27 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+        """Get authors and narrators."""
+        libraries = await self._client.get_all_libraries()
+        library_ids_audiobook: set[str] = set()
+        for library in libraries:
+            if library.media_type == AbsLibraryMediaType.BOOK:
+                library_ids_audiobook.add(library.id_)
+        for book_lib_id in library_ids_audiobook:
+            for abs_author in await self._client.get_library_authors(library_id=book_lib_id):
+                yield parse_author(
+                    abs_author=abs_author,
+                    instance_id=self.instance_id,
+                    domain=self.domain,
+                    token=self._client.token,
+                    base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                )
+            for abs_narrator in await self._client.get_library_narrators(library_id=book_lib_id):
+                yield parse_narrator(
+                    abs_narrator=abs_narrator, instance_id=self.instance_id, domain=self.domain
+                )
+
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from abs."""
         for playlist_dict, media_type in zip(
@@ -771,6 +798,7 @@ for more details.
             async for response in self._client.get_library_items(library_id=book_lib_id):
                 if not response.results:
                     break
+                await asyncio.sleep(1)
                 book_ids = [x.id_ for x in response.results]
                 # store uuids
                 self.libraries.audiobooks[book_lib_id].item_ids.update(book_ids)

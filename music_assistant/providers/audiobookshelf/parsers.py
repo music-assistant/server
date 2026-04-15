@@ -3,6 +3,8 @@
 from contextlib import suppress
 from datetime import datetime
 
+from aioaudiobookshelf.schema.author import AuthorExpanded as AbsAuthorExpanded
+from aioaudiobookshelf.schema.author import Narrator as AbsNarrator
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
 )
@@ -24,7 +26,8 @@ from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
 )
-from music_assistant_models.enums import ContentType, ImageType, MediaType
+from music_assistant_models.enums import ArtistType, ContentType, ImageType, MediaType
+from music_assistant_models.media_items import Artist as MassArtist
 from music_assistant_models.media_items import Audiobook as MassAudiobook
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -306,3 +309,55 @@ def parse_audiobook(
     mass_audiobook.date_added = datetime.fromtimestamp(abs_audiobook.added_at / 1000)
 
     return mass_audiobook
+
+
+def parse_author(
+    *,
+    abs_author: AbsAuthorExpanded,
+    instance_id: str,
+    domain: str,
+    token: str,
+    base_url: str,
+) -> MassArtist:
+    """Translate AbsAuthor to MassArtist."""
+    mass_artist = MassArtist(
+        item_id=abs_author.id_,
+        provider=instance_id,
+        name=abs_author.name,
+        sort_name=abs_author.name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=abs_author.id_, provider_domain=domain, provider_instance=instance_id
+            )
+        },
+        artist_type=ArtistType.AUTHOR,
+    )
+    # cover
+    if abs_author.image_path is not None:
+        api_url = f"/api/items/{abs_author.id_}/image?token={token}"
+        cover_url = f"{base_url}{api_url}"
+        mass_artist.metadata.images = UniqueList(
+            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
+        )
+    return mass_artist
+
+
+def parse_narrator(
+    *,
+    abs_narrator: AbsNarrator,
+    instance_id: str,
+    domain: str,
+) -> MassArtist:
+    """Translate AbsNarrator to MassArtist."""
+    return MassArtist(
+        item_id=abs_narrator.id_,
+        provider=instance_id,
+        name=abs_narrator.name,
+        sort_name=abs_narrator.name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=abs_narrator.id_, provider_domain=domain, provider_instance=instance_id
+            )
+        },
+        artist_type=ArtistType.NARRATOR,
+    )
