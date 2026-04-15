@@ -802,8 +802,13 @@ class MusicController(CoreController):
     @api_command("music/recommendations")
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user else None
         recommendation_providers = [
-            x for x in self.providers if ProviderFeature.RECOMMENDATIONS in x.supported_features
+            x
+            for x in self.mass.providers
+            if ProviderFeature.RECOMMENDATIONS in x.supported_features
+            and (not user_provider_filter or x.instance_id in user_provider_filter)
         ]
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
