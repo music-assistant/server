@@ -990,6 +990,20 @@ class MusicProvider(Provider):
                 prov_item.provider_mappings,
             )
             try:
+                if ProviderFeature.AUTHOR_AUDIOBOOKS in self.supported_features and not all(
+                    isinstance(author, Artist) for author in prov_item.authors
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} supports ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide Artist instances."
+                    )
+                if ProviderFeature.NARRATOR_AUDIOBOOKS in self.supported_features and not all(
+                    isinstance(narrator, Artist) for narrator in prov_item.narrators
+                ):
+                    raise MusicAssistantError(
+                        f"Provider {self.name} supports ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+                        f" item {prov_item.name} does not exclusively provide Artist instances."
+                    )
                 if not library_item:
                     # add item to the library
                     for prov_map in prov_item.provider_mappings:

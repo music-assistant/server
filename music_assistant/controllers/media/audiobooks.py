@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from json import loads as json_loads
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -199,12 +199,22 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         await self._set_playlog(db_id, item)
 
-        # update artist mappings
-        # TODO: add warning in music controller sync
-        for author in item.authors:
-            ...
-        for narrator in item.narrators:
-            ...
+        # update artist mappings - the sync method in the provider model raises an exception
+        # if not all entries are either of type str or Artist
+        if item.authors and isinstance(item.authors[0], Artist):
+            # only for type checking
+            authors = [author for author in item.authors if isinstance(author, Artist)]
+            for author in authors:
+                # just to be sure
+                author.artist_type = ArtistType.AUTHOR
+            await self._set_audiobook_authors_narrators(db_id, authors)
+        if item.narrators and isinstance(item.narrators[0], Artist):
+            # only for type checking
+            narrators = [narrator for narrator in item.narrators if isinstance(narrator, Artist)]
+            for narrator in narrators:
+                # just to be sure
+                narrator.artist_type = ArtistType.NARRATOR
+            await self._set_audiobook_authors_narrators(db_id, narrators)
         return db_id
 
     async def _set_audiobook_authors_narrators(
