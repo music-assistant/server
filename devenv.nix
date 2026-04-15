@@ -1,5 +1,9 @@
 { pkgs, lib, config, inputs, ... }:
 
+let
+  # Single source of truth for Python version — see .python-version at repo root.
+  pythonVersion = lib.strings.removeSuffix "\n" (builtins.readFile ./.python-version);
+in
 {
   # https://devenv.sh/basics/
   env.GREET = "devenv";
@@ -11,7 +15,7 @@
   languages.python = {
     enable = true;
     uv.enable = true;
-    version = "3.13";
+    version = lib.versions.majorMinor pythonVersion;
   };
 
   # https://devenv.sh/scripts/
