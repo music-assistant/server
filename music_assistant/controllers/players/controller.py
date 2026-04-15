@@ -108,7 +108,7 @@ from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine, Iterator
+    from collections.abc import Callable, Iterator
 
     from music_assistant_models.config_entries import (
         ConfigEntry,
@@ -116,12 +116,14 @@ if TYPE_CHECKING:
         CoreConfig,
         PlayerConfig,
     )
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
 
 CACHE_CATEGORY_PLAYER_POWER = 1
+
+# Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
+_SENTINEL: Any = object()
 
 
 class PlayerController(ProtocolLinkingMixin, CoreController):
@@ -151,6 +153,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
+        # Subscribers for player state updates (called with player + changed_values)
+        self._state_update_subscribers: list[
+            Callable[[Player, dict[str, tuple[Any, Any]]], None]
+        ] = []
 
     @contextlib.asynccontextmanager
     async def get_player_lock(
@@ -1577,7 +1583,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for key in (conf_key, dsp_conf_key):
             self.mass.config.remove(key)
 
-    def signal_player_state_update(
+    def signal_player_state_update(  # noqa: PLR0915
         self,
         player: Player,
         changed_values: dict[str, tuple[Any, Any]],
@@ -1657,6 +1663,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         ) or (ATTR_ENABLED in changed_values and changed_values[ATTR_ENABLED][1] is False)
         if became_inactive and (player.state.active_group or player.state.synced_to):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
+
+        # dispatch to internal state update subscribers (with changed_values)
+        self._dispatch_state_update_subscribers(player, changed_values)
 
         # signal player update on the eventbus
         if player.state.type != PlayerType.PROTOCOL:
@@ -1953,87 +1962,132 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     continue
                 yield child_player
 
-    async def wait_for_state(
+    def subscribe_player_state_update(
+        self,
+        callback: Callable[[Player, dict[str, tuple[Any, Any]]], None],
+    ) -> Callable[[], None]:
+        """
+        Subscribe to player state update notifications.
+
+        The callback receives the Player and a dict of changed values
+        (mapping attribute name to a (previous, new) tuple).
+
+        :param callback: Function to invoke for each player state update.
+        :return: An unsubscribe function.
+        """
+        self._state_update_subscribers.append(callback)
+
+        def _unsub() -> None:
+            with suppress(ValueError):
+                self._state_update_subscribers.remove(callback)
+
+        return _unsub
+
+    def _dispatch_state_update_subscribers(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Notify all internal subscribers of a player state update."""
+        for subscriber in list(self._state_update_subscribers):
+            try:
+                subscriber(player, changed_values)
+            except Exception:
+                self.logger.exception(
+                    "Error in player state update subscriber for %s", player.player_id
+                )
+
+    async def _wait_for_playback_state(
         self,
         player: Player,
         wanted_state: PlaybackState,
-        timeout: float = 60.0,
+        timeout: float,
         minimal_time: float = 0,
     ) -> None:
-        """Wait for the given player to reach the given state."""
+        """Wait for a player to reach a playback state, with optional minimum wait time."""
         start_timestamp = time.time()
-        self.logger.debug(
-            "Waiting for player %s to reach state %s", player.state.name, wanted_state
-        )
-        try:
-            async with asyncio.timeout(timeout):
-                while player.state.playback_state != wanted_state:
-                    await asyncio.sleep(0.1)
+        async with self.wait_for_player_update(
+            player.player_id,
+            attribute_name="playback_state",
+            attribute_value=wanted_state,
+            timeout=timeout,
+        ):
+            pass
+        elapsed = time.time() - start_timestamp
+        if elapsed < minimal_time:
+            await asyncio.sleep(minimal_time - elapsed)
 
-        except TimeoutError:
-            self.logger.debug(
-                "Player %s did not reach state %s within the timeout of %s seconds",
-                player.state.name,
-                wanted_state,
-                timeout,
-            )
-        elapsed_time = round(time.time() - start_timestamp, 2)
-        if elapsed_time < minimal_time:
-            self.logger.debug(
-                "Player %s reached state %s too soon (%s vs %s seconds) - add fallback sleep...",
-                player.state.name,
-                wanted_state,
-                elapsed_time,
-                minimal_time,
-            )
-            await asyncio.sleep(minimal_time - elapsed_time)
-        else:
-            self.logger.debug(
-                "Player %s reached state %s within %s seconds",
-                player.state.name,
-                wanted_state,
-                elapsed_time,
-            )
-
+    @contextlib.asynccontextmanager
     async def wait_for_player_update(
         self,
         player_id: str,
+        attribute_name: str | None = None,
+        attribute_value: Any = _SENTINEL,
         timeout: float = 5.0,
-        action: Coroutine[Any, Any, Any] | None = None,
-    ) -> bool:
+    ) -> AsyncIterator[None]:
         """
-        Wait for a state update event on the given player.
+        Async context manager that waits for a player state update.
 
-        Subscribes to PLAYER_UPDATED events *before* executing the optional action,
-        so that state updates emitted synchronously during the action are not missed.
+        Subscribes to player state updates on entry, runs the body (typically
+        the action that triggers the expected update), then waits for a
+        matching update on exit. If ``attribute_name`` and ``attribute_value``
+        are both provided and the current value already matches at entry, the
+        wait is skipped.
+
+        Example::
+
+            async with mass.players.wait_for_player_update(
+                player_id, attribute_name="playback_state",
+                attribute_value=PlaybackState.IDLE, timeout=5,
+            ):
+                await mass.players._handle_cmd_stop(player_id)
 
         :param player_id: The player ID to wait for.
+        :param attribute_name: Optional state attribute to watch for changes
+            (e.g. ``"playback_state"``). If omitted, any state change satisfies
+            the wait.
+        :param attribute_value: Optional value the watched attribute must reach.
+            Only meaningful in combination with ``attribute_name``.
         :param timeout: Maximum time to wait in seconds.
-        :param action: Optional coroutine to execute while subscribed.
-        :return: True if a state update was received, False if timed out.
         """
         update_event = asyncio.Event()
 
-        def _on_event(_event: MassEvent) -> None:
-            update_event.set()
+        def _on_state_update(player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
+            if player.player_id != player_id:
+                return
+            if attribute_name is None:
+                update_event.set()
+                return
+            if attribute_name not in changed_values:
+                return
+            if attribute_value is _SENTINEL:
+                update_event.set()
+                return
+            _prev, new_val = changed_values[attribute_name]
+            if new_val == attribute_value:
+                update_event.set()
 
-        unsub = self.mass.subscribe(
-            _on_event,
-            event_filter=EventType.PLAYER_UPDATED,
-            id_filter=player_id,
+        # short-circuit when the desired value is already the current state
+        already_satisfied = (
+            attribute_name is not None
+            and attribute_value is not _SENTINEL
+            and (player := self.get_player(player_id)) is not None
+            and getattr(player.state, attribute_name, _SENTINEL) == attribute_value
         )
+
+        unsub = self.subscribe_player_state_update(_on_state_update)
         try:
-            if action is not None:
-                await action
-            async with asyncio.timeout(timeout):
-                await update_event.wait()
-                return True
-        except TimeoutError:
-            self.logger.debug(
-                "Timed out waiting for state update on player %s, proceeding optimistically",
-                player_id,
-            )
-            return False
+            yield
+            if already_satisfied:
+                return
+            try:
+                async with asyncio.timeout(timeout):
+                    await update_event.wait()
+            except TimeoutError:
+                self.logger.debug(
+                    "Timed out waiting for player update on %s (attr=%s value=%s)",
+                    player_id,
+                    attribute_name,
+                    attribute_value,
+                )
         finally:
             unsub()
 
@@ -2228,7 +2282,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
-            await self.wait_for_state(player, PlaybackState.IDLE, 10, 0.4)
+            await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
         # adjust volume if needed
         # in case of a (sync) group, we need to do this for all child players
         prev_volumes: dict[str, int] = {}
@@ -2278,7 +2332,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         )
         await self._handle_play_media(player.player_id, announcement)
         # wait for the player(s) to play
-        await self.wait_for_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
+        await self._wait_for_playback_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
         # wait for the player to stop playing
         if not announcement.duration:
             if not announcement.custom_data:
@@ -2291,7 +2345,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if announcement.duration is None:
             raise ValueError("Announcement duration could not be determined")
 
-        await self.wait_for_state(
+        await self._wait_for_playback_state(
             player,
             PlaybackState.IDLE,
             timeout=announcement.duration + 10,
@@ -2687,13 +2741,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         synced_to = player.state.synced_to or player.state.active_group
         if synced_to and (parent := self.get_player(synced_to)):
             try:
-                await self.wait_for_player_update(
-                    player.player_id,
-                    timeout=5,
-                    action=self._handle_set_members(
-                        parent, player_ids_to_remove=[player.player_id]
-                    ),
-                )
+                async with self.wait_for_player_update(player.player_id, timeout=5):
+                    await self._handle_set_members(parent, player_ids_to_remove=[player.player_id])
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -2996,9 +3045,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and player_state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
             # wait for the stop command to process and prevent race conditions
-            await self.wait_for_player_update(
-                player_id, timeout=5, action=self._handle_cmd_stop(player_id)
-            )
+            async with self.wait_for_player_update(player_id, timeout=5):
+                await self._handle_cmd_stop(player_id)
 
         # power off all synced childs when player is a sync leader
         elif not powered and player_state.type == PlayerType.PLAYER and player_state.group_members:
@@ -3257,9 +3305,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if prev_source and source != prev_source:
             with suppress(PlayerCommandFailed, RuntimeError):
                 # just try to stop (regardless of state)
-                await self.wait_for_player_update(
-                    player_id, timeout=5, action=self._handle_cmd_stop(player_id)
-                )
+                async with self.wait_for_player_update(player_id, timeout=5):
+                    await self._handle_cmd_stop(player_id)
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):

@@ -26,7 +26,8 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_cmd_resume = AsyncMock()
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_set_members = AsyncMock()
-    mass.players.wait_for_player_update = AsyncMock(return_value=True)
+    # wait_for_player_update is an async context manager — return one that no-ops.
+    mass.players.wait_for_player_update = MagicMock(return_value=AsyncMock())
     mass.players.trigger_player_update = MagicMock()
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
@@ -359,7 +360,7 @@ class TestDynamicLeaderSwitch:
 
         # handoff_sync_leadership should NOT have been called
         old_leader.handoff_sync_leadership.assert_not_awaited()
-        # Instead, dissolve+reform happened: wait_for_player_update was called
-        # with the old leader's player_id (which internally stops the session)
-        mass.players.wait_for_player_update.assert_awaited()
+        # Instead, dissolve+reform happened: wait_for_player_update was used
+        # to wrap the stop of the old leader (which internally stops the session)
+        mass.players.wait_for_player_update.assert_called()
         assert "old_leader" not in sgp._attr_group_members
