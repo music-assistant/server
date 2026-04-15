@@ -10,6 +10,14 @@ repos:
         types: [text]
         files: ^(music_assistant/.+/manifest\.json|pyproject\.toml|\.pre-commit-config\.yaml|scripts/gen_requirements_all\.py)$
 
+      - id: check-python-version
+        name: Validate pyproject.toml matches .python-version
+        entry: uv run -m scripts.check_python_version
+        pass_filenames: false
+        language: system
+        files: ^(\.python-version|pyproject\.toml|scripts/check_python_version\.py)$
+        verbose: true  # script overwrites pre-commit's metadata via ANSI escapes
+
       - id: ruff-check
         name: 🐶 Ruff Linter
         language: system
