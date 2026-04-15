@@ -143,7 +143,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    # ProviderFeature.LIBRARY_ARTISTS,  # authors/ narrators
+    ProviderFeature.LIBRARY_ARTISTS,  # authors/ narrators
     # ProviderFeature.AUTHOR_AUDIOBOOKS,
     # ProviderFeature.NARRATOR_AUDIOBOOKS,
     ProviderFeature.BROWSE,
