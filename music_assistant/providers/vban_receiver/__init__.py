@@ -288,7 +288,7 @@ class VBANReceiverProvider(PluginProvider):
         """Report the active player status."""
         return bool(self._source_details.in_use_by)
 
-    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
+    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
         self.logger.debug(
             "Getting VBAN PCM audio stream for Player: %s//Stream: %s//Config: %s",
@@ -303,7 +303,7 @@ class VBANReceiverProvider(PluginProvider):
         ):
             try:
                 packet = await self._vban_stream.get_packet()
-            except asyncio.QueueShutDown:  # type: ignore[attr-defined]
+            except asyncio.QueueShutDown:
                 self.logger.error(
                     "Found VBANIncomingStream queue shut down when attempting to get VBAN packet"
                 )
