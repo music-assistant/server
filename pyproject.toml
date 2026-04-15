@@ -206,7 +206,11 @@ ignore = [
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  "TC002", # Move third-party import into type-checking block; to enable later
+  "UP037", # Remove quotes from type annotation; to enable later
   "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later
+  "PYI055", # Simplify type[A] | type[B] to type[A | B]; to enable later
+  "RUF100", # Remove unused noqa comments; to enable later
   "BLE001",
   "FBT001",
   "FBT002",
