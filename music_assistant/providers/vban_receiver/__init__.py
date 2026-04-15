@@ -288,7 +288,7 @@ class VBANReceiverProvider(PluginProvider):
         """Report the active player status."""
         return bool(self._source_details.in_use_by)
 
-    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes]:
+    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
         self.logger.debug(
             "Getting VBAN PCM audio stream for Player: %s//Stream: %s//Config: %s",
