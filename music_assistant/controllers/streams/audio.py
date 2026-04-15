@@ -922,6 +922,16 @@ class StreamsAudio:
                     loglevel="info",
                 ) as ffmpeg_proc:
                     await ffmpeg_proc.wait()
+
+                    if chunks_received < 5:
+                        self.logger.debug(
+                            "Loudness analysis for %s skipped: "
+                            "insufficient audio data (%s chunks received)",
+                            streamdetails.uri,
+                            chunks_received,
+                        )
+                        return
+
                     log_lines_str = "\n".join(ffmpeg_proc.log_history)
                     try:
                         loudness_str = (
@@ -934,6 +944,15 @@ class StreamsAudio:
                         self.logger.debug(
                             "Could not determine loudness of %s from buffer analysis",
                             streamdetails.uri,
+                        )
+                        return
+
+                    if loudness <= -50:
+                        self.logger.debug(
+                            "Loudness measurement for %s discarded: "
+                            "%s LUFS is below the reliability threshold",
+                            streamdetails.uri,
+                            loudness,
                         )
                         return
 

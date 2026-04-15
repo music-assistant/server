@@ -1102,8 +1102,8 @@ class MusicController(CoreController):
         """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return
-        if loudness in (None, inf, -inf):
-            # skip invalid values
+        if loudness in (None, inf, -inf) or loudness <= -50:
+            # skip invalid or unreliable values (ebur128 reports -70 LUFS on near-silence)
             return
         # prefer domain for streaming providers as the catalog is the same across instances
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
