@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncGenerator, Sequence
+from typing import Any
 
 import aiohttp
-from aiohttp import web
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -21,20 +22,26 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
+    Album,
+    Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
-    MediaItemMetadata,
+    MediaItemType,
+    Playlist,
     ProviderMapping,
     Radio,
     SearchResults,
-    UniqueList,
+    Track,
 )
-from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, StreamMetadata
+from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -50,9 +57,6 @@ from .constants import (
 )
 from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
 
 class PandoraStationSession:
     """Manages streaming state for a single Pandora station."""
@@ -65,22 +69,10 @@ class PandoraStationSession:
             station_id: The Pandora station ID.
         """
         self.station_id = station_id
-        self.fragments: list[dict[str, Any] | None] = []
-        self.track_map: list[tuple[int, int]] = []
-        self.cumulative_times: list[int] = []
+        self.last_track_started: bool = False
+        self.playback_started: bool = False
+        self.fragments: list[list[dict[str, Any]]] = []
         self.last_accessed = time.time()
-
-    def get_track_duration(self, music_track_num: int) -> int:
-        """Calculate duration for a specific track index."""
-        if not (0 <= music_track_num < len(self.track_map)):
-            return 0
-        frag_idx, track_idx = self.track_map[music_track_num]
-        if frag_idx >= len(self.fragments) or not (frag := self.fragments[frag_idx]):
-            return 0
-        tracks = frag.get("tracks", [])
-        if track_idx >= len(tracks):
-            return 0
-        return int(tracks[track_idx].get("trackLength", 0))
 
 
 class StreamViolationError(InvalidDataError):
@@ -90,7 +82,7 @@ class StreamViolationError(InvalidDataError):
 class PandoraProvider(MusicProvider):
     """Pandora Music Provider."""
 
-    _auth_token: str | None = None
+    _auth_token: str | None = os.environ.get("PANDORA_AUTHTOKEN", None)
     _user_id: str | None = None
     _csrf_token: str | None = None
     _sessions: dict[str, PandoraStationSession]
@@ -99,7 +91,6 @@ class PandoraProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._on_unload_callbacks = []
         self._sessions = {}
 
         # Authenticate with Pandora
@@ -116,17 +107,8 @@ class PandoraProvider(MusicProvider):
             self.http_session = self.mass.http_session
         await self._authenticate(username, password)
 
-        # Register dynamic stream route
-        self._on_unload_callbacks.append(
-            self.mass.streams.register_dynamic_route(
-                f"/{self.instance_id}_stream", self._handle_stream_request
-            )
-        )
-
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        for callback in getattr(self, "_on_unload_callbacks", []):
-            callback()
         await self.close()
         await super().unload(is_removed)
 
@@ -134,6 +116,9 @@ class PandoraProvider(MusicProvider):
         """Authenticate with Pandora and get auth token."""
         try:
             self._csrf_token = await get_csrf_token(self.http_session)
+            if self._auth_token:
+                self.logger.warning(f"Using existing auth token: {self._auth_token}")
+                return
 
             login_data = {
                 "username": username,
@@ -141,7 +126,6 @@ class PandoraProvider(MusicProvider):
                 "keepLoggedIn": True,
                 "existingAuthToken": None,
             }
-
             headers = create_auth_headers(self._csrf_token)
 
             async with self.http_session.post(
@@ -216,6 +200,7 @@ class PandoraProvider(MusicProvider):
                         # Auth token expired, re-authenticate and retry once
                         username = str(self.config.get_value(CONF_USERNAME))
                         password = str(self.config.get_value(CONF_PASSWORD))
+                        self._auth_token = None
                         await self._authenticate(username, password)
                         return await self._api_request(
                             method,
@@ -272,7 +257,7 @@ class PandoraProvider(MusicProvider):
             await self.close()
             raise InvalidDataError("Invalid response from Pandora") from err
 
-    @use_cache(3600)
+    #    @use_cache(3600)
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get single radio station details."""
         return Radio(
@@ -288,7 +273,32 @@ class PandoraProvider(MusicProvider):
             },
         )
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Pandora radio stations."""
+        sub_path = path.split("://", 1)[1] if "://" in path else ""
+        self.logger.warning(f"browsing: {sub_path}")
+        path_parts = [part for part in sub_path.split("/") if part]
+        if not path_parts:
+            # Top-level: add a "Radio Stations" folder alongside the default items
+            items = list(await super().browse(path))
+            items.append(
+                BrowseFolder(
+                    item_id="stations",
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://stations",
+                    name="Radio Stations",
+                )
+            )
+            return items
+        if path_parts[0] in ["stations", "radios", "playlists"]:
+            result: list[MediaItemType | ItemMapping | BrowseFolder] = []
+            async for station in self._get_radios():
+                self.logger.info(f"Retrieved {station.name}, {station.is_dynamic}")
+                result.append(station)
+            return result
+        return await super().browse(path)
+
+    async def _get_radios(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed radio stations from the provider."""
         response = await self._api_request(
             "POST",
@@ -297,83 +307,218 @@ class PandoraProvider(MusicProvider):
                 "pageSize": 250,
             },
         )
-
         stations = response.get("stations", [])
-        self.logger.debug("Retrieved %d stations from Pandora", len(stations))
-
+        self.logger.warning("Retrieved %d stations from Pandora", len(stations))
         for station in stations:
-            station_image = None
-            if art := station.get("art"):
-                art_url = next(
-                    (item["url"] for item in art if item.get("size") == 500),
-                    art[-1]["url"] if art else None,
+            yield self._parse_station(station)
+
+    def _find_track(self, prov_track_id: str) -> dict[str, Any]:
+        """Get track in the station fragments from provider track_id."""
+        station_id, track_id = prov_track_id.split("_")
+        session = self._sessions[station_id]
+        for tracks in session.fragments[::-1]:
+            for track in tracks:
+                if track.get("musicId") == track_id:
+                    return track
+        return {}
+
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id."""
+        self.logger.warning(f"get track {prov_track_id}")
+        if track := self._find_track(prov_track_id):
+            self.logger.warning(f"returning {track.get('songTitle')}")
+            return self._parse_track(track)
+        raise MediaNotFoundError(f"Track {prov_track_id} not found")
+
+    async def get_artist(self, artist_name: str) -> Artist:
+        """Get artist details from just artist_name."""
+        self.logger.warning(f"find artist for {artist_name}")
+        if artist := self._parse_artist(artist_name):
+            return artist
+        raise MediaNotFoundError(f"Artist {artist_name} not found")
+
+    async def get_album(self, prov_track_id: str) -> Album:
+        """Get Album from provider track_id."""
+        self.logger.warning(f"find album for {prov_track_id}")
+        if track := self._find_track(prov_track_id):
+            if album := self._parse_album(track, prov_track_id):
+                return album
+        raise MediaNotFoundError(f"Album {prov_track_id} not found")
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details by id."""
+        self.logger.warning(f"get playlist {prov_playlist_id}")
+        async for station in self._get_radios():
+            self.logger.warning(f"{station.item_id}")
+            if station.item_id == prov_playlist_id:
+                self.logger.warning(f"returning {station.name} {station.is_dynamic}")
+                return station
+        return self._parse_station({"stationId": prov_playlist_id})
+
+    async def get_playlist_tracks(self, station_id: str, page: int = 0) -> list[Track]:
+        """Get all playlist tracks for given station id."""
+        if page > 0:
+            return []
+
+        session = self._get_or_create_session(station_id)
+        self.logger.warning(
+            f"getting tracks for {station_id} -- {len(session.fragments)} {session.last_track_started}"
+        )
+        if (
+            len(session.fragments) == 0
+            or session.playback_started is False
+            or session.last_track_started
+        ):
+            await self._get_fragment_data(session, len(session.fragments))
+            if tracks := session.fragments[-1]:
+                return [self._parse_track(track) for track in tracks]
+        return []
+
+    def _parse_station(self, station: dict[str, Any]) -> Playlist:
+        playlist = Playlist(
+            item_id=station["stationId"],
+            provider=self.instance_id,
+            name=station["name"],
+            is_dynamic=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=station["stationId"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
                 )
-                if art_url:
-                    station_image = MediaItemImage(
+            },
+        )
+
+        if art := station.get("art"):
+            art_url = next(
+                (item["url"] for item in art if item.get("size") == 500),
+                art[-1]["url"] if art else None,
+            )
+            if art_url:
+                playlist.metadata.add_image(
+                    MediaItemImage(
                         type=ImageType.THUMB,
                         path=art_url,
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
-            yield Radio(
-                item_id=station["stationId"],
-                provider=self.instance_id,
-                name=station["name"],
-                metadata=MediaItemMetadata(
-                    images=UniqueList([station_image]) if station_image else None,
-                ),
+                )
+        playlist.metadata.description = "Pandora Radio Station"
+        return playlist
+
+    def _parse_track(self, obj: dict[str, Any]) -> Track:
+        """Parse track object to generic layout."""
+        name, version = parse_title_and_version(obj.get("songTitle", "Unknown Song"))
+        track_id = obj["stationId"] + "_" + obj["musicId"]
+        track = Track(
+            item_id=track_id,
+            provider=self.domain,
+            name=name,
+            version=version,
+            duration=int(obj.get("trackLength", 0)),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.MP3
+                        if self._use_high_quality()
+                        else ContentType.AAC,
+                    ),
+                    url=obj.get("songDetailURL"),
+                )
+            },
+        )
+        if album_art := obj.get("albumArt"):
+            album_art_url = next(
+                (art["url"] for art in album_art if art.get("size") == 500),
+                album_art[-1]["url"] if album_art else None,
+            )
+            if album_art_url:
+                track.metadata.add_image(
+                    MediaItemImage(
+                        provider=self.instance_id,
+                        type=ImageType.THUMB,
+                        path=album_art_url,
+                        remotely_accessible=True,
+                    )
+                )
+        if artist_name := obj.get("artistName"):
+            track.artists = UniqueList([self._parse_artist(artist_name)])
+        track.album = self._parse_album(obj, track_id)
+        self.logger.info(name)
+        return track
+
+    def _parse_artist(self, artist_name: str) -> Artist:
+        """Parse artist object to generic layout."""
+        return Artist(
+            item_id=artist_name,
+            name=artist_name,
+            provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=artist_name,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+
+    def _parse_album(self, obj: dict[str, Any], track_id: str) -> Album | None:
+        """Parse track object to generic layout."""
+        name, version = parse_title_and_version(obj.get("albumTitle", "Unknown Album"))
+        if url := obj.get("albumDetailURL"):
+            return Album(
+                item_id=track_id,
+                provider=self.domain,
+                name=name,
+                version=version,
                 provider_mappings={
                     ProviderMapping(
-                        item_id=station["stationId"],
+                        item_id=track_id,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
+                        url=url,
                     )
                 },
             )
+        return None
 
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+    async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
-        if media_type != MediaType.RADIO:
-            await self.close()
-            raise MediaNotFoundError(f"Unsupported media type: {media_type}")
+        station_id, track_id = prov_item_id.split("_")
+        session = self._sessions[station_id]
+        url = None
+        if tracks := session.fragments[-1]:
+            for i, track in enumerate(tracks):
+                if track.get("musicId") == track_id:
+                    url = track.get("audioURL")
+                    break
+        session.playback_started = True
+        session.last_track_started = i >= 3
 
-        # Clear any existing session so we get fresh tracks from the API
-        self._sessions.pop(item_id, None)
-
-        # Create playlist with 1000 track placeholders for continuous streaming
-        parts = [
-            MultiPartPath(
-                path=f"{self.mass.streams.base_url}/{self.instance_id}_stream?"
-                f"station_id={item_id}&track_num={i}"
-            )
-            for i in range(1000)
-        ]
+        self.logger.warning(f"Playing {track.get('songTitle')} {session.last_track_started}")
         return StreamDetails(
             provider=self.instance_id,
-            item_id=item_id,
+            item_id=prov_item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.MP3 if self._use_high_quality() else ContentType.AAC,
             ),
-            media_type=MediaType.RADIO,
+            media_type=MediaType.TRACK,
             stream_type=StreamType.HTTP,
-            path=parts,
-            can_seek=False,
-            allow_seek=False,
-            stream_metadata=StreamMetadata(
-                title="Pandora Radio",
-            ),
-            stream_metadata_update_callback=self._update_stream_metadata,
-            stream_metadata_update_interval=5,  # Check every 5 seconds
+            path=url,
+            can_seek=True,
+            allow_seek=True,
         )
 
     async def _get_fragment_data(
         self, session: PandoraStationSession, fragment_index: int
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         """Fetch fragment data from Pandora API."""
         # Check if already cached in session
         if fragment_index < len(session.fragments):
-            cached = session.fragments[fragment_index]
-            if cached is not None:
+            if cached := session.fragments[fragment_index]:
                 return cached
 
         is_stream_start = fragment_index == 0
@@ -400,35 +545,17 @@ class PandoraProvider(MusicProvider):
                 if is_stream_start
                 else frozenset({RETRY_REASON_STREAM_VIOLATION}),
             )
+            tracks = []
+            for track in result.get("tracks", []):
+                if "curator message" not in track.get("songTitle", "").lower():
+                    tracks.append(track)
 
             # Store in session cache
             while len(session.fragments) <= fragment_index:
-                session.fragments.append(None)
-            session.fragments[fragment_index] = result
-
-            tracks = result.get("tracks", [])
-
-            # Calculate starting cumulative time for this fragment
-            if session.cumulative_times:
-                # Get the last music track's end time
-                last_music_track_num = len(session.track_map) - 1
-                last_start = session.cumulative_times[-1]
-                last_duration = session.get_track_duration(last_music_track_num)
-                current_cumulative = last_start + last_duration
-            else:
-                current_cumulative = 0
-
-            for track_idx, track in enumerate(tracks):
-                title = track.get("songTitle", "")
-                # Skip curator messages from the mapping
-                if "Curator Message" not in title and "curator message" not in title.lower():
-                    session.track_map.append((fragment_index, track_idx))
-                    session.cumulative_times.append(current_cumulative)
-
-                    duration = track.get("trackLength", 0)
-                    current_cumulative += duration
-
-            return result
+                session.fragments.append([])
+            session.fragments[fragment_index] = tracks
+            session.last_track_started = False
+            return tracks
 
         except MediaNotFoundError:
             await self.close()
@@ -444,69 +571,6 @@ class PandoraProvider(MusicProvider):
             self.logger.error("Invalid fragment data for station %s: %s", session.station_id, err)
             await self.close()
             raise
-
-    async def _handle_stream_request(self, request: web.Request) -> web.Response:
-        """
-        Handle dynamic stream request.
-
-        Map track numbers to Pandora fragments and redirect to audio URLs.
-        """
-        if not (station_id := request.query.get("station_id")):
-            return web.Response(status=400, text="Missing station_id")
-        if not (track_num_str := request.query.get("track_num")):
-            return web.Response(status=400, text="Missing track_num")
-
-        try:
-            music_track_num = int(track_num_str)
-        except ValueError:
-            return web.Response(status=400, text="Invalid track_num")
-
-        # Get or create session with LRU eviction
-        session = self._get_or_create_session(station_id)
-
-        try:
-            # If we don't have this music track yet, fetch more fragments
-            while music_track_num >= len(session.track_map):
-                next_fragment_idx = len(session.fragments)
-                await self._get_fragment_data(session, next_fragment_idx)
-
-            # Look up the actual fragment/track position
-            fragment_idx, track_idx = session.track_map[music_track_num]
-
-            # Ensure fragment is loaded
-            if fragment_idx >= len(session.fragments) or not session.fragments[fragment_idx]:
-                await self._get_fragment_data(session, fragment_idx)
-
-            fragment = session.fragments[fragment_idx]
-            if not fragment:
-                return web.Response(status=404, text="Track unavailable")
-
-            # Get the track
-            tracks = fragment.get("tracks", [])
-            if track_idx >= len(tracks):
-                self.logger.error(
-                    "Track index %d out of range (fragment has %d tracks)",
-                    track_idx,
-                    len(tracks),
-                )
-                return web.Response(status=404, text="Track unavailable")
-
-            track = tracks[track_idx]
-            audio_url = track.get("audioURL")
-
-            if not audio_url:
-                self.logger.error("No audio URL in track data")
-                return web.Response(status=404, text="Track unavailable")
-
-            # Redirect to the actual audio URL
-            return web.Response(status=302, headers={"Location": audio_url})
-
-        except (MediaNotFoundError, InvalidDataError) as err:
-            self.logger.error("Stream error: %s", err)
-            return web.Response(status=404, text="Stream unavailable")
-        except ProviderUnavailableError as err:
-            self.logger.error("Pandora service unavailable: %s", err)
-            return web.Response(status=503, text="Service temporarily unavailable")
 
     def _get_or_create_session(self, station_id: str) -> PandoraStationSession:
         """Get or create a session, with LRU eviction if needed."""
@@ -532,85 +596,18 @@ class PandoraProvider(MusicProvider):
     ) -> SearchResults:
         """Search library radio stations by name."""
         # Search limited to library stations (API search requires legacy endpoints)
-        if MediaType.RADIO not in media_types:
+        if MediaType.PLAYLIST not in media_types:
             return SearchResults()
 
-        results: list[Radio] = []
+        results: list[Playlist] = []
 
-        async for station in self.get_library_radios():
+        async for station in self._get_radios():
             if compare_strings(station.name, search_query):
                 results.append(station)
                 if len(results) >= limit:
                     break
 
-        return SearchResults(radio=results)
-
-    async def _update_stream_metadata(
-        self, streamdetails: StreamDetails, elapsed_time: int
-    ) -> None:
-        """Update stream metadata based on elapsed playback time."""
-        station_id = streamdetails.item_id
-
-        # Get session if it exists
-        if station_id not in self._sessions:
-            return
-
-        session = self._sessions[station_id]
-        session.last_accessed = time.time()
-
-        if not session.track_map or not session.cumulative_times:
-            return
-
-        # Find the current track based on elapsed time
-        current_track_idx = None
-        for i, start_time in enumerate(session.cumulative_times):
-            # Calculate when this track ends
-            if i + 1 < len(session.cumulative_times):
-                end_time = session.cumulative_times[i + 1]
-            else:
-                end_time = start_time + session.get_track_duration(i)
-
-            if start_time <= elapsed_time < end_time:
-                current_track_idx = i
-                break
-
-        if current_track_idx is None:
-            return
-
-        # Get track data
-        frag_idx, track_idx = session.track_map[current_track_idx]
-        if frag_idx >= len(session.fragments):
-            return
-        fragment = session.fragments[frag_idx]
-        if not fragment:
-            return
-
-        tracks = fragment.get("tracks", [])
-        if track_idx >= len(tracks):
-            return
-
-        track = tracks[track_idx]
-
-        # Update metadata if title changed
-        if not streamdetails.stream_metadata or streamdetails.stream_metadata.title == track.get(
-            "songTitle"
-        ):
-            return
-
-        # Get album art
-        album_art_url = None
-        if album_art := track.get("albumArt"):
-            album_art_url = next(
-                (art["url"] for art in album_art if art.get("size") == 500),
-                album_art[-1]["url"] if album_art else None,
-            )
-
-        streamdetails.stream_metadata.title = track.get("songTitle", "Unknown Song")
-        streamdetails.stream_metadata.artist = track.get("artistName", "Unknown Artist")
-        streamdetails.stream_metadata.album = track.get("albumTitle")
-        streamdetails.stream_metadata.image_url = album_art_url
-        streamdetails.stream_metadata.duration = track.get("trackLength")
-        streamdetails.stream_metadata.uri = track.get("songDetailURL")
+        return SearchResults(playlists=results)
 
     async def close(self) -> None:
         """Handle closing of http session if using socks."""
