@@ -62,10 +62,17 @@ def _make_mass(players: list[MockPlayer] | None = None) -> MagicMock:
     # subscribe returns an unsubscribe callable
     mass.subscribe = MagicMock(return_value=MagicMock())
 
-    # create_task returns a mock Task
-    mock_task = MagicMock(spec=asyncio.Task)
-    mock_task.done.return_value = False
-    mass.create_task = MagicMock(return_value=mock_task)
+    # create_task returns a mock Task that can be awaited
+    mock_task = asyncio.get_event_loop().create_future()
+    mock_task.cancel()  # pre-cancel so await raises CancelledError
+    _real_done = mock_task.done
+
+    # Wrap to track calls but keep real behavior
+    mock_task_wrapper = MagicMock(spec=asyncio.Task)
+    mock_task_wrapper.done = _real_done
+    mock_task_wrapper.cancel = mock_task.cancel
+    mock_task_wrapper.__await__ = mock_task.__await__
+    mass.create_task = MagicMock(return_value=mock_task_wrapper)
 
     return mass
 

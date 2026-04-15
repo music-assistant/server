@@ -231,7 +231,7 @@ class DirectConnectionHandler:
 
         try:
             body = await request.json()
-        except (ValueError, UnicodeDecodeError):
+        except Exception:
             return web.json_response(build_response(request_id, {}), status=400)
 
         try:
@@ -259,7 +259,7 @@ class DirectConnectionHandler:
 
         try:
             body = await request.json()
-        except (ValueError, UnicodeDecodeError):
+        except Exception:
             return web.json_response(build_response(request_id, {}), status=400)
 
         try:

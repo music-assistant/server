@@ -8,6 +8,7 @@ window to batch rapid state changes into a single callback.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -99,8 +100,11 @@ class StateNotifier:
         if self._flush_handle:
             self._flush_handle.cancel()
             self._flush_handle = None
-        if self._heartbeat_task and not self._heartbeat_task.done():
-            self._heartbeat_task.cancel()
+        if self._heartbeat_task is not None:
+            if not self._heartbeat_task.done():
+                self._heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._heartbeat_task
             self._heartbeat_task = None
         self._dirty_player_ids.clear()
         self._logger.info("State notifier stopped")
