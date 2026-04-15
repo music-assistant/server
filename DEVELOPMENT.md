@@ -3,7 +3,7 @@ Developer docs
 
 ## 📝 Prerequisites
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
-* Python 3.12 is minimal required, 3.12 recommended (or check the pyproject for current required version)
+* Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
 
 We recommend developing on a (recent) macOS or Linux machine.
