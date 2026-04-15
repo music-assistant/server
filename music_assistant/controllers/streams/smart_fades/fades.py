@@ -23,6 +23,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     TimeStretchFilter,
     TrimFilter,
 )
+from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -202,8 +203,7 @@ class SmartFade(ABC):
                     if _phase0_first_chunk_logged:
                         _phase0_last = time.perf_counter()
                         self.logger.warning(
-                            "[PHASE0] %s.apply async: first_to_last=%.1fms "
-                            "total_from_spawn=%.1fms",
+                            "[PHASE0] %s.apply async: first_to_last=%.1fms total_from_spawn=%.1fms",
                             type(self).__name__,
                             (_phase0_last - _phase0_first) * 1000,
                             (_phase0_last - _phase0_spawn_start) * 1000,
@@ -614,9 +614,11 @@ class StandardCrossFade(SmartFade):
 
             async def _post_crossfade() -> AsyncGenerator[bytes, None]:
                 if leftover:
-                    yield leftover
+                    for pcm_slice in iter_pcm_slices(leftover, pcm_format, 1000):
+                        yield pcm_slice
                 async for remaining_chunk in fade_in_part:
-                    yield remaining_chunk
+                    for pcm_slice in iter_pcm_slices(remaining_chunk, pcm_format, 1000):
+                        yield pcm_slice
 
             post_crossfade = _post_crossfade()
 
@@ -626,11 +628,13 @@ class StandardCrossFade(SmartFade):
             len(adjusted_fade_out_part) / pcm_format.pcm_sample_size,
         )
         # Yield pre-crossfade, crossfaded section, and post-crossfade
-        yield pre_crossfade
+        for pcm_slice in iter_pcm_slices(pre_crossfade, pcm_format, 1000):
+            yield pcm_slice
         async for chunk in super().apply(adjusted_fade_out_part, adjusted_fade_in_part, pcm_format):
             yield chunk
         if isinstance(post_crossfade, bytes):
-            yield post_crossfade
+            for pcm_slice in iter_pcm_slices(post_crossfade, pcm_format, 1000):
+                yield pcm_slice
         else:
             async for chunk in post_crossfade:
                 yield chunk
