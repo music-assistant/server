@@ -1114,7 +1114,10 @@ class MusicController(CoreController):
             "provider": prov_key,
             "loudness": loudness,
         }
-        if album_loudness not in (None, inf, -inf):
+        if (
+            album_loudness not in (None, inf, -inf)
+            and album_loudness > LOUDNESS_MEASUREMENT_MIN_LUFS
+        ):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
 
