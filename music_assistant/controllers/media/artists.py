@@ -227,6 +227,10 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         if library_item.artist_type == ArtistType.ARTIST:
             await self._remove_music_artist_from_library(db_id=db_id, recursive=recursive)
+        elif library_item.artist_type in (ArtistType.AUTHOR, ArtistType.NARRATOR):
+            await self._remove_author_narrator_from_library(db_id=db_id, recursive=recursive)
+        else:
+            raise MusicAssistantError(f"Unknown artist_type {library_item.artist_type}.")
 
         # delete the artist itself from db
         # this will raise if the item still has references and recursive is false
@@ -253,6 +257,19 @@ class ArtistsController(MediaControllerBase[Artist]):
                 raise MusicAssistantError("Artist still has tracks linked")
             with contextlib.suppress(MediaNotFoundError):
                 await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
+
+    async def _remove_author_narrator_from_library(self, db_id: int, recursive: bool) -> None:
+        # recursively also remove author/ narrator audiobooks
+        # album_artists table maps to audiobook / author + narrator in that case.
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has albums linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.audiobooks.remove_item_from_library(db_row["album_id"])
 
     async def get_provider_artist_toptracks(
         self,
