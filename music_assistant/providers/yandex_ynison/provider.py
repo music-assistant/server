@@ -18,7 +18,11 @@ from music_assistant_models.enums import (
     ProviderType,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    LoginFailed,
+    PlayerCommandFailed,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from ya_passport_auth import SecretStr
 
@@ -1041,7 +1045,9 @@ class YandexYnisonProvider(PluginProvider):
     async def _on_play(self) -> None:
         """Handle play command — send resume to Ynison."""
         if not self._ynison:
-            raise UnsupportedFeaturedException("Not connected to Ynison")
+            raise UnsupportedFeaturedException("Ynison client not initialized")
+        if not self._ynison.connected:
+            raise PlayerCommandFailed("Ynison WebSocket disconnected")
         state = self._ynison.state
         await self._send_progress_to_ynison(
             progress_ms=state.progress_ms,
@@ -1052,7 +1058,9 @@ class YandexYnisonProvider(PluginProvider):
     async def _on_pause(self) -> None:
         """Handle pause command — send pause to Ynison."""
         if not self._ynison:
-            raise UnsupportedFeaturedException("Not connected to Ynison")
+            raise UnsupportedFeaturedException("Ynison client not initialized")
+        if not self._ynison.connected:
+            raise PlayerCommandFailed("Ynison WebSocket disconnected")
         state = self._ynison.state
         await self._send_progress_to_ynison(
             progress_ms=state.progress_ms,
@@ -1319,13 +1327,17 @@ class YandexYnisonProvider(PluginProvider):
     async def _on_next(self) -> None:
         """Handle next track command — signal track end so Yandex advances."""
         if not self._ynison:
-            raise UnsupportedFeaturedException("Not connected to Ynison")
+            raise UnsupportedFeaturedException("Ynison client not initialized")
+        if not self._ynison.connected:
+            raise PlayerCommandFailed("Ynison WebSocket disconnected")
         await self._signal_track_completion()
 
     async def _on_previous(self) -> None:
         """Handle previous track command — update queue index in Ynison."""
         if not self._ynison:
-            raise UnsupportedFeaturedException("Not connected to Ynison")
+            raise UnsupportedFeaturedException("Ynison client not initialized")
+        if not self._ynison.connected:
+            raise PlayerCommandFailed("Ynison WebSocket disconnected")
         queue = self._ynison.state.player_state.get("player_queue", {})
         current_index = queue.get("current_playable_index", 0)
         if current_index > 0:
@@ -1338,7 +1350,9 @@ class YandexYnisonProvider(PluginProvider):
         :param position: Position in seconds from Music Assistant.
         """
         if not self._ynison:
-            raise UnsupportedFeaturedException("Not connected to Ynison")
+            raise UnsupportedFeaturedException("Ynison client not initialized")
+        if not self._ynison.connected:
+            raise PlayerCommandFailed("Ynison WebSocket disconnected")
         seek_ms = position * 1000
         state = self._ynison.state
         await self._send_progress_to_ynison(
