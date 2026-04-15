@@ -172,6 +172,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
+        # only serialize str narrators/ authors to db
+        _authors = [author for author in item.authors if isinstance(author, str)]
+        _narrators = [narrator for narrator in item.narrators if isinstance(narrator, str)]
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -182,8 +185,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
                 "publisher": item.publisher,
-                "authors": serialize_to_json(item.authors),
-                "narrators": serialize_to_json(item.narrators),
+                "authors": serialize_to_json(_authors),
+                "narrators": serialize_to_json(_narrators),
                 "duration": item.duration,
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
@@ -273,6 +276,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        # only serialize str narrators/ authors to db
+        _update_authors = [author for author in update.authors if isinstance(author, str)]
+        _update_narrators = [narrator for narrator in update.narrators if isinstance(narrator, str)]
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -286,10 +292,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 ),
                 "publisher": cur_item.publisher or update.publisher,
                 "authors": serialize_to_json(
-                    update.authors if overwrite else cur_item.authors or update.authors
+                    _update_authors if overwrite else cur_item.authors or _update_authors
                 ),
                 "narrators": serialize_to_json(
-                    update.narrators if overwrite else cur_item.narrators or update.narrators
+                    _update_narrators if overwrite else cur_item.narrators or _update_narrators
                 ),
                 "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "search_name": create_safe_string(name, True, True),
