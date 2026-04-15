@@ -44,6 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev \
     libssh-dev \
     liblzma-dev \
+    # Allows pipewire devices to be detected when running in docker container.
+    pipewire-alsa \
     # SSL/TLS support for HTTPS
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*

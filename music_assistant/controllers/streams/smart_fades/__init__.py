@@ -1,8 +1,7 @@
-"""Smart Fades - Audio analyzer and mixer."""
+"""Smart Fades - Audio mixer."""
 
 from __future__ import annotations
 
-from .analyzer import SmartFadesAnalyzer
 from .mixer import SmartFadesMixer
 
-__all__ = ["SmartFadesAnalyzer", "SmartFadesMixer"]
+__all__ = ["SmartFadesMixer"]

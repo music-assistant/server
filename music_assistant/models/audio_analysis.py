@@ -47,12 +47,12 @@ class AudioAnalysisData(DataClassDictMixin):
     # Tonality: "major" or "minor".
     mode: str | None = None
 
-    # Spectral & Energy (per-second timed arrays)
+    # Spectral & Energy (fixed 1800 bins covering track duration)
 
-    # Per-second RMS energy, normalized 0.0-1.0. Array length = duration in seconds.
-    rms_energy_per_second: npt.NDArray[np.float32] | None = None
-    # Per-second spectral centroid in Hz. Array length = duration in seconds.
-    spectral_centroid_per_second: npt.NDArray[np.float32] | None = None
+    # RMS energy, normalized 0.0-1.0. Fixed 1800 bins.
+    rms_energy: npt.NDArray[np.float32] | None = None
+    # Spectral centroid in Hz. Fixed 1800 bins.
+    spectral_centroid: npt.NDArray[np.float32] | None = None
 
     # High-Level Descriptors (all normalized 0.0-1.0)
 
@@ -80,9 +80,6 @@ class AudioAnalysisData(DataClassDictMixin):
     rhythmic_regularity: float | None = None
 
     # Visualization
-
-    # Peak amplitude waveform for frontend display, normalized 0.0-1.0. Fixed 800 bins.
-    wave_form: npt.NDArray[np.float32] | None = None
 
     # Provider-Specific
 

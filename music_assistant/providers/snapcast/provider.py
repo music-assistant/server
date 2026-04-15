@@ -81,6 +81,11 @@ class SnapCastProvider(PlayerProvider):
     _snapcast_ma_streams_lock: asyncio.Lock
 
     @property
+    def supports_dynamic_leader_switching(self) -> bool:
+        """Return True: Snapcast supports removing the leader without stream teardown."""
+        return True
+
+    @property
     def queue_control_available(self) -> bool:
         """Return whether queue-based control scripts are available.
 

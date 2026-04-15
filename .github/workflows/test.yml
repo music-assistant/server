@@ -57,7 +57,9 @@ jobs:
           path: ~/.cache/uv
           key: uv-${{ runner.os }}-3.12-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
       - name: Install dependencies
-        run: uv pip install --system . .[test] -r requirements_all.txt
+        # --index-strategy: allow PyPI packages when also using the PyTorch extra index
+        # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+        run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
       - name: Lint/test with pre-commit
         run: SKIP=no-commit-to-branch pre-commit run --all-files
 
@@ -99,6 +101,8 @@ jobs:
           path: ~/.cache/uv
           key: uv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
       - name: Install dependencies
-        run: uv pip install --system . .[test] -r requirements_all.txt
+        # --index-strategy: allow PyPI packages when also using the PyTorch extra index
+        # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+        run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
       - name: Pytest
         run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/
