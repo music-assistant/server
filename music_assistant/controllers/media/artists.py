@@ -581,8 +581,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             }
         )
 
-    #####
-
     async def audiobooks(
         self,
         item_id: str,
@@ -616,20 +614,14 @@ class ArtistsController(MediaControllerBase[Artist]):
                     item_id, provider_instance_id_or_domain
                 )
             return []
-        if library_artist.artist_type == ArtistType.AUTHOR:
-            db_items = await self.get_library_author_audiobooks(library_artist.item_id)
-            result: list[Audiobook] = db_items
-            if in_library_only:
-                # return in-library items only
-                return result
-        elif library_artist.artist_type == ArtistType.NARRATOR:
-            db_items = await self.get_library_narrator_audiobooks(library_artist.item_id)
-            result: list[Audiobook] = db_items
-            if in_library_only:
-                # return in-library items only
-                return result
-        else:
-            return []
+
+        db_items = await self.get_library_author_narrator_audiobooks(
+            library_artist.item_id, artist_type=library_artist.artist_type
+        )
+        result: list[Audiobook] = db_items
+        if in_library_only:
+            # return in-library items only
+            return result
         # return all (unique) items from all providers
         # initialize unique_ids with db_items to prevent duplicates
         unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
@@ -664,60 +656,70 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
-        return []
-        # if ProviderFeature.ARTIST_ALBUMS in prov.supported_features:
-        #     return await prov.get_artist_albums(item_id)
-        # # fallback implementation using the db
-        # if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-        #     item_id,
-        #     provider_instance_id_or_domain,
-        # ):
-        #     if db_artist.artist_type != ArtistType.ARTIST:
-        #         self.logger.debug("Albums only available for artists of type ARTIST")
-        #         return []
-        #     db_artist_id = int(db_artist.item_id)  # ensure integer
-        #     subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-        #     query = f"albums.item_id in ({subquery})"
-        #     return await self.mass.music.albums.get_library_items_by_query(
-        #         extra_query_parts=[query],
-        #         extra_query_params={"artist_id": db_artist_id},
-        #         provider_filter=[provider_instance_id_or_domain],
-        #     )
-        # return []
+        if ProviderFeature.AUTHOR_AUDIOBOOKS in prov.supported_features:
+            return await prov.get_author_audiobooks(item_id)
+        # fallback implementation using the db
+        return await self._get_db_author_narrator_audiobooks(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            artist_type=ArtistType.AUTHOR,
+        )
 
     async def get_provider_narrator_audiobooks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> list[Audiobook]:
-        """Return audiobooks for a narrator on given provider."""
+        """Return audiobooks for an author on given provider."""
         assert provider_instance_id_or_domain != "library"
         if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
         prov = cast("MusicProvider", prov)
+        if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
+            return await prov.get_author_audiobooks(item_id)
+        # fallback implementation using the db
+        return await self._get_db_author_narrator_audiobooks(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            artist_type=ArtistType.NARRATOR,
+        )
+
+    async def _get_db_author_narrator_audiobooks(
+        self, item_id: str, provider_instance_id_or_domain: str, artist_type: ArtistType
+    ) -> list[Audiobook]:
+        if db_author_narrator := await self.mass.music.artists.get_library_item_by_prov_id(
+            item_id,
+            provider_instance_id_or_domain,
+        ):
+            if db_author_narrator.artist_type != artist_type:
+                self.logger.debug("Artist type must be %s.", artist_type)
+                return []
+            # note that we are using the album_artists table, which maps to audiobook_author/narrator in this case.
+            db_artist_id = int(db_author_narrator.item_id)  # ensure integer
+            subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
+            query = f"albums.item_id in ({subquery})"
+            return await self.mass.music.audiobooks.get_library_items_by_query(
+                extra_query_parts=[query],
+                extra_query_params={"artist_id": db_artist_id},
+                provider_filter=[provider_instance_id_or_domain],
+            )
         return []
 
-    async def get_library_author_audiobooks(
+    async def get_library_author_narrator_audiobooks(
         self,
         item_id: str | int,
+        artist_type: ArtistType,
     ) -> list[Audiobook]:
-        """Return all in-library audiobooks for an author."""
-        return []
-        # db_id = int(item_id)  # ensure integer
-        # library_item = await self.get_library_item(db_id)
-        # if library_item.artist_type != ArtistType.ARTIST:
-        #     self.logger.debug("Albums only available for artists of type ARTIST")
-        #     return []
-        # subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-        # query = f"albums.item_id in ({subquery})"
-        # return await self.mass.music.albums.get_library_items_by_query(
-        #     extra_query_parts=[query],
-        #     extra_query_params={"artist_id": db_id},
-        # )
-
-    async def get_library_narrator_audiobooks(
-        self,
-        item_id: str | int,
-    ) -> list[Audiobook]:
-        """Return all in-library audiobooks for a narrator."""
-        return []
+        """Return all in-library audiobooks for an author/ narrator."""
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != artist_type:
+            self.logger.debug("Audiobooks only available for artists of type %s", artist_type)
+            return []
+        # note that we are using the album_artists table, which maps to audiobook_author/narrator in this case.
+        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
+        query = f"albums.item_id in ({subquery})"
+        return await self.mass.music.audiobooks.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"artist_id": db_id},
+        )
