@@ -664,6 +664,38 @@ class Player(ABC):
         # current media is updated (after applying group/sync membership logic).
         # for instance to update any display information on the physical player.
 
+    def on_protocol_player_updated(
+        self, protocol_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Handle callback when one of the linked protocol players of the player is updated."""
+        # optional callback
+        # default implementation will simply trigger an update for the state of the player
+        self.mass.players.trigger_player_update(self.player_id)
+
+    def on_protocol_parent_updated(
+        self, protocol_parent: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Handle callback when the parent protocol player of the player is updated."""
+        # optional callback
+        # default implementation will simply trigger an update for the state of the player
+        self.mass.players.trigger_player_update(self.player_id)
+
+    def on_group_member_updated(
+        self, member_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Handle callback when a group member of the group player is updated."""
+        # optional callback
+        # default implementation will simply trigger an update for the state of the player
+        self.mass.players.trigger_player_update(self.player_id)
+
+    def on_group_updated(
+        self, group_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Handle callback when a group player is updated this player is a member of."""
+        # optional callback
+        # default implementation will simply trigger an update for the state of the player
+        self.mass.players.trigger_player_update(self.player_id)
+
     # DO NOT OVERWRITE BELOW !
     # These properties and methods are either managed by core logic or they
     # are used to perform a very specific function. Overwriting these may
@@ -1667,7 +1699,11 @@ class Player(ABC):
                 continue
             if group_player.player_id == self.player_id:
                 continue
-            if group_player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            if group_player.powered is False or (
+                group_player.powered is None and group_player.playback_state == PlaybackState.IDLE
+            ):
+                # a group is only considered active if it supports power and is powered on,
+                # or if it doesn't support power but is not idle
                 continue
             if self.player_id in group_player.state.group_members:
                 return group_player.player_id

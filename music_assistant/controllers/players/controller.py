@@ -1686,36 +1686,38 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         # update/signal group player(s) child's when group updates
-        for child_player in self.iter_group_members(player, exclude_self=True):
-            self.trigger_player_update(child_player.player_id)
+        if player.type == PlayerType.GROUP:
+            for child_player in self.iter_group_members(player, exclude_self=True):
+                child_player.on_group_updated(player, changed_values)
         # update/signal group player(s) when child updates
-        for group_player in self._get_player_groups(player, powered_only=False):
-            self.trigger_player_update(group_player.player_id)
-        # update/signal manually synced to player when child updates
-        if (synced_to := player.state.synced_to) and (
-            synced_to_player := self.get_player(synced_to)
+        else:
+            for group_player in self._get_player_groups(player, powered_only=False):
+                group_player.on_group_member_updated(player, changed_values)
+
+        # update/signal manually sync-parent player when child updates
+        if (_sync_parent_id := player.state.synced_to) and (
+            _sync_parent := self.get_player(_sync_parent_id)
         ):
-            self.trigger_player_update(synced_to_player.player_id)
-        # update/signal active groups when a group member updates
-        if (active_group := player.state.active_group) and (
-            active_group_player := self.get_player(active_group)
-        ):
-            self.trigger_player_update(active_group_player.player_id)
+            self.trigger_player_update(_sync_parent.player_id)
         # If this is a protocol player, forward the state update to the parent player
-        if player.protocol_parent_id and (
-            parent_player := self.mass.players.get_player(player.protocol_parent_id)
+        if (
+            player.type == PlayerType.PROTOCOL
+            and player.protocol_parent_id
+            and (_protocol_parent := self.mass.players.get_player(player.protocol_parent_id))
         ):
-            self.trigger_player_update(parent_player.player_id)
+            _protocol_parent.on_protocol_player_updated(player, changed_values)
         # If this is a parent player with linked protocols, forward state updates
         # to linked protocol players so their state reflects parent dependencies
         if player.state.type != PlayerType.PROTOCOL and player.linked_output_protocols:
             for linked in player.linked_output_protocols:
                 if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
-                    self.mass.players.trigger_player_update(protocol_player.player_id)
+                    protocol_player.on_protocol_parent_updated(player, changed_values)
+
         # trigger update of all players in a provider if group related fields changed
+        # this ensures that calculated fields like can_group_with are updated on all players
         if any(key in changed_values for key in ("group_members", "synced_to", "available")):
             for prov_player in player.provider.players:
-                self.trigger_player_update(prov_player.player_id)
+                self.trigger_player_update(prov_player.player_id, debounce_delay=2)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
