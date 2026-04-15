@@ -323,7 +323,7 @@ class MusicbrainzProvider(MetadataProvider):
 
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
-        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
+        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases+isrcs"):
             if "id" not in result:
                 result["id"] = recording_id
             try:
