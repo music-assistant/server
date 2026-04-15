@@ -6,8 +6,7 @@ authors = [
 ]
 classifiers = [
   "Environment :: Console",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
   "aiodns>=3.2.0", # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
@@ -42,8 +41,8 @@ dependencies = [
   "uv>=0.8.0",
   "librosa==0.11.0",
   "numpy==2.3.5",  # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
-  "torch==2.7.1",
-  "torchaudio==2.7.1",
+  "torch==2.11.0",
+  "torchaudio==2.11.0",
   "gql[all]==4.0.0",
   "aiortc>=1.6.0",
   "pyjwt[crypto]>=2.10.1",
@@ -51,7 +50,7 @@ dependencies = [
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 version = "0.0.0"
 
 [project.optional-dependencies]
@@ -95,7 +94,13 @@ fix = true
 show-fixes = true
 
 line-length = 100
-target-version = "py312"
+# IMPORTANT: target-version is intentionally pinned ONE MINOR BEHIND the runtime
+# (.python-version = 3.14, target-version = py313) so that lint/format don't
+# introduce 3.14-only syntax (e.g. PEP 758 except-without-parens) while we still
+# need clean cherry-pick backports to `stable` (which runs Python 3.13).
+# BUMP TO "py314" BEFORE THE 2.9 RELEASE — once `stable` follows dev to 3.14,
+# this restriction can be lifted.
+target-version = "py313"
 
 [tool.ruff.lint.pydocstyle]
 # Use Sphinx-style docstrings with :param: syntax
@@ -111,7 +116,9 @@ max-statements = 50
 
 [tool.mypy]
 platform = "linux"
-python_version = "3.12"
+# Kept at 3.13 to match [tool.ruff] target-version — see the note there.
+# BUMP TO "3.14" BEFORE THE 2.9 RELEASE.
+python_version = "3.13"
 
 # set this to normal when we have fixed all exclusions
 follow_imports = "silent"
@@ -171,7 +178,7 @@ line-ending = "lf"
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
 filterwarnings = [
-  # Suppress Python 3.13 AsyncMock internal warnings about unawaited coroutines
+  # Suppress Python 3.14 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",
 ]
 
@@ -207,6 +214,7 @@ ignore = [
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later before 2.9 release
   "BLE001",
   "FBT001",
   "FBT002",
