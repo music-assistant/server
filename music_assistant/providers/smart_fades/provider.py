@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -86,9 +87,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
         torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
-        # Select best available quantization engine (fbgemm is x86-only, qnnpack for ARM)
+        # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
+        is_arm = platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
+        preference = ("qnnpack", "fbgemm") if is_arm else ("fbgemm", "qnnpack")
         supported_engines = torch.backends.quantized.supported_engines
-        quantized_engine = next((e for e in ("fbgemm", "qnnpack") if e in supported_engines), None)
+        quantized_engine = next((e for e in preference if e in supported_engines), None)
         if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
             torch.backends.quantized.engine = quantized_engine
         beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
