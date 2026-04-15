@@ -846,6 +846,7 @@ async def test_get_audio_stream_continues_after_non_block_boundary_drop(
 def _make_raw_stream_details(
     url: str = "https://cdn.example.com/track.flac",
     codec: str = "flac-mp4",
+    bit_rate: int = 0,
 ) -> StreamDetails:
     """Build StreamDetails for raw (unencrypted) windowed stream tests."""
     return StreamDetails(
@@ -857,6 +858,7 @@ def _make_raw_stream_details(
             "url": url,
             "codec": codec,
             "transport": "raw",
+            "bit_rate": bit_rate,
             "fi_quality": "lossless",
             "fi_codecs": "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4",
         },
@@ -994,3 +996,73 @@ async def test_get_audio_stream_raw_resets_on_range_ignored(
 
     # Should get the full plaintext without duplication
     assert result == plaintext
+
+
+async def test_get_audio_stream_raw_seek_starts_from_byte_offset(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """Raw stream with seek_position starts Range requests from calculated byte offset."""
+    # 320 kbps = 40000 bytes/sec; seek to 10s → offset 400000
+    bit_rate = 320
+    seek_seconds = 10
+    expected_offset = int(seek_seconds * bit_rate * 1000 / 8)  # 400000
+
+    plaintext = b"S" * 64
+    resp = _MockResponse([plaintext], status=206)
+    session = _MultiCallHttpSession([resp])
+    streaming_provider_stub.mass.http_session = session
+
+    sd = _make_raw_stream_details(bit_rate=bit_rate)
+    result = b""
+    async for chunk in streaming_manager.get_audio_stream(sd, seek_position=seek_seconds):
+        result += chunk
+
+    assert result == plaintext
+    assert len(session.calls) == 1
+    range_header = session.calls[0]["headers"]["Range"]
+    assert range_header.startswith(f"bytes={expected_offset}-")
+
+
+async def test_get_audio_stream_raw_seek_zero_bitrate_starts_from_zero(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """When bit_rate is 0, seek_position is ignored and stream starts from byte 0."""
+    plaintext = b"Z" * 64
+    resp = _MockResponse([plaintext])
+    session = _MultiCallHttpSession([resp])
+    streaming_provider_stub.mass.http_session = session
+
+    sd = _make_raw_stream_details(bit_rate=0)
+    result = b""
+    async for chunk in streaming_manager.get_audio_stream(sd, seek_position=30):
+        result += chunk
+
+    assert result == plaintext
+    assert session.calls[0]["headers"]["Range"].startswith("bytes=0-")
+
+
+async def test_get_audio_stream_encrypted_ignores_seek_position(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """Encrypted stream always starts from byte 0 regardless of seek_position."""
+    key = b"\x01" * 16
+    key_hex = key.hex()
+    plaintext = b"E" * 64
+    cipher = Cipher(algorithms.AES(key), modes.CTR(b"\x00" * 16))
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    resp = _MockResponse([ciphertext])
+    session = _MultiCallHttpSession([resp])
+    streaming_provider_stub.mass.http_session = session
+
+    sd = _make_encrypted_stream_details(key_hex)
+    result = b""
+    async for chunk in streaming_manager.get_audio_stream(sd, seek_position=30):
+        result += chunk
+
+    assert result == plaintext
+    assert session.calls[0]["headers"]["Range"].startswith("bytes=0-")

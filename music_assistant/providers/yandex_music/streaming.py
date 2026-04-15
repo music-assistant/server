@@ -157,12 +157,13 @@ class YandexMusicStreamingManager:
             )
 
             # Always use StreamType.CUSTOM with windowed Range requests to prevent CDN drops.
-            # can_seek=False: provider always streams from position 0;
-            # allow_seek=True: ffmpeg handles seek with -ss input flag.
+            # Raw transport: can_seek=True — provider handles seek via Range byte offset.
+            # Encrypted transport: seeking disabled — AES-CTR seek not implemented.
             data: dict[str, Any] = {
                 "url": url,
                 "codec": codec,
                 "transport": transport,
+                "bit_rate": bit_rate,
                 # Stored for URL refresh on 4xx:
                 "fi_quality": fi_params["quality"],
                 "fi_codecs": codecs,
@@ -177,8 +178,8 @@ class YandexMusicStreamingManager:
                 stream_type=StreamType.CUSTOM,
                 duration=track.duration,
                 data=data,
-                can_seek=False,
-                allow_seek=True,
+                can_seek=not needs_decryption,
+                allow_seek=not needs_decryption,
             )
 
         # Fallback: /tracks/{id}/download-info (defensive, should rarely trigger)
@@ -696,6 +697,30 @@ class YandexMusicStreamingManager:
             raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
         return True, key_bytes
 
+    def _calculate_seek_offset(
+        self, data: dict[str, Any], seek_position: int, is_encrypted: bool
+    ) -> int:
+        """Calculate initial byte offset for raw transport seeking.
+
+        :param data: Stream data dict (must contain 'bit_rate' in kbps).
+        :param seek_position: Seek offset in seconds.
+        :param is_encrypted: Whether the stream uses AES encryption.
+        :return: Byte offset to start streaming from (0 if not applicable).
+        """
+        if seek_position <= 0 or is_encrypted:
+            return 0
+        bit_rate = data.get("bit_rate") or 0
+        if not bit_rate:
+            return 0
+        byte_offset = seek_position * bit_rate * 1000 // 8
+        self.logger.debug(
+            "Seeking to %ds: byte offset %d (bitrate %d kbps)",
+            seek_position,
+            byte_offset,
+            bit_rate,
+        )
+        return byte_offset
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
@@ -711,14 +736,15 @@ class YandexMusicStreamingManager:
         Retry counter resets after each successful window.
 
         :param streamdetails: Stream details with URL (and optional decryption key).
-        :param seek_position: Always 0 (seeking delegated to ffmpeg via allow_seek=True).
+        :param seek_position: Seek offset in seconds for raw transport (0 = from start).
         :return: Async generator yielding audio bytes.
         """
         data = streamdetails.data
         is_encrypted, key_bytes = self._validate_encryption_key(data)
+        initial_byte_offset = self._calculate_seek_offset(data, seek_position, is_encrypted)
 
         max_retries = 6
-        bytes_yielded = 0
+        bytes_yielded = initial_byte_offset
         attempt = 0
         retry_delay: float = 0.0
 

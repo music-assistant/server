@@ -47,6 +47,7 @@ from .constants import (
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
+    CONF_QUALITY,
     CONF_TOKEN,
     CONF_X_TOKEN,
     DEFAULT_BASE_URL,
@@ -2349,11 +2350,24 @@ class YandexMusicProvider(MusicProvider):
         Handles both raw (direct) and encrypted (encraw) transports.
 
         :param streamdetails: Stream details with URL and optional decryption key.
-        :param seek_position: Seek position in seconds (delegated to ffmpeg).
+        :param seek_position: Seek position in seconds (handled by provider for raw transport).
         :return: Async generator yielding audio chunks.
         """
         async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
             yield chunk
+
+    async def get_rotor_station_tracks(
+        self, station_id: str, queue: str | int | None = None
+    ) -> tuple[list[Any], str | None]:
+        """Fetch tracks from a rotor station (My Wave, similar, etc.).
+
+        Wrapper around client.get_rotor_station_tracks for use by ynison plugin.
+        """
+        return await self.client.get_rotor_station_tracks(station_id, queue=queue)
+
+    def get_quality(self) -> str:
+        """Return the configured audio quality tier (e.g. 'balanced', 'superb')."""
+        return str(self.config.get_value(CONF_QUALITY) or "").strip().lower()
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve wave cover image with background color fill for transparent PNGs.
