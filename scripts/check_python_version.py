@@ -9,6 +9,19 @@ from pathlib import Path
 # ruff: noqa: T201
 
 
+def _emit_warnings(lines: list[str]) -> None:
+    """Print warnings; in an interactive terminal, overwrite pre-commit's verbose metadata."""
+    block = "\n".join(lines)
+    try:
+        with Path("/dev/tty").open("r"):
+            # Move up past pre-commit's "- hook id", "- duration", blank line, clear,
+            # then colorize the block in 256-color orange (xterm palette index 208).
+            block = f"\033[3A\033[J\033[38;5;208m{block}\033[0m"
+    except OSError:
+        pass
+    print(block)
+
+
 def main() -> int:
     """Entry point; returns 0 on success, 1 on any drift."""
     root = Path(__file__).resolve().parent.parent
@@ -25,7 +38,12 @@ def main() -> int:
     with (root / "pyproject.toml").open("rb") as fp:
         data = tomllib.load(fp)
 
+    # Hard errors: runtime/distribution contract — must match .python-version exactly.
     errors: list[str] = []
+    # Soft warnings: linter/type-checker compat targets — may intentionally lag the
+    # runtime (e.g. pinned to py313 while runtime is 3.14 to keep dev backport-friendly
+    # with stable). Surfaced for awareness but not blocking.
+    warnings: list[str] = []
 
     project = data.get("project", {})
     requires = project.get("requires-python", "")
@@ -44,16 +62,22 @@ def main() -> int:
 
     ruff_target = data.get("tool", {}).get("ruff", {}).get("target-version", "")
     if ruff_target != py_target:
-        errors.append(f"tool.ruff.target-version is {ruff_target!r}, expected {py_target!r}")
+        warnings.append(f"tool.ruff.target-version is {ruff_target!r}, expected {py_target!r}")
 
     mypy_python = data.get("tool", {}).get("mypy", {}).get("python_version", "")
     if mypy_python != major_minor:
-        errors.append(f"tool.mypy.python_version is {mypy_python!r}, expected {major_minor!r}")
+        warnings.append(f"tool.mypy.python_version is {mypy_python!r}, expected {major_minor!r}")
+
+    if warnings:
+        _emit_warnings(
+            [f"pyproject.toml soft drift against .python-version ({pin}):"]
+            + [f"  - WARN: {warn}" for warn in warnings]
+        )
 
     if errors:
         print(f"pyproject.toml drift detected against .python-version ({pin}):")
         for err in errors:
-            print(f"  - {err}")
+            print(f"  - ERROR: {err}")
         return 1
 
     return 0

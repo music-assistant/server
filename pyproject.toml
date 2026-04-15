@@ -94,7 +94,13 @@ fix = true
 show-fixes = true
 
 line-length = 100
-target-version = "py314"
+# IMPORTANT: target-version is intentionally pinned ONE MINOR BEHIND the runtime
+# (.python-version = 3.14, target-version = py313) so that lint/format don't
+# introduce 3.14-only syntax (e.g. PEP 758 except-without-parens) while we still
+# need clean cherry-pick backports to `stable` (which runs Python 3.13).
+# BUMP TO "py314" BEFORE THE 2.9 RELEASE — once `stable` follows dev to 3.14,
+# this restriction can be lifted.
+target-version = "py313"
 
 [tool.ruff.lint.pydocstyle]
 # Use Sphinx-style docstrings with :param: syntax
@@ -110,7 +116,9 @@ max-statements = 50
 
 [tool.mypy]
 platform = "linux"
-python_version = "3.14"
+# Kept at 3.13 to match [tool.ruff] target-version — see the note there.
+# BUMP TO "3.14" BEFORE THE 2.9 RELEASE.
+python_version = "3.13"
 
 # set this to normal when we have fixed all exclusions
 follow_imports = "silent"
@@ -206,11 +214,7 @@ ignore = [
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
-  "TC002", # Move third-party import into type-checking block; to enable later
-  "UP037", # Remove quotes from type annotation; to enable later
-  "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later
-  "PYI055", # Simplify type[A] | type[B] to type[A | B]; to enable later
-  "RUF100", # Remove unused noqa comments; to enable later
+  "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later before 2.9 release
   "BLE001",
   "FBT001",
   "FBT002",
