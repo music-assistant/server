@@ -4,15 +4,13 @@ from contextlib import suppress
 from datetime import datetime
 
 from aioaudiobookshelf.schema.author import AuthorExpanded as AbsAuthorExpanded
+from aioaudiobookshelf.schema.author import AuthorMinified as AbsAuthorMinified
 from aioaudiobookshelf.schema.author import Narrator as AbsNarrator
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
 )
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
-)
-from aioaudiobookshelf.schema.library import (
-    LibraryItemMinifiedBook as AbsLibraryItemMinifiedBook,
 )
 from aioaudiobookshelf.schema.library import (
     LibraryItemMinifiedPodcast as AbsLibraryItemMinifiedPodcast,
@@ -224,7 +222,7 @@ def parse_podcast_episode(
 
 def parse_audiobook(
     *,
-    abs_audiobook: AbsLibraryItemExpandedBook | AbsLibraryItemMinifiedBook,
+    abs_audiobook: AbsLibraryItemExpandedBook,
     instance_id: str,
     domain: str,
     token: str | None,
@@ -283,24 +281,31 @@ def parse_audiobook(
         )
 
     # expanded version
-    if isinstance(abs_audiobook, AbsLibraryItemExpandedBook):
-        mass_audiobook.authors.set([x.name for x in abs_audiobook.media.metadata.authors])
-        mass_audiobook.narrators.set(abs_audiobook.media.metadata.narrators)
-        chapters = []
-        for idx, chapter in enumerate(abs_audiobook.media.chapters, 1):
-            chapters.append(
-                MediaItemChapter(
-                    position=idx,
-                    name=chapter.title,
-                    start=chapter.start,
-                    end=chapter.end,
-                )
+    mass_audiobook.authors.set(
+        [
+            parse_author(
+                abs_author=author,
+                instance_id=instance_id,
+                domain=domain,
+                token=token,
+                base_url=base_url,
             )
-        mass_audiobook.metadata.chapters = chapters
+            for author in abs_audiobook.media.metadata.authors
+        ]
+    )
 
-    elif isinstance(abs_audiobook, AbsLibraryItemMinifiedBook):
-        mass_audiobook.authors.set([abs_audiobook.media.metadata.author_name])
-        mass_audiobook.narrators.set([abs_audiobook.media.metadata.narrator_name])
+    mass_audiobook.narrators.set(abs_audiobook.media.metadata.narrators)
+    chapters = []
+    for idx, chapter in enumerate(abs_audiobook.media.chapters, 1):
+        chapters.append(
+            MediaItemChapter(
+                position=idx,
+                name=chapter.title,
+                start=chapter.start,
+                end=chapter.end,
+            )
+        )
+    mass_audiobook.metadata.chapters = chapters
 
     if media_progress is not None and media_progress.current_time is not None:
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
@@ -313,10 +318,10 @@ def parse_audiobook(
 
 def parse_author(
     *,
-    abs_author: AbsAuthorExpanded,
+    abs_author: AbsAuthorExpanded | AbsAuthorMinified,
     instance_id: str,
     domain: str,
-    token: str,
+    token: str | None,
     base_url: str,
 ) -> MassArtist:
     """Translate AbsAuthor to MassArtist."""
@@ -333,7 +338,11 @@ def parse_author(
         artist_type=ArtistType.AUTHOR,
     )
     # cover
-    if abs_author.image_path is not None:
+    if (
+        isinstance(abs_author, AbsAuthorExpanded)
+        and abs_author.image_path is not None
+        and token is not None
+    ):
         api_url = f"/api/items/{abs_author.id_}/image?token={token}"
         cover_url = f"{base_url}{api_url}"
         mass_artist.metadata.images = UniqueList(
