@@ -257,6 +257,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
                 "Last.fm recommendations built (%d folders)",
                 len(self._recommendation_folders),
             )
+            # TODO: signal the frontend to refresh the Discover view once a suitable
+            # event exists upstream (e.g. a RECOMMENDATIONS_UPDATED EventType).
         except MusicAssistantError as err:
             self.logger.warning("Failed to populate recommendations: %s", err)
 
