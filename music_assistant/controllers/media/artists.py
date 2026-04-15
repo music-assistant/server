@@ -715,7 +715,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             # note that we are using the album_artists table, which maps to audiobook_author/narrator in this case.
             db_artist_id = int(db_author_narrator.item_id)  # ensure integer
             subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-            query = f"albums.item_id in ({subquery})"
+            query = f"audiobooks.item_id in ({subquery})"
             return await self.mass.music.audiobooks.get_library_items_by_query(
                 extra_query_parts=[query],
                 extra_query_params={"artist_id": db_artist_id},
@@ -736,7 +736,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         # note that we are using the album_artists table, which maps to audiobook_author/narrator in this case.
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-        query = f"albums.item_id in ({subquery})"
+        query = f"audiobooks.item_id in ({subquery})"
         return await self.mass.music.audiobooks.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
