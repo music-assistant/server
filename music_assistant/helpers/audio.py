@@ -6,7 +6,7 @@ import logging
 import re
 import struct
 import urllib.parse
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from io import BytesIO
 from typing import TYPE_CHECKING, Final
 
@@ -83,6 +83,45 @@ def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
 
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+
+
+def iter_pcm_slices(
+    audio: bytes,
+    pcm_format: AudioFormat,
+    target_duration_ms: int = 100,
+) -> Iterator[bytes]:
+    """Yield frame-aligned PCM slices of approximately ``target_duration_ms``.
+
+    Large PCM buffers (e.g. crossfade segments or full-track reads) are split
+    into fixed-size sub-chunks so that downstream consumers get predictable
+    chunk sizes for buffering, write-timeout management, and ring-buffer
+    bookkeeping.
+
+    :param audio: Raw PCM bytes to slice.
+    :param pcm_format: Format description (sample rate, bit depth, channels).
+    :param target_duration_ms: Desired slice length in milliseconds (default 100).
+    """
+    if not audio:
+        return
+    bytes_per_sample = max(1, pcm_format.bit_depth // 8)
+    frame_size = bytes_per_sample * pcm_format.channels
+    if frame_size <= 0:
+        yield audio
+        return
+    samples_per_slice = max(1, round((target_duration_ms / 1000) * pcm_format.sample_rate))
+    slice_size = max(frame_size, samples_per_slice * frame_size)
+    offset = 0
+    audio_len = len(audio)
+    while offset < audio_len:
+        end = min(audio_len, offset + slice_size)
+        # Align to frame boundary unless this is the tail of the buffer.
+        if end < audio_len:
+            aligned_end = end - (end % frame_size)
+            if aligned_end <= offset:
+                aligned_end = min(audio_len, offset + frame_size)
+            end = aligned_end
+        yield audio[offset:end]
+        offset = end
 
 
 def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:

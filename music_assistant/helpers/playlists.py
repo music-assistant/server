@@ -233,6 +233,28 @@ def parse_m3u_playlist_name(m3u_data: str) -> str | None:
     return None
 
 
+def parse_m3u_playlist_image(m3u_data: str) -> str | None:
+    """
+    Extract the playlist cover image from an M3U #EXTIMG directive.
+
+    Looks for a simple #EXTIMG:url line before the first track entry.
+    This is a de facto standard for playlist-level cover images.
+    """
+    for line in m3u_data.splitlines():
+        line = line.strip()  # noqa: PLW2901
+        if not line or line.startswith(("#EXTM3U", "#PLAYLIST:")):
+            continue
+        # stop at first track entry or track-level metadata
+        if not line.startswith("#"):
+            break
+        if line.startswith(("#EXTINF:", "#EXTMA:", "#EXTPROV:")):
+            break
+        # simple playlist-level image (just URL, no field separator)
+        if line.startswith("#EXTIMG:") and FIELD_SEPARATOR not in line:
+            return line.split("#EXTIMG:", 1)[1].strip()
+    return None
+
+
 def parse_pls(pls_data: str) -> list[PlaylistItem]:
     """Parse a PLS playlist file into PlaylistItem entries."""
     pls_parser = configparser.ConfigParser(strict=False)
@@ -314,13 +336,19 @@ async def fetch_playlist(
 def generate_m3u(
     playlist_name: str,
     items: Sequence[PlaylistItem],
+    playlist_image_url: str | None = None,
 ) -> str:
     """Generate an M3U8 playlist string from PlaylistItem entries.
 
     :param playlist_name: Human-readable name (written as #PLAYLIST directive).
     :param items: Entries to write. Only fields that are set are emitted.
+    :param playlist_image_url: Optional playlist cover image URL.
     """
-    lines: list[str] = ["#EXTM3U", f"#PLAYLIST:{playlist_name}"]
+    # Playlist-level image using #EXTIMG directive (de facto standard for playlist covers)
+    lines: list[str] = ["#EXTM3U"]
+    if playlist_image_url:
+        lines.append(f"#EXTIMG:{playlist_image_url}")
+    lines.append(f"#PLAYLIST:{playlist_name}")
     sep = FIELD_SEPARATOR
     for item in items:
         if item.metadata:

@@ -1,7 +1,6 @@
 """Unit tests for AirPlay stream session late-join logic."""
 
 import time
-from collections import deque
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,25 +9,24 @@ import pytest
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
 PCM_SAMPLE_SIZE = 176400  # 44.1kHz / 16-bit / 2ch
-BYTES_PER_SAMPLE = 4  # 16-bit * 2ch
 
 
 def _make_session(
     start_time: float,
     seconds_streamed: float,
-    chunk_positions: list[float],
 ) -> AirPlayStreamSession:
-    """Create a stream session with pre-filled ring buffer for testing.
+    """Create a stream session for testing.
 
     :param start_time: The wall-clock time when the stream was started.
     :param seconds_streamed: How many seconds of audio have been streamed.
-    :param chunk_positions: List of stream positions for each chunk in the ring buffer.
     """
     prov = MagicMock()
 
     pcm_format = MagicMock()
     pcm_format.pcm_sample_size = PCM_SAMPLE_SIZE
     pcm_format.sample_rate = 44100
+    pcm_format.bit_depth = 16
+    pcm_format.channels = 2
 
     leader = MagicMock()
     leader.stream = MagicMock()
@@ -40,18 +38,11 @@ def _make_session(
     session.start_ntp = 1  # dummy
     session.wait_start = 2.0
 
-    session._chunk_buffer = deque(maxlen=12)
-    for pos in chunk_positions:
-        session._chunk_buffer.append((b"\x00" * PCM_SAMPLE_SIZE, pos))
-
     return session
 
 
 def _make_late_joiner(wait_start_ms: int = 2000) -> MagicMock:
-    """Create a mock AirPlay player for late-join testing.
-
-    :param wait_start_ms: The wait_start value in milliseconds.
-    """
+    """Create a mock AirPlay player for late-join testing."""
     player = MagicMock()
     player.player_id = "late_joiner"
     player.wait_start = wait_start_ms
@@ -72,24 +63,23 @@ def _setup_stream(player: MagicMock) -> Any:
     return _side_effect
 
 
-async def _run_add_client(
-    session: AirPlayStreamSession,
-    player: MagicMock,
-) -> tuple[float, list[tuple[bytes, float]]]:
-    """Run add_client and return (captured_start_at, fed_chunks).
+@pytest.mark.asyncio
+async def test_late_join_empty_buffer() -> None:
+    """Test that with an empty buffer, start_at = start_time + seconds_streamed."""
+    now = time.time()
+    start_time = now - 10
+    seconds_streamed = 12.5
+    session = _make_session(start_time, seconds_streamed)
+    player = _make_late_joiner(wait_start_ms=2000)
 
-    Patches unix_time_to_ntp to capture the start_at value and
-    _start_client/_feed_buffered_chunks to avoid real I/O.
-    """
     captured_start_at: list[float] = []
 
     def capture_ntp(unix_ts: float) -> int:
         captured_start_at.append(unix_ts)
-        return 1  # dummy NTP value
+        return 1
 
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
-        patch.object(session, "_feed_buffered_chunks", new_callable=AsyncMock) as mock_feed,
         patch(
             "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
             side_effect=capture_ntp,
@@ -98,99 +88,170 @@ async def _run_add_client(
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-        fed_chunks: list[tuple[bytes, float]] = []
-        if mock_feed.called:
-            fed_chunks = list(mock_feed.call_args.args[1])
+    assert captured_start_at, "unix_time_to_ntp was never called"
+    expected = start_time + seconds_streamed
+    assert abs(captured_start_at[0] - expected) < 0.1
+
+
+@pytest.mark.asyncio
+async def test_late_join_with_buffered_pcm_in_future() -> None:
+    """Late join with start_at already in the future leaves start_at unmodified."""
+    now = time.time()
+    # Place start_at well in the future: start_time = now + 5, buffer = 0 →
+    # start_at = now + 5 + (seconds_streamed - 0) = now + 17.5 (>> min_headroom)
+    start_time = now + 5
+    seconds_streamed = 12.5
+    session = _make_session(start_time, seconds_streamed)
+    # Fill the ring buffer with 3 seconds of PCM
+    session._pcm_buffer = bytearray(b"\x00" * PCM_SAMPLE_SIZE * 3)
+    player = _make_late_joiner(wait_start_ms=2000)
+
+    captured_start_at: list[float] = []
+
+    def capture_ntp(unix_ts: float) -> int:
+        captured_start_at.append(unix_ts)
+        return 1
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            side_effect=capture_ntp,
+        ),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
 
     assert captured_start_at, "unix_time_to_ntp was never called"
-    return captured_start_at[0], fed_chunks
-
-
-@pytest.mark.asyncio
-async def test_late_join_start_at_never_in_the_past() -> None:
-    """Test that start_at is always >= now + wait_start.
-
-    AirPlay 2 cannot handle receiving an NTP start time in the past.
-    """
-    now = time.time()
-    wait_start_ms = 2000
-    # Stream running for 20s, ring buffer has chunks at positions 10-19.
-    # With wait_start=2s, min_position = (now+2) - (now-10) = 12.
-    # Chunks at 12-19 pass the filter.
-    start_time = now - 10
-    session = _make_session(start_time, 20.0, [float(i) for i in range(10, 20)])
-    player = _make_late_joiner(wait_start_ms=wait_start_ms)
-
-    start_at, _ = await _run_add_client(session, player)
-
-    min_start_at = now + wait_start_ms / 1000
-    assert start_at >= min_start_at - 0.1, (
-        f"start_at must be >= now + wait_start, got {start_at - now:.2f}s from now"
+    # start_at should remain at start_time + (seconds_streamed - 3.0) — already in future
+    expected = start_time + (seconds_streamed - 3.0)
+    assert abs(captured_start_at[0] - expected) < 0.1, (
+        f"start_at should match buffer position, expected {expected}, got {captured_start_at[0]}"
     )
 
 
 @pytest.mark.asyncio
-async def test_late_join_start_at_matches_first_byte() -> None:
-    """Test that start_at corresponds to the stream position of the first byte fed.
-
-    The CLI maps byte 0 to start_ntp, so they must match for sync.
-    """
+async def test_late_join_adds_to_sync_clients() -> None:
+    """Test that the late joiner is added to sync_clients."""
     now = time.time()
-    # With wait_start=2s, min_position = (now+2) - start_time.
-    # Place chunks so some are at or after min_position.
-    # start_time = now - 10, min_position = 12, chunks at 10-19.
-    start_time = now - 10
-    session = _make_session(start_time, 20.0, [float(i) for i in range(10, 20)])
+    session = _make_session(now - 10, 12.5)
+    player = _make_late_joiner()
+
+    with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
+        mock_start.side_effect = _setup_stream(player)
+        with patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            return_value=1,
+        ):
+            await session.add_client(player)
+
+    assert player in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_join_no_running_session() -> None:
+    """Test that add_client is a no-op when no session is running."""
+    now = time.time()
+    session = _make_session(now - 10, 12.5)
+    # Make the leader's stream not running
+    leader = session.sync_clients[0]
+    leader.stream = MagicMock()
+    leader.stream.running = False
+    player = _make_late_joiner()
+
+    with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
+        await session.add_client(player)
+        mock_start.assert_not_called()
+        assert player not in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
+    """When start_at would be in the past, trim from buffer head and shift start_at forward."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    start_time = now - 0.5
+    seconds_streamed = 5.0
+    session = _make_session(start_time, seconds_streamed)
+    # Fill ring buffer with 5 seconds of non-silent PCM (so trim has something to take)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
     player = _make_late_joiner(wait_start_ms=2000)
 
-    start_at, fed_chunks = await _run_add_client(session, player)
+    written_chunks: list[bytes] = []
+    captured_start_at: list[float] = []
 
-    assert fed_chunks, "Expected buffered chunks to be fed"
-    first_chunk_pos = fed_chunks[0][1]
-    expected = start_time + first_chunk_pos
-    assert abs(start_at - expected) < 0.01, (
-        f"start_at must equal start_time + first_chunk_pos, got diff={start_at - expected:.4f}s"
+    def capture_ntp(unix_ts: float) -> int:
+        captured_start_at.append(unix_ts)
+        return 1
+
+    async def capture_write(_player: Any, chunk: bytes) -> None:
+        written_chunks.append(chunk)
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            side_effect=capture_ntp,
+        ),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+    # start_at should be pushed to now + min_headroom (session.wait_start = 2.0)
+    assert captured_start_at, "unix_time_to_ntp was never called"
+    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01), (
+        f"start_at should be at now + min_headroom, got offset {captured_start_at[0] - now:.4f}s"
+    )
+
+    # Buffer should have been trimmed: 2.5s out of 5s (start_at shifted from -0.5 to +2.0)
+    assert written_chunks, "No data was written to the player"
+    written = written_chunks[0]
+    remaining_seconds = len(written) / PCM_SAMPLE_SIZE
+    assert remaining_seconds == pytest.approx(2.5, abs=0.01), (
+        f"expected 2.5s remaining, got {remaining_seconds:.4f}s"
     )
 
 
 @pytest.mark.asyncio
-async def test_late_join_trims_first_chunk() -> None:
-    """Test that the first chunk is trimmed when it straddles min_position."""
-    now = time.time()
-    # With wait_start=2s, min_position = (now+2) - start_time = 52.
-    # Place a chunk at position 51 that extends to 52 (straddles min_position).
-    start_time = now - 50
-    session = _make_session(start_time, 53.0, [51.0, 52.0, 53.0])
+async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
+    """When the required trim exceeds the buffer, the buffer is dropped entirely."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    # start_at = now - 4.0 (way in the past). With 3s buffer the required trim
+    # is 6s but buffer only holds 3s → buffer fully consumed.
+    start_time = now - 4.0
+    seconds_streamed = 3.0
+    session = _make_session(start_time, seconds_streamed)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 3)
     player = _make_late_joiner(wait_start_ms=2000)
 
-    start_at, fed_chunks = await _run_add_client(session, player)
+    written_chunks: list[bytes] = []
+    captured_start_at: list[float] = []
 
-    assert fed_chunks, "Expected buffered chunks to be fed"
-    first_data, first_pos = fed_chunks[0]
+    def capture_ntp(unix_ts: float) -> int:
+        captured_start_at.append(unix_ts)
+        return 1
 
-    # start_at must match the first byte and be >= now + wait_start
-    assert start_at >= now + 2.0 - 0.1
-    assert abs(start_at - (session.start_time + first_pos)) < 0.01
+    async def capture_write(_player: Any, chunk: bytes) -> None:
+        written_chunks.append(chunk)
 
-    # First chunk should be at min_position (52.0), not 51.0
-    assert first_pos >= 52.0 - 0.1
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch(
+            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
+            side_effect=capture_ntp,
+        ),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
 
-    # If trimmed from position 51, it should be smaller than a full chunk
-    # (the chunk at 52.0 passes the filter directly, so trimming only happens
-    # if no full chunks are >= min_position)
-    assert len(first_data) <= PCM_SAMPLE_SIZE
-    assert len(first_data) % BYTES_PER_SAMPLE == 0
-
-
-@pytest.mark.asyncio
-async def test_late_join_no_buffer() -> None:
-    """Test that with no ring buffer, start_at is still >= now + wait_start."""
-    now = time.time()
-    start_time = now - 50
-    session = _make_session(start_time, 50.0, chunk_positions=[])
-    player = _make_late_joiner(wait_start_ms=2000)
-
-    start_at, fed_chunks = await _run_add_client(session, player)
-
-    assert not fed_chunks
-    assert start_at >= now + 2.0 - 0.1
+    # No bytes should be written (buffer fully trimmed)
+    assert written_chunks == [], "Buffer should have been dropped entirely"
+    # start_at should be exactly now + min_headroom (since the next-chunk anchor would
+    # have landed at now - 1.0, which is below the target).
+    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01)

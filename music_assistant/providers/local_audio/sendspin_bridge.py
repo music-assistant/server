@@ -266,19 +266,29 @@ class SendspinLocalAudioBridge:
     async def _stop_streaming(self) -> None:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
-        if self._writer_task:
-            self._writer_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._writer_task
+        if self._writer_task and not self._writer_task.done():
+            # Signal the writer to stop gracefully by sending None.
+            # Don't cancel the task directly as it may be blocked in
+            # run_in_executor writing to the audio device - cancelling
+            # while a write is in progress can cause a segfault.
+            while not self._write_queue.empty():
+                self._write_queue.get_nowait()
+            self._write_queue.put_nowait(None)
+            try:
+                await asyncio.wait_for(self._writer_task, timeout=2.0)
+            except TimeoutError:
+                # Writer didn't stop in time - it may be stuck in a blocking write.
+                # Cancel it as a last resort but don't close the stream until it's done.
+                self._writer_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._writer_task
+            except asyncio.CancelledError:
+                pass
             self._writer_task = None
+        # Drain any remaining items
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        if self._output_stream is not None:
-            with suppress(Exception):
-                self._output_stream.stop()
-            with suppress(Exception):
-                self._output_stream.close()
-            self._output_stream = None
+        # Stream cleanup is handled in _audio_writer's finally block
 
 
 class LocalAudioBridgeManager:
@@ -367,17 +377,38 @@ class LocalAudioBridgeManager:
 
     @staticmethod
     def _enumerate_output_devices() -> list[dict[str, Any]]:
-        """Enumerate available audio output devices via sounddevice."""
+        """
+        Enumerate available audio output devices via sounddevice.
+
+        Only devices that can actually be opened are returned. This filters out
+        ALSA virtual devices (dmix, surround*, etc.) that may be unavailable
+        when another audio system (like PipeWire) controls the hardware.
+        """
         devices: list[dict[str, Any]] = []
         # sd.query_devices() returns a DeviceList (not a plain list),
         # where each element is a dict with device properties.
         all_devices = sd.query_devices()
         for idx, dev in enumerate(all_devices):
             max_output_channels: int = dev.get("max_output_channels", 0)
-            if max_output_channels >= 2:
-                dev_with_index = dict(dev)
-                dev_with_index["index"] = idx
-                devices.append(dev_with_index)
+            if max_output_channels < 2:
+                continue
+            # Test if the device can actually be opened - many ALSA virtual
+            # devices will fail if PipeWire or another audio server is active
+            # TODO: query supported sample rates per device and default to 48kHz
+            try:
+                test_stream = sd.RawOutputStream(
+                    device=idx,
+                    samplerate=BRIDGE_SAMPLE_RATE,
+                    channels=BRIDGE_CHANNELS,
+                    dtype="int16",
+                )
+                test_stream.close()
+            except sd.PortAudioError:
+                # Device unavailable, skip it
+                continue
+            dev_with_index = dict(dev)
+            dev_with_index["index"] = idx
+            devices.append(dev_with_index)
         return devices
 
     async def stop_all(self) -> None:

@@ -240,7 +240,10 @@ class MetaDataController(CoreController):
     @property
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
-        return cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA))
+        return sorted(
+            cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA)),
+            key=lambda p: p.priority,
+        )
 
     @property
     def preferred_language(self) -> str:

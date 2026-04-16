@@ -20,7 +20,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from types import NoneType
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, TypeVar, cast
 
 import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -76,6 +76,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -83,6 +84,8 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia
+
+_SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -120,38 +123,41 @@ def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R
     func: Callable[Concatenate[PlayerQueuesControllerT, P], Awaitable[R]],
 ) -> Callable[Concatenate[PlayerQueuesControllerT, P], Coroutine[Any, Any, R]]:
     """
-    Decorator to mark a play action in progress on the queue.
+    Decorator for queue playback actions.
 
-    Sets ATTR_PLAY_ACTION_IN_PROGRESS to True before calling the function
-    and resets it to False after completion. Uses an internal refcount so
-    concurrent actions don't clear the flag prematurely.
+    Acquires the shared playback lock for the queue's player (re-entrant)
+    and sets ATTR_PLAY_ACTION_IN_PROGRESS on the queue while the action runs.
+    Uses an internal refcount so nested actions don't clear the flag prematurely.
 
     :param func: The function to wrap.
     """  # noqa: D401
 
     @functools.wraps(func)
     async def wrapper(self: PlayerQueuesControllerT, *args: P.args, **kwargs: P.kwargs) -> R:
-        """Execute function with play action flag set."""
+        """Execute function with playback lock and play action flag set."""
         queue_id = kwargs.get("queue_id") or args[0]
         assert isinstance(queue_id, str)  # for type checking
         queue = self._queues.get(queue_id)
         if queue is None:
             return await func(self, *args, **kwargs)
-        prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
-        try:
-            self._play_action_refcount[queue_id] = self._play_action_refcount.get(queue_id, 0) + 1
-            queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
-            if not prev_in_progress:
-                self.signal_update(queue_id)
-            return await func(self, *args, **kwargs)
-        finally:
-            refcount = self._play_action_refcount.get(queue_id, 1) - 1
-            if refcount <= 0:
-                self._play_action_refcount.pop(queue_id, None)
-                queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-                self.signal_update(queue_id)
-            else:
-                self._play_action_refcount[queue_id] = refcount
+        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
+            prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
+            try:
+                self._play_action_refcount[queue_id] = (
+                    self._play_action_refcount.get(queue_id, 0) + 1
+                )
+                queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
+                if not prev_in_progress:
+                    self.signal_update(queue_id)
+                return await func(self, *args, **kwargs)
+            finally:
+                refcount = self._play_action_refcount.get(queue_id, 1) - 1
+                if refcount <= 0:
+                    self._play_action_refcount.pop(queue_id, None)
+                    queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                    self.signal_update(queue_id)
+                else:
+                    self._play_action_refcount[queue_id] = refcount
 
     return wrapper
 
@@ -188,7 +194,6 @@ class PlayerQueuesController(CoreController):
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, CompareState] = {}
         self._transitioning_players: set[str] = set()
-        self._play_action_locks: dict[str, asyncio.Lock] = {}
         self._play_action_refcount: dict[str, int] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
@@ -497,6 +502,7 @@ class PlayerQueuesController(CoreController):
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
         username: str | None = None,
+        sort_by: str | None = None,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -510,13 +516,15 @@ class PlayerQueuesController(CoreController):
             Setting the username allows for overriding the logged-in user
             to account for playback history per user when the play_media is
             called from a shared context (like a web hook or automation).
+        :param sort_by: Optional sort key to order tracks before applying start_item.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
-            await self._handle_play_media(queue_id, media, option, radio_mode, start_item, username)
+        # Lock is acquired by the @handle_play_action decorator on the internal handler
+        await self._handle_play_media(
+            queue_id, media, option, radio_mode, start_item, username, sort_by
+        )
 
     @api_command("player_queues/move_item")
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -653,7 +661,9 @@ class PlayerQueuesController(CoreController):
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-        # Use internal handler to avoid circular redirect deadlock
+        # Use internal handler to avoid circular redirect:
+        # public cmd_stop redirects to queue.stop when a queue is active,
+        # which would loop back here indefinitely.
         await self.mass.players._handle_cmd_stop(queue_id)
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
@@ -667,9 +677,7 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
-            await self._handle_play(queue_id)
+        await self._handle_play(queue_id)
 
     @api_command("player_queues/pause")
     async def pause(self, queue_id: str) -> None:
@@ -727,6 +735,7 @@ class PlayerQueuesController(CoreController):
         await self.play(queue_id)
 
     @api_command("player_queues/next")
+    @handle_play_action
     async def next(self, queue_id: str) -> None:
         """
         Handle NEXT TRACK command for given queue.
@@ -734,13 +743,39 @@ class PlayerQueuesController(CoreController):
         :param queue_id: queue_id of the queue to handle the command.
         """
         self._check_player_permission(queue_id)
-        if not self.get(queue_id):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
-            await self._handle_next(queue_id)
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            raise InvalidCommand(f"Queue {queue_id} is not active")
+        self._transitioning_players.add(queue_id)
+        idx = self._queues[queue_id].current_index
+        if idx is None:
+            self.logger.warning("Queue %s has no current index", queue.display_name)
+            self._transitioning_players.discard(queue_id)
+            return
+        next_index = self._get_next_index(queue_id, idx, True)
+        if next_index is None:
+            self._transitioning_players.discard(queue_id)
+            return
+
+        # immediately update current item so UI shows the new track right away
+        queue.current_index = next_index
+        queue.current_item = self.get_item(queue_id, next_index)
+        queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
+        self.signal_update(queue_id)
+        if queue_player := self.mass.players.get_player(queue_id, True):
+            queue_player.update_state()
+
+        # debounce rapid next button presses using call_later
+        self.mass.call_later(
+            1,
+            self.play_index,
+            queue_id,
+            next_index,
+            task_id=f"queue_play_index_{queue_id}",
+        )
 
     @api_command("player_queues/previous")
+    @handle_play_action
     async def previous(self, queue_id: str) -> None:
         """
         Handle PREVIOUS TRACK command for given queue.
@@ -748,11 +783,35 @@ class PlayerQueuesController(CoreController):
         :param queue_id: queue_id of the queue to handle the command.
         """
         self._check_player_permission(queue_id)
-        if not self.get(queue_id):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        lock = self._play_action_locks.setdefault(queue_id, asyncio.Lock())
-        async with lock:
-            await self._handle_previous(queue_id)
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            raise InvalidCommand(f"Queue {queue_id} is not active")
+        self._transitioning_players.add(queue_id)
+        current_index = self._queues[queue_id].current_index
+        if current_index is None:
+            self._transitioning_players.discard(queue_id)
+            return
+        prev_index = int(current_index)
+        # restart current track if elapsed > 5s, otherwise go to previous
+        if self._queues[queue_id].elapsed_time < 5:
+            prev_index = max(current_index - 1, 0)
+
+        # immediately update current item so UI shows the new track right away
+        queue.current_index = prev_index
+        queue.current_item = self.get_item(queue_id, prev_index)
+        queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
+        self.signal_update(queue_id)
+        if queue_player := self.mass.players.get_player(queue_id, True):
+            queue_player.update_state()
+
+        # debounce rapid previous button presses using call_later
+        self.mass.call_later(
+            1,
+            self.play_index,
+            queue_id,
+            prev_index,
+            task_id=f"queue_play_index_{queue_id}",
+        )
 
     @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
@@ -918,14 +977,8 @@ class PlayerQueuesController(CoreController):
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
-            # Use _handle_play_media directly to bypass the play_media lock.
-            # The queue controller is an internal consumer and play_index is
-            # already serialized by _play_action_locks. Going through the public
-            # play_media would deadlock when called from within cmd_set_members
-            # (which holds the play_media lock during protocol switches).
-            player = self.mass.players._get_player_with_redirect(queue_id)
-            await self.mass.players._handle_play_media(
-                player.player_id,
+            await self.mass.players.play_media(
+                queue_id,
                 await self.player_media_from_queue_item(queue_item),
             )
             queue.current_index = index
@@ -1134,7 +1187,6 @@ class PlayerQueuesController(CoreController):
         self._queue_items.pop(player_id, None)
         self._prev_states.pop(player_id, None)
         self._transitioning_players.discard(player_id)
-        self._play_action_locks.pop(player_id, None)
         self._play_action_refcount.pop(player_id, None)
 
     async def load_next_queue_item(
@@ -1196,6 +1248,7 @@ class PlayerQueuesController(CoreController):
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
         username: str | None = None,
+        sort_by: str | None = None,
     ) -> None:
         """Handle play media without acquiring the queue lock."""
         # cancel any pending play_index calls for this queue to prevent conflicts
@@ -1319,7 +1372,11 @@ class PlayerQueuesController(CoreController):
                     elif start_item is not None:
                         start_item_uri = start_item.uri
                     media_items += await self._resolve_media_items(
-                        media_item, start_item_uri, userid=queue.userid, queue_id=queue_id
+                        media_item,
+                        start_item_uri,
+                        userid=queue.userid,
+                        queue_id=queue_id,
+                        sort_by=sort_by,
                     )
 
             except MusicAssistantError as err:
@@ -1447,80 +1504,6 @@ class PlayerQueuesController(CoreController):
         # player is not paused, perform resume instead
         await self.resume(queue_id)
 
-    @handle_play_action
-    async def _handle_next(self, queue_id: str) -> None:
-        """Handle next track without acquiring the queue lock."""
-        if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
-        # we set a flag to notify the update logic that we're transitioning to a new track
-        # NOTE that this flag is reset in the play_index method
-        self._transitioning_players.add(queue_id)
-        idx = self._queues[queue_id].current_index
-        if idx is None:
-            self.logger.warning("Queue %s has no current index", queue.display_name)
-            self._transitioning_players.discard(queue_id)
-            return
-        next_index = self._get_next_index(queue_id, idx, True)
-        if next_index is None:
-            self._transitioning_players.discard(queue_id)
-            return
-
-        # immediately update current item so UI shows the new track right away
-        queue.current_index = next_index
-        queue.current_item = self.get_item(queue_id, next_index)
-        queue.elapsed_time = 0
-        queue.elapsed_time_last_updated = time.time()
-        self.signal_update(queue_id)
-        if queue_player := self.mass.players.get_player(queue_id, True):
-            # also update player so it can update its 'current_media'
-            queue_player.update_state()
-
-        # debounce rapid next button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            next_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
-
-    @handle_play_action
-    async def _handle_previous(self, queue_id: str) -> None:
-        """Handle previous track without acquiring the queue lock."""
-        if (queue := self.get(queue_id)) is None or not queue.active:
-            raise InvalidCommand(f"Queue {queue_id} is not active")
-        # we set a flag to notify the update logic that we're transitioning to a new track
-        # NOTE that this flag is reset in the play_index method
-        self._transitioning_players.add(queue_id)
-        current_index = self._queues[queue_id].current_index
-        if current_index is None:
-            self._transitioning_players.discard(queue_id)
-            return
-        prev_index = int(current_index)
-        # restart current track if current track has played longer than 4
-        # otherwise skip to previous track
-        if self._queues[queue_id].elapsed_time < 5:
-            prev_index = max(current_index - 1, 0)
-
-        # immediately update current item so UI shows the new track right away
-        queue.current_index = prev_index
-        queue.current_item = self.get_item(queue_id, prev_index)
-        queue.elapsed_time = 0
-        queue.elapsed_time_last_updated = time.time()
-        self.signal_update(queue_id)
-        if queue_player := self.mass.players.get_player(queue_id, True):
-            # also update player so it can update its 'current_media'
-            queue_player.update_state()
-
-        # debounce rapid previous button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            prev_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
-
     async def _load_item(
         self,
         queue_item: QueueItem,
@@ -1624,6 +1607,10 @@ class PlayerQueuesController(CoreController):
             fade_in=fade_in,
             prefer_album_loudness=bool(playing_album_tracks),
         )
+        # update queue_item.duration from streamdetails if we got a better value
+        if queue_item.streamdetails.duration and not queue_item.duration:
+            queue_item.duration = queue_item.streamdetails.duration
+            self.signal_update(queue_id, items_changed=True)
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
@@ -1901,7 +1888,9 @@ class PlayerQueuesController(CoreController):
             return all_tracks
         return []
 
-    async def get_album_tracks(self, album: Album, start_item: str | None) -> list[Track]:
+    async def get_album_tracks(
+        self, album: Album, start_item: str | None, sort_by: str | None = None
+    ) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
@@ -1909,7 +1898,6 @@ class PlayerQueuesController(CoreController):
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
         result: list[Track] = []
-        start_item_found = False
         self.logger.info(
             "Fetching tracks to play for album %s",
             album.name,
@@ -1921,11 +1909,14 @@ class PlayerQueuesController(CoreController):
         ):
             if not album_track.available:
                 continue
-            if start_item in (album_track.item_id, album_track.uri):
-                start_item_found = True
-            if start_item is not None and not start_item_found:
-                continue
             result.append(album_track)
+        if sort_by and sort_by != "track_number":
+            result = self._sort_tracks(result, sort_by)
+        if start_item is not None:
+            for idx, track in enumerate(result):
+                if start_item in (track.item_id, track.uri):
+                    return result[idx:]
+            return []
         return result
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
@@ -1968,17 +1959,38 @@ class PlayerQueuesController(CoreController):
         return result
 
     async def get_playlist_tracks(
-        self, playlist: Playlist, start_item: str | None
+        self,
+        playlist: Playlist,
+        start_item: str | None,
+        sort_by: str | None = None,
     ) -> list[PlaylistPlayableItem]:
         """Return tracks for given playlist, based on user preference."""
         result: list[PlaylistPlayableItem] = []
-        start_item_found = False
         self.logger.info(
             "Fetching tracks to play for playlist %s",
             playlist.name,
         )
         force_refresh = playlist.is_dynamic
-        # TODO: Handle other sort options etc.
+        needs_sort = sort_by is not None and sort_by != "position"
+        # Fast path: no re-sort needed, skip-until-found in a single pass
+        # so we don't materialize huge playlists when starting near the end.
+        if not needs_sort:
+            start_item_found = False
+            async for playlist_track in self.mass.music.playlists.tracks(
+                playlist.item_id,
+                playlist.provider,
+                force_refresh=force_refresh,
+                allow_dynamic_tracks=playlist.is_dynamic,
+            ):
+                if not playlist_track.available:
+                    continue
+                if start_item in (playlist_track.item_id, playlist_track.uri):
+                    start_item_found = True
+                if start_item is not None and not start_item_found:
+                    continue
+                result.append(playlist_track)
+            return result
+        # Sort path: must materialize all tracks before sorting, then slice.
         async for playlist_track in self.mass.music.playlists.tracks(
             playlist.item_id,
             playlist.provider,
@@ -1987,12 +1999,51 @@ class PlayerQueuesController(CoreController):
         ):
             if not playlist_track.available:
                 continue
-            if start_item in (playlist_track.item_id, playlist_track.uri):
-                start_item_found = True
-            if start_item is not None and not start_item_found:
-                continue
             result.append(playlist_track)
+        result = self._sort_tracks(result, cast("str", sort_by))
+        if start_item is not None:
+            for idx, track in enumerate(result):
+                if start_item in (track.item_id, track.uri):
+                    return result[idx:]
+            return []
         return result
+
+    @staticmethod
+    def _sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
+        """Sort tracks by the given sort key."""
+        key_map: dict[str, tuple[Any, bool]] = {
+            "position_desc": (lambda t: getattr(t, "position", 0) or 0, True),
+            "name": (lambda t: (t.sort_name or t.name or "").lower(), False),
+            "artist": (
+                lambda t: (
+                    (t.artists[0].sort_name or t.artists[0].name).lower()
+                    if hasattr(t, "artists") and t.artists
+                    else ""
+                ),
+                False,
+            ),
+            "album": (
+                lambda t: (
+                    (t.album.sort_name or t.album.name).lower()
+                    if hasattr(t, "album") and t.album
+                    else ""
+                ),
+                False,
+            ),
+            "duration": (lambda t: getattr(t, "duration", 0) or 0, False),
+            "duration_desc": (lambda t: getattr(t, "duration", 0) or 0, True),
+            "track_number": (
+                lambda t: (
+                    getattr(t, "disc_number", 0) or 0,
+                    getattr(t, "track_number", 0) or 0,
+                ),
+                False,
+            ),
+        }
+        if sort_by in key_map:
+            key_fn, reverse = key_map[sort_by]
+            return sorted(tracks, key=key_fn, reverse=reverse)
+        return list(tracks)
 
     async def get_audiobook_resume_point(
         self, audio_book: Audiobook, chapter: str | int | None = None, userid: str | None = None
@@ -2178,12 +2229,11 @@ class PlayerQueuesController(CoreController):
                         queue.display_name,
                     )
                     return
-                cur_index = self._queues[queue_id].current_index or 0
                 await self.load(
                     queue_id,
                     queue_items,
-                    insert_at_index=cur_index + 1,
-                    keep_remaining=False,
+                    insert_at_index=len(self._queue_items[queue_id]),
+                    keep_remaining=True,
                     keep_played=True,
                 )
             except MusicAssistantError as err:
@@ -2335,6 +2385,7 @@ class PlayerQueuesController(CoreController):
         start_item: str | None = None,
         userid: str | None = None,
         queue_id: str | None = None,
+        sort_by: str | None = None,
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
         # resolve Itemmapping to full media item
@@ -2349,7 +2400,7 @@ class PlayerQueuesController(CoreController):
                     media_item, userid=userid, queue_id=queue_id, user_initiated=True
                 )
             )
-            return list(await self.get_playlist_tracks(media_item, start_item))
+            return list(await self.get_playlist_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
             self.mass.create_task(
@@ -2365,7 +2416,7 @@ class PlayerQueuesController(CoreController):
                     media_item, userid=userid, queue_id=queue_id, user_initiated=True
                 )
             )
-            return list(await self.get_album_tracks(media_item, start_item))
+            return list(await self.get_album_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
             self.mass.create_task(

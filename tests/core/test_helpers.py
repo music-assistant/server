@@ -163,6 +163,70 @@ async def test_uri_parsing() -> None:
         await uri.parse_uri("invalid://blah")
 
 
+async def test_apple_music_uri_parsing() -> None:
+    """Test parsing of Apple Music share URLs."""
+    # station — should resolve as PLAYLIST (is_dynamic)
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/station/dead-sara-essentials/ra.331701075"
+    )
+    assert media_type == MediaType.PLAYLIST
+    assert provider == "apple_music"
+    assert item_id == "ra.331701075"
+    # playlist
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/playlist/disturbed-essentials/pl.5d641aa29c5d4cc49b474d7d100996ec"
+    )
+    assert media_type == MediaType.PLAYLIST
+    assert provider == "apple_music"
+    assert item_id == "pl.5d641aa29c5d4cc49b474d7d100996ec"
+    # album
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/album/some-album/1234567890"
+    )
+    assert media_type == MediaType.ALBUM
+    assert provider == "apple_music"
+    assert item_id == "1234567890"
+    # artist
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/artist/dead-sara/123456789"
+    )
+    assert media_type == MediaType.ARTIST
+    assert provider == "apple_music"
+    assert item_id == "123456789"
+    # song
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/song/my-song/987654321"
+    )
+    assert media_type == MediaType.TRACK
+    assert provider == "apple_music"
+    assert item_id == "987654321"
+    # trailing slash stripped
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/station/some-station/ra.111222333/"
+    )
+    assert media_type == MediaType.PLAYLIST
+    assert item_id == "ra.111222333"
+    # query string stripped (non-track query params)
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/album/some-album/1234567890?itsct=music_box"
+    )
+    assert media_type == MediaType.ALBUM
+    assert item_id == "1234567890"
+    # track share link: album URL with ?i=<track_id>
+    media_type, provider, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/album/some-album/1234567890?i=987654321"
+    )
+    assert media_type == MediaType.TRACK
+    assert provider == "apple_music"
+    assert item_id == "987654321"
+    # track share link with additional query params
+    media_type, _, item_id = await uri.parse_uri(
+        "https://music.apple.com/de/album/some-album/1234567890?itsct=music_box&i=111222333"
+    )
+    assert media_type == MediaType.TRACK
+    assert item_id == "111222333"
+
+
 def test_format_ip_for_url() -> None:
     """Test IPv6 bracket wrapping for URLs (RFC 2732)."""
     # IPv4 should pass through unchanged

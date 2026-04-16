@@ -100,6 +100,7 @@ from music_assistant.constants import (
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
     NON_HTTP_PROVIDERS,
+    PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE,
@@ -1833,7 +1834,7 @@ class ConfigController:
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
         auto_option = ConfigValueOption(
-            title="Auto-select (based on active/preferred protocol)", value="auto"
+            title="Auto-select (based on active/preferred protocol)", value=PLAYER_CONTROL_PROTOCOL
         )
         # work out player supported features
         power_options: list[ConfigValueOption] = []
@@ -1842,7 +1843,9 @@ class ConfigController:
                 ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
             )
         volume_options: list[ConfigValueOption] = []
+        has_native_volume_control = False
         if player.supports_feature(PlayerFeature.VOLUME_SET):
+            has_native_volume_control = True
             volume_options.append(
                 ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
             )
@@ -1851,18 +1854,37 @@ class ConfigController:
             mute_options.append(
                 ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
             )
-        # add 'auto' option if any linked protocol players support the feature
+        # add player protocols as volume controls if native player has no volume control
         for linked_protocol in player.linked_output_protocols:
-            if protocol_player := self.mass.players.get_player(linked_protocol.output_protocol_id):
-                if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
-                    if auto_option not in volume_options:
-                        volume_options.append(auto_option)
-                if protocol_player.supports_feature(PlayerFeature.VOLUME_MUTE):
-                    if auto_option not in mute_options:
-                        mute_options.append(auto_option)
-                if protocol_player.supports_feature(PlayerFeature.POWER):
-                    if auto_option not in power_options:
-                        power_options.append(auto_option)
+            if has_native_volume_control:
+                break
+            protocol_player = self.mass.players.get_player(linked_protocol.output_protocol_id)
+            if not protocol_player or not protocol_player.available:
+                continue
+            if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
+                if auto_option not in volume_options:
+                    volume_options.append(auto_option)
+                if linked_protocol.protocol_domain in ("chromecast", "dlna"):
+                    # for chromecast/dlna we can use the protocol player for volume control
+                    # even if the protocol player is not the active protocol
+                    volume_options.append(
+                        ConfigValueOption(
+                            title=protocol_player.provider.name,
+                            value=protocol_player.player_id,
+                        )
+                    )
+            if protocol_player.supports_feature(PlayerFeature.VOLUME_MUTE):
+                if auto_option not in mute_options:
+                    mute_options.append(auto_option)
+                if linked_protocol.protocol_domain in ("chromecast", "dlna"):
+                    # for chromecast/dlna we can use the protocol player for volume control
+                    # even if the protocol player is not the active protocol
+                    mute_options.append(
+                        ConfigValueOption(
+                            title=protocol_player.provider.name,
+                            value=protocol_player.player_id,
+                        )
+                    )
 
         # append none+fake options
         power_options += [

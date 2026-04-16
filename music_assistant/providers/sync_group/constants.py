@@ -19,20 +19,6 @@ CONF_ENTRY_SGP_NOTE = ConfigEntry(
 
 CONF_MEMBERS_FILTER: Final[str] = "members_filter"
 
-SUPPORT_DYNAMIC_LEADER = {
-    # providers that support dynamic leader selection in a syncgroup
-    # meaning that if you would remove the current leader from the group,
-    # the provider will automatically select a new leader from the remaining members
-    # and the music keeps playing uninterrupted.
-    "airplay",
-    "snapcast",
-    "sendspin",
-    # TODO: Get this working with Sonos as well (need to handle range requests)
-    # TODO: Add squeezelite support. Currently restarts the entire stream session
-    #  on member changes (no late-join support), so removing the leader would still
-    #  cause a gap. Needs late-join / stream transfer support first.
-}
-
 
 EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
     PlayerFeature.ENQUEUE,
@@ -41,3 +27,15 @@ EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.MULTI_DEVICE_DSP,
 }
+
+
+# Provider domains whose live sync session can survive removal of the current
+# leader (the protocol promotes another sync_client to leader at the protocol
+# level). When the active session is owned by one of these providers the sync
+# group can do a seamless leader handoff; otherwise it must dissolve and
+# re-form (with a brief audio gap) on leader change.
+PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH: Final[tuple[str, ...]] = (
+    "airplay",
+    "snapcast",
+    "sendspin",
+)

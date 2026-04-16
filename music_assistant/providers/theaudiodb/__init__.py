@@ -138,6 +138,11 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     throttler: Throttler
 
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 20
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache

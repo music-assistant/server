@@ -602,6 +602,29 @@ class ProtocolLinkingMixin:
             if not self._identifiers_match(universal_player, player, ""):
                 continue
 
+            # Do not merge if both UPs have protocols from the same domain.
+            # Multiple instances of the same protocol on one host (e.g., several
+            # squeezelite players on the same VM) are separate devices that happen
+            # to share an IP. Merging them would orphan one instance's protocol.
+            domains_a = {
+                link.protocol_domain
+                for link in universal_player.linked_output_protocols
+                if link.protocol_domain
+            }
+            domains_b = {
+                link.protocol_domain
+                for link in player.linked_output_protocols
+                if link.protocol_domain
+            }
+            if domains_a & domains_b:
+                self.logger.debug(
+                    "Skipping merge of %s and %s: shared protocol domain(s) %s",
+                    universal_player.player_id,
+                    player.player_id,
+                    domains_a & domains_b,
+                )
+                continue
+
             # Determine which player absorbs the other (more protocols wins)
             keep, remove = (
                 (universal_player, player)
@@ -1883,17 +1906,21 @@ class ProtocolLinkingMixin:
                         parent_protocol_player.state.name,
                         old_parent_members,
                     )
+                    # Use internal handler to stop the specific protocol player,
+                    # bypassing group/sync redirect and queue redirect logic.
                     await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
                 else:
                     old_parent_members = []
                 # Resume playback on the new protocol and re-add migrated members.
-                await self.mass.players._handle_cmd_resume(parent_player.player_id)
+                await self.mass.players.cmd_resume(parent_player.player_id)
                 if old_parent_members:
                     self.logger.debug(
                         "Re-adding migrated members %s to %s on new protocol",
                         old_parent_members,
                         parent_player.state.name,
                     )
+                    # Use internal handler because we are already inside a
+                    # _handle_set_members call chain that holds the play lock.
                     await self.mass.players._handle_set_members(
                         parent_player,
                         player_ids_to_add=old_parent_members,
