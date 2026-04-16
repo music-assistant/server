@@ -57,6 +57,7 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
+    CONF_CAST_AUDIO_UNSUPPORTED,
     CONF_SENDSPIN_STATIC_DELAY,
     DEFAULT_SENDSPIN_STATIC_DELAY,
 )
@@ -891,6 +892,20 @@ class SendspinPlayer(SendspinBasePlayer):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
+        # Show alert if this Cast device is known to lack AudioContext support
+        if self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_CAST_AUDIO_UNSUPPORTED
+        ):
+            entries.append(
+                ConfigEntry(
+                    key="cast_audio_unsupported",
+                    type=ConfigEntryType.ALERT,
+                    label="This Cast device does not support audio playback. "
+                    "The Sendspin Cast bridge requires AudioContext support, "
+                    "which is not available on this device.",
+                    required=False,
+                )
+            )
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
         if player_role is not None:

@@ -41,6 +41,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     BRIDGE_PREFIX,
+    CONF_CAST_AUDIO_UNSUPPORTED,
     CONF_SENDSPIN_STATIC_DELAY,
 )
 from music_assistant.providers.sendspin.helpers import (
@@ -81,13 +82,19 @@ class SendspinCastController(BaseController):
     status messages (connection state, errors) from the Cast app.
     """
 
-    def __init__(self, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        on_fatal_audio_error: Callable[[], None] | None = None,
+    ) -> None:
         """Initialize the controller.
 
         :param logger: Logger to forward Cast receiver messages to.
+        :param on_fatal_audio_error: Callback when Cast app reports audio is unsupported.
         """
         super().__init__(SENDSPIN_CAST_NAMESPACE)
         self._log = logger
+        self._on_fatal_audio_error = on_fatal_audio_error
 
     def receive_message(self, _message: CastMessage, data: dict[str, Any]) -> bool:
         """Handle incoming messages on the Sendspin namespace.
@@ -119,6 +126,8 @@ class SendspinCastController(BaseController):
         message = data.get("message", "")
         if state == "error":
             self._log.error("[CastApp] Error: %s", message)
+            if "Audio output is not supported" in message and self._on_fatal_audio_error:
+                self._on_fatal_audio_error()
         return True
 
 
@@ -267,7 +276,10 @@ class SendspinChromecastBridge:
             self._bridge_role.setup_audio_requirements()
 
         # Register log controller to receive receiver_log messages from the Cast app
-        self._log_controller = SendspinCastController(self.logger)
+        self._log_controller = SendspinCastController(
+            self.logger,
+            on_fatal_audio_error=self._on_cast_fatal_audio_error,
+        )
         self.cast_player.cc.register_handler(self._log_controller)
 
         self.logger.info(
@@ -294,6 +306,23 @@ class SendspinChromecastBridge:
             self._bridge_role = None
 
         self.logger.debug("Sendspin bridge stopped for %s", self.cast_player.display_name)
+
+    def _on_cast_fatal_audio_error(self) -> None:
+        """Handle fatal audio error from Cast receiver (called from socket thread)."""
+        self.mass.loop.call_soon_threadsafe(self.mass.create_task, self._handle_fatal_audio_error())
+
+    async def _handle_fatal_audio_error(self) -> None:
+        """Process fatal audio error on the event loop.
+
+        Sets persistent config flag so the Sendspin player shows an alert.
+        """
+        self.logger.error(
+            "Cast device %s does not support AudioContext — audio playback unavailable",
+            self.cast_player.display_name,
+        )
+        self.mass.config.set_raw_player_config_value(
+            self._bridge_client_id, CONF_CAST_AUDIO_UNSUPPORTED, True
+        )
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle stream start request from Sendspin server.
