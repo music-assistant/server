@@ -52,7 +52,8 @@ def _find_pulse_server() -> str:
     return ""
 
 
-PULSE_SERVER: Final = _find_pulse_server()
+def _get_pulse_server() -> str:
+    return _find_pulse_server()
 
 
 def _load_lib() -> ctypes.CDLL:
