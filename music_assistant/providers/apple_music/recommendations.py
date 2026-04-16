@@ -32,7 +32,7 @@ class AppleMusicRecommendationManager:
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         # Apple Music only provides ~2 tracks per call, cap at 6 to avoid flooding the API.
-        limit = 6
+        limit = min(limit, 6)
         endpoint = f"me/stations/next-tracks/ra.{prov_track_id}"
         found_tracks: list[Track] = []
         while len(found_tracks) < limit:

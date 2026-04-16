@@ -192,14 +192,16 @@ class AppleMusicStreamingManager:
         )
         cdm = Cdm.from_device(device)
         session_id = cdm.open()
-        challenge = cdm.get_license_challenge(session_id, pssh)
-        track_license = await self._get_license(challenge, license_url, uri, item_id)
-        cdm.parse_license(session_id, track_license)
-        key = next(key for key in cdm.get_keys(session_id) if key.type == "CONTENT")
-        if not key:
-            raise MediaNotFoundError("Unable to get decryption key for song %s.", item_id)
-        cdm.close(session_id)
-        decryption_key = key.key.hex()
+        try:
+            challenge = cdm.get_license_challenge(session_id, pssh)
+            track_license = await self._get_license(challenge, license_url, uri, item_id)
+            cdm.parse_license(session_id, track_license)
+            key = next((key for key in cdm.get_keys(session_id) if key.type == "CONTENT"), None)
+            if not key:
+                raise MediaNotFoundError(f"Unable to get decryption key for song {item_id}.")
+            decryption_key = key.key.hex()
+        finally:
+            cdm.close(session_id)
         self.provider.mass.create_task(
             self.provider.mass.cache.set(
                 key=item_id,
@@ -241,5 +243,5 @@ class AppleMusicStreamingManager:
             content = await response.json(loads=json_loads)
             track_license = content.get("license")
             if not track_license:
-                raise MediaNotFoundError("No license found for song %s.", item_id)
+                raise MediaNotFoundError(f"No license found for song {item_id}.")
             return track_license

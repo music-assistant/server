@@ -92,14 +92,11 @@ def parse_album(
 ) -> Album | ItemMapping | None:
     """Parse album object to generic layout."""
     relationships = album_obj.get("relationships", {})
+    catalog_data = relationships.get("catalog", {}).get("data", [])
     response_type = album_obj.get("type")
-    if (
-        response_type == "library-albums"
-        and relationships["catalog"]["data"] != []
-        and "attributes" in relationships["catalog"]["data"][0]
-    ):
-        album_id = relationships.get("catalog", {})["data"][0]["id"]
-        attributes = relationships.get("catalog", {})["data"][0]["attributes"]
+    if response_type == "library-albums" and catalog_data != [] and "attributes" in catalog_data[0]:
+        album_id = catalog_data[0]["id"]
+        attributes = catalog_data[0]["attributes"]
     elif "attributes" in album_obj:
         album_id = album_obj["id"]
         attributes = album_obj["attributes"]

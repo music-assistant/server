@@ -51,6 +51,8 @@ class AppleMusicMediaManager:
         endpoint = f"catalog/{self.provider._storefront}/search"
         limit = min(limit, 25)
         searchresult = SearchResults()
+        if not media_types:
+            return searchresult
         searchtypes = []
         if MediaType.ARTIST in media_types:
             searchtypes.append("artists")

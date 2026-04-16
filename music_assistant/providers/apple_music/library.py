@@ -13,7 +13,7 @@ from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.media_items import Album, MediaItemType, Playlist, Track
+    from music_assistant_models.media_items import Album, Artist, MediaItemType, Playlist, Track
 
     from .provider import AppleMusicProvider
 
@@ -27,7 +27,7 @@ class AppleMusicLibraryManager:
         self.api = provider.api_client
         self.logger = provider.logger
 
-    async def get_library_artists(self) -> AsyncGenerator[Album, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self.api.get_all_items(
