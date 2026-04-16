@@ -6,8 +6,9 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientSession, TCPConnector
-from wiim import WiimApiEndpoint, WiimController, WiimDevice
-from wiim.discovery import verify_wiim_device
+from wiim import WiimController
+from wiim.discovery import async_create_wiim_device, verify_wiim_device
+from wiim.exceptions import WiimDeviceException, WiimRequestException
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
@@ -20,7 +21,6 @@ from music_assistant.models.player_provider import PlayerProvider
 from .player import WiimPlayer
 
 if TYPE_CHECKING:
-    from async_upnp_client.client import UpnpDevice
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -60,23 +60,23 @@ class WiimProvider(PlayerProvider):
                 f"http://{stripped_ip_address}/description.xml",
             )
 
+            matched_location = None
             upnp_device = None
             for location in potential_locations:
-                # Use the verify_wiim_device function from discovery.py to check
-                # if this is a WiiM device
                 upnp_device = await verify_wiim_device(location, self.wiim_session)
                 if upnp_device:
+                    matched_location = location
                     break
 
-            if not upnp_device:
-                return
+            if not upnp_device or not matched_location:
+                continue
 
             player_id = upnp_device.udn
 
             if not player_id:
-                return  # guard, we need a player_id to work with
+                continue
 
-            await self.try_add_player(player_id, stripped_ip_address, "Unknown", upnp_device)
+            await self.try_add_player(player_id, stripped_ip_address, "Unknown", matched_location)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -109,84 +109,60 @@ class WiimProvider(PlayerProvider):
             f"http://{cur_address}:49152/description.xml",
         )
 
+        matched_location = None
         upnp_device = None
         for location in potential_locations:
-            # Use the verify_wiim_device function from discovery.py to check
-            # if this is a WiiM device
             upnp_device = await verify_wiim_device(location, self.wiim_session)
             if upnp_device:
+                matched_location = location
                 break
 
-        if not upnp_device:
+        if not upnp_device or not matched_location:
             return
 
         player_id = upnp_device.udn
 
         if not player_id:
-            return  # guard, we need a player_id to work with
+            return
 
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
-                # the player has become unavailable
+            if mass_player := self.mass.players.get_player(player_id):
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 await self.mass.players.unregister(player_id)
             return
 
         # handle update for existing device
-        # (state change is either updated or added)
-        # check if we have an existing player in the player manager
-        # note that you can use this point to update the player connection info
-        # if that changed (e.g. ip address)
-        if mass_player := self.mass.players.get(player_id):
-            # existing player found in the player manager,
-            # this is an existing player that has been updated/reconnected
-            # or simply a re-announcement on mdns.
-
+        if mass_player := self.mass.players.get_player(player_id):
             if cur_address and cur_address != mass_player.device_info.ip_address:
                 self.logger.debug(
                     "Address updated to %s for player %s", cur_address, mass_player.display_name
                 )
-            # inform the player manager of any changes to the player object
-            # note that you would normally call this from some other callback from
-            # the player's native api/library which informs you of changes in the player state.
-            # as a last resort you can also choose to let the player manager
-            # poll the player for state changes
             mass_player.update_state()
             return
+
         # handle new player
         self.logger.debug("Discovered device %s on %s", name, cur_address)
-        # your own connection logic will probably be implemented here where
-        # you connect to the player etc. using your device/provider specific library.
-
-        await self.try_add_player(player_id, cur_address, name, upnp_device)
+        await self.try_add_player(player_id, cur_address, name, matched_location)
 
     async def try_add_player(
-        self, player_id: str, ip_address: str, name: str, upnp_device: UpnpDevice
+        self, player_id: str, ip_address: str, name: str, upnp_location: str
     ) -> None:
-        """Try to add a device."""
-        http_api = WiimApiEndpoint(
-            protocol="https", port=443, endpoint=ip_address, session=self.wiim_session
-        )
-
-        wiim_dev = WiimDevice(
-            upnp_device,
-            session=self.wiim_session,
-            http_api_endpoint=http_api,
-            ha_host_ip=self.mass.webserver.publish_ip,
-            polling_interval=60,
-        )
+        """Try to add a WiiM device as a player."""
+        try:
+            wiim_dev = await async_create_wiim_device(
+                upnp_location,
+                self.wiim_session,
+                host=ip_address,
+                local_host=self.mass.webserver.publish_ip,
+                polling_interval=60,
+            )
+        except (WiimRequestException, WiimDeviceException) as err:
+            self.logger.warning("Failed to initialize WiiM device at %s: %s", ip_address, err)
+            return
 
         await self.wiim_controller.add_device(wiim_dev)
 
-        player = WiimPlayer(provider=self, player_id=player_id, device=wiim_dev)
-
+        player = WiimPlayer(provider=self, player_id=wiim_dev.udn, device=wiim_dev)
         await player.setup()
-
-        init_success = await wiim_dev.async_init_services_and_subscribe()
-
-        if not init_success:
-            self.logger.warning("Failed to initialize WiiM device %s", name)
-
         await self.mass.players.register(player)
