@@ -13,7 +13,9 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.models.player import Player
 
 from .constants import (
+    CONF_HARDWARE_VOLUME_CEILING,
     CONF_VOLUME_CONTROL,
+    DEFAULT_HARDWARE_VOLUME_CEILING,
     DEVICE_UUID_NAMESPACE,
     VOLUME_CONTROL_HARDWARE,
     VOLUME_CONTROL_SOFTWARE,
@@ -178,6 +180,32 @@ class LocalAudioPlayer(Player):
         except FileNotFoundError:
             self.logger.warning("Mute control command not found, falling back to software")
             self._hardware_volume_fallback = True
+
+    async def apply_hardware_ceiling(self) -> None:
+        """Set PA sink hardware volume ceiling via pulsectl (Linux only).
+
+        Called on every startup to cap the hardware output level at the
+        configured ceiling percentage. No-op on non-Linux or if no PA sink.
+        """
+        if not self._pa_sink_name:
+            return
+        ceiling: int = int(
+            self._provider.config.get_value(
+                CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
+            )
+        )
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(
+            None, self._set_pulse_volume, self._pa_sink_name, ceiling
+        )
+        if ok:
+            self.logger.debug(
+                "Hardware ceiling set to %d%% for sink %s", ceiling, self._pa_sink_name
+            )
+        else:
+            self.logger.warning(
+                "Failed to set hardware ceiling for sink %s", self._pa_sink_name
+            )
 
     def _set_pulse_volume(self, pa_sink_name: str, volume: int) -> bool:
         """Set PulseAudio sink volume. Returns True on success.
