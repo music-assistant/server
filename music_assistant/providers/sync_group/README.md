@@ -210,7 +210,7 @@ This mirrors how a typical AVR or stereo system behaves: turn it on, it's an act
 2. play_media(media)
    │
    ├─► Optimistically set _attr_current_media / _attr_active_source
-   ├─► await power(True)            # forms the group if not already
+   ├─► _form_syncgroup()            # idempotent - recovers if dissolved-but-powered
    └─► _handle_play_media(sync_leader, media)   # leader actually plays
    │
 3. Leader starts playback, synced members follow
@@ -260,7 +260,7 @@ When `SET_MEMBERS` is called on a dynamic group:
 
 1. Remove from the internal member list (static members cannot be removed)
 2. If removing the **sync leader** while playing:
-   - If the active protocol supports dynamic leader switching (e.g. AirPlay, Snapcast), perform a **seamless handoff**: pick a new leader from the live session, hand off via the protocol player's `handoff_sync_leadership`, remaining members keep playing
+   - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_leader_protocol])` on the old session player and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol player. Remaining members keep playing.
    - If the chosen new leader is not part of the live session (e.g. a freshly-added player), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
 3. If removing a non-leader member: forward to `cmd_set_members` on the leader
 

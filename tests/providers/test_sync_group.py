@@ -27,7 +27,13 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_set_members = AsyncMock()
     # wait_for_player_update is an async context manager — return one that no-ops.
-    mass.players.wait_for_player_update = MagicMock(return_value=AsyncMock())
+    # __aexit__ must explicitly return False so exceptions inside the `async with`
+    # body propagate (an unconfigured AsyncMock returns a truthy MagicMock and
+    # would silently swallow real test failures).
+    wait_ctx = AsyncMock()
+    wait_ctx.__aenter__.return_value = None
+    wait_ctx.__aexit__.return_value = False
+    mass.players.wait_for_player_update = MagicMock(return_value=wait_ctx)
     mass.players.trigger_player_update = MagicMock()
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
