@@ -327,15 +327,13 @@ class WiimPlayer(Player):
                 "spotify:"
             ):
                 self._attr_active_source = SOURCE_SPOTIFY
-            elif self.device.play_mode is not None:
+            else:
                 for mode_name, ps in INPUT_MODE_SOURCES.items():
                     if mode_name == self.device.play_mode:
                         self._attr_active_source = ps.id
                         break
                 else:
                     self._attr_active_source = SOURCE_UNKNOWN
-            else:
-                self._attr_active_source = SOURCE_UNKNOWN
 
             # Set current media for external sources
             if self._attr_active_source != self.player_id and (media := self.device.current_media):
