@@ -7,24 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
-try:
-    from ya_passport_auth import SecretStr
-except ImportError:
-
-    class SecretStr:  # type: ignore[no-redef]
-        """Fallback for environments without ya-passport-auth."""
-
-        def __init__(self, value: str) -> None:
-            """Initialize with a secret value."""
-            if not value:
-                raise ValueError("SecretStr value must not be empty")
-            self._value = value
-
-        def get_secret(self) -> str:
-            """Return the secret value."""
-            return self._value
-
-
+from music_assistant.providers.yandex_smarthome._compat import SecretStr
 from music_assistant.providers.yandex_smarthome.cloud import (
     CloudManager,
     get_cloud_otp,

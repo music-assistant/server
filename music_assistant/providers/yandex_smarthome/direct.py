@@ -188,10 +188,11 @@ class DirectConnectionHandler:
         return False
 
     def _unauthorized_response(self, request_id: str = "") -> web.Response:
-        """Return a 401 Unauthorized response."""
+        """Return a 401 Unauthorized response in the Smart Home API envelope."""
         return web.json_response(
-            {"request_id": request_id, "error": "unauthorized"},
+            build_response(request_id, {"error": "unauthorized"}),
             status=401,
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     # -------------------------------------------------------------------

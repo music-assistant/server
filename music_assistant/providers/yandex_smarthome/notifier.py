@@ -236,7 +236,7 @@ class StateNotifier:
 
     async def _send_discovery(self) -> None:
         """POST discovery notification to Yandex."""
-        discovery_url = self._callback_url.replace("/state", "/discovery")
+        discovery_url = self._callback_url.removesuffix("/state") + "/discovery"
         payload = {
             "ts": time.time(),
             "payload": {"user_id": self._user_id},

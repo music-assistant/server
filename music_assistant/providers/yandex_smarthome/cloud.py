@@ -94,7 +94,12 @@ class CloudManager:
                     break
 
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._handle_message(ws, msg.json())
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        self._logger.warning("Received invalid JSON from cloud relay: %r", msg.data)
+                        continue
+                    await self._handle_message(ws, data)
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     self._logger.error("WebSocket error: %s", ws.exception())
                     break
