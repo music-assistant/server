@@ -84,6 +84,7 @@ from music_assistant.constants import (
     CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_PROTOCOL_PARENT_ID,
     CONF_REPORTED_MAC,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -650,13 +651,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/power")
-    @handle_player_command
+    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
 
         :param player_id: player_id of the player to handle the command.
         :param powered: bool if player should be powered on or off.
         """
+        # Power is serialized with PLAYBACK because powering on a sync/group player
+        # forms the group (and powering off dissolves it) - this must not race with
+        # play_media / cmd_resume / cmd_set_members on the same player.
         await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set")
@@ -1149,7 +1153,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # automatically ungroup it first and wait for state to propagate
             await self._auto_ungroup_if_synced(parent_player, "setting members")
 
-        # Serialize with playback commands to prevent protocol switches from
+        # Use lock for playback commands to prevent protocol switches from
         # racing with concurrent play_media / play_index / resume calls.
         async with self.get_player_lock(parent_player.player_id, PlayerLockPurpose.PLAYBACK):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
@@ -1583,7 +1587,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for key in (conf_key, dsp_conf_key):
             self.mass.config.remove(key)
 
-    def signal_player_state_update(  # noqa: PLR0915
+    def signal_player_state_update(
         self,
         player: Player,
         changed_values: dict[str, tuple[Any, Any]],
@@ -1604,10 +1608,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if not player.state.enabled and ATTR_ENABLED not in changed_values:
             return
 
-        if len(changed_values) == 0 and not force_update:
-            # nothing changed
-            return
-
         # to prevent spamming the eventbus on small changes (e.g. elapsed time),
         # we check if there are only changes in the elapsed time and send
         # a lightweight event.
@@ -1615,6 +1615,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             "current_media.elapsed_time",
             "elapsed_time_last_updated",
         }
+        if len(clean_changed_keys) == 0 and not force_update:
+            # nothing changed
+            return
+
         if clean_changed_keys == {ATTR_ELAPSED_TIME} and not force_update:
             now = time.time()
             prev_elapsed, new_elapsed = changed_values[ATTR_ELAPSED_TIME]
@@ -1622,10 +1626,22 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             prev_corrected = (prev_elapsed or 0) + (now - (prev_updated or now))
             new_corrected = (new_elapsed or 0) + (now - (new_updated or now))
             if abs(prev_corrected - new_corrected) > 1.0:
+                # Significant elapsed_time drift / seek / jump - notify the queue and
+                # fan out to related players so derived elapsed_time on parents/groups
+                # stays in sync. Skipping the forward on small ticks avoids a per-second
+                # cascade through group → children → group.
                 self.mass.player_queues.on_player_elapsed_time_corrected(player)
-                if player.protocol_parent_id:
-                    self.trigger_player_update(player.protocol_parent_id)
+                if not skip_forward or force_update:
+                    self._forward_state_update(player, changed_values)
             return
+
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Player state updated for %s: changed fields: %s",
+                player.name,
+                ", ".join(changed_values.keys()),
+            )
 
         # signal update to the playerqueue
         if player.state.type != PlayerType.PROTOCOL:
@@ -1691,9 +1707,19 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=player.config
             )
 
-        if skip_forward and not force_update:
-            return
+        if not skip_forward or force_update:
+            self._forward_state_update(player, changed_values)
 
+        # trigger update of all players in a provider if group related fields changed
+        # this ensures that calculated fields like can_group_with are updated on all players
+        if any(key in changed_values for key in ("group_members", "synced_to", "available")):
+            for prov_player in player.provider.players:
+                self.trigger_player_update(prov_player.player_id, debounce_delay=2)
+
+    def _forward_state_update(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Forward a player state update to related players (groups, sync parent, protocols)."""
         # update/signal group player(s) child's when group updates
         if player.type == PlayerType.GROUP:
             for child_player in self.iter_group_members(player, exclude_self=True):
@@ -1721,12 +1747,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             for linked in player.linked_output_protocols:
                 if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
                     protocol_player.on_protocol_parent_updated(player, changed_values)
-
-        # trigger update of all players in a provider if group related fields changed
-        # this ensures that calculated fields like can_group_with are updated on all players
-        if any(key in changed_values for key in ("group_members", "synced_to", "available")):
-            for prov_player in player.provider.players:
-                self.trigger_player_update(prov_player.player_id, debounce_delay=2)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
@@ -3228,8 +3248,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 target_player.state.group_members,
             )
             player.set_active_output_protocol(output_protocol.output_protocol_id)
-        else:
-            # Native playback
+        elif player.type != PlayerType.GROUP:
+            # Native playback - group players don't have output protocols of their own
+            # (they delegate to a sync leader / member which manages its own protocol)
             self.logger.debug(
                 "Starting playback on %s via native, group_members=%s",
                 player.state.name,
