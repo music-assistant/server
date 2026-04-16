@@ -1,7 +1,7 @@
 """Tests for the MPD player provider."""
 
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 
 from music_assistant.providers.mpd.provider import MPDPlayerProvider
@@ -9,7 +9,7 @@ from music_assistant.providers.mpd.provider import MPDPlayerProvider
 
 async def test_remove_player_prunes_manual_host_config() -> None:
     """Removing an MPD player should also remove its host entry from provider config."""
-    provider = cast(Any, MPDPlayerProvider.__new__(MPDPlayerProvider))
+    provider = cast("MPDPlayerProvider", MPDPlayerProvider.__new__(MPDPlayerProvider))
     config_entries = {
         "manual_discovery_ip_addresses": SimpleNamespace(
             value=[
