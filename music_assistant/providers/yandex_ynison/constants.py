@@ -53,3 +53,13 @@ MAX_RECONNECT_ATTEMPTS: Final[int] = 5
 # WebSocket timeouts
 WS_CONNECT_TIMEOUT: Final[float] = 15.0
 WS_HEARTBEAT: Final[float] = 30.0
+
+# Ynison error codes that require immediate reconnection
+YNISON_ERROR_REBALANCED: Final[str] = "300100001"
+YNISON_ERROR_NOT_SERVED: Final[str] = "300100002"
+YNISON_RECONNECT_ERROR_CODES: Final[frozenset[str]] = frozenset(
+    {
+        YNISON_ERROR_REBALANCED,
+        YNISON_ERROR_NOT_SERVED,
+    }
+)

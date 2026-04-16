@@ -28,6 +28,7 @@ from .constants import (
     WS_CONNECT_TIMEOUT,
     WS_HEARTBEAT,
     YNISON_ORIGIN,
+    YNISON_RECONNECT_ERROR_CODES,
     YNISON_REDIRECT_URL,
     YNISON_STATE_PATH,
 )
@@ -131,6 +132,7 @@ class YnisonClient:
         self._reconnect_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._connected = False
+        self._has_connected_once = False
 
         # Latest state from server
         self.state = YnisonState()
@@ -438,13 +440,24 @@ class YnisonClient:
         self._connected = True
         self._logger.info("Connected to Ynison state service at %s", host)
 
-        # Send initial state
-        await self.send_full_state()
+        # On reconnect, send last known state to avoid blank-state reset.
+        # On cold start, send initial (empty/paused) state.
+        if self._has_connected_once and self.state.player_state:
+            self._logger.info(
+                "Reconnect: restoring last known state (track=%s paused=%s)",
+                self.state.current_track_id,
+                self.state.is_paused,
+            )
+            await self.send_full_state(player_state=self.state.player_state)
+        else:
+            await self.send_full_state()
+
+        self._has_connected_once = True
 
         # Start message loop
         self._message_task = asyncio.ensure_future(self._message_loop())
 
-    async def _message_loop(self) -> None:
+    async def _message_loop(self) -> None:  # noqa: PLR0915
         """Read messages from state service and dispatch callbacks."""
         if self._ws is None:
             raise RuntimeError("WebSocket not connected — call connect() first")
@@ -481,10 +494,18 @@ class YnisonClient:
                         continue
 
                     if "error" in data:
+                        error_info = data["error"]
+                        error_code = error_info.get("details", {}).get("ynison-error-code", "")
                         self._logger.warning(
                             "Ynison error response: %s",
-                            json.dumps(data["error"])[:300],
+                            json.dumps(error_info)[:300],
                         )
+                        if error_code in YNISON_RECONNECT_ERROR_CODES:
+                            self._logger.info(
+                                "Ynison re-balance error %s — breaking for immediate reconnect",
+                                error_code,
+                            )
+                            break
                         continue
 
                     self._parse_state(data)

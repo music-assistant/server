@@ -719,9 +719,57 @@ class TestConnectState:
             await client._connect_state("host.yandex.net", "ticket", 42)
 
         assert client._connected is True
-        mock_sfs.assert_awaited_once()
+        # Cold start: send_full_state called with no args (blank state)
+        mock_sfs.assert_awaited_once_with()
+        assert client._has_connected_once is True
         assert client._message_task is not None
         # Clean up the task
+        client._message_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await client._message_task
+
+    async def test_reconnect_sends_last_known_state(self, client: YnisonClient) -> None:
+        """On reconnect, send_full_state is called with the preserved player state."""
+        mock_ws = AsyncMock()
+        mock_session = AsyncMock()
+        mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+        client._session = mock_session
+
+        # Simulate prior connection: set flag and populate state
+        client._has_connected_once = True
+        client.state.player_state = {
+            "status": {"paused": False, "progress_ms": 120000, "duration_ms": 300000},
+            "player_queue": {
+                "current_playable_index": 3,
+                "playable_list": [{"playable_id": "t1"}],
+            },
+        }
+
+        with patch.object(client, "send_full_state", new_callable=AsyncMock) as mock_sfs:
+            await client._connect_state("host.yandex.net", "ticket", 42)
+
+        mock_sfs.assert_awaited_once_with(player_state=client.state.player_state)
+        # Clean up
+        client._message_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await client._message_task
+
+    async def test_reconnect_empty_state_falls_back(self, client: YnisonClient) -> None:
+        """On reconnect with empty player_state, falls back to blank initial state."""
+        mock_ws = AsyncMock()
+        mock_session = AsyncMock()
+        mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+        client._session = mock_session
+
+        client._has_connected_once = True
+        client.state.player_state = {}  # empty — no prior state received
+
+        with patch.object(client, "send_full_state", new_callable=AsyncMock) as mock_sfs:
+            await client._connect_state("host.yandex.net", "ticket", 42)
+
+        # Falls back to no-arg call (blank initial state)
+        mock_sfs.assert_awaited_once_with()
+        # Clean up
         client._message_task.cancel()
         with suppress(asyncio.CancelledError):
             await client._message_task
@@ -816,7 +864,7 @@ class TestMessageLoop:
         assert client.state.is_paused is False
 
     async def test_text_message_with_error_field(self, client: YnisonClient) -> None:
-        """TEXT message with 'error' key logs warning, continues."""
+        """TEXT message with non-reconnect error logs warning, continues."""
         error_msg = _make_ws_msg(
             aiohttp.WSMsgType.TEXT,
             json.dumps({"error": {"code": 500, "message": "server error"}}),
@@ -829,6 +877,59 @@ class TestMessageLoop:
         await self._run_loop_with_messages(client, [error_msg, valid_msg])
 
         client._logger.warning.assert_called()  # type: ignore[attr-defined]
+
+    async def test_rebalance_error_breaks_loop(self, client: YnisonClient) -> None:
+        """Ynison re-balance error (300100001) breaks the loop for immediate reconnect."""
+        rebalance_msg = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps(
+                {
+                    "error": {
+                        "details": {
+                            "ynison-error-code": "300100001",
+                            "ynison-backoff-millis": "0:100:500:1000:1000:5000",
+                        },
+                        "grpc_code": 10,
+                        "http_code": 409,
+                        "message": "User re-balanced to another host",
+                    }
+                }
+            ),
+        )
+        # This message should NOT be reached because the loop breaks
+        valid_msg = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps({"player_state": {"status": {"paused": True}}}),
+        )
+        mock_callbacks = client._on_state_update
+        await self._run_loop_with_messages(client, [rebalance_msg, valid_msg])
+
+        # The valid message was never processed (loop broke on re-balance error)
+        mock_callbacks.assert_not_awaited()
+
+    async def test_not_served_error_breaks_loop(self, client: YnisonClient) -> None:
+        """Ynison 'not served' error (300100002) also breaks the loop."""
+        not_served_msg = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps(
+                {
+                    "error": {
+                        "details": {"ynison-error-code": "300100002"},
+                        "grpc_code": 10,
+                        "http_code": 409,
+                        "message": "Current user's not served by this host",
+                    }
+                }
+            ),
+        )
+        valid_msg = _make_ws_msg(
+            aiohttp.WSMsgType.TEXT,
+            json.dumps({"player_state": {"status": {"paused": True}}}),
+        )
+        mock_callbacks = client._on_state_update
+        await self._run_loop_with_messages(client, [not_served_msg, valid_msg])
+
+        mock_callbacks.assert_not_awaited()
 
     async def test_text_message_invalid_json(self, client: YnisonClient) -> None:
         """TEXT message with invalid JSON logs warning, continues."""
