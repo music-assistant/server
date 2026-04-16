@@ -50,6 +50,7 @@ class WiimPlayer(Player):
         }
         self._attr_can_group_with = {provider.instance_id}
         self.device = device
+        self._wiim_controller = provider.wiim_controller
 
         self.current_uri: str | None = None
 
@@ -125,6 +126,14 @@ class WiimPlayer(Player):
         """Handle PlayQueue events from the SDK."""
         self._update_ma_state_from_sdk_cache()
 
+    def _handle_command_error(
+        self, action: str, err: WiimDeviceException | WiimRequestException
+    ) -> None:
+        """Handle a command error by marking the device unavailable."""
+        self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
+        self._attr_available = False
+        self.update_state()
+
     @property
     def needs_poll(self) -> bool:
         """Return if the player needs to be polled for state updates."""
@@ -148,68 +157,70 @@ class WiimPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        self.logger.info(
-            "Received VOLUME_SET command on player %s with level %s",
-            self.display_name,
-            volume_level,
-        )
-        await self.device.async_set_volume(
-            volume_level
-        )  # update the player state in the player manager
-
+        self.logger.debug("VOLUME_SET command on %s with level %s", self.display_name, volume_level)
+        try:
+            await self.device.async_set_volume(volume_level)
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("volume_set", err)
+            return
         self._update_ma_state_from_sdk_cache()
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        self.logger.info(
-            "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
-        )
-        await self.device.async_set_mute(muted)
-
+        self.logger.debug("VOLUME_MUTE command on %s with muted %s", self.display_name, muted)
+        try:
+            await self.device.async_set_mute(muted)
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("volume_mute", err)
+            return
         self._update_ma_state_from_sdk_cache()
 
     async def play(self) -> None:
         """Play command."""
-        self.logger.info("Received PLAY command on player %s", self.display_name)
-        await self.device.async_play()
-
+        self.logger.debug("PLAY command on %s", self.display_name)
+        try:
+            await self.device.async_play()
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("play", err)
+            return
         self._update_ma_state_from_sdk_cache()
 
     async def stop(self) -> None:
         """Stop command."""
-        self.logger.info("Received STOP command on player %s", self.display_name)
-        await self.device.async_stop()
-
+        self.logger.debug("STOP command on %s", self.display_name)
+        try:
+            await self.device.async_stop()
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("stop", err)
+            return
         self._update_ma_state_from_sdk_cache()
 
     async def pause(self) -> None:
         """Pause command."""
-        self.logger.info("Received PAUSE command on player %s", self.display_name)
-        await self.device.async_pause()
-
+        self.logger.debug("PAUSE command on %s", self.display_name)
+        try:
+            await self.device.async_pause()
+            await self.device.sync_device_duration_and_position()
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("pause", err)
+            return
         self._update_ma_state_from_sdk_cache()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        self.logger.info(
-            "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
-        )
-
+        self.logger.debug("PLAY_MEDIA command on %s with uri %s", self.display_name, media.uri)
         didl_string = create_didl_metadata_str(media)
-
         self.current_uri = media.uri
-
-        await self.device.async_play(uri=media.uri, metadata=didl_string)
-
+        try:
+            await self.device.async_play(uri=media.uri, metadata=didl_string)
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("play_media", err)
+            return
         self._update_ma_state_from_sdk_cache()
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        # OPTIONAL
-        # this method is optional and should be implemented if you need to handle
-        # any logic when the player is unloaded from the Player controller.
-        # This is called when the player is removed from the Player controller.
-        self.logger.info("Player %s unloaded", self.name)
+        self.logger.debug("Player %s unloaded", self.name)
 
     async def set_members(
         self,
@@ -217,17 +228,17 @@ class WiimPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        self.logger.info("Player %s set members", self.name)
+        self.logger.debug("SET_MEMBERS command on %s", self.display_name)
+        try:
+            if player_ids_to_add:
+                for player_id in player_ids_to_add:
+                    await self._wiim_controller.async_join_group(self.player_id, player_id)
 
-        if player_ids_to_add:
-            for i in player_ids_to_add:
-                await cast("WiimProvider", self.provider).wiim_controller.async_join_group(
-                    self.player_id, i
-                )
-
-        if player_ids_to_remove:
-            for i in player_ids_to_remove:
-                await cast("WiimProvider", self.provider).wiim_controller.async_ungroup_device(i)
+            if player_ids_to_remove:
+                for player_id in player_ids_to_remove:
+                    await self._wiim_controller.async_ungroup_device(player_id)
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("set_members", err)
 
     def _update_ma_state_from_sdk_cache(self) -> None:
         """Update MA state from SDK's cache/HTTP poll attributes.
