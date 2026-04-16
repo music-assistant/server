@@ -783,6 +783,8 @@ class YandexMusicClient:
                 track_id,
                 getattr(err, "message", str(err)) or repr(err),
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
             LOGGER.warning(
                 "get-file-info for track %s: Unexpected %s: %s",

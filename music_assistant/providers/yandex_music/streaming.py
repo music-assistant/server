@@ -398,8 +398,8 @@ class YandexMusicStreamingManager:
     def _parse_mp4_audio_params(header: bytes) -> tuple[int, int]:
         """Extract sample_rate and bit_depth from MP4/fMP4 container.
 
-        Scans for the 'esds' or 'dfLa' (FLAC-in-MP4) box, or falls back to
-        parsing the AudioSampleEntry in 'mp4a'/'fLaC' boxes inside 'stsd'.
+        Scans for the 'dfLa' (FLAC-in-MP4) box, or falls back to parsing
+        the AudioSampleEntry in an 'mp4a' box to read sample size and sample rate.
 
         :param header: First 8-32 KB of the MP4 stream.
         :return: (sample_rate, bit_depth) or (0, 0) if not found.
