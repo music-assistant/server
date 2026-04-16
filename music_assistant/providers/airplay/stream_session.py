@@ -115,6 +115,8 @@ class AirPlayStreamSession:
         :param airplay_player: The player whose processes should be stopped.
         """
         stream = airplay_player.stream
+        if stream is not None and stream.session != self:
+            stream = None
         await self.stop_client(airplay_player)
         # Only set IDLE if the player's stream still belongs to this session,
         # otherwise a re-add to a new session may have already set a new state.
