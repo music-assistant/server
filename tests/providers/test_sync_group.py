@@ -26,7 +26,14 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_cmd_resume = AsyncMock()
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_set_members = AsyncMock()
-    mass.players.wait_for_player_update = AsyncMock(return_value=True)
+    # wait_for_player_update is an async context manager — return one that no-ops.
+    # __aexit__ must explicitly return False so exceptions inside the `async with`
+    # body propagate (an unconfigured AsyncMock returns a truthy MagicMock and
+    # would silently swallow real test failures).
+    wait_ctx = AsyncMock()
+    wait_ctx.__aenter__.return_value = None
+    wait_ctx.__aexit__.return_value = False
+    mass.players.wait_for_player_update = MagicMock(return_value=wait_ctx)
     mass.players.trigger_player_update = MagicMock()
     mass.call_later = MagicMock()
     mass.cancel_timer = MagicMock()
@@ -62,6 +69,8 @@ def _make_mock_player(
         proto = MagicMock(spec=OutputProtocol)
         proto.protocol_domain = domain
         proto.available = True
+        # default to a synthetic protocol id; tests that need a specific id can override
+        proto.output_protocol_id = f"{player_id}_{domain}_proto"
         protocols.append(proto)
     player.linked_output_protocols = protocols
 
@@ -86,7 +95,8 @@ def _make_sync_group(mass: MagicMock, player_id: str = "syncgroup_test") -> Sync
     provider.mass = mass
 
     def _config_get_value(key: str, default: object = None) -> object:
-        if key == "dynamic_group_members":
+        # CONF_DYNAMIC_GROUP_MEMBERS resolves to "dynamic_members"
+        if key == "dynamic_members":
             return True
         if key == "members_filter":
             return []
@@ -257,7 +267,7 @@ class TestDynamicLeaderSwitch:
 
     @pytest.mark.asyncio
     async def test_dynamic_leader_switch_hands_off_to_new_leader(self) -> None:
-        """When the new leader IS in the live session, seamless handoff is used."""
+        """When the new leader IS in the live session, seamless protocol-level handoff is used."""
         mass = _make_mock_mass()
         sgp = _make_sync_group(mass)
 
@@ -278,13 +288,19 @@ class TestDynamicLeaderSwitch:
             active_output_protocol="ap_old",
             protocol_domains=["airplay"],
         )
-        old_leader.handoff_sync_leadership = AsyncMock()
         new_leader = _make_mock_player(
             "new_leader",
             provider_domain="sonos",
             protocol_domains=["airplay"],
             active_output_protocol="ap_new",
         )
+        # Wire the linked airplay protocols on the parents to point to the
+        # corresponding protocol player ids so _resolve_session_target can find them.
+        new_leader.linked_output_protocols[0].output_protocol_id = "ap_new"
+        ap_only.linked_output_protocols[0].output_protocol_id = "ap_only_proto"
+        # ap_only's airplay protocol player needs to exist for the protocol-id resolution
+        ap_only_proto = _make_mock_player("ap_only_proto", provider_domain="airplay")
+
         ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
         # Set up the live session with new_leader's protocol player in sync_clients
         mock_session = MagicMock()
@@ -299,6 +315,7 @@ class TestDynamicLeaderSwitch:
                 "ap_old": ap_protocol,
                 "ap_new": ap_new,
                 "ap_only": ap_only,
+                "ap_only_proto": ap_only_proto,
             }
         )
 
@@ -310,11 +327,20 @@ class TestDynamicLeaderSwitch:
 
         assert sgp.sync_leader == new_leader
         assert "old_leader" not in sgp._attr_group_members
-        # Old leader got the handoff call with the new leader + remaining members
-        old_leader.handoff_sync_leadership.assert_awaited_once()
-        call_args = old_leader.handoff_sync_leadership.await_args
-        assert call_args.args[0] == new_leader
-        assert "ap_only" in call_args.args[1]
+
+        # 1. Old leader's session protocol player got told to step out (self-remove)
+        ap_protocol.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+
+        # 2. New leader's protocol player got the remaining members added.
+        # ap_only is already a protocol player on the airplay domain (its own
+        # provider is universal_player but its linked airplay protocol resolves
+        # via _resolve_session_target). The exact id depends on the mock wiring,
+        # but the call must have happened.
+        ap_new.set_members.assert_awaited()
+        add_call = ap_new.set_members.await_args
+        assert add_call.kwargs.get("player_ids_to_add"), (
+            "expected new leader's protocol player to receive the remaining members"
+        )
 
     @pytest.mark.asyncio
     async def test_dynamic_leader_switch_dissolves_when_new_leader_not_in_session(
@@ -331,7 +357,6 @@ class TestDynamicLeaderSwitch:
             active_output_protocol="ap_old",
             protocol_domains=["airplay"],
         )
-        old_leader.handoff_sync_leadership = AsyncMock()
         # Freshly-added player — NOT in the live session
         fresh_player = _make_mock_player(
             "fresh_player", provider_domain="sonos", protocol_domains=["airplay"]
@@ -357,9 +382,153 @@ class TestDynamicLeaderSwitch:
         with patch.object(sgp, "update_state"):
             await sgp._dynamic_leader_switch("old_leader")
 
-        # handoff_sync_leadership should NOT have been called
-        old_leader.handoff_sync_leadership.assert_not_awaited()
-        # Instead, dissolve+reform happened: wait_for_player_update was called
-        # with the old leader's player_id (which internally stops the session)
-        mass.players.wait_for_player_update.assert_awaited()
+        # The old protocol player must NOT have been told to self-remove
+        # (that path is only for the seamless handoff). Instead, dissolve+reform
+        # happened: wait_for_player_update was used to wrap the stop.
+        ap_protocol.set_members.assert_not_awaited()
+        mass.players.wait_for_player_update.assert_called()
         assert "old_leader" not in sgp._attr_group_members
+
+
+class TestPowerLifecycle:
+    """Test that power(True/False) drives the group's form/dissolve lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_power_on_forms_group_and_picks_leader(self) -> None:
+        """power(True) should select a sync leader and mark the group powered."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp.power(True)
+
+        assert sgp.sync_leader == leader
+        assert sgp._attr_powered is True
+
+    @pytest.mark.asyncio
+    async def test_power_on_with_no_members_stays_unformed(self) -> None:
+        """power(True) on an empty group should leave sync_leader as None but mark powered."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        with patch.object(sgp, "update_state"):
+            await sgp.power(True)
+
+        assert sgp.sync_leader is None
+        # group is powered (intent to be active) even though no leader could be picked
+        assert sgp._attr_powered is True
+
+    @pytest.mark.asyncio
+    async def test_power_off_dissolves_group(self) -> None:
+        """power(False) should clear the sync leader and mark unpowered."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        sgp._attr_powered = True
+
+        with patch.object(sgp, "update_state"):
+            await sgp.power(False)
+
+        # use getattr to defeat mypy's narrowing of these attributes after the
+        # earlier assignments, since it can't see that power(False) mutates them.
+        assert getattr(sgp, "sync_leader") is None  # noqa: B009
+        assert getattr(sgp, "_attr_powered") is False  # noqa: B009
+
+    @pytest.mark.asyncio
+    async def test_stop_does_not_dissolve_group(self) -> None:
+        """stop() should stop the leader but leave the group formed and powered."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        sgp._attr_powered = True
+
+        await sgp.stop()
+
+        # leader was stopped via the internal handler
+        mass.players._handle_cmd_stop.assert_awaited_once_with("leader")
+        # but the group is still formed: sync_leader and powered are unchanged
+        assert sgp.sync_leader == leader
+        assert sgp._attr_powered is True
+
+
+class TestSetMembersDoesNotRegisterIncompatible:
+    """Regression test for: incompatible members must NOT be added to _attr_group_members."""
+
+    @pytest.mark.asyncio
+    async def test_incompatible_member_is_not_registered(self) -> None:
+        """A member that fails the can_group_with check must not be appended."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        # leader's can_group_with does NOT include the incompatible member
+        leader.state.can_group_with = {"leader"}
+        incompatible = _make_mock_player("incompatible", provider_domain="alien_protocol")
+
+        mass.players.get_player = _player_lookup({"leader": leader, "incompatible": incompatible})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+
+        await sgp.set_members(player_ids_to_add=["incompatible"])
+
+        # incompatible must NOT linger in the internal member list
+        assert "incompatible" not in sgp._attr_group_members
+        # and the leader was never asked to add it (the call may still happen
+        # with empty lists since the member-changed path is taken, but the
+        # incompatible id must not appear in either add or remove)
+        for call in mass.players.cmd_set_members.await_args_list:
+            assert "incompatible" not in (call.kwargs.get("player_ids_to_add") or [])
+            assert "incompatible" not in (call.kwargs.get("player_ids_to_remove") or [])
+
+    @pytest.mark.asyncio
+    async def test_compatible_member_is_registered_and_forwarded(self) -> None:
+        """A compatible member should be appended and forwarded to the leader."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"compatible"}
+        compatible = _make_mock_player("compatible", provider_domain="sonos")
+
+        mass.players.get_player = _player_lookup({"leader": leader, "compatible": compatible})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+
+        await sgp.set_members(player_ids_to_add=["compatible"])
+
+        assert "compatible" in sgp._attr_group_members
+        mass.players.cmd_set_members.assert_awaited_once()
+        kwargs = mass.players.cmd_set_members.await_args.kwargs
+        assert kwargs.get("player_ids_to_add") == ["compatible"]
+
+    @pytest.mark.asyncio
+    async def test_member_added_when_no_leader_yet(self) -> None:
+        """Adding to an empty/unformed group must register the member regardless."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        member = _make_mock_player("member", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"member": member})
+
+        # no sync leader, empty group
+        sgp.sync_leader = None
+        sgp._attr_group_members = []
+
+        await sgp.set_members(player_ids_to_add=["member"])
+
+        # member is registered so a future _form_syncgroup can pick it as leader
+        assert "member" in sgp._attr_group_members
+        # but cmd_set_members on the leader is not called (no leader yet)
+        mass.players.cmd_set_members.assert_not_awaited()

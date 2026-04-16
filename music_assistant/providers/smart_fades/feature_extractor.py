@@ -122,7 +122,11 @@ class AdvancedBeatFeatureExtractor:
 
             if output_last_frame < first_frame:
                 # Not enough frames to output anything yet; store samples and wait
-                self._prev_samples = pcm[-self._keep_samples :].copy()
+                if self._prev_samples is not None:
+                    combined = np.concatenate([self._prev_samples, pcm])
+                else:
+                    combined = pcm
+                self._prev_samples = combined[-self._keep_samples :].copy()
                 self._total_samples = chunk_end
                 return np.array([], dtype=np.float32).reshape(0, self._n_mels)
 
@@ -142,8 +146,7 @@ class AdvancedBeatFeatureExtractor:
                 audio_segment = pcm
                 audio_start = chunk_start
 
-            # Store end samples for next chunk
-            self._prev_samples = pcm[-self._keep_samples :].copy()
+            self._prev_samples = audio_segment[-self._keep_samples :].copy()
 
             # Update total samples
             self._total_samples = chunk_end
@@ -179,6 +182,10 @@ class AdvancedBeatFeatureExtractor:
 
         def _finalize_sync() -> np.ndarray:
             if self._prev_samples is None or len(self._prev_samples) == 0:
+                return np.array([], dtype=np.float32).reshape(0, self._n_mels)
+
+            # mel_spec reflect-pad requires len > n_fft // 2
+            if len(self._prev_samples) <= self.n_fft // 2:
                 return np.array([], dtype=np.float32).reshape(0, self._n_mels)
 
             # MelSpectrogram(center=True) produces 1 + total_samples // hop frames.

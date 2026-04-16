@@ -120,6 +120,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ) -> AsyncGenerator[PlaylistPlayableItem, None]:
         """Return playlist tracks for the given provider playlist id."""
         library_item: Playlist | None = None
+        provider_item: Playlist | None = None
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
@@ -127,6 +128,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             library_item = await self.get_library_item_by_prov_id(
                 item_id, provider_instance_id_or_domain
             )
+            if library_item is None:
+                with suppress(ProviderUnavailableError, MediaNotFoundError, NotImplementedError):
+                    provider_item = await self.get_provider_item(
+                        item_id, provider_instance_id_or_domain
+                    )
 
         # Dynamic playlists always need fresh tracks from the provider.
         if allow_dynamic_tracks:
@@ -135,7 +141,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # Dynamic playlists should not expose a static track list in browse/refresh views.
         # Only the playback queue may request tracks for dynamic refill.
         if not allow_dynamic_tracks:
-            if library_item is not None and library_item.is_dynamic:
+            if (library_item is not None and library_item.is_dynamic) or (
+                provider_item is not None and provider_item.is_dynamic
+            ):
                 return
 
         # playlist tracks are not stored in the db,
