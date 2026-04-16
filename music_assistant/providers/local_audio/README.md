@@ -2,14 +2,17 @@
 
 ## Overview
 
-The Local Audio Out provider exposes locally attached soundcards (USB DACs, built-in speakers, HDMI audio, etc.) as players in Music Assistant. It leverages the Sendspin provider for synchronization and timing, registering each soundcard as an external Sendspin bridge client.
+The Local Audio Out provider exposes locally attached soundcards as players in Music Assistant. On Linux it enumerates PulseAudio sinks (USB DACs, built-in audio, HDMI, remap sinks, virtual sinks, etc.); on macOS it enumerates PortAudio/CoreAudio devices. It leverages the Sendspin provider for synchronization and timing, registering each device as an external Sendspin bridge client.
 
 ### Key Features
 
-- **Automatic Device Discovery**: Enumerates all audio output devices via PortAudio/sounddevice
+- **Automatic Device Discovery**: On Linux, enumerates all PulseAudio output sinks via libpulse directly — no `pactl` binary required. On macOS, enumerates via PortAudio/sounddevice
+- **Native Format Negotiation** *(Linux)*: Each PA sink advertises its native sample rate and bit depth (16, 24, or 32-bit) so Music Assistant transcodes to the correct format — no unnecessary resampling
 - **Sendspin Integration**: Each device is registered as a Sendspin bridge client, enabling synchronized multi-room playback
-- **Software Volume Control**: Per-device volume and mute via PCM sample scaling
-- **Stable Player IDs**: Uses UUIDv5 from device name + host API index so players persist across restarts
+- **Hardware Volume Control**: PulseAudio sink volume on Linux, CoreAudio on macOS, with automatic fallback to software scaling
+- **Software Volume Control**: Per-device volume and mute via PCM sample scaling when hardware control is unavailable or disabled
+- **Stable Player IDs**: Uses UUIDv5 derived from device name + host API index so players persist across restarts
+- **Hardware Volume Ceiling** *(Linux)*: Configurable per-provider PA sink volume ceiling applied at startup
 
 ## Architecture
 
@@ -19,11 +22,12 @@ The Local Audio Out provider exposes locally attached soundcards (USB DACs, buil
 ┌──────────────────────────────────────────────────────────────┐
 │                    LocalAudioProvider                         │
 │  - Thin provider shell, delegates to bridge manager          │
+│  - Verifies libpulse-simple present on Linux at init         │
 └──────────────────────────────────────────────────────────────┘
                               │
                 ┌─────────────▼──────────────┐
                 │  LocalAudioBridgeManager   │
-                │  - Enumerates soundcards   │
+                │  - Enumerates devices      │
                 │  - Creates/stops bridges   │
                 └─────────────┬──────────────┘
                               │
@@ -35,43 +39,90 @@ The Local Audio Out provider exposes locally attached soundcards (USB DACs, buil
 │                     │              │                        │
 │ Sendspin Client ──► │              │ Sendspin Client ──►    │
 │ BridgePlayerRole    │              │ BridgePlayerRole       │
-│ sounddevice Output  │              │ sounddevice Output     │
+│ PA/sounddevice out  │              │ PA/sounddevice out     │
 └─────────────────────┘              └────────────────────────┘
 ```
 
 ### Audio Flow
 
+#### Linux (PulseAudio)
 ```
 Sendspin PushStream
        │
        ▼
 BridgePlayerRole.on_audio_chunk
        │
-       ▼ (volume/mute applied)
+       ▼ (software volume/mute applied, format conversion for 24-bit)
+asyncio.Queue
+       │
+       ▼
+PASimpleStream (libpulse-simple via ctypes)
+       │
+       ▼
+PulseAudio Sink
+       │
+       ▼
+Physical Audio Device
+```
+
+#### macOS (CoreAudio)
+```
+Sendspin PushStream
+       │
+       ▼
+BridgePlayerRole.on_audio_chunk
+       │
+       ▼ (software volume/mute applied)
 asyncio.Queue
        │
        ▼
 sounddevice.RawOutputStream (PortAudio)
        │
        ▼
-Physical Soundcard
+CoreAudio Device
 ```
+
+### Bit Depth Handling (Linux)
+
+| Sink Format | MA Delivery                       | PA Stream Format  | Conversion                         |
+|-------------|-----------------------------------|-------------------|------------------------------------|
+| `s16le`     | 16-bit PCM                        | `PA_SAMPLE_S16LE` | None                               |
+| `s24le`     | 32-bit container (left-justified) | `PA_SAMPLE_S24LE` | Unpack int32, repack to 3-byte LE  |
+| `s32le`     | 32-bit PCM                        | `PA_SAMPLE_S32LE` | None                               |
 
 ### File Structure
 
 | File | Description |
 |------|-------------|
-| `__init__.py` | Provider entry point, setup, and config |
+| `__init__.py` | Provider entry point, setup, and config entries |
 | `provider.py` | `LocalAudioProvider` class |
-| `sendspin_bridge.py` | Bridge manager and per-device bridge implementation |
-| `constants.py` | Shared constants (UUID namespace, buffer size) |
+| `sendspin_bridge.py` | Bridge manager and per-device bridge (PA on Linux, sounddevice on macOS) |
+| `player.py` | `LocalAudioPlayer` — MA player model for each device |
+| `pa_simple.py` | ctypes wrapper around `libpulse-simple` for direct PCM output; sink enumeration via `libpulse` *(Linux only)* |
+| `constants.py` | Shared constants (UUID namespace, buffer size, config keys) |
 | `manifest.json` | Provider metadata and dependencies |
 
 ## Dependencies
 
 - **Sendspin provider** (`depends_on: sendspin`): Required for audio synchronization and player management
-- **sounddevice**: Python bindings for PortAudio, used for audio output
+- **libpulse / libpulse-simple** *(Linux)*: PulseAudio client libraries accessed via ctypes — no Python PulseAudio bindings required for streaming or enumeration
+- **pulsectl** *(Linux)*: Python PulseAudio bindings used for hardware volume and mute control
+- **sounddevice** *(macOS)*: Python bindings for PortAudio, used for audio output and device enumeration
 - **numpy**: Used for PCM volume scaling
+
+## Configuration
+
+| Setting | Platform | Description |
+|---------|----------|-------------|
+| Volume control mode | All | `hardware` (OS-level), `software` (PCM scaling), or `disabled` |
+| Hardware volume ceiling | Linux only | Sets PA sink volume on startup to cap maximum output level (0–100, default 50) |
+
+## Notes
+
+- On Linux, multi-channel sinks (5.1, 7.1) are supported — the bridge opens a stereo stream and PulseAudio handles channel remapping automatically.
+- Virtual sinks created by `module-remap-sink` (stereo pairs split from multi-channel cards) are fully supported and are the recommended way to expose individual speaker pairs as independent MA players.
+- On Linux, hardware volume control uses `pulsectl` to set the PA sink volume directly. If `pulsectl` is unavailable the provider falls back to software volume automatically.
+- On macOS, hardware volume control uses CoreAudio. If that fails the provider falls back to software volume automatically.
 
 ## Related Documentation
 
