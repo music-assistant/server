@@ -15,7 +15,11 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_AUDIOBOOKS, DB_TABLE_PLAYLOG
+from music_assistant.constants import (
+    DB_TABLE_AUDIOBOOK_ARTISTS,
+    DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_PLAYLOG,
+)
 from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
@@ -165,7 +169,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """Delete item from the library(database)."""
         db_id = int(item_id)  # ensure integer
         # delete entry(s) from album artists table
-        await self.mass.music.database.delete(DB_TABLE_ALBUM_ARTISTS, {"album_id": db_id})
+        await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_ARTISTS, {"audiobook_id": db_id})
         # delete the album itself from db
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(item_id)
@@ -226,9 +230,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         if overwrite:
             # on overwrite, clear the album_artists table first
             await self.mass.music.database.delete(
-                DB_TABLE_ALBUM_ARTISTS,
+                DB_TABLE_AUDIOBOOK_ARTISTS,
                 {
-                    "album_id": db_id,
+                    "audiobook_id": db_id,
                 },
             )
         for artist in artists:
@@ -258,9 +262,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             )
         # write (or update) record in album_artists table
         await self.mass.music.database.insert_or_replace(
-            DB_TABLE_ALBUM_ARTISTS,
+            DB_TABLE_AUDIOBOOK_ARTISTS,
             {
-                "album_id": db_id,
+                "audiobook_id": db_id,
                 "artist_id": int(db_artist.item_id),
             },
         )
