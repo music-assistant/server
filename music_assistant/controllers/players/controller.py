@@ -1720,8 +1720,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         """Forward a player state update to related players (groups, sync parent, protocols)."""
-        # update/signal group player(s) child's when group updates
-        if player.type == PlayerType.GROUP:
+        # Propagate leader/group updates to child players. This must also cover
+        # regular sync leaders (not just virtual group players) because synced
+        # children derive playback/current-media state from their leader.
+        if player.state.group_members:
             for child_player in self.iter_group_members(player, exclude_self=True):
                 child_player.on_group_updated(player, changed_values)
         # update/signal group player(s) when child updates
