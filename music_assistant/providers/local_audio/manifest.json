@@ -3,9 +3,14 @@
   "domain": "local_audio",
   "name": "Local Audio Out",
   "description": "Play audio through locally attached soundcards (USB DACs, built-in speakers, etc.).",
-  "codeowners": ["@music-assistant"],
+  "codeowners": [
+    "@music-assistant"
+  ],
   "depends_on": "sendspin",
-  "requirements": ["sounddevice==0.5.5", "pulsectl"],
+  "requirements": [
+    "sounddevice==0.5.5",
+    "pulsectl; sys_platform == 'linux'"
+  ],
   "documentation": "https://music-assistant.io/player-support/local-audio/",
   "builtin": true,
   "allow_disable": true,
