@@ -750,6 +750,7 @@ class TestConnectState:
 
         mock_sfs.assert_awaited_once_with(player_state=client.state.player_state)
         # Clean up
+        assert client._message_task is not None
         client._message_task.cancel()
         with suppress(asyncio.CancelledError):
             await client._message_task
@@ -770,6 +771,7 @@ class TestConnectState:
         # Falls back to no-arg call (blank initial state)
         mock_sfs.assert_awaited_once_with()
         # Clean up
+        assert client._message_task is not None
         client._message_task.cancel()
         with suppress(asyncio.CancelledError):
             await client._message_task
@@ -878,8 +880,13 @@ class TestMessageLoop:
 
         client._logger.warning.assert_called()  # type: ignore[attr-defined]
 
-    async def test_rebalance_error_breaks_loop(self, client: YnisonClient) -> None:
+    async def test_rebalance_error_breaks_loop(
+        self,
+        client: YnisonClient,
+        mock_callbacks: tuple[AsyncMock, AsyncMock],
+    ) -> None:
         """Ynison re-balance error (300100001) breaks the loop for immediate reconnect."""
+        on_state_update, _ = mock_callbacks
         rebalance_msg = _make_ws_msg(
             aiohttp.WSMsgType.TEXT,
             json.dumps(
@@ -901,14 +908,18 @@ class TestMessageLoop:
             aiohttp.WSMsgType.TEXT,
             json.dumps({"player_state": {"status": {"paused": True}}}),
         )
-        mock_callbacks = client._on_state_update
         await self._run_loop_with_messages(client, [rebalance_msg, valid_msg])
 
         # The valid message was never processed (loop broke on re-balance error)
-        mock_callbacks.assert_not_awaited()
+        on_state_update.assert_not_awaited()
 
-    async def test_not_served_error_breaks_loop(self, client: YnisonClient) -> None:
+    async def test_not_served_error_breaks_loop(
+        self,
+        client: YnisonClient,
+        mock_callbacks: tuple[AsyncMock, AsyncMock],
+    ) -> None:
         """Ynison 'not served' error (300100002) also breaks the loop."""
+        on_state_update, _ = mock_callbacks
         not_served_msg = _make_ws_msg(
             aiohttp.WSMsgType.TEXT,
             json.dumps(
@@ -926,10 +937,9 @@ class TestMessageLoop:
             aiohttp.WSMsgType.TEXT,
             json.dumps({"player_state": {"status": {"paused": True}}}),
         )
-        mock_callbacks = client._on_state_update
         await self._run_loop_with_messages(client, [not_served_msg, valid_msg])
 
-        mock_callbacks.assert_not_awaited()
+        on_state_update.assert_not_awaited()
 
     async def test_text_message_invalid_json(self, client: YnisonClient) -> None:
         """TEXT message with invalid JSON logs warning, continues."""
