@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.helpers.util import detect_charset
+from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -389,10 +389,7 @@ def construct_media_item_from_playlist_item(
     except ValueError:
         media_type = MediaType.TRACK
     name = metadata.get("name") or item.title or item.path
-    try:
-        duration = int(item.length) if item.length else 0
-    except ValueError:
-        duration = 0
+    duration = try_parse_int(item.length, default=None) if item.length else None
 
     provider_mappings = _resolve_provider_mappings(item, mass)
     external_ids = _collect_external_ids(metadata)
@@ -428,18 +425,18 @@ def construct_media_item_from_playlist_item(
             item_id=item_id,
             provider=item_provider,
             name=name,
-            duration=duration,
             position=0,
             provider_mappings=provider_mappings,
             podcast=podcast_mapping,
             external_ids=external_ids,
         )
+        if duration is not None:
+            media_item.duration = duration
     elif media_type == MediaType.AUDIOBOOK:
         media_item = Audiobook(
             item_id=item_id,
             provider=item_provider,
             name=name,
-            duration=duration,
             provider_mappings=provider_mappings,
             authors=UniqueList(
                 metadata.get("authors", "").split("; ") if metadata.get("authors") else []
@@ -449,6 +446,8 @@ def construct_media_item_from_playlist_item(
             ),
             external_ids=external_ids,
         )
+        if duration is not None:
+            media_item.duration = duration
     else:
         media_item = _construct_track(
             item,
@@ -520,7 +519,7 @@ def _construct_track(
     item_id: str,
     item_provider: str,
     name: str,
-    duration: int,
+    duration: int | None,
     provider_mappings: set[ProviderMapping],
     external_ids: set[tuple[ExternalID, str]],
 ) -> Track:
@@ -548,17 +547,19 @@ def _construct_track(
             version=item.album.version,
             media_type=MediaType.ALBUM,
         )
-    return Track(
+    track = Track(
         item_id=item_id,
         provider=item_provider,
         name=name,
         version=metadata.get("version", ""),
-        duration=duration,
         artists=artists,
         album=album_mapping,
         provider_mappings=provider_mappings,
         external_ids=external_ids,
     )
+    if duration is not None:
+        track.duration = duration
+    return track
 
 
 # --------------------------------------------------------------------------- #
