@@ -23,9 +23,9 @@ async def test_remove_player_prunes_manual_host_config() -> None:
     provider.config = Mock()
     provider.config.instance_id = "mpd_test"
     provider.config.values = config_entries
-    provider.config.get_value.side_effect = lambda key, default=None: config_entries.get(
-        key, SimpleNamespace(value=default)
-    ).value
+    provider.config.get_value.side_effect = lambda key, default=None: (
+        config_entries.get(key, SimpleNamespace(value=default)).value
+    )
     original_entries = [
         "kitchen.local:6600",
         "office.local:6601",
