@@ -26,6 +26,12 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_cmd_resume = AsyncMock()
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_set_members = AsyncMock()
+    mass.players._handle_set_members = AsyncMock()
+    # get_player_lock is an async context manager (used by syncgroup to lock the sync leader)
+    lock_ctx = AsyncMock()
+    lock_ctx.__aenter__.return_value = None
+    lock_ctx.__aexit__.return_value = False
+    mass.players.get_player_lock = MagicMock(return_value=lock_ctx)
     # wait_for_player_update is an async context manager — return one that no-ops.
     # __aexit__ must explicitly return False so exceptions inside the `async with`
     # body propagate (an unconfigured AsyncMock returns a truthy MagicMock and
@@ -488,7 +494,7 @@ class TestSetMembersDoesNotRegisterIncompatible:
         # and the leader was never asked to add it (the call may still happen
         # with empty lists since the member-changed path is taken, but the
         # incompatible id must not appear in either add or remove)
-        for call in mass.players.cmd_set_members.await_args_list:
+        for call in mass.players._handle_set_members.await_args_list:
             assert "incompatible" not in (call.kwargs.get("player_ids_to_add") or [])
             assert "incompatible" not in (call.kwargs.get("player_ids_to_remove") or [])
 
@@ -509,8 +515,8 @@ class TestSetMembersDoesNotRegisterIncompatible:
         await sgp.set_members(player_ids_to_add=["compatible"])
 
         assert "compatible" in sgp._attr_group_members
-        mass.players.cmd_set_members.assert_awaited_once()
-        kwargs = mass.players.cmd_set_members.await_args.kwargs
+        mass.players._handle_set_members.assert_awaited_once()
+        kwargs = mass.players._handle_set_members.await_args.kwargs
         assert kwargs.get("player_ids_to_add") == ["compatible"]
 
     @pytest.mark.asyncio
@@ -530,5 +536,5 @@ class TestSetMembersDoesNotRegisterIncompatible:
 
         # member is registered so a future _form_syncgroup can pick it as leader
         assert "member" in sgp._attr_group_members
-        # but cmd_set_members on the leader is not called (no leader yet)
-        mass.players.cmd_set_members.assert_not_awaited()
+        # but _handle_set_members on the leader is not called (no leader yet)
+        mass.players._handle_set_members.assert_not_awaited()

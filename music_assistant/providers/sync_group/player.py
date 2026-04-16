@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
 )
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
@@ -462,11 +463,16 @@ class SyncGroupPlayer(Player):
             # `active_protocol_domain` is derived from live state, so the
             # group will naturally downshift on the next leader selection if
             # the last protocol-requiring member was removed.
-            await self.mass.players.cmd_set_members(
-                self.sync_leader.player_id,
-                player_ids_to_add=final_players_to_add,
-                player_ids_to_remove=final_players_to_remove,
-            )
+            # use _handle_set_members directly to avoid the redirect loop
+            # (cmd_set_members redirects sync-leader targets back to this syncgroup)
+            async with self.mass.players.get_player_lock(
+                self.sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+            ):
+                await self.mass.players._handle_set_members(
+                    self.sync_leader,
+                    player_ids_to_add=final_players_to_add,
+                    player_ids_to_remove=final_players_to_remove,
+                )
         # NOTE: If we weren't playing before, we don't need to do anything else,
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(self.player_id)
@@ -528,7 +534,14 @@ class SyncGroupPlayer(Player):
                     timeout=5,
                 ):
                     await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
-            await self.mass.players.cmd_set_members(self.sync_leader.player_id, members_to_sync)
+            # use _handle_set_members directly to avoid the redirect loop
+            # (cmd_set_members redirects sync-leader targets back to this syncgroup)
+            async with self.mass.players.get_player_lock(
+                self.sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+            ):
+                await self.mass.players._handle_set_members(
+                    self.sync_leader, player_ids_to_add=members_to_sync
+                )
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
@@ -539,11 +552,16 @@ class SyncGroupPlayer(Player):
             ]
             if sync_children:
                 # wait for the leader's state to reflect the ungroup
-                async with self.mass.players.wait_for_player_update(
-                    sync_leader.player_id, timeout=5
+                # use _handle_set_members directly to avoid the redirect loop
+                # (cmd_set_members redirects sync-leader targets back to this syncgroup)
+                async with (
+                    self.mass.players.wait_for_player_update(sync_leader.player_id, timeout=5),
+                    self.mass.players.get_player_lock(
+                        sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+                    ),
                 ):
-                    await self.mass.players.cmd_set_members(
-                        sync_leader.player_id, [], sync_children
+                    await self.mass.players._handle_set_members(
+                        sync_leader, player_ids_to_remove=sync_children
                     )
         # Clear the leader's active protocol so it doesn't persist
         # after the sync group is dissolved. The controller's normal
