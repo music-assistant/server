@@ -88,7 +88,5 @@ class MPDPlayerProvider(PlayerProvider):
             entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
             new_entries = [entry for entry in entries if _parse_host_entry(entry) != host_port]
             if new_entries != entries:
-                self.mass.config.set_raw_provider_config_value(
-                    self.instance_id, CONF_MANUAL_IPS, new_entries
-                )
+                self._update_config_value(CONF_MANUAL_IPS, new_entries)
         await self.mass.players.unregister(player_id, True)
