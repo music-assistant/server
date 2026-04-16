@@ -157,8 +157,9 @@ class YandexMusicStreamingManager:
             )
 
             # Always use StreamType.CUSTOM with windowed Range requests to prevent CDN drops.
-            # Raw transport: can_seek=True — provider handles seek via Range byte offset.
-            # Encrypted transport: seeking disabled — AES-CTR seek not implemented.
+            # can_seek=True only when we can compute a byte offset (raw + known bitrate).
+            # allow_seek=True lets ffmpeg handle time-based seeking when can_seek is False.
+            can_seek = not needs_decryption and bit_rate > 0
             data: dict[str, Any] = {
                 "url": url,
                 "codec": codec,
@@ -178,7 +179,7 @@ class YandexMusicStreamingManager:
                 stream_type=StreamType.CUSTOM,
                 duration=track.duration,
                 data=data,
-                can_seek=not needs_decryption,
+                can_seek=can_seek,
                 allow_seek=not needs_decryption,
             )
 
