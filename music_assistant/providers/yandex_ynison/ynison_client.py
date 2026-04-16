@@ -553,18 +553,15 @@ class YnisonClient:
             "current_playable_index", -1
         )
 
-        # One-level-deep merge of player_state: Ynison sends sub-objects like
-        # "player_queue" and "status" as complete replacements, so shallow
-        # dict-union at the first nesting level is sufficient. Deeper recursion
-        # would risk merging stale list items (e.g. playable_list entries).
+        # Replace each incoming player_state sub-object at the top level:
+        # Ynison sends entries like "player_queue" and "status" as complete
+        # objects, so merging nested dicts would retain stale keys that are
+        # absent from the update.
         incoming_ps = data.get("player_state")
         if incoming_ps is not None:
             existing_ps = self.state.player_state
             for key, value in incoming_ps.items():
-                if isinstance(value, dict) and isinstance(existing_ps.get(key), dict):
-                    existing_ps[key] = {**existing_ps[key], **value}
-                else:
-                    existing_ps[key] = value
+                existing_ps[key] = value
         self.state.active_device_id = data.get(
             "active_device_id_optional", self.state.active_device_id
         )
