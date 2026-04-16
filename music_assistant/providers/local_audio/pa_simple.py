@@ -171,122 +171,68 @@ class PASimpleStream:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+
 def enumerate_pa_sinks() -> list[dict[str, Any]]:
-    """Enumerate stereo-capable PulseAudio sinks via pulsectl."""
-    import pulsectl
+    """Enumerate stereo-capable PulseAudio sinks via pulsectl.
+
+    Returns list of dicts with keys:
+      - name: display name (PA sink description)
+      - pa_sink_name: internal PA sink name
+      - max_output_channels: number of channels
+      - sample_rate: sink native sample rate in Hz
+      - bit_depth: sink native bit depth (16, 24, or 32)
+
+    Bit depth is resolved in priority order:
+      1. alsa.resolution_bits proplist entry (physical ALSA sinks)
+      2. alsa.resolution_bits of the master device (remap/filter sinks)
+      3. _PA_FORMAT_TO_BIT_DEPTH fallback (format may reflect active stream,
+         not native hardware, but is better than nothing)
+    """
+    import pulsectl  # noqa: PLC0415
+
     sinks = []
     with pulsectl.Pulse("ma-local-audio-enum") as pulse:
-        for sink in pulse.sink_list():
+        all_sinks = pulse.sink_list()
+
+        # Build resolution_bits lookup from physical ALSA sinks keyed by name
+        alsa_bits: dict[str, int] = {}
+        for sink in all_sinks:
+            bits_str = sink.proplist.get("alsa.resolution_bits")
+            if bits_str:
+                try:
+                    alsa_bits[sink.name] = int(bits_str)
+                except ValueError:
+                    pass
+
+        for sink in all_sinks:
             channels = sink.sample_spec.channels
             if channels < 2:
                 continue
-            bit_depth = _PA_FORMAT_TO_BIT_DEPTH.get(sink.sample_spec.format, 16)
+            sample_rate = sink.sample_spec.rate
+
+            # Resolve bit depth
+            bits_str = sink.proplist.get("alsa.resolution_bits")
+            if bits_str:
+                # Physical ALSA sink — use its own resolution bits
+                try:
+                    bit_depth = int(bits_str)
+                except ValueError:
+                    bit_depth = _PA_FORMAT_TO_BIT_DEPTH.get(sink.sample_spec.format, 16)
+            else:
+                # Remap/filter sink — look up master device's resolution bits
+                master = sink.proplist.get("device.master_device")
+                if master and master in alsa_bits:
+                    bit_depth = alsa_bits[master]
+                else:
+                    # Last resort: derive from PA format constant
+                    # (may reflect active stream format, not native hardware)
+                    bit_depth = _PA_FORMAT_TO_BIT_DEPTH.get(sink.sample_spec.format, 16)
+
             sinks.append({
                 "name": sink.description or sink.name,
                 "pa_sink_name": sink.name,
                 "max_output_channels": channels,
-                "sample_rate": sink.sample_spec.rate,
-                "bit_depth": bit_depth,
-            })
-    return sinks
-
-    class _PASampleSpecFull(ctypes.Structure):
-        _fields_ = [
-            ("format", ctypes.c_int),
-            ("rate", ctypes.c_uint32),
-            ("channels", ctypes.c_uint8),
-        ]
-
-    class _PASinkInfo(ctypes.Structure):
-        _fields_ = [
-            ("name", ctypes.c_char_p),
-            ("index", ctypes.c_uint32),
-            ("description", ctypes.c_char_p),
-            ("sample_spec", _PASampleSpecFull),
-        ]
-
-    sinks: list[dict[str, Any]] = []
-
-    SINK_CB = ctypes.CFUNCTYPE(
-        None,
-        ctypes.c_void_p,
-        ctypes.POINTER(_PASinkInfo),
-        ctypes.c_int,
-        ctypes.c_void_p,
-    )
-
-    def _sink_cb(
-        context: ctypes.c_void_p,
-        info_ptr: ctypes.POINTER(_PASinkInfo),
-        eol: int,
-        userdata: ctypes.c_void_p,
-    ) -> None:
-        if eol or not info_ptr:
-            return
-        info = info_ptr.contents
-        name = info.name.decode() if info.name else ""
-        desc = info.description.decode() if info.description else name
-        channels = info.sample_spec.channels
-        sample_rate = info.sample_spec.rate
-        bit_depth = _PA_FORMAT_TO_BIT_DEPTH.get(info.sample_spec.format, 16)
-        if channels >= 2:
-            sinks.append({
-                "name": desc,
-                "pa_sink_name": name,
-                "max_output_channels": channels,
                 "sample_rate": sample_rate,
                 "bit_depth": bit_depth,
             })
-
-    sink_cb = SINK_CB(_sink_cb)
-
-    mainloop = lib.pa_mainloop_new()
-    if not mainloop:
-        raise OSError("pa_mainloop_new failed")
-
-    try:
-        api = lib.pa_mainloop_get_api(mainloop)
-        ctx = lib.pa_context_new(api, b"music-assistant-enum")
-        if not ctx:
-            raise OSError("pa_context_new failed")
-
-        pulse_server = _get_pulse_server()
-        server = pulse_server.encode() if pulse_server else None
-        ret = lib.pa_context_connect(ctx, server, 0, None)
-        if ret < 0:
-            lib.pa_context_unref(ctx)
-            raise OSError(f"pa_context_connect failed (ret={ret}, server={pulse_server!r})")
-
-        # Wait for context to become ready (max ~2s)
-        for _ in range(2000):
-            lib.pa_mainloop_iterate(mainloop, 0, None)
-            state = lib.pa_context_get_state(ctx)
-            if state == PA_CONTEXT_READY:
-                break
-            if state in (PA_CONTEXT_FAILED, PA_CONTEXT_TERMINATED):
-                lib.pa_context_unref(ctx)
-                raise OSError(f"PA context failed to connect (state={state}, server={pulse_server!r})")
-        else:
-            lib.pa_context_unref(ctx)
-            raise OSError(f"Timed out waiting for PA context to become ready (server={pulse_server!r})")
-
-        # Issue get_sink_info_list and pump mainloop until operation completes
-        op = lib.pa_context_get_sink_info_list(ctx, sink_cb, None)
-        if not op:
-            lib.pa_context_disconnect(ctx)
-            lib.pa_context_unref(ctx)
-            raise OSError("pa_context_get_sink_info_list failed")
-
-        for _ in range(2000):
-            lib.pa_mainloop_iterate(mainloop, 0, None)
-            if lib.pa_operation_get_state(op) == PA_OPERATION_DONE:
-                break
-
-        lib.pa_operation_unref(op)
-        lib.pa_context_disconnect(ctx)
-        lib.pa_context_unref(ctx)
-
-    finally:
-        lib.pa_mainloop_free(mainloop)
-
     return sinks
