@@ -4,8 +4,9 @@ from unittest.mock import Mock
 
 import pytest
 from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack
+from music_assistant_models.enums import ContentType
 
-from music_assistant.providers.bandcamp.converters import BandcampConverters
+from music_assistant.providers.bandcamp.converters import BandcampConverters, DiscographyItem
 
 
 @pytest.fixture
@@ -193,3 +194,192 @@ def test_track_from_api_with_album(converters: BandcampConverters) -> None:
     assert result.album is not None
     assert result.album.item_id == "123-456"
     assert result.album.name == "Test Album"
+
+
+def _make_mock_track(streaming_url: dict[str, str]) -> Mock:
+    """Create a mock API track with the given streaming URL."""
+    mock_artist = Mock()
+    mock_artist.id = 123
+    mock_artist.name = "Test Artist"
+    mock_artist.url = "https://test.bandcamp.com"
+
+    mock_track = Mock()
+    mock_track.id = 789
+    mock_track.title = "Test Track"
+    mock_track.artist = mock_artist
+    mock_track.url = "https://test.bandcamp.com/track/test-track"
+    mock_track.duration = 300
+    mock_track.lyrics = None
+    mock_track.track_number = 1
+    mock_track.streaming_url = streaming_url
+    return mock_track
+
+
+def test_track_from_api_audio_format_mp3_320(converters: BandcampConverters) -> None:
+    """Test that mp3-320 streaming URL sets audio format correctly."""
+    mock_track = _make_mock_track({"mp3-320": "https://example.com/track.mp3"})
+    result = converters.track_from_api(track=mock_track, album_id=456)
+    mapping = next(iter(result.provider_mappings))
+    assert mapping.audio_format.content_type == ContentType.MP3
+    assert mapping.audio_format.bit_rate == 320
+
+
+def test_track_from_api_audio_format_mp3_v0(converters: BandcampConverters) -> None:
+    """Test that mp3-v0 streaming URL sets content type with no bitrate (VBR)."""
+    mock_track = _make_mock_track({"mp3-v0": "https://example.com/track.mp3"})
+    result = converters.track_from_api(track=mock_track, album_id=456)
+    mapping = next(iter(result.provider_mappings))
+    assert mapping.audio_format.content_type == ContentType.MP3
+    assert mapping.audio_format.bit_rate is None
+
+
+def test_track_from_api_audio_format_mp3_128(converters: BandcampConverters) -> None:
+    """Test that mp3-128 streaming URL sets audio format correctly."""
+    mock_track = _make_mock_track({"mp3-128": "https://example.com/track.mp3"})
+    result = converters.track_from_api(track=mock_track, album_id=456)
+    mapping = next(iter(result.provider_mappings))
+    assert mapping.audio_format.content_type == ContentType.MP3
+    assert mapping.audio_format.bit_rate == 128
+
+
+def test_track_from_api_audio_format_none_streaming_url(converters: BandcampConverters) -> None:
+    """Test that None streaming_url does not crash."""
+    mock_track = _make_mock_track({"mp3-128": "https://example.com/track.mp3"})
+    mock_track.streaming_url = None
+    result = converters.track_from_api(track=mock_track, album_id=456)
+    mapping = next(iter(result.provider_mappings))
+    assert mapping.audio_format.content_type == ContentType.MP3
+    assert mapping.audio_format.bit_rate is None
+
+
+def test_streaming_url_priority_v0_over_320(converters: BandcampConverters) -> None:
+    """Test that mp3-v0 is preferred over mp3-320."""
+    url, bitrate, content_type = converters.streaming_url_from_api(
+        {
+            "mp3-320": "https://example.com/320.mp3",
+            "mp3-v0": "https://example.com/v0.mp3",
+        }
+    )
+    assert url == "https://example.com/v0.mp3"
+    assert bitrate is None
+    assert content_type == ContentType.MP3
+
+
+def test_streaming_url_priority_320_over_128(converters: BandcampConverters) -> None:
+    """Test that mp3-320 is preferred over mp3-128."""
+    url, bitrate, content_type = converters.streaming_url_from_api(
+        {
+            "mp3-128": "https://example.com/128.mp3",
+            "mp3-320": "https://example.com/320.mp3",
+        }
+    )
+    assert url == "https://example.com/320.mp3"
+    assert bitrate == 320
+    assert content_type == ContentType.MP3
+
+
+def test_streaming_url_priority_v0_over_320_over_128(converters: BandcampConverters) -> None:
+    """Test full priority chain when all three formats are present."""
+    url, bitrate, content_type = converters.streaming_url_from_api(
+        {
+            "mp3-128": "https://example.com/128.mp3",
+            "mp3-320": "https://example.com/320.mp3",
+            "mp3-v0": "https://example.com/v0.mp3",
+        }
+    )
+    assert url == "https://example.com/v0.mp3"
+    assert bitrate is None
+    assert content_type == ContentType.MP3
+
+
+def test_streaming_url_fallback_unknown_key(converters: BandcampConverters) -> None:
+    """Test that an unknown streaming key falls back with UNKNOWN content type."""
+    url, bitrate, content_type = converters.streaming_url_from_api(
+        {"ogg-vorbis": "https://example.com/track.ogg"}
+    )
+    assert url == "https://example.com/track.ogg"
+    assert bitrate is None
+    assert content_type == ContentType.UNKNOWN
+
+
+def test_streaming_url_empty_dict(converters: BandcampConverters) -> None:
+    """Test that empty dict returns None for URL and bitrate."""
+    url, bitrate, content_type = converters.streaming_url_from_api({})
+    assert url is None
+    assert bitrate is None
+    assert content_type == ContentType.MP3
+
+
+def test_album_from_discography_item(converters: BandcampConverters) -> None:
+    """Test converting a full discography item to MA Album."""
+    item: DiscographyItem = {
+        "item_id": 394626934,
+        "item_type": "album",
+        "artist_name": "Amanda Palmer & Friends",
+        "band_name": "Amanda Palmer",
+        "title": "Forty-Five Degrees",
+        "art_id": 3547137148,
+        "release_date": "21 Feb 2020 00:00:00 GMT",
+        "band_id": 3463798201,
+    }
+    result = converters.album_from_discography_item(item)
+
+    assert result.item_id == "3463798201-394626934"
+    assert result.name == "Forty-Five Degrees"
+    assert result.year == 2020
+    assert result.provider == "bandcamp_test"
+    artists = list(result.artists)
+    assert len(artists) == 1
+    assert artists[0].name == "Amanda Palmer & Friends"
+    assert artists[0].item_id == "3463798201"
+    assert result.metadata.images
+    assert any("a3547137148_0.jpg" in img.path for img in result.metadata.images)
+
+
+def test_album_from_discography_item_missing_art_id(converters: BandcampConverters) -> None:
+    """Test discography item with no art_id produces album without image."""
+    item: DiscographyItem = {
+        "item_id": 100,
+        "item_type": "album",
+        "band_name": "Test",
+        "title": "No Art",
+        "band_id": 200,
+        "release_date": "01 Jan 2021 00:00:00 GMT",
+    }
+    result = converters.album_from_discography_item(item)
+    assert result.item_id == "200-100"
+    assert result.year == 2021
+    assert not result.metadata.images
+
+
+def test_album_from_discography_item_missing_release_date(converters: BandcampConverters) -> None:
+    """Test discography item with no release_date sets year to None."""
+    item: DiscographyItem = {
+        "item_id": 100,
+        "item_type": "album",
+        "band_name": "Test",
+        "title": "No Date",
+        "band_id": 200,
+        "art_id": 999,
+    }
+    result = converters.album_from_discography_item(item)
+    assert result.year is None
+
+
+def test_album_from_discography_item_artist_name_fallback(
+    converters: BandcampConverters,
+) -> None:
+    """Test that band_name is used when artist_name is None."""
+    item: DiscographyItem = {
+        "item_id": 100,
+        "item_type": "album",
+        "artist_name": None,
+        "band_name": "Fallback Artist",
+        "title": "Test",
+        "band_id": 200,
+        "art_id": 999,
+        "release_date": "15 Mar 2022 00:00:00 GMT",
+    }
+    result = converters.album_from_discography_item(item)
+    artists = list(result.artists)
+    assert artists[0].name == "Fallback Artist"

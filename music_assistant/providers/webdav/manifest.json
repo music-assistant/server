@@ -1,0 +1,11 @@
+{
+  "domain": "webdav",
+  "name": "WebDav Provider",
+  "description": "Stream music and audiobooks stored on any WebDAV-compatible server",
+  "documentation": "https://music-assistant.io/music-providers/webdav/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": true,
+  "stage": "beta"
+}

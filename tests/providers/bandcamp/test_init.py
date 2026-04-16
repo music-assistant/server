@@ -20,7 +20,7 @@ async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
         mock_client_class.return_value = mock_client
 
         # Configure mock client for collection access
-        mock_collection = mock.AsyncMock()
+        mock_collection = mock.AsyncMock(has_more=False, last_token=None)
         mock_collection.items = []
 
         # Mock collection items for library tests

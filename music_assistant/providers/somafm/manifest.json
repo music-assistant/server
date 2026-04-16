@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "somafm",
-  "stage": "beta",
+  "stage": "stable",
   "name": "SomaFM Radio",
   "description": "Listen to SomaFM. Over 30 channels of commercial-free, human-curated radio programming focusing on non-mainstream music.",
   "codeowners": ["@macegr"],

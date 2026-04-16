@@ -22,7 +22,7 @@ Endpoints:
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -40,8 +40,10 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -99,8 +101,7 @@ CATCHUP_DAYS = 30
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_RADIOS,
-    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.BROWSE,
 }
 
 
@@ -619,19 +620,47 @@ class RadiothekProvider(MusicProvider):
     # MA API: Radios
     # ----------------------------
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Yield all radios exposed by this provider."""
-        bundle = await self._get_bundle()
+    @use_cache(3600 * 24)  # Cache for 24 hours
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse this provider's radio stations and podcasts.
 
-        # ORF stations (local icons)
+        :param path: The path to browse, (e.g. provider_id://artists).
+        """
+        subpath = path.split("://", 1)[1] if "://" in path else ""
+
+        if subpath == "radios":
+            return await self._browse_radios()
+        if subpath == "podcasts":
+            return await self._browse_podcasts()
+
+        # top-level: show category folders
+        return [
+            BrowseFolder(
+                item_id="radios",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://radios",
+                name="Radio Stations",
+            ),
+            BrowseFolder(
+                item_id="podcasts",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://podcasts",
+                name="Podcasts",
+            ),
+        ]
+
+    async def _browse_radios(self) -> list[Radio]:
+        """Return all radio stations for browsing."""
+        bundle = await self._get_bundle()
+        radios: list[Radio] = []
+
         for st in self._iter_orf_stations(bundle):
             r = self._radio_item(st.id, st.name or st.id)
             img = self._orf_local_icon_image(st.id)
             if img:
                 r.metadata.add_image(img)
-            yield r
+            radios.append(r)
 
-        # privates (remote icons)
         for pst in self._iter_privates(bundle):
             r = self._radio_item(pst.id, pst.name or pst.id)
             for url in pst.image_urls:
@@ -643,23 +672,28 @@ class RadiothekProvider(MusicProvider):
                         remotely_accessible=True,
                     )
                 )
-            yield r
+            radios.append(r)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-        """Yield all podcasts exposed by this provider."""
+        return radios
+
+    async def _browse_podcasts(self) -> list[Podcast]:
+        """Return all podcasts for browsing."""
         bundle = await self._get_bundle()
+        podcasts: list[Podcast] = []
 
-        # A) catch-up “podcasts” (one per station, filtered)
+        # catch-up station podcasts
         stations = {s.id: s for s in self._iter_orf_stations(bundle)}
         for station_id in self._catchup_station_ids(bundle):
             st = stations.get(station_id)
             if st:
-                yield self._podcast_from_station(st)
+                podcasts.append(self._podcast_from_station(st))
 
-        # B) actual ORF podcasts
+        # actual ORF podcasts
         pods = await self._get_orf_podcasts_index()
         for pod in pods:
-            yield self._podcast_from_orf_podcast_obj(pod)
+            podcasts.append(self._podcast_from_orf_podcast_obj(pod))
+
+        return podcasts
 
     @use_cache(3600 * 24)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -821,7 +855,7 @@ class RadiothekProvider(MusicProvider):
     # MA API: Search
     # ----------------------------
 
-    @use_cache(3600 * 6)
+    @use_cache(3600 * 24)
     async def search(
         self,
         search_query: str,

@@ -401,7 +401,7 @@ Inherits from `PluginProvider`
 ## Related Documentation
 
 - **PluginSource Model**: See `music_assistant/models/plugin.py`
-- **Player Controller**: See `music_assistant/controllers/players/player_controller.py`
+- **Player Controller**: See `music_assistant/controllers/players/`
 - **Spotify Provider**: See `music_assistant/providers/spotify/`
 - **librespot**: https://github.com/librespot-org/librespot
 

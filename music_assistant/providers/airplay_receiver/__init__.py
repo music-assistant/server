@@ -93,7 +93,7 @@ async def get_config_entries(
                 *(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in sorted(
-                        mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
                 ),
             ],
@@ -242,14 +242,14 @@ class AirPlayReceiverProvider(PluginProvider):
         # If there's an active player (source was selected on a player), use it
         if self._active_player_id:
             # Validate that the active player still exists
-            if self.mass.players.get(self._active_player_id):
+            if self.mass.players.get_player(self._active_player_id):
                 return self._active_player_id
             # Active player no longer exists, clear it
             self._active_player_id = None
 
         # Handle auto selection
         if self._default_player_id == PLAYER_ID_AUTO:
-            all_players = list(self.mass.players.all(False, False))
+            all_players = list(self.mass.players.all_players(False, False))
             # First, try to find a playing player
             for player in all_players:
                 if player.state.playback_state == PlaybackState.PLAYING:
@@ -266,7 +266,7 @@ class AirPlayReceiverProvider(PluginProvider):
             return None
 
         # Use the specific default player if configured and it still exists
-        if self.mass.players.get(self._default_player_id):
+        if self.mass.players.get_player(self._default_player_id):
             return self._default_player_id
         self.logger.warning(
             "Configured default player '%s' no longer exists", self._default_player_id
@@ -371,7 +371,7 @@ class AirPlayReceiverProvider(PluginProvider):
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
         player_volume = 100  # Default to 100%
         if self._default_player_id and self._default_player_id != PLAYER_ID_AUTO:
-            if _player := self.mass.players.get(self._default_player_id):
+            if _player := self.mass.players.get_player(self._default_player_id):
                 if _player.volume_level is not None:
                     player_volume = _player.volume_level
         # Map 0-100 to -30.0...0.0
@@ -571,9 +571,9 @@ class AirPlayReceiverProvider(PluginProvider):
             # This will cause ffmpeg to output a chunk, which will then check in_use_by
             # and break out of the loop when it sees it's None
             self.mass.create_task(self._write_silence_to_unblock_stream())
-            # Deselect source from player if there was one
+            # Stop the player that was using this source
             if current_player_id:
-                self.mass.create_task(self.mass.players.select_source(current_player_id, None))
+                self.mass.create_task(self.mass.players.deselect_source(current_player_id))
 
     def _handle_volume_change(self, volume: int) -> None:
         """Handle volume changes from AirPlay client (iOS/macOS device).

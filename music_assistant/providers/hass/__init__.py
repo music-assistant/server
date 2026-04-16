@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from functools import partial
 from typing import TYPE_CHECKING, cast
 
@@ -25,9 +26,22 @@ from hass_client.utils import (
     get_websocket_url,
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
+from music_assistant_models.errors import (
+    LoginFailed,
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
+from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.player_control import PlayerControl
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.auth import AuthenticationHelper
@@ -37,6 +51,7 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import OFF_STATES, MediaPlayerEntityFeature
 
 if TYPE_CHECKING:
+    from aiohttp import ClientSession
     from hass_client.models import CompressedState, Device, EntityStateEvent
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
@@ -52,17 +67,20 @@ CONF_VERIFY_SSL = "verify_ssl"
 CONF_POWER_CONTROLS = "power_controls"
 CONF_MUTE_CONTROLS = "mute_controls"
 CONF_VOLUME_CONTROLS = "volume_controls"
-
-SUPPORTED_FEATURES: set[ProviderFeature] = (
-    set()
-)  # we don't have any special supported features (yet)
+CONF_TTS_ENTITY = "tts_entity"
+CONF_AI_TASK_ENTITY = "ai_task_entity"
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return HomeAssistantProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    supported_features: set[ProviderFeature] = set()
+    if config.get_value(CONF_TTS_ENTITY):
+        supported_features.add(ProviderFeature.TTS)
+    if config.get_value(CONF_AI_TASK_ENTITY):
+        supported_features.add(ProviderFeature.AI_QUERY)
+    return HomeAssistantProvider(mass, manifest, config, supported_features)
 
 
 async def get_config_entries(
@@ -80,7 +98,7 @@ async def get_config_entries(
     """
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH and values:
-        hass_url = values[CONF_URL]
+        hass_url = str(values[CONF_URL]).strip()
         async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
             client_id = base_url(auth_helper.callback_url)
             auth_url = get_auth_url(
@@ -183,7 +201,10 @@ async def get_config_entries(
     # append player controls entries (if we have an active instance)
     if instance_id and (hass_prov := mass.get_provider(instance_id)) and hass_prov.available:
         hass_prov = cast("HomeAssistantProvider", hass_prov)
-        return (*base_entries, *(await _get_player_control_config_entries(hass_prov.hass)))
+        return (
+            *base_entries,
+            *(await _get_config_entries(hass_prov.hass)),
+        )
 
     return (
         *base_entries,
@@ -208,15 +229,28 @@ async def get_config_entries(
             label=CONF_MUTE_CONTROLS,
             default_value=[],
         ),
+        ConfigEntry(
+            key=CONF_TTS_ENTITY,
+            type=ConfigEntryType.STRING,
+            label=CONF_TTS_ENTITY,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_AI_TASK_ENTITY,
+            type=ConfigEntryType.STRING,
+            label=CONF_AI_TASK_ENTITY,
+            required=False,
+        ),
     )
 
 
-async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, ...]:
-    """Return all HA state objects for (valid) media_player entities."""
+async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, ...]:
+    """Return the (entity based) config entries."""
     all_power_entities: list[ConfigValueOption] = []
     all_mute_entities: list[ConfigValueOption] = []
     all_volume_entities: list[ConfigValueOption] = []
-    # collect all entities that are usable for player controls
+    tts_entities: list[ConfigValueOption] = []
+    ai_task_entities: list[ConfigValueOption] = []
     if not hass.connected:
         return ()
     for state in await hass.get_states():
@@ -234,6 +268,12 @@ async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple
         if entity_platform in ("number", "input_number"):
             # number and input_number are very similar, both are suitable for volume control
             all_volume_entities.append(ConfigValueOption(name, state["entity_id"]))
+            continue
+        if entity_platform == "tts":
+            tts_entities.append(ConfigValueOption(name, state["entity_id"]))
+            continue
+        if entity_platform == "ai_task":
+            ai_task_entities.append(ConfigValueOption(name, state["entity_id"]))
             continue
 
         # media player can be used as control, depending on features
@@ -255,7 +295,9 @@ async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple
     all_power_entities.sort(key=lambda x: x.title)
     all_mute_entities.sort(key=lambda x: x.title)
     all_volume_entities.sort(key=lambda x: x.title)
-    return (
+    tts_entities.sort(key=lambda x: x.title)
+    ai_task_entities.sort(key=lambda x: x.title)
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key=CONF_POWER_CONTROLS,
             type=ConfigEntryType.STRING,
@@ -292,7 +334,28 @@ async def _get_player_control_config_entries(hass: HomeAssistantClient) -> tuple
             "like to import as player Mute controls in Music Assistant.",
             category="player_controls",
         ),
-    )
+        ConfigEntry(
+            key=CONF_TTS_ENTITY,
+            type=ConfigEntryType.STRING,
+            label="Text-to-Speech entity",
+            required=False,
+            options=tts_entities,
+            default_value=tts_entities[0].value if tts_entities else None,
+            description="Select which Home Assistant TTS entity you like to use for text-to-speech capabilities inside Music Assistant.",
+            category="Features",
+        ),
+        ConfigEntry(
+            key=CONF_AI_TASK_ENTITY,
+            type=ConfigEntryType.STRING,
+            label="AI Task entity",
+            required=False,
+            options=ai_task_entities,
+            default_value=ai_task_entities[0].value if ai_task_entities else None,
+            description="Select which Home Assistant AI Task entity you like to use for AI queries inside Music Assistant.",
+            category="Features",
+        ),
+    ]
+    return tuple(entries)
 
 
 class HomeAssistantProvider(PluginProvider):
@@ -500,7 +563,7 @@ class HomeAssistantProvider(PluginProvider):
             return
         if not (player_control := self._player_controls.get(entity_id)):
             return
-        entity_platform = entity_id.split(".")[0]
+        entity_platform = entity_id.split(".", maxsplit=1)[0]
         if "s" in state:
             # state changed
             if player_control.supports_power:
@@ -510,13 +573,10 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and entity_platform != "media_player":
                 player_control.volume_level = try_parse_int(state["s"]) or 0
         if "a" in state and (attributes := state["a"]):
-            if player_control.supports_volume:
-                if entity_platform == "media_player":
-                    player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
-                else:
-                    player_control.volume_level = try_parse_int(attributes.get("value")) or 0
-            if player_control.supports_mute and entity_platform == "media_player":
-                player_control.volume_muted = attributes.get("volume_muted")
+            if player_control.supports_volume and "volume_level" in attributes:
+                player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
+            if player_control.supports_mute and "is_volume_muted" in attributes:
+                player_control.volume_muted = attributes.get("is_volume_muted")
         self.mass.players.update_player_control(entity_id)
 
     async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
@@ -584,3 +644,64 @@ class HomeAssistantProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
+
+    async def resolve_image(self, path: str) -> bytes:
+        """Resolve an image from an image path."""
+        ha_url, headers, http_session = self._get_ha_http()
+        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
+            response.raise_for_status()
+            return await response.read()
+
+    async def ai_query(self, query: str) -> str:
+        """Handle an AI query via Home Assistant's ai_task service."""
+        entity_id = self.config.get_value(CONF_AI_TASK_ENTITY)
+        result = await self.hass.send_command(
+            "call_service",
+            domain="ai_task",
+            service="generate_data",
+            service_data={
+                "task_name": "music_assistant",
+                "instructions": query,
+                "entity_id": str(entity_id),
+            },
+            return_response=True,
+        )
+        response = result.get("response", {}) if isinstance(result, dict) else {}
+        data = response.get("data") if isinstance(response, dict) else None
+        if not data:
+            msg = f"AI Task returned no data in response: {result}"
+            raise MusicAssistantError(msg)
+        return str(data)
+
+    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
+        """Handle text-to-speech via Home Assistant's REST API."""
+        if (entity_id := self.config.get_value(CONF_TTS_ENTITY)) is None:
+            raise UnsupportedFeaturedException("TTS entity is not configured")
+        ha_url, headers, http_session = self._get_ha_http()
+        payload: dict[str, str] = {"engine_id": str(entity_id), "message": message}
+        if language:
+            payload["language"] = language
+        async with http_session.post(
+            f"{ha_url}/api/tts_get_url", headers=headers, json=payload
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+        url = str(data["url"])
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=url,
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.SOUND_EFFECT,
+            stream_type=StreamType.HTTP,
+            path=url,
+        )
+
+    def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
+        """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
+        ha_url = cast("str", self.config.get_value(CONF_URL)).rstrip("/")
+        ha_url = ha_url.removesuffix("/api")
+        token = self.config.get_value(CONF_AUTH_TOKEN) or os.environ.get("HASSIO_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
+        return ha_url, headers, http_session

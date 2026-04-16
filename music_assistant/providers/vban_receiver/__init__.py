@@ -87,7 +87,7 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    ip_addresses = await get_ip_addresses()
+    ip_addresses = await get_ip_addresses(include_ipv6=True)
 
     def _validate_stream_name(config_value: str) -> bool:
         """Validate stream name."""
@@ -303,7 +303,7 @@ class VBANReceiverProvider(PluginProvider):
         ):
             try:
                 packet = await self._vban_stream.get_packet()
-            except asyncio.QueueShutDown:  # type: ignore[attr-defined]
+            except asyncio.QueueShutDown:
                 self.logger.error(
                     "Found VBANIncomingStream queue shut down when attempting to get VBAN packet"
                 )

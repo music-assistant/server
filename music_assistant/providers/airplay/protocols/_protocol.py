@@ -58,6 +58,10 @@ class AirPlayProtocol(ABC):
         self._total_bytes_sent = 0
         self._stream_bytes_sent = 0
         self._connected = asyncio.Event()
+        self._metadata_checksum = ""
+        self._last_progress_sent: int = -1
+        self._elapsed_time_offset: float | None = None
+        self.last_stderr_activity: float = 0.0
 
     @property
     def running(self) -> bool:
@@ -79,7 +83,13 @@ class AirPlayProtocol(ABC):
         # repeat sending the volume level to the player because some players seem
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
-        self.mass.call_later(2, self.send_cli_command(f"VOLUME={self.player.volume_level}"))
+        volume = 0 if self.player.volume_muted else self.player.volume_level
+        self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
+        # we also need to send the metadata after connection, because some players (e.g. Sonos)
+        # simply won't start playback until they receive the metadata ?!
+        # reset checksum so the resend isn't blocked by deduplication
+        self._metadata_checksum = ""
+        self.mass.call_later(2, self.player._on_player_media_updated)
 
     async def stop(self, force: bool = False) -> None:
         """
@@ -89,17 +99,34 @@ class AirPlayProtocol(ABC):
         """
         # always send stop command first
         await self.send_cli_command("ACTION=STOP")
-        if self._cli_proc:
-            await self._cli_proc.write_eof()
         self._stopped = True
         await self.commands_pipe.remove()
         if force:
+            # Kill immediately - skip write_eof() as it can block indefinitely
+            # when the CLI stops reading from stdin after receiving STOP.
             if self._cli_proc and not self._cli_proc.closed:
                 await self._cli_proc.kill()
-        elif self._cli_proc and not self._cli_proc.closed:
-            await self._cli_proc.close()
-        if not force:
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+        else:
+            if self._cli_proc:
+                await self._cli_proc.write_eof()
+            if self._cli_proc and not self._cli_proc.closed:
+                await self._cli_proc.close()
+        self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+
+    async def write_audio(self, data: bytes) -> None:
+        """Write raw audio data to the CLI process stdin.
+
+        :param data: Raw audio bytes to send to the streaming process.
+        """
+        if self._stopped or not self._cli_proc or self._cli_proc.closed:
+            return
+        await self._cli_proc.write(data)
+
+    async def write_audio_eof(self) -> None:
+        """Signal end-of-stream to the CLI process stdin."""
+        if self._stopped or not self._cli_proc or self._cli_proc.closed:
+            return
+        await self._cli_proc.write_eof()
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLI binary."""
@@ -121,11 +148,19 @@ class AirPlayProtocol(ABC):
             title = metadata.title or ""
             artist = metadata.artist or ""
             album = metadata.album or ""
+
+            metadata_checksum = f"{title}|{artist}|{album}|{duration}|{metadata.image_url}"
+            if metadata_checksum == self._metadata_checksum:
+                return
+            self._metadata_checksum = metadata_checksum
+
             cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
             cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
+
             await self.send_cli_command(cmd)
-            # get image
+            self._last_progress_sent = 0
             if metadata.image_url:
                 await self.send_cli_command(f"ARTWORK={metadata.image_url}")
-        if progress is not None:
+        if progress is not None and abs(progress - self._last_progress_sent) >= 2:
+            self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")

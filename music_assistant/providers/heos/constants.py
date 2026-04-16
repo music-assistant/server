@@ -1,5 +1,7 @@
 """Constants for HEOS Player Provider."""
 
+from typing import Final
+
 from music_assistant_models.enums import MediaType, PlaybackState
 from pyheos import MediaType as HeosMediaType
 from pyheos import PlayState as HeosPlayState
@@ -26,3 +28,11 @@ HEOS_PLAY_STATE_TO_PLAYBACK_STATE: dict[HeosPlayState | None, PlaybackState] = {
 }
 
 HEOS_PASSIVE_SOURCES = [const.MUSIC_SOURCE_AUX_INPUT]
+
+
+CONF_TIMEOUT: Final[str] = "timeout"
+DEFAULT_TIMEOUT: Final = 25.0
+
+CONNECT_MAX_ATTEMPTS: Final = 3
+CONNECT_INITIAL_RETRY_DELAY: Final = 5
+CONNECT_RETRY_BACKOFF_FACTOR: Final = 1.5

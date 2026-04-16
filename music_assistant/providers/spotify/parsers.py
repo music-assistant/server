@@ -261,9 +261,10 @@ def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Pod
     if "explicit" in podcast_obj:
         podcast.metadata.explicit = podcast_obj["explicit"]
 
-    # Convert languages list to genres for categorization
-    if "languages" in podcast_obj:
-        podcast.metadata.genres = set(podcast_obj["languages"])
+    if podcast_obj.get("languages"):
+        podcast.metadata.languages = UniqueList(podcast_obj["languages"])
+
+    podcast.metadata.genres = {"Spoken Word"}
 
     return podcast
 
@@ -401,7 +402,9 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
         audiobook.metadata.explicit = audiobook_obj["explicit"]
 
     if audiobook_obj.get("languages"):
-        audiobook.metadata.languages = audiobook_obj["languages"][0]
+        audiobook.metadata.languages = UniqueList(audiobook_obj["languages"])
+
+    audiobook.metadata.genres = {"Spoken Word"}
 
     # Set publication date if available
     if audiobook_obj.get("publication_date"):

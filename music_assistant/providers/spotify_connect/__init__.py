@@ -98,7 +98,7 @@ async def get_config_entries(
                 *(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in sorted(
-                        mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
                 ),
             ],
@@ -263,14 +263,14 @@ class SpotifyConnectProvider(PluginProvider):
         # If there's an active player (source was selected on a player), use it
         if self._active_player_id:
             # Validate that the active player still exists
-            if self.mass.players.get(self._active_player_id):
+            if self.mass.players.get_player(self._active_player_id):
                 return self._active_player_id
             # Active player no longer exists, clear it
             self._active_player_id = None
 
         # Handle auto selection
         if self._default_player_id == PLAYER_ID_AUTO:
-            all_players = list(self.mass.players.all(False, False))
+            all_players = list(self.mass.players.all_players(False, False))
             # First, try to find a playing player
             for player in all_players:
                 if player.state.playback_state == PlaybackState.PLAYING:
@@ -287,7 +287,7 @@ class SpotifyConnectProvider(PluginProvider):
             return None
 
         # Use the specific default player if configured and it still exists
-        if self.mass.players.get(self._default_player_id):
+        if self.mass.players.get_player(self._default_player_id):
             return self._default_player_id
         self.logger.warning(
             "Configured default player '%s' no longer exists", self._default_player_id
@@ -647,7 +647,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Get initial volume from default player if available, or use 20 as fallback
             initial_volume = 20
             if self._default_player_id and self._default_player_id != PLAYER_ID_AUTO:
-                if _player := self.mass.players.get(self._default_player_id):
+                if _player := self.mass.players.get_player(self._default_player_id):
                     if _player.volume_level:
                         initial_volume = _player.volume_level
             args: list[str] = [
@@ -739,8 +739,11 @@ class SpotifyConnectProvider(PluginProvider):
             if self._spotify_provider is not None:
                 self._spotify_provider = None
                 self._update_source_capabilities()
-            # Clear active player and potentially stop daemon on session disconnect
+            # Clear active player and stop the player on session disconnect
+            prev_player_id = self._active_player_id
             self._clear_active_player()
+            if prev_player_id:
+                self.mass.create_task(self.mass.players.deselect_source(prev_player_id))
 
         # handle paused event - clear in_use_by so UI shows correct active source
         # this happens when MA starts playing while Spotify Connect was active

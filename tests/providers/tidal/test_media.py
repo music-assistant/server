@@ -234,3 +234,33 @@ async def test_get_playlist_tracks(
         "playlists/1/tracks",
         params={"limit": 200, "offset": 0},
     )
+
+
+async def test_get_playlist_favorite_tracks(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_playlist returns the virtual favorite tracks playlist without an API call."""
+    playlist = await media_manager.get_playlist("favorite_tracks")
+
+    assert playlist.item_id == "favorite_tracks"
+    assert playlist.name == "Favorite Tracks"
+    assert not playlist.is_editable
+    provider_mock.api.get_data.assert_not_called()
+
+
+@patch("music_assistant.providers.tidal.media.parse_track")
+async def test_get_playlist_tracks_favorite_tracks(
+    mock_parse_track: Mock, media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_playlist_tracks returns favorite tracks ordered by date descending."""
+    provider_mock.api.get_data.return_value = {"items": [{"item": {"id": 1}}]}
+    mock_parse_track.return_value = Mock(item_id="1")
+
+    tracks = await media_manager.get_playlist_tracks("favorite_tracks", page=0)
+
+    assert len(tracks) == 1
+    assert tracks[0].item_id == "1"
+    provider_mock.api.get_data.assert_called_with(
+        "users/12345/favorites/tracks",
+        params={"limit": 200, "offset": 0, "order": "DATE", "orderDirection": "DESC"},
+    )

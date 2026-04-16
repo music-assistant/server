@@ -1,5 +1,12 @@
 """Constants for the MusicCast provider."""
 
+from aiomusiccast.capabilities import BinarySensor as MCBinarySensor
+from aiomusiccast.capabilities import BinarySetter as MCBinarySetter
+from aiomusiccast.capabilities import NumberSensor as MCNumberSensor
+from aiomusiccast.capabilities import NumberSetter as MCNumberSetter
+from aiomusiccast.capabilities import OptionSetter as MCOptionSetter
+from aiomusiccast.capabilities import TextSensor as MCTextSensor
+
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED,
@@ -68,4 +75,22 @@ MC_CONTROL_SOURCE_IDS = MC_NETUSB_SOURCE_IDS
 MC_CONTROL_SOURCE_IDS.append(
     # tuner can be controlled, will change the station
     "tuner",
+)
+
+# for most sound modes we can just split at '_' and capitalize
+# here are some exceptions:
+MC_SOUND_MODE_FRIENDLY_NAMES = {
+    "2ch_stereo": "2 Channel Stereo",
+    "all_ch_stereo": "All Channels Stereo",
+    "surr_decoder": "Surround Decoder",
+}
+
+# We translate aiomusiccast's capabilities to PlayerOptions
+MC_CAPABILITIES = (
+    MCBinarySensor
+    | MCBinarySetter
+    | MCNumberSensor
+    | MCNumberSetter
+    | MCTextSensor
+    | MCOptionSetter
 )

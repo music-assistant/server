@@ -45,3 +45,19 @@ def iso_from_utc_timestamp(timestamp: float) -> str:
 def from_iso_string(iso_datetime: str) -> datetime.datetime:
     """Return datetime from ISO datetime string."""
     return datetime.datetime.fromisoformat(iso_datetime)
+
+
+def local_clock_time_to_utc(hour: int, minute: int = 0) -> tuple[int, int]:
+    """Convert a server-local wall clock time to UTC hour/minute.
+
+    This uses the server's current local timezone offset.
+    """
+    local_timezone = LOCAL_TIMEZONE or datetime.UTC
+    local_datetime = datetime.datetime.now(local_timezone).replace(
+        hour=hour,
+        minute=minute,
+        second=0,
+        microsecond=0,
+    )
+    utc_datetime = local_datetime.astimezone(datetime.UTC)
+    return utc_datetime.hour, utc_datetime.minute

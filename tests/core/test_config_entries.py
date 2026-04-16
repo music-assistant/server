@@ -10,9 +10,12 @@ from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_ENTRY_ZEROCONF_INTERFACES,
+    CONF_LOG_LEVEL,
     CONF_PUBLISH_IP,
     CONF_ZEROCONF_INTERFACES,
 )
+from music_assistant.controllers.discovery import DiscoveryController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.models.core_controller import CoreController
 
 
@@ -29,6 +32,20 @@ class TestRequiresReload:
             f"CONF_ENTRY_ZEROCONF_INTERFACES ({CONF_ZEROCONF_INTERFACES}) should have "
             "requires_reload=True because it's read at startup time"
         )
+
+    @pytest.mark.asyncio
+    async def test_zeroconf_interfaces_entry_lives_on_discovery_controller(
+        self, mock_mass: "MockMass"
+    ) -> None:
+        """Test that zeroconf interface selection belongs to the discovery controller."""
+        discovery_controller = DiscoveryController(mock_mass)
+        player_controller = PlayerController(mock_mass)  # type: ignore[arg-type]
+
+        discovery_entries = await discovery_controller.get_config_entries()
+        player_entries = await player_controller.get_config_entries()
+
+        assert any(entry.key == CONF_ZEROCONF_INTERFACES for entry in discovery_entries)
+        assert all(entry.key != CONF_ZEROCONF_INTERFACES for entry in player_entries)
 
 
 class TestStreamsControllerConfigEntries:
@@ -182,6 +199,48 @@ async def test_core_controller_update_config_skips_reload_when_not_required(
 
     # Verify call_later was NOT called
     assert len(mock_mass.call_later_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_core_controller_reload_runs_post_setup(mock_mass: MockMass) -> None:
+    """Test that CoreController.reload also reruns post-setup logic."""
+
+    class TestController(CoreController):
+        domain = "test"
+
+        def __init__(self, mass: MockMass) -> None:
+            """Initialize test controller."""
+            super().__init__(mass)  # type: ignore[arg-type]
+            self.setup_calls = 0
+            self.post_setup_calls = 0
+
+        async def setup(self, config: CoreConfig) -> None:
+            """Record setup invocations."""
+            self.setup_calls += 1
+            self.config = config
+
+        async def post_setup(self) -> None:
+            """Record post-setup invocations."""
+            self.post_setup_calls += 1
+
+    controller = TestController(mock_mass)
+    config = CoreConfig(
+        domain="test",
+        values={
+            CONF_LOG_LEVEL: ConfigEntry(
+                key=CONF_LOG_LEVEL,
+                type=ConfigEntryType.STRING,
+                label="Log level",
+                default_value="INFO",
+                value="INFO",
+            )
+        },
+    )
+
+    await controller.reload(config)
+
+    assert controller.setup_calls == 1
+    assert controller.post_setup_calls == 1
 
 
 def test_config_entry_default_requires_reload_is_false() -> None:

@@ -72,7 +72,7 @@ async def get_config_entries(
     player_name_default = None
     if values and values.get(CONF_MASS_PLAYER_ID):
         player_id = str(values.get(CONF_MASS_PLAYER_ID))
-        if player := mass.players.get(player_id):
+        if player := mass.players.get_player(player_id):
             player_name_default = player.display_name
 
     return (
@@ -96,7 +96,7 @@ async def get_config_entries(
             options=[
                 ConfigValueOption(x.display_name, x.player_id)
                 for x in sorted(
-                    mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                    mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                 )
             ],
         ),
@@ -188,7 +188,7 @@ class PlexConnectProvider(PluginProvider):
         )
 
         # Now try to setup the player instance
-        player = self.mass.players.get(self.mass_player_id)
+        player = self.mass.players.get_player(self.mass_player_id)
         if not player:
             self.logger.info(
                 f"Player {self.mass_player_id} not found yet, waiting for PLAYER_ADDED event"
@@ -259,7 +259,7 @@ class PlexConnectProvider(PluginProvider):
             self.logger.error("Cannot setup player instance: Plex provider not available")
             return
 
-        player = self.mass.players.get(self.mass_player_id)
+        player = self.mass.players.get_player(self.mass_player_id)
         if not player:
             self.logger.warning(f"Player {self.mass_player_id} not found")
             return

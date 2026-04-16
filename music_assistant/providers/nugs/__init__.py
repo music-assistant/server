@@ -164,6 +164,16 @@ class NugsProvider(MusicProvider):
         response = await self._get_data("stash", endpoint)
         return self._parse_playlist(response["items"])
 
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id."""
+        cache_key = f"nugs_track_{prov_track_id}"
+        cached: Track | None = await self.mass.cache.get(
+            cache_key, provider=self.instance_id, base_class=Track
+        )
+        if cached:
+            return cached
+        raise MediaNotFoundError(f"Track {prov_track_id} not found")
+
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
@@ -175,11 +185,13 @@ class NugsProvider(MusicProvider):
             MediaType.ALBUM, album_data["containerID"], album_data["containerInfo"]
         )
         image = f"https://api.livedownloads.com{album_data['img']['url']}"
-        return [
+        tracks = [
             self._parse_track(item, artist=artist, album=album, image_url=image)
             for item in album_data["tracks"]
             if item["trackID"]
         ]
+        await self._cache_tracks(tracks)
+        return tracks
 
     @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -194,7 +206,19 @@ class NugsProvider(MusicProvider):
             track = self._parse_track(item)
             track.position = index
             result.append(track)
+        await self._cache_tracks(result)
         return result
+
+    async def _cache_tracks(self, tracks: list[Track]) -> None:
+        """Cache individual tracks persistently for later lookup by get_track."""
+        for track in tracks:
+            await self.mass.cache.set(
+                f"nugs_track_{track.item_id}",
+                track.to_dict(),
+                expiration=3600 * 24 * 14,
+                provider=self.instance_id,
+                persistent=True,
+            )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

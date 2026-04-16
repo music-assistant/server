@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
@@ -102,6 +102,20 @@ CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     depends_on_value="audiobooks",
 )
 
+CONF_ENTRY_PROPAGATE_GENRES = ConfigEntry(
+    key="propagate_track_genres",
+    type=ConfigEntryType.BOOLEAN,
+    label="Propagate track genres to albums and artists",
+    description="Derive album and artist genres from their tracks when the album/artist "
+    "has no genre metadata of its own. Useful when your files only have genres "
+    "tagged at track level.",
+    default_value=False,
+    required=False,
+    category="sync_options",
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
 CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS = ConfigEntry(
     key="ignore_album_playlists",
     type=ConfigEntryType.BOOLEAN,
@@ -137,6 +151,7 @@ TRACK_EXTENSIONS = {
     "ape",
     "mpc",
     "mp2",
+    "m2a",
     "mp1",
     "dra",
     "mpeg",
@@ -153,23 +168,13 @@ TRACK_EXTENSIONS = {
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
-PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg"}
+PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 SUPPORTED_EXTENSIONS = {
     *TRACK_EXTENSIONS,
     *AUDIOBOOK_EXTENSIONS,
     *PODCAST_EPISODE_EXTENSIONS,
     *PLAYLIST_EXTENSIONS,
-}
-
-
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
 }
 
 
@@ -182,3 +187,5 @@ CACHE_CATEGORY_ALBUM_INFO: Final[int] = 2
 CACHE_CATEGORY_FOLDER_IMAGES: Final[int] = 3
 CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
 CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
+
+DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"

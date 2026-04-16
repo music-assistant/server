@@ -18,7 +18,10 @@ RUN uv venv $VIRTUAL_ENV
 # pre-install ALL requirements into the venv
 # comes at a cost of a slightly larger image size but is faster to start
 # because we do not have to install dependencies at runtime
+# --index-strategy: allow PyPI packages when also using the PyTorch extra index
+# https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
 RUN uv pip install \
+    --index-strategy unsafe-best-match \
     -r requirements_all.txt
 
 # Install PyAV from pre-built wheel (built against system FFmpeg in base image)
@@ -37,6 +40,9 @@ ARG MASS_VERSION
 RUN uv pip install \
     --no-cache \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
+
+# Pre-compile Python bytecode for faster startup
+RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
 
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root

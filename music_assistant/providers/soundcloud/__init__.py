@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qs, urlparse
 
+from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -14,7 +16,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -338,11 +340,33 @@ class SoundcloudMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of (max 500) tracks for the given artist."""
-        tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 500)
+        """Get a list of (max 100, API doesn't allow a higher limit) tracks for the given artist."""
+        tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 100)
 
-        tracks = []
-        for item in tracks_obj["collection"]:
+        tracks: list[Track] = []
+
+        # Try multiple fallback mechanisms to get tracks collection
+        collection = self._extract_collection(tracks_obj)
+
+        # If still no collection, try getting popular tracks
+        if not collection:
+            try:
+                popular_tracks_obj = await self._soundcloud.get_popular_tracks_user(
+                    prov_artist_id, 100
+                )
+                collection = self._extract_collection(popular_tracks_obj)
+            except ClientError as error:
+                self.logger.debug("Failed to get popular tracks: %s", error)
+
+        # If no collection found, log warning and return empty list
+        if not collection:
+            self.logger.warning(
+                "No tracks found for artist %s (tried collection, items, and popular tracks)",
+                prov_artist_id,
+            )
+            return tracks
+
+        for item in collection:
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
@@ -351,13 +375,29 @@ class SoundcloudMusicProvider(MusicProvider):
                 self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
         return tracks
+
+    def _extract_collection(
+        self, api_response: dict[str, Any] | None
+    ) -> list[dict[str, Any]] | None:
+        """Extract collection or items from SoundCloud API response."""
+        if not api_response:
+            return None
+        return api_response.get("collection") or api_response.get("items")
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(prov_track_id, limit)
-        tracks = []
-        for item in tracks_obj["collection"]:
+        tracks: list[Track] = []
+
+        # Check if we have a valid response with tracks collection
+        collection = self._extract_collection(tracks_obj)
+
+        if not collection:
+            self.logger.warning("No similar tracks found for track %s", prov_track_id)
+            return tracks
+
+        for item in collection:
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
@@ -368,9 +408,54 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return tracks
 
+    async def _get_stream_url(self, item_id: str) -> str | None:
+        """Get stream URL, preferring progressive (HTTP) over HLS.
+
+        SoundCloud HLS playlists can have limited content windows (~10 min) which
+        cause seeking failures mid-track. Progressive HTTP URLs support full
+        range-based seeking across the entire track duration.
+        """
+        full_json = await self._soundcloud.get_track_details(item_id)
+        if not (full_json and isinstance(full_json, list)):
+            return None
+        track_info = full_json[0]
+        track_auth = track_info.get("track_authorization")
+        if not track_auth:
+            return None
+        transcodings = track_info.get("media", {}).get("transcodings", [])
+        # Two passes: prefer progressive mp3, fall back to any mp3 (which may be HLS)
+        for preferred_protocol in ("progressive", None):
+            for transcoding in transcodings:
+                preset = transcoding.get("preset", "")
+                protocol = transcoding.get("format", {}).get("protocol", "")
+                if not preset.startswith("mp3"):
+                    continue
+                if preferred_protocol is not None and protocol != preferred_protocol:
+                    continue
+                stream_url = (
+                    f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
+                    f"&track_authorization={track_auth}"
+                )
+                req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
+                if isinstance(req, dict) and "url" in req:
+                    return str(req["url"])
+        return None
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        url: str = await self._soundcloud.get_stream_url(track_id=item_id, presets=["mp3"])
+        url = await self._get_stream_url(item_id)
+        if not url:
+            msg = f"No stream URL available for Soundcloud track {item_id}"
+            raise MediaNotFoundError(msg)
+        # Parse CDN URL expiry to avoid seeking with an expired URL.
+        # SoundCloud CDN URLs are short-lived; seeking starts a new FFmpeg process
+        # that makes a fresh HTTP request to the stored URL, which may have expired.
+        expiration = 30  # conservative default if expiry cannot be determined
+        if parsed_qs := parse_qs(urlparse(url).query):
+            for param in ("Expires", "expire"):
+                if expire_ts := parsed_qs.get(param, [None])[0]:
+                    expiration = max(30, int(expire_ts) - int(time.time()) - 10)
+                    break
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -385,6 +470,7 @@ class SoundcloudMusicProvider(MusicProvider):
             path=url,
             can_seek=True,
             allow_seek=True,
+            expiration=expiration,
         )
 
     async def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
@@ -459,7 +545,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 ]
             )
         if playlist_obj.get("genre"):
-            playlist.metadata.genres = playlist_obj["genre"]
+            playlist.metadata.genres = {playlist_obj["genre"]}
         if playlist_obj.get("tag_list"):
             playlist.metadata.style = playlist_obj["tag_list"]
         return playlist

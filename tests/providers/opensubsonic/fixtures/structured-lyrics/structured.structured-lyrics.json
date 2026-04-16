@@ -1,0 +1,21 @@
+{
+      "displayArtist": "Muse",
+      "displayTitle": "Hysteria",
+      "lang": "eng",
+      "offset": -100,
+      "synced": true,
+      "line": [
+        {
+          "start": 0,
+          "value": "It's bugging me"
+        },
+        {
+          "start": 2000,
+          "value": "Grating me"
+        },
+        {
+          "start": 3001,
+          "value": "And twisting me around..."
+        }
+      ]
+    }

@@ -62,6 +62,45 @@ async def test_get_recommendations(
         assert mock_get_page.call_count >= 1
 
 
+async def test_get_recommendations_strips_at_symbol_when_multiple_instances(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """Test that username is included and '@' is stripped when multiple instances exist."""
+    provider_mock.auth.user = Mock(profile_name="john@domain.tld", user_name=None)
+
+    provider_mock.mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            Mock(domain="tidal", instance_id="tidal_instance_1"),
+            Mock(domain="tidal", instance_id="tidal_instance_2"),
+            Mock(domain="other", instance_id="other_instance"),
+        ]
+    )
+
+    parser_with_module = Mock()
+    parser_with_module._module_map = [{"title": "Test Module"}]
+    parser_with_module.get_module_items.return_value = (
+        [Mock(item_id="rec_1", name="Recommendation 1")],
+        MediaType.PLAYLIST,
+    )
+
+    parser_empty = Mock()
+    parser_empty._module_map = []
+    parser_empty.get_module_items = Mock()
+
+    with patch.object(
+        recommendation_manager, "get_page_content", new_callable=AsyncMock
+    ) as mock_get_page:
+        # Only first page returns the module, remaining pages return no modules
+        mock_get_page.side_effect = [parser_with_module] + [parser_empty] * 4
+
+        recommendations = await recommendation_manager.get_recommendations()
+
+        assert len(recommendations) == 1
+        assert recommendations[0].name == "Test Module (john)"
+        assert "@" not in recommendations[0].name
+        assert len(recommendations[0].items) == 1
+
+
 async def test_get_page_content(
     recommendation_manager: TidalRecommendationManager, provider_mock: Mock
 ) -> None:

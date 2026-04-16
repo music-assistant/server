@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "bbc_sounds",
-  "stage": "beta",
+  "stage": "stable",
   "name": "BBC Sounds",
   "description": "Stream live BBC radio shows, podcast series and on-demand audio.",
   "codeowners": [

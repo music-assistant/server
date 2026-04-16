@@ -13,14 +13,18 @@ from music_assistant.constants import (
 
 MASS_APP_ID = "C35B0678"
 APP_MEDIA_RECEIVER = "CC1AD845"
-SENDSPIN_CAST_APP_ID = "938CBF87"
+SENDSPIN_CAST_APP_ID = "7D69F439"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
-CONF_USE_SENDSPIN_MODE = "use_sendspin_mode"
-CONF_SENDSPIN_SYNC_DELAY = "sendspin_sync_delay"
-CONF_SENDSPIN_CODEC = "sendspin_codec"
-DEFAULT_SENDSPIN_SYNC_DELAY = -300
-DEFAULT_SENDSPIN_CODEC = "flac"
+
+# Devices known to not work with the Sendspin Cast bridge.
+# Tuple of (manufacturer, model) where "*" is a wildcard.
+# These devices will not get a Sendspin bridge, allowing other protocols
+# (e.g. AirPlay bridge) to handle them instead.
+SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
+    ("Harman Luxury Audio", "*"),
+    ("*", "HK OMNI ADAPT+AMP"),
+}
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
@@ -54,3 +58,21 @@ CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(
     safe_max_sample_rate=48000,
     safe_max_bit_depth=16,
 )
+
+# Measured defaults for known Cast models.
+CAST_MODEL_STATIC_DELAY: dict[tuple[str, str], int] = {
+    ("Google Inc.", "Google Home Mini"): 330,
+    ("Google Inc.", "Google Nest Mini"): 427,
+    ("Google Inc.", "Chromecast Audio"): 335,
+    ("Google Inc.", "Google Nest Hub"): 188,
+}
+CAST_FALLBACK_STATIC_DELAY = 330
+
+
+def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
+    """Look up the default static delay for a Cast device model.
+
+    :param manufacturer: Device manufacturer (e.g., "Google Inc.").
+    :param model: Device model name (e.g., "Google Nest Mini").
+    """
+    return CAST_MODEL_STATIC_DELAY.get((manufacturer, model), CAST_FALLBACK_STATIC_DELAY)

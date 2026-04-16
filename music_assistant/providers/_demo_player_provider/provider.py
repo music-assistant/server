@@ -117,7 +117,7 @@ class DemoPlayerprovider(PlayerProvider):
         # handle removed player
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
+            if mass_player := self.mass.players.get_player(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 await self.mass.players.unregister(player_id)
@@ -127,7 +127,7 @@ class DemoPlayerprovider(PlayerProvider):
         # check if we have an existing player in the player manager
         # note that you can use this point to update the player connection info
         # if that changed (e.g. ip address)
-        if mass_player := self.mass.players.get(player_id):
+        if mass_player := self.mass.players.get_player(player_id):
             # existing player found in the player manager,
             # this is an existing player that has been updated/reconnected
             # or simply a re-announcement on mdns.
