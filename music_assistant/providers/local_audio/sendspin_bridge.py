@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
@@ -340,6 +341,7 @@ class LocalAudioBridgeManager:
                 device_index: int = device["index"]
                 device_name: str = device["name"]
                 hostapi_index: int = device.get("hostapi", 0)
+                pa_sink_name: str | None = device.get("pa_sink_name")
                 device_uuid = get_device_uuid(device_name, hostapi_index)
                 client_id = bridge_client_id_from_uuid(device_uuid)
 
@@ -349,7 +351,12 @@ class LocalAudioBridgeManager:
 
                 # Register (or update) our player with MA
                 player = LocalAudioPlayer(
-                    self.provider, device_uuid, device_name, hostapi_index, device_index
+                    self.provider,
+                    device_uuid,
+                    device_name,
+                    hostapi_index,
+                    device_index,
+                    pa_sink_name=pa_sink_name,
                 )
                 await self.mass.players.register_or_update(player)
 
@@ -373,7 +380,9 @@ class LocalAudioBridgeManager:
                     continue
 
                 self._bridges[client_id] = bridge
-                self.logger.info("Bridge created for %s", device_name)
+                self.logger.info(
+                    "Bridge created for %s (pa_sink=%s)", device_name, pa_sink_name or "none"
+                )
 
     @staticmethod
     def _enumerate_output_devices() -> list[dict[str, Any]]:
@@ -383,10 +392,22 @@ class LocalAudioBridgeManager:
         Only devices that can actually be opened are returned. This filters out
         ALSA virtual devices (dmix, surround*, etc.) that may be unavailable
         when another audio system (like PipeWire) controls the hardware.
+
+        On Linux, each device is annotated with its matching PulseAudio sink
+        name (if found) for use by hardware volume control.
         """
+        # Build PA sink description -> name lookup on Linux
+        pa_sink_map: dict[str, str] = {}
+        if sys.platform == "linux":
+            try:
+                import pulsectl
+                with pulsectl.Pulse("ma-local-audio-enum") as pulse:
+                    for sink in pulse.sink_list():
+                        pa_sink_map[sink.description] = sink.name
+            except Exception:
+                pass  # PA not available, volume will fall back to software
+
         devices: list[dict[str, Any]] = []
-        # sd.query_devices() returns a DeviceList (not a plain list),
-        # where each element is a dict with device properties.
         all_devices = sd.query_devices()
         for idx, dev in enumerate(all_devices):
             max_output_channels: int = dev.get("max_output_channels", 0)
@@ -408,6 +429,16 @@ class LocalAudioBridgeManager:
                 continue
             dev_with_index = dict(dev)
             dev_with_index["index"] = idx
+            # Annotate with PA sink name if matched by description
+            pa_sink_name = pa_sink_map.get(dev["name"])
+            dev_with_index["pa_sink_name"] = pa_sink_name
+            if sys.platform == "linux" and not pa_sink_name:
+                # Log at debug so mismatches are visible during development
+                import logging
+                logging.getLogger(__name__).debug(
+                    "No PA sink match for device '%s' — volume will use software control",
+                    dev["name"],
+                )
             devices.append(dev_with_index)
         return devices
 
