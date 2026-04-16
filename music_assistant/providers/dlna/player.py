@@ -479,9 +479,19 @@ class DLNAPlayer(Player):
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
+
+        replace_pause_with_stop: bool = await self.mass.config.get_player_config_value(
+            self.player_id, "replace_pause_with_stop"
+        )
+
+        if replace_pause_with_stop and self.device.can_stop:
+            await self.stop()
+            return
+
         if self.device.can_pause:
             await self.device.async_pause()
             return
+
         # Some devices expose Pause but report stale CurrentTransportActions.
         # Force-call Pause when action exists; otherwise fallback to Stop.
         pause_action = self.device._action("AVT", "Pause")
