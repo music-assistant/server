@@ -166,6 +166,11 @@ DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
 
+# Loudness measurements at or below this value are considered unreliable:
+# ebur128 reports ~-70 LUFS when it receives near-silence or very little
+# audio (e.g. when a stream was cancelled early).
+LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
+
 
 def load_genre_mapping() -> list[dict[str, Any]]:
     """Load default genre mapping from JSON file.
