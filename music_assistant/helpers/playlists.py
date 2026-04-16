@@ -28,7 +28,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.helpers.util import detect_charset
+from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -418,10 +418,7 @@ def construct_media_item_from_playlist_item(
     except ValueError:
         media_type = MediaType.TRACK
     name = metadata.get("name") or item.title or item.path
-    try:
-        duration = int(item.length) if item.length else 0
-    except ValueError:
-        duration = 0
+    duration = (try_parse_int(item.length) or 0) if item.length else 0
 
     provider_mappings = _resolve_provider_mappings(item, mass)
     external_ids = _collect_external_ids(metadata)
