@@ -13,12 +13,14 @@ from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 from wiim.models import WiimGroupRole
 
-from music_assistant.helpers.upnp import create_didl_metadata_str
+from music_assistant.constants import create_sample_rates_config_entry
+from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
     INPUT_MODE_SOURCES,
     PASSIVE_SOURCES,
+    PLAYER_ID_PREFIX,
     SOURCE_AIRPLAY,
     SOURCE_ID_TO_INPUT_MODE,
     SOURCE_SPOTIFY,
@@ -27,6 +29,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpService, UpnpStateVariable
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
     from .provider import WiimProvider
 
@@ -41,15 +44,22 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
 
-    def __init__(self, provider: WiimProvider, player_id: str, device: WiimDevice) -> None:
+    def __init__(
+        self,
+        provider: WiimProvider,
+        player_id: str,
+        device: WiimDevice,
+        mac_address: str | None = None,
+    ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
 
-        # init some static variables
         self._attr_name = device.name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.ENQUEUE,
+            PlayerFeature.SEEK,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
@@ -68,6 +78,8 @@ class WiimPlayer(Player):
         self._attr_device_info.add_identifier(IdentifierType.UUID, player_id)
         if device.ip_address:
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device.ip_address)
+        if mac_address:
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
 
         self.current_uri: str | None = None
 
@@ -112,34 +124,65 @@ class WiimPlayer(Player):
     ) -> None:
         """Handle AVTransport events from the SDK."""
         event_data = self.device.event_data
+        transport_state = event_data.get("TransportState")
+        self.logger.debug(
+            "[PROGRESS] %s AVTransport: TransportState=%s, playing_status=%s,"
+            " pos=%s, elapsed=%s, elapsed_updated=%s",
+            self._attr_name,
+            transport_state,
+            self.device.playing_status,
+            self.device.current_position,
+            self._attr_elapsed_time,
+            self._attr_elapsed_time_last_updated,
+        )
 
-        if "TransportState" in event_data:
+        if transport_state:
             try:
-                sdk_status = PlayingStatus(event_data["TransportState"])
+                sdk_status = PlayingStatus(transport_state)
             except ValueError:
-                self.logger.warning("Unknown TransportState: %s", event_data["TransportState"])
+                self.logger.warning("Unknown TransportState: %s", transport_state)
             else:
-                self.device.playing_status = sdk_status
                 if sdk_status == PlayingStatus.STOPPED:
-                    self.device.current_position = 0
-                    self.device.current_track_duration = 0
+                    self._attr_elapsed_time = None
+                    self._attr_elapsed_time_last_updated = None
                 elif sdk_status in {PlayingStatus.PAUSED, PlayingStatus.PLAYING}:
                     asyncio.create_task(self._sync_position())
 
         self._update_ma_state_from_sdk_cache()
 
     async def _sync_position(self) -> None:
-        """Sync duration and position from the device."""
+        """Fetch fresh position from the device and update state."""
         try:
             await self.device.sync_device_duration_and_position()
         except (WiimDeviceException, WiimRequestException) as err:
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
+            return
+        device_pos = self.device.current_position
+        if device_pos is not None:
+            self._attr_elapsed_time = device_pos
+            self._attr_elapsed_time_last_updated = time.time()
+        self._update_ma_state_from_sdk_cache()
 
     def _handle_sdk_rendering_control_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
     ) -> None:
         """Handle RenderingControl events from the SDK."""
+        # Check if this event contains a Slave element (group membership change)
+        for sv in state_variables:
+            if sv.name == "LastChange" and sv.value and "Slave" in str(sv.value):
+                asyncio.create_task(self._refresh_multiroom())
+                return
         self._update_ma_state_from_sdk_cache()
+
+    async def _refresh_multiroom(self) -> None:
+        """Refresh multiroom status from devices, then update all WiiM players."""
+        try:
+            await self._wiim_controller.async_update_all_multiroom_status()
+        except (WiimDeviceException, WiimRequestException) as err:
+            self.logger.debug("Failed to refresh multiroom status: %s", err)
+        for player in self.provider.players:
+            if isinstance(player, WiimPlayer):
+                player._update_ma_state_from_sdk_cache()
 
     def _handle_sdk_play_queue_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
@@ -159,6 +202,35 @@ class WiimPlayer(Player):
     def needs_poll(self) -> bool:
         """Return if the player needs to be polled for state updates."""
         return False
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """Return player-specific config entries."""
+        return [
+            create_sample_rates_config_entry(
+                max_sample_rate=192000,
+                safe_max_sample_rate=192000,
+                max_bit_depth=24,
+                safe_max_bit_depth=24,
+            ),
+        ]
+
+    async def enqueue_next_media(self, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next queue item on the player."""
+        stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        didl_metadata = create_didl_metadata(media, url=stream_url)
+        try:
+            await self.device._invoke_upnp_action(
+                "AVTransport",
+                "SetNextAVTransportURI",
+                NextURI=stream_url,
+                NextURIMetaData=didl_metadata,
+            )
+        except (WiimDeviceException, WiimRequestException) as err:
+            self.logger.warning("Enqueue failed on %s: %s", self._attr_name, err)
 
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player.
@@ -205,11 +277,14 @@ class WiimPlayer(Player):
         except (WiimDeviceException, WiimRequestException) as err:
             self._handle_command_error("play", err)
             return
-        self._update_ma_state_from_sdk_cache()
+        await self._sync_position()
 
     async def stop(self) -> None:
         """Stop command."""
         self.logger.debug("STOP command on %s", self.display_name)
+        self.current_uri = None
+        self._attr_active_source = None
+        self._attr_current_media = None
         try:
             await self.device.async_stop()
         except (WiimDeviceException, WiimRequestException) as err:
@@ -222,19 +297,40 @@ class WiimPlayer(Player):
         self.logger.debug("PAUSE command on %s", self.display_name)
         try:
             await self.device.async_pause()
-            await self.device.sync_device_duration_and_position()
         except (WiimDeviceException, WiimRequestException) as err:
             self._handle_command_error("pause", err)
             return
-        self._update_ma_state_from_sdk_cache()
+        await self._sync_position()
+
+    async def seek(self, position: int) -> None:
+        """Seek to position in seconds."""
+        self.logger.debug("SEEK command on %s to %s", self.display_name, position)
+        try:
+            await self.device.async_seek(position)
+        except (WiimDeviceException, WiimRequestException) as err:
+            self._handle_command_error("seek", err)
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        self.logger.debug("PLAY_MEDIA command on %s with uri %s", self.display_name, media.uri)
-        didl_string = create_didl_metadata_str(media)
-        self.current_uri = media.uri
+        stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        didl_metadata = create_didl_metadata(media, url=stream_url)
+        self.current_uri = stream_url
+        self._attr_active_source = self.player_id
+        # Set current_media so the queue controller can identify the active
+        # queue item via _parse_player_current_item_id and update elapsed_time.
+        self.set_current_media(
+            uri=stream_url,
+            title=media.title,
+            artist=media.artist,
+            album=media.album,
+            image_url=media.image_url,
+            duration=media.duration,
+            source_id=media.source_id,
+            queue_item_id=media.queue_item_id,
+            clear_all=True,
+        )
         try:
-            await self.device.async_play(uri=media.uri, metadata=didl_string)
+            await self.device.async_play(uri=stream_url, metadata=didl_metadata)
         except (WiimDeviceException, WiimRequestException) as err:
             self._handle_command_error("play_media", err)
             return
@@ -257,12 +353,16 @@ class WiimPlayer(Player):
         self.logger.debug("SET_MEMBERS command on %s", self.display_name)
         try:
             if player_ids_to_add:
-                for player_id in player_ids_to_add:
-                    await self._wiim_controller.async_join_group(self.player_id, player_id)
+                for member_id in player_ids_to_add:
+                    if member := self.mass.players.get_player(member_id):
+                        await self._wiim_controller.async_join_group(
+                            self.device.udn, member.device.udn
+                        )
 
             if player_ids_to_remove:
-                for player_id in player_ids_to_remove:
-                    await self._wiim_controller.async_ungroup_device(player_id)
+                for member_id in player_ids_to_remove:
+                    if member := self.mass.players.get_player(member_id):
+                        await self._wiim_controller.async_ungroup_device(member.device.udn)
         except (WiimDeviceException, WiimRequestException) as err:
             self._handle_command_error("set_members", err)
 
@@ -272,9 +372,6 @@ class WiimPlayer(Player):
         This is the main method for updating this entity's MA attributes.
         Crucially, it also handles propagating metadata to followers if this is a leader.
         """
-        logger = self.logger
-        logger.debug("Device %s: Updating MA state from SDK cache/HTTP poll", self._attr_name)
-
         self._attr_available = self.device.available
 
         if self.device.name != self._attr_name:
@@ -284,6 +381,7 @@ class WiimPlayer(Player):
             # If device is unavailable, clear media-related attributes
             self._attr_current_media = None
             self._attr_active_source = None
+            self.logger.info("Calling update_state()")
             self.update_state()
             return
 
@@ -311,29 +409,31 @@ class WiimPlayer(Player):
                 self._attr_playback_state = PlaybackState.IDLE
         else:
             if self.device.playing_status is not None:
-                self._attr_playback_state = SDK_TO_MA_STATE.get(
-                    self.device.playing_status, PlaybackState.IDLE
-                )
+                new_state = SDK_TO_MA_STATE.get(self.device.playing_status, PlaybackState.IDLE)
+                if (
+                    new_state == PlaybackState.PLAYING
+                    and self._attr_playback_state != PlaybackState.PLAYING
+                ):
+                    # Ensure elapsed_time is not None so the frontend can
+                    # extrapolate using elapsed_time + (now - last_updated).
+                    if self._attr_elapsed_time is None:
+                        self._attr_elapsed_time = 0
+                    self._attr_elapsed_time_last_updated = time.time()
+                self._attr_playback_state = new_state
 
-            group_members = self._wiim_controller.get_group_members(self.player_id)
-            self._attr_group_members = [m.udn for m in group_members if m.udn != self.player_id]
+            group_members = self._wiim_controller.get_group_members(self.device.udn)
+            self._attr_group_members = [
+                f"{PLAYER_ID_PREFIX}{m.udn}" for m in group_members if m.udn != self.device.udn
+            ]
 
-            # Active source detection
-            if self.current_uri and self.current_uri == self.device.current_track_uri:
-                self._attr_active_source = self.player_id
-            elif self.device.current_track_uri == "wiimu_airplay":
+            # Active source detection (flag-based, like HEOS):
+            # active_source is set to player_id in play_media(). Here we only
+            # override it when we see positive evidence of an external source.
+            device_uri = self.device.current_track_uri
+            if device_uri == "wiimu_airplay":
                 self._attr_active_source = SOURCE_AIRPLAY
-            elif self.device.current_track_uri and self.device.current_track_uri.startswith(
-                "spotify:"
-            ):
+            elif device_uri and device_uri.startswith("spotify:"):
                 self._attr_active_source = SOURCE_SPOTIFY
-            else:
-                for mode_name, ps in INPUT_MODE_SOURCES.items():
-                    if mode_name == self.device.play_mode:
-                        self._attr_active_source = ps.id
-                        break
-                else:
-                    self._attr_active_source = SOURCE_UNKNOWN
 
             # Set current media for external sources
             if self._attr_active_source != self.player_id and (media := self.device.current_media):
@@ -346,8 +446,5 @@ class WiimPlayer(Player):
                     source_id=self._attr_active_source,
                     duration=media.duration,
                 )
-
-            self._attr_elapsed_time = self.device.current_position
-            self._attr_elapsed_time_last_updated = time.time()
-
+        self.logger.info("Calling update_state()")
         self.update_state()

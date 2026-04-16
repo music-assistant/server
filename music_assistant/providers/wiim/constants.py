@@ -2,6 +2,9 @@
 
 from music_assistant_models.player import PlayerSource
 
+# Player ID prefix to avoid colliding with DLNA (which uses the raw UDN)
+PLAYER_ID_PREFIX = "wiim_"
+
 # Passive sources detected via current track URI
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"

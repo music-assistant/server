@@ -19,6 +19,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
+from .constants import PLAYER_ID_PREFIX
 from .player import WiimPlayer
 
 if TYPE_CHECKING:
@@ -72,7 +73,7 @@ class WiimProvider(PlayerProvider):
             if not upnp_device or not matched_location:
                 continue
 
-            player_id = upnp_device.udn
+            player_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
 
             if not player_id:
                 continue
@@ -93,30 +94,40 @@ class WiimProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        self.logger.debug(
+            "mDNS callback: name=%s, state_change=%s, info=%s",
+            name,
+            state_change,
+            info is not None,
+        )
         if not info:
+            self.logger.debug("mDNS callback: no info, returning")
             return
 
         if state_change == ServiceStateChange.Removed:
             return  # ignore, rely on SDK availability polling
 
         cur_address = get_primary_ip_address_from_zeroconf(info)
+        self.logger.debug("mDNS callback: cur_address=%s", cur_address)
         if cur_address is None:
             return
 
         # Try to get player_id from mDNS properties first (avoids network call)
-        player_id = info.decoded_properties.get("uuid") if info.decoded_properties else None
+        udn = info.decoded_properties.get("uuid") if info.decoded_properties else None
+        wiim_player_id = f"{PLAYER_ID_PREFIX}{udn}" if udn else None
 
         # Check for existing player before hitting the network
-        if player_id and (mass_player := self.mass.players.get_player(player_id)):
+        if wiim_player_id and (mass_player := self.mass.players.get_player(wiim_player_id)):
             if cur_address and cur_address != mass_player.device_info.ip_address:
                 self.logger.debug(
                     "Address updated to %s for player %s", cur_address, mass_player.display_name
                 )
                 mass_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
-            self.mass.players.trigger_player_update(player_id)
+            self.mass.players.trigger_player_update(wiim_player_id)
             return
 
         # New device -- verify it's a WiiM and set up
+        self.logger.debug("mDNS callback: new device, verifying at %s", cur_address)
         potential_locations = (
             f"http://{cur_address}:{get_port_from_zeroconf(info)}/description.xml",
             f"http://{cur_address}/description.xml",
@@ -131,13 +142,19 @@ class WiimProvider(PlayerProvider):
                 break
 
         if not upnp_device or not matched_location:
+            self.logger.debug("mDNS callback: verify_wiim_device failed for %s", cur_address)
             return
 
-        player_id = upnp_device.udn
+        player_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
         if not player_id:
             return
 
-        self.logger.debug("Discovered device %s on %s", name, cur_address)
+        # Extract MAC address from mDNS properties for protocol linking
+        mac_address: str | None = None
+        if info.decoded_properties:
+            mac_address = info.decoded_properties.get("MAC")
+
+        self.logger.debug("Discovered device %s on %s (MAC: %s)", name, cur_address, mac_address)
         task_id = f"setup_wiim_{player_id}"
         self.mass.call_later(
             5,
@@ -146,13 +163,22 @@ class WiimProvider(PlayerProvider):
             cur_address,
             name,
             matched_location,
+            mac_address,
             task_id=task_id,
         )
 
     async def try_add_player(
-        self, player_id: str, ip_address: str, name: str, upnp_location: str
+        self,
+        player_id: str,
+        ip_address: str,
+        name: str,
+        upnp_location: str,
+        mac_address: str | None = None,
     ) -> None:
         """Try to add a WiiM device as a player."""
+        self.logger.debug(
+            "try_add_player: %s at %s (location: %s)", name, ip_address, upnp_location
+        )
         try:
             wiim_dev = await async_create_wiim_device(
                 upnp_location,
@@ -164,9 +190,28 @@ class WiimProvider(PlayerProvider):
         except (WiimRequestException, WiimDeviceException) as err:
             self.logger.warning("Failed to initialize WiiM device at %s: %s", ip_address, err)
             return
+        except Exception:
+            self.logger.exception("Unexpected error initializing WiiM device at %s", ip_address)
+            return
 
+        self.logger.debug("try_add_player: device created: %s (%s)", wiim_dev.name, wiim_dev.udn)
         await self.wiim_controller.add_device(wiim_dev)
 
-        player = WiimPlayer(provider=self, player_id=wiim_dev.udn, device=wiim_dev)
-        await player.setup()
-        await self.mass.players.register_or_update(player)
+        # Use a WiiM-namespaced player ID to avoid colliding with DLNA, which
+        # uses the raw UDN and would repeatedly overwrite our player object.
+        # Protocol linking works via MAC/UUID/IP identifiers on DeviceInfo.
+        wiim_player_id = f"{PLAYER_ID_PREFIX}{wiim_dev.udn}"
+
+        try:
+            player = WiimPlayer(
+                provider=self,
+                player_id=wiim_player_id,
+                device=wiim_dev,
+                mac_address=mac_address,
+            )
+            await player.setup()
+            self.logger.debug("try_add_player: registering player %s", wiim_player_id)
+            await self.mass.players.register_or_update(player)
+            self.logger.info("WiiM player registered: %s (%s)", wiim_dev.name, wiim_player_id)
+        except Exception:
+            self.logger.exception("Failed to register WiiM player %s", wiim_dev.name)
