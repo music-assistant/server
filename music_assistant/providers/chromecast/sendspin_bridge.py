@@ -105,7 +105,10 @@ class SendspinCastController(BaseController):
         return True
 
     def _handle_status(self, data: dict[str, Any]) -> bool:
-        """Handle a status message from the Cast receiver."""
+        """Handle a status message from the Cast receiver.
+
+        Only errors are logged. Non-error statuses are sent every second and would be too noisy.
+        """
         state = data.get("state")
         message = data.get("message", "")
         if state == "error":
