@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import time
 import typing
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimDeviceException, WiimRequestException
+from wiim.models import WiimGroupRole
 
 from music_assistant.helpers.upnp import create_didl_metadata_str
 from music_assistant.models.player import Player, PlayerMedia
@@ -241,7 +242,11 @@ class WiimPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        self.logger.debug("Player %s unloaded", self.name)
+        self.device.general_event_callback = None
+        self.device.av_transport_event_callback = None
+        self.device.rendering_control_event_callback = None
+        self.device.play_queue_event_callback = None
+        self.logger.debug("Player %s unloaded, callbacks cleared", self.name)
 
     async def set_members(
         self,
@@ -286,33 +291,32 @@ class WiimPlayer(Player):
         self._attr_volume_level = self.device.volume if self.device.volume is not None else None
         self._attr_volume_muted = self.device.is_muted
 
-        # Determine current group role (leader/follower/standalone)
-        is_current_device_leader = False
-        group_info = cast("WiimProvider", self.provider).wiim_controller.get_device_group_info(
-            self.device.udn
-        )
-        if group_info and (
-            group_info.get("role") == "leader" or group_info.get("role") == "standalone"
-        ):
-            is_current_device_leader = True
-        elif group_info and group_info.get("role") == "follower":
-            pass
+        # Group role and state
+        snapshot = self._wiim_controller.get_group_snapshot(self.device.udn)
 
-        self._is_group_leader = is_current_device_leader
-
-        if self._is_group_leader:
-            # This device is a leader or standalone, update its
-            # media metadata from its own SDK device state.
+        if snapshot.role == WiimGroupRole.FOLLOWER:
+            self._attr_group_members.clear()
+            try:
+                leader_device = self._wiim_controller.get_device(snapshot.leader_udn)
+                if leader_device.playing_status is not None:
+                    self._attr_playback_state = SDK_TO_MA_STATE.get(
+                        leader_device.playing_status, PlaybackState.IDLE
+                    )
+            except ValueError:
+                self.logger.debug(
+                    "Leader %s not found for follower %s",
+                    snapshot.leader_udn,
+                    self._attr_name,
+                )
+                self._attr_playback_state = PlaybackState.IDLE
+        else:
             if self.device.playing_status is not None:
                 self._attr_playback_state = SDK_TO_MA_STATE.get(
                     self.device.playing_status, PlaybackState.IDLE
                 )
 
-            group_members = cast("WiimProvider", self.provider).wiim_controller.get_group_members(
-                self.player_id
-            )
-
-            self._attr_group_members = [i.udn for i in group_members if i.udn != self.player_id]
+            group_members = self._wiim_controller.get_group_members(self.player_id)
+            self._attr_group_members = [m.udn for m in group_members if m.udn != self.player_id]
 
             # Active source detection
             if self.current_uri and self.current_uri == self.device.current_track_uri:
@@ -348,91 +352,4 @@ class WiimPlayer(Player):
             self._attr_elapsed_time = self.device.current_position
             self._attr_elapsed_time_last_updated = time.time()
 
-        elif group_info and group_info.get("role") == "follower":
-            self._attr_group_members.clear()
-        #     # This device is a follower. It should actively pull metadata from its leader.
-        #     leader_udn = group_info.get("leader_udn")
-        #     if leader_udn:
-        #         leader_entity_id = self._get_entity_id_for_udn(leader_udn)
-        #         leader_state = (
-        #             self.hass.states.get(leader_entity_id) if leader_entity_id else None
-        #         )
-
-        #         if leader_state and leader_entity_id != self.entity_id:
-        #             SDK_LOGGER.debug(
-        #                 f"Follower {self.entity_id}: Actively pulling metadata from leader
-        #  {leader_entity_id}"
-        #             )
-        #             # Pull metadata from leader's state machine state
-        #             self._attr_media_title = leader_state.attributes.get("media_title")
-        #             self._attr_media_artist = leader_state.attributes.get(
-        #                 "media_artist"
-        #             )
-        #             self._attr_media_album_name = leader_state.attributes.get(
-        #                 "media_album_name"
-        #             )
-        #             # For image, use entity_picture from attributes, which might
-        # be a local proxy path
-        #             self._attr_media_image_url = leader_state.attributes.get(
-        #                 "entity_picture"
-        #             )
-        #             self._attr_media_content_id = leader_state.attributes.get(
-        #                 "media_content_id"
-        #             )
-        #             self._attr_media_content_type = leader_state.attributes.get(
-        #                 "media_content_type"
-        #             )
-        #             self._attr_media_duration = leader_state.attributes.get(
-        #                 "media_duration"
-        #             )
-        #             self._attr_media_position = leader_state.attributes.get(
-        #                 "media_position"
-        #             )
-        #             self._attr_media_position_updated_at = leader_state.attributes.get(
-        #                 "media_position_updated_at"
-        #             )
-        #             self._attr_source = leader_state.attributes.get("source")
-        #             self._attr_shuffle = leader_state.attributes.get("shuffle", False)
-        #             self._attr_repeat = leader_state.attributes.get(
-        #                 "repeat", RepeatMode.OFF
-        #             )
-        #             self._attr_supported_features = leader_state.attributes.get(
-        #                 "supported_features", SUPPORT_WIIM_BASE
-        #             )
-        #         else:
-        #             SDK_LOGGER.debug(
-        #                 f"Follower {self.entity_id}: Leader entity {leader_udn} not found
-        # or is self. Clearing own media metadata."
-        #             )
-        #             # If leader not found or is self (which means an inconsistent state),
-        #  clear media info
-        #             self._attr_media_title = None
-        #             self._attr_media_artist = None
-        #             self._attr_media_album_name = None
-        #             self._attr_media_image_url = None
-        #             self._attr_media_content_id = None
-        #             self._attr_media_content_type = None
-        #             self._attr_media_duration = None
-        #             self._attr_media_position = None
-        #             self._attr_media_position_updated_at = None
-        #             self._attr_state = MediaPlayerState.IDLE
-        #     else:
-        #         SDK_LOGGER.debug(
-        #             f"Follower {self.entity_id}: No leader UDN found in group info.
-        # Clearing own media metadata."
-        #         )
-        #         # No leader_udn in group_info for a follower, clear media info
-        #         self._attr_media_title = None
-        #         self._attr_media_artist = None
-        #         self._attr_media_album_name = None
-        #         self._attr_media_image_url = None
-        #         self._attr_media_content_id = None
-        #         self._attr_media_content_type = None
-        #         self._attr_media_duration = None
-        #         self._attr_media_position = None
-        #         self._attr_media_position_updated_at = None
-        #         self._attr_state = MediaPlayerState.IDLE
-
-        # # Update the group_members attribute
-        # self._update_supported_features()
         self.update_state()
