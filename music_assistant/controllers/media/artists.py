@@ -24,6 +24,7 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
@@ -102,7 +103,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts = [f"artist_type = '{artist_type}'"]
-        if album_artists_only:
+        if album_artists_only and artist_type == ArtistType.ARTIST:
             extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
@@ -261,9 +262,8 @@ class ArtistsController(MediaControllerBase[Artist]):
 
     async def _remove_author_narrator_from_library(self, db_id: int, recursive: bool) -> None:
         # recursively also remove author/ narrator audiobooks
-        # album_artists table maps to audiobook / author + narrator in that case.
         for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id",
+            f"SELECT album_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id",
             {"artist_id": db_id},
             limit=5000,
         ):
@@ -712,10 +712,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             if db_author_narrator.artist_type != artist_type:
                 self.logger.debug("Artist type must be %s.", artist_type)
                 return []
-            # note that we are using the album_artists table, which maps to audiobook_author/narrator in this case.
             db_artist_id = int(db_author_narrator.item_id)  # ensure integer
-            subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-            query = f"albums.item_id in ({subquery})"
+            subquery = f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
+            query = f"audiobooks.item_id in ({subquery})"
             return await self.mass.music.audiobooks.get_library_items_by_query(
                 extra_query_parts=[query],
                 extra_query_params={"artist_id": db_artist_id},
@@ -734,9 +733,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         if library_item.artist_type != artist_type:
             self.logger.debug("Audiobooks only available for artists of type %s", artist_type)
             return []
-        # note that we are using the album_artists table, which maps to audiobook_author/narrator in this case.
-        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-        query = f"albums.item_id in ({subquery})"
+        subquery = (
+            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
+        )
+        query = f"audiobooks.item_id in ({subquery})"
         return await self.mass.music.audiobooks.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},

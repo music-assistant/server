@@ -55,6 +55,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -69,6 +70,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
+    LOUDNESS_MEASUREMENT_MIN_LUFS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
@@ -109,7 +111,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 38
+DB_SCHEMA_VERSION: Final[int] = 39
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -1102,8 +1104,8 @@ class MusicController(CoreController):
         """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return
-        if loudness in (None, inf, -inf):
-            # skip invalid values
+        if loudness in (None, inf, -inf) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+            # skip invalid or unreliable values (ebur128 reports -70 LUFS on near-silence)
             return
         # prefer domain for streaming providers as the catalog is the same across instances
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
@@ -1113,7 +1115,10 @@ class MusicController(CoreController):
             "provider": prov_key,
             "loudness": loudness,
         }
-        if album_loudness not in (None, inf, -inf):
+        if (
+            album_loudness not in (None, inf, -inf)
+            and album_loudness > LOUDNESS_MEASUREMENT_MIN_LUFS
+        ):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
 
@@ -2689,6 +2694,20 @@ class MusicController(CoreController):
             await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
 
         if prev_version <= 37:
+            # purge unreliable loudness measurements persisted by earlier versions
+            # (ebur128 reports ~-70 LUFS on near-silence / early-cancelled streams,
+            # which caused huge gain corrections on subsequent plays)
+            await self._database.execute(
+                f"DELETE FROM {DB_TABLE_LOUDNESS_MEASUREMENTS} "
+                f"WHERE loudness <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
+            )
+            await self._database.execute(
+                f"UPDATE {DB_TABLE_LOUDNESS_MEASUREMENTS} "
+                f"SET loudness_album = NULL "
+                f"WHERE loudness_album <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
+            )
+
+        if prev_version <= 38:
             # add artist_type column to artist table, and make
             # "artist the default, as this was the only artist type supported
             try:
@@ -2965,6 +2984,15 @@ class MusicController(CoreController):
             FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
             FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
             UNIQUE(album_id, artist_id)
+            );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIOBOOK_ARTISTS}(
+            [audiobook_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([audiobook_id]) REFERENCES [audiobooks]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(audiobook_id, artist_id)
             );"""
         )
 
