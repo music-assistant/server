@@ -429,6 +429,14 @@ class LocalAudioBridgeManager:
 
         self.logger.info("Found %d local audio output device(s)", len(devices))
 
+        for device in devices:
+            self.logger.debug(
+                "Enumerated sink: %s rate=%s depth=%s",
+                device.get("pa_sink_name"),
+                device.get("sample_rate"),
+                device.get("bit_depth"),
+            )        
+
         async with self._lock:
             for device in devices:
                 device_name: str = device["name"]
