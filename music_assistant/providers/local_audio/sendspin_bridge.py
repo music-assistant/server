@@ -157,6 +157,7 @@ class SendspinLocalAudioBridge:
             on_mute_change=self._on_mute_change,
             on_stream_start=self._on_bridge_stream_start,
             on_stream_end=self._on_bridge_stream_end,
+            initial_volume=25,
         )
         self._bridge_role.setup_audio_requirements(
             sample_rate=self.sample_rate,
@@ -449,6 +450,7 @@ class LocalAudioBridgeManager:
                     pa_sink_name=pa_sink_name,
                 )
                 await self.mass.players.register_or_update(player)
+                await player.apply_hardware_ceiling()
 
                 bridge = SendspinLocalAudioBridge(
                     self.provider, player, device, sendspin_server
