@@ -169,6 +169,29 @@ def test_unregister_routes(handler: DirectConnectionHandler) -> None:
     assert len(handler._unregister_callbacks) == 0
 
 
+def test_register_routes_rolls_back_on_failure(
+    handler: DirectConnectionHandler, mock_mass: MagicMock
+) -> None:
+    """register_routes must unregister partial routes and re-raise on RuntimeError."""
+    unregister_cb = MagicMock()
+    call_count = {"n": 0}
+
+    def register(_path: str, _handler_fn: Any, _method: str) -> Any:
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            raise RuntimeError("already registered")
+        return unregister_cb
+
+    mock_mass.webserver.register_dynamic_route.side_effect = register
+
+    with pytest.raises(RuntimeError):
+        handler.register_routes()
+
+    # 2 successful registrations must be rolled back via unregister_cb
+    assert unregister_cb.call_count == 2
+    assert handler._unregister_callbacks == []
+
+
 # ---------------------------------------------------------------------------
 # Auth validation
 # ---------------------------------------------------------------------------

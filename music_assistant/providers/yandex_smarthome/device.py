@@ -307,7 +307,24 @@ async def _execute_input_source(
     )
 
 
-async def execute_capability_action(
+def _invalid_bool_result(cap_type: str, instance: str, value: Any) -> CapabilityActionResult:
+    """Build an INVALID_ACTION result for a capability that requires a boolean value."""
+    return CapabilityActionResult(
+        type=cap_type,
+        state=CapabilityActionResultState(
+            instance=instance,
+            action_result=ActionResult(
+                status="ERROR",
+                error_code=ERROR_INVALID_ACTION,
+                error_message=(
+                    f"Expected boolean value for {cap_type}/{instance}, got {type(value).__name__}"
+                ),
+            ),
+        ),
+    )
+
+
+async def execute_capability_action(  # noqa: PLR0915
     mass: Any,
     player_id: str,
     action: CapabilityAction,
@@ -336,6 +353,14 @@ async def execute_capability_action(
 
     is_group = _is_group_player(player)
 
+    # Bool-typed capabilities: reject non-bool payloads up-front so truthiness
+    # on strings like "false"/"0" can't trigger the wrong command.
+    requires_bool = action.type == YandexCapabilityType.ON_OFF or (
+        action.type == YandexCapabilityType.TOGGLE and instance in (INSTANCE_MUTE, INSTANCE_PAUSE)
+    )
+    if requires_bool and not isinstance(value, bool):
+        return _invalid_bool_result(action.type, instance, value)
+
     try:
         if action.type == YandexCapabilityType.ON_OFF:
             if value:
@@ -361,9 +386,9 @@ async def execute_capability_action(
 
         elif action.type == YandexCapabilityType.TOGGLE and instance == INSTANCE_MUTE:
             if is_group:
-                await mass.players.cmd_group_volume_mute(player_id, bool(value))
+                await mass.players.cmd_group_volume_mute(player_id, value)
             else:
-                await mass.players.cmd_volume_mute(player_id, bool(value))
+                await mass.players.cmd_volume_mute(player_id, value)
 
         elif action.type == YandexCapabilityType.TOGGLE and instance == INSTANCE_PAUSE:
             if value:

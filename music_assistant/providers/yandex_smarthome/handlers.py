@@ -172,13 +172,19 @@ def parse_action_payload(raw: dict[str, Any]) -> ActionRequestPayload:
             state_raw = cap_raw.get("state")
             if not isinstance(state_raw, dict):
                 continue
+            instance_raw = state_raw.get("instance")
+            if not isinstance(instance_raw, str) or not instance_raw.strip():
+                continue
+            relative_raw = state_raw.get("relative", False)
+            if not isinstance(relative_raw, bool):
+                continue
             capabilities.append(
                 CapabilityAction(
                     type=cap_type,
                     state=CapabilityActionState(
-                        instance=state_raw.get("instance", ""),
+                        instance=instance_raw.strip(),
                         value=state_raw.get("value"),
-                        relative=state_raw.get("relative", False),
+                        relative=relative_raw,
                     ),
                 )
             )

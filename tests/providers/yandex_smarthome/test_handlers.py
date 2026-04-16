@@ -328,6 +328,52 @@ class TestParseActionPayload:
         payload = parse_action_payload(raw)
         assert len(payload.devices) == 1
 
+    def test_skips_missing_or_empty_instance(self) -> None:
+        """Capability with missing/empty/non-string instance should be skipped."""
+        raw = {
+            "payload": {
+                "devices": [
+                    {
+                        "id": "p1",
+                        "capabilities": [
+                            {"type": "devices.capabilities.on_off", "state": {"value": True}},
+                            {
+                                "type": "devices.capabilities.on_off",
+                                "state": {"instance": "   ", "value": True},
+                            },
+                            {
+                                "type": "devices.capabilities.on_off",
+                                "state": {"instance": 42, "value": True},
+                            },
+                        ],
+                    }
+                ],
+            },
+        }
+        payload = parse_action_payload(raw)
+        assert len(payload.devices) == 1
+        assert payload.devices[0].capabilities == []
+
+    def test_skips_non_bool_relative(self) -> None:
+        """Capability with non-bool `relative` field should be skipped."""
+        raw = {
+            "payload": {
+                "devices": [
+                    {
+                        "id": "p1",
+                        "capabilities": [
+                            {
+                                "type": "devices.capabilities.range",
+                                "state": {"instance": "volume", "value": 10, "relative": "yes"},
+                            },
+                        ],
+                    }
+                ],
+            },
+        }
+        payload = parse_action_payload(raw)
+        assert payload.devices[0].capabilities == []
+
 
 # ---------------------------------------------------------------------------
 # Tests: build_response

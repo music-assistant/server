@@ -154,9 +154,11 @@ class DirectConnectionHandler:
         for path, method, handler in routes:
             try:
                 unregister = register(path, handler, method)
-                self._unregister_callbacks.append(unregister)
             except RuntimeError:
-                self._logger.warning("Failed to register route %s %s", method, path)
+                self._logger.error("Failed to register route %s %s; rolling back", method, path)
+                self.unregister_routes()
+                raise
+            self._unregister_callbacks.append(unregister)
 
         self._logger.info(
             "Direct connection: registered %d routes on MA webserver",

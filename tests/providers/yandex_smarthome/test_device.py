@@ -513,6 +513,50 @@ class TestExecuteCapabilityAction:
         assert result.state.action_result.error_code == "INTERNAL_ERROR"
 
     @pytest.mark.asyncio
+    async def test_on_off_non_bool_value_returns_invalid_action(self) -> None:
+        """ON_OFF with non-bool value (e.g. string 'false') must not power on."""
+        mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        action = CapabilityAction(
+            type=YandexCapabilityType.ON_OFF,
+            state=CapabilityActionState(instance="on", value="false"),
+        )
+        result = await execute_capability_action(mass, "p1", action)
+        assert result.state.action_result.status == "ERROR"
+        assert result.state.action_result.error_code == "INVALID_ACTION"
+        mass.players.cmd_play.assert_not_awaited()
+        mass.players.cmd_stop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mute_non_bool_value_returns_invalid_action(self) -> None:
+        """Mute toggle with non-bool value must not call cmd_volume_mute."""
+        mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        action = CapabilityAction(
+            type=YandexCapabilityType.TOGGLE,
+            state=CapabilityActionState(instance="mute", value="false"),
+        )
+        result = await execute_capability_action(mass, "p1", action)
+        assert result.state.action_result.status == "ERROR"
+        assert result.state.action_result.error_code == "INVALID_ACTION"
+        mass.players.cmd_volume_mute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pause_non_bool_value_returns_invalid_action(self) -> None:
+        """Pause toggle with non-bool value must not call cmd_pause/cmd_play."""
+        mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        action = CapabilityAction(
+            type=YandexCapabilityType.TOGGLE,
+            state=CapabilityActionState(instance="pause", value="true"),
+        )
+        result = await execute_capability_action(mass, "p1", action)
+        assert result.state.action_result.status == "ERROR"
+        assert result.state.action_result.error_code == "INVALID_ACTION"
+        mass.players.cmd_pause.assert_not_awaited()
+        mass.players.cmd_play.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_missing_player_returns_device_unreachable(self) -> None:
         """Player not found should return DEVICE_UNREACHABLE."""
         mass = MockMass()
