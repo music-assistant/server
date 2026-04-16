@@ -9,7 +9,7 @@ from music_assistant.providers.mpd.provider import MPDPlayerProvider
 
 async def test_remove_player_prunes_manual_host_config() -> None:
     """Removing an MPD player should also remove its host entry from provider config."""
-    provider = cast("Any", MPDPlayerProvider.__new__(MPDPlayerProvider))
+    provider = cast(Any, MPDPlayerProvider.__new__(MPDPlayerProvider))
     config_entries = {
         "manual_discovery_ip_addresses": SimpleNamespace(
             value=[
