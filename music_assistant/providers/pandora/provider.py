@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -58,6 +59,16 @@ from .constants import (
 from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
 
 
+async def read_file_to_string(file_path: str) -> str:
+    """Read file content and return as string."""
+
+    def sync_read() -> str:
+        with open(file_path, encoding="utf-8") as file:
+            return file.read().strip()
+
+    return await asyncio.to_thread(sync_read)
+
+
 class PandoraStationSession:
     """Manages streaming state for a single Pandora station."""
 
@@ -82,7 +93,7 @@ class StreamViolationError(InvalidDataError):
 class PandoraProvider(MusicProvider):
     """Pandora Music Provider."""
 
-    _auth_token: str | None = os.environ.get("PANDORA_AUTHTOKEN", None)
+    _auth_token: str | None = None
     _user_id: str | None = None
     _csrf_token: str | None = None
     _sessions: dict[str, PandoraStationSession]
@@ -105,6 +116,9 @@ class PandoraProvider(MusicProvider):
             self._socks_proxy = True
         else:
             self.http_session = self.mass.http_session
+        if token_file := os.environ.get("PANDORA_AUTHTOKEN_FILE"):
+            if os.path.exists(token_file):
+                self._auth_token = await read_file_to_string(token_file)
         await self._authenticate(username, password)
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -200,8 +214,8 @@ class PandoraProvider(MusicProvider):
                         # Auth token expired, re-authenticate and retry once
                         username = str(self.config.get_value(CONF_USERNAME))
                         password = str(self.config.get_value(CONF_PASSWORD))
-                        self._auth_token = None
                         await self._authenticate(username, password)
+                        self._auth_token = None
                         return await self._api_request(
                             method,
                             url,
@@ -276,29 +290,15 @@ class PandoraProvider(MusicProvider):
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse Pandora radio stations."""
         sub_path = path.split("://", 1)[1] if "://" in path else ""
-        self.logger.warning(f"browsing: {sub_path}")
-        path_parts = [part for part in sub_path.split("/") if part]
-        if not path_parts:
-            # Top-level: add a "Radio Stations" folder alongside the default items
-            items = list(await super().browse(path))
-            items.append(
-                BrowseFolder(
-                    item_id="stations",
-                    provider=self.instance_id,
-                    path=f"{self.instance_id}://stations",
-                    name="Radio Stations",
-                )
-            )
-            return items
-        if path_parts[0] in ["stations", "radios", "playlists"]:
+        if not sub_path:
             result: list[MediaItemType | ItemMapping | BrowseFolder] = []
-            async for station in self._get_radios():
+            async for station in self._get_stations():
                 self.logger.info(f"Retrieved {station.name}, {station.is_dynamic}")
                 result.append(station)
             return result
         return await super().browse(path)
 
-    async def _get_radios(self) -> AsyncGenerator[Playlist]:
+    async def _get_stations(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed radio stations from the provider."""
         response = await self._api_request(
             "POST",
@@ -348,7 +348,7 @@ class PandoraProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         self.logger.warning(f"get playlist {prov_playlist_id}")
-        async for station in self._get_radios():
+        async for station in self._get_stations():
             self.logger.warning(f"{station.item_id}")
             if station.item_id == prov_playlist_id:
                 self.logger.warning(f"returning {station.name} {station.is_dynamic}")
@@ -601,7 +601,7 @@ class PandoraProvider(MusicProvider):
 
         results: list[Playlist] = []
 
-        async for station in self._get_radios():
+        async for station in self._get_stations():
             if compare_strings(station.name, search_query):
                 results.append(station)
                 if len(results) >= limit:
