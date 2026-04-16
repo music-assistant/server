@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -10,7 +11,9 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.mass import MusicAssistant
 
 from .constants import (
+    CONF_HARDWARE_VOLUME_CEILING,
     CONF_VOLUME_CONTROL,
+    DEFAULT_HARDWARE_VOLUME_CEILING,
     VOLUME_CONTROL_DISABLED,
     VOLUME_CONTROL_HARDWARE,
     VOLUME_CONTROL_SOFTWARE,
@@ -36,7 +39,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     # ruff: noqa: ARG001
-    return (
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key=CONF_VOLUME_CONTROL,
             type=ConfigEntryType.STRING,
@@ -47,7 +50,26 @@ async def get_config_entries(
             ],
             default_value=VOLUME_CONTROL_HARDWARE,
         ),
-    )
+    ]
+
+    if sys.platform == "linux":
+        entries.append(
+            ConfigEntry(
+                key=CONF_HARDWARE_VOLUME_CEILING,
+                type=ConfigEntryType.INTEGER,
+                label="Hardware volume ceiling",
+                description=(
+                    "Sets the PulseAudio sink volume to this level on every startup. "
+                    "This attenuates the maximum output level of the hardware. "
+                    "Day-to-day volume control uses software scaling within this ceiling. "
+                    "Range: 0-100. Default: 50."
+                ),
+                default_value=DEFAULT_HARDWARE_VOLUME_CEILING,
+                required=False,
+            ),
+        )
+
+    return tuple(entries)
 
 
 async def setup(
