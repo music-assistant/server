@@ -180,13 +180,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             channels = sink.sample_spec.channels
             if channels < 2:
                 continue
-            fmt = sink.sample_spec.format.name  # e.g. 's32le'
-            try:
-                bit_depth = int(
-                    "".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0]))
-                )
-            except ValueError:
-                bit_depth = 16
+            bit_depth = _PA_FORMAT_TO_BIT_DEPTH.get(sink.sample_spec.format, 16)
             sinks.append({
                 "name": sink.description or sink.name,
                 "pa_sink_name": sink.name,
