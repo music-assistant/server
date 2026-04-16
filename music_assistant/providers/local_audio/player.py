@@ -80,7 +80,7 @@ class LocalAudioPlayer(Player):
         device_uuid = get_device_uuid(device_name, hostapi_index)
         self._attr_device_info.add_identifier(IdentifierType.UUID, device_uuid)
         self._attr_can_group_with = set()
-        self._attr_volume_level = 100
+        self._attr_volume_level = 25 if (sys.platform == "linux" and pa_sink_name) else 100
         self._device_index = device_index
         self._pa_sink_name = pa_sink_name
         # Set when hardware volume fails, causes automatic fallback to software
@@ -91,7 +91,11 @@ class LocalAudioPlayer(Player):
         """Return the effective volume control mode for this player."""
         if self._hardware_volume_fallback:
             return VOLUME_CONTROL_SOFTWARE
-        # Volume control mode is configured at provider level
+        # On Linux with a PA sink, use software volume — hardware ceiling
+        # is set once at startup via apply_hardware_ceiling()
+        if sys.platform == "linux" and self._pa_sink_name:
+            return VOLUME_CONTROL_SOFTWARE
+        # On other platforms, volume control mode is configured at provider level
         return str(self._provider.config.get_value(CONF_VOLUME_CONTROL) or VOLUME_CONTROL_HARDWARE)
 
     async def volume_set(self, volume_level: int) -> None:
