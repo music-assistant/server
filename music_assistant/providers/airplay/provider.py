@@ -51,11 +51,6 @@ class AirPlayProvider(PlayerProvider):
         """Return the Sendspin bridge manager."""
         return self._bridge_manager
 
-    @property
-    def supports_dynamic_leader_switching(self) -> bool:
-        """Return True: AirPlay supports removing the leader without stream teardown."""
-        return True
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # Initialize Sendspin bridge manager for protocol linking
