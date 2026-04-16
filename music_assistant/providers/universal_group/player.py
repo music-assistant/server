@@ -218,21 +218,19 @@ class UniversalGroupPlayer(Player):
                             other_group.supports_feature(PlayerFeature.SET_MEMBERS)
                             and member.player_id not in other_group.static_group_members
                         ):
-                            await self.mass.players.wait_for_player_update(
-                                member.player_id,
-                                timeout=5,
-                                action=other_group.set_members(
+                            async with self.mass.players.wait_for_player_update(
+                                member.player_id, timeout=5
+                            ):
+                                await other_group.set_members(
                                     player_ids_to_remove=[member.player_id]
-                                ),
-                            )
+                                )
                         else:
                             # if the other group does not support SET_MEMBERS or it is a static
                             # member, we need to power it off to leave the group
-                            await self.mass.players.wait_for_player_update(
-                                member.player_id,
-                                timeout=5,
-                                action=other_group.power(False),
-                            )
+                            async with self.mass.players.wait_for_player_update(
+                                member.player_id, timeout=5
+                            ):
+                                await other_group.power(False)
                 if member.synced_to:
                     # edge case: the member is part of a syncgroup - ungroup it first
                     await member.ungroup()
