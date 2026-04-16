@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientSession, TCPConnector
+from music_assistant_models.enums import IdentifierType
 from wiim import WiimController
 from wiim.discovery import async_create_wiim_device, verify_wiim_device
 from wiim.exceptions import WiimDeviceException, WiimRequestException
@@ -93,13 +94,29 @@ class WiimProvider(PlayerProvider):
     ) -> None:
         """Handle MDNS service state callback."""
         if not info:
-            return  # guard
+            return
+
+        if state_change == ServiceStateChange.Removed:
+            return  # ignore, rely on SDK availability polling
 
         cur_address = get_primary_ip_address_from_zeroconf(info)
-
         if cur_address is None:
             return
 
+        # Try to get player_id from mDNS properties first (avoids network call)
+        player_id = info.decoded_properties.get("uuid") if info.decoded_properties else None
+
+        # Check for existing player before hitting the network
+        if player_id and (mass_player := self.mass.players.get_player(player_id)):
+            if cur_address and cur_address != mass_player.device_info.ip_address:
+                self.logger.debug(
+                    "Address updated to %s for player %s", cur_address, mass_player.display_name
+                )
+                mass_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
+            self.mass.players.trigger_player_update(player_id)
+            return
+
+        # New device -- verify it's a WiiM and set up
         potential_locations = (
             f"http://{cur_address}:{get_port_from_zeroconf(info)}/description.xml",
             f"http://{cur_address}/description.xml",
@@ -107,7 +124,6 @@ class WiimProvider(PlayerProvider):
         )
 
         matched_location = None
-        upnp_device = None
         for location in potential_locations:
             upnp_device = await verify_wiim_device(location, self.wiim_session)
             if upnp_device:
@@ -118,29 +134,20 @@ class WiimProvider(PlayerProvider):
             return
 
         player_id = upnp_device.udn
-
         if not player_id:
             return
 
-        # handle removed player
-        if state_change == ServiceStateChange.Removed:
-            if mass_player := self.mass.players.get_player(player_id):
-                self.logger.debug("Player offline: %s", mass_player.display_name)
-                await self.mass.players.unregister(player_id)
-            return
-
-        # handle update for existing device
-        if mass_player := self.mass.players.get_player(player_id):
-            if cur_address and cur_address != mass_player.device_info.ip_address:
-                self.logger.debug(
-                    "Address updated to %s for player %s", cur_address, mass_player.display_name
-                )
-            mass_player.update_state()
-            return
-
-        # handle new player
         self.logger.debug("Discovered device %s on %s", name, cur_address)
-        await self.try_add_player(player_id, cur_address, name, matched_location)
+        task_id = f"setup_wiim_{player_id}"
+        self.mass.call_later(
+            5,
+            self.try_add_player,
+            player_id,
+            cur_address,
+            name,
+            matched_location,
+            task_id=task_id,
+        )
 
     async def try_add_player(
         self, player_id: str, ip_address: str, name: str, upnp_location: str
@@ -162,4 +169,4 @@ class WiimProvider(PlayerProvider):
 
         player = WiimPlayer(provider=self, player_id=wiim_dev.udn, device=wiim_dev)
         await player.setup()
-        await self.mass.players.register(player)
+        await self.mass.players.register_or_update(player)
