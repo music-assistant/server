@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import typing
 from typing import TYPE_CHECKING, cast
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
+from wiim.exceptions import WiimDeviceException, WiimRequestException
 
 from music_assistant.helpers.upnp import create_didl_metadata_str
 from music_assistant.models.player import Player, PlayerMedia
@@ -51,6 +53,7 @@ class WiimPlayer(Player):
 
         self.current_uri: str | None = None
 
+        device.general_event_callback = self._handle_sdk_general_device_update
         device.rendering_control_event_callback = self._handle_sdk_rendering_control_event
         device.av_transport_event_callback = self._handle_sdk_av_transport_event
         device.play_queue_event_callback = self._handle_sdk_play_queue_event
@@ -61,19 +64,65 @@ class WiimPlayer(Player):
         self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
         self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_UNKNOWN])
 
+    def _handle_sdk_general_device_update(self, device: WiimDevice) -> None:
+        """Handle general updates from the SDK (availability changes)."""
+        if not device.available:
+            self.logger.debug("Device %s became unavailable", self._attr_name)
+            self._update_ma_state_from_sdk_cache()
+            return
+
+        if device.supports_http_api:
+            self.logger.debug("Device %s available, ensuring subscriptions", self._attr_name)
+            asyncio.create_task(self._ensure_subscriptions_and_update())
+        else:
+            self._update_ma_state_from_sdk_cache()
+
+    async def _ensure_subscriptions_and_update(self) -> None:
+        """Re-subscribe to UPnP events and update state."""
+        try:
+            await self.device.ensure_subscriptions()
+        except (WiimDeviceException, WiimRequestException) as err:
+            self.logger.warning("Failed to re-subscribe for %s: %s", self._attr_name, err)
+        self._update_ma_state_from_sdk_cache()
+
     def _handle_sdk_av_transport_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
     ) -> None:
+        """Handle AVTransport events from the SDK."""
+        event_data = self.device.event_data
+
+        if "TransportState" in event_data:
+            try:
+                sdk_status = PlayingStatus(event_data["TransportState"])
+            except ValueError:
+                self.logger.warning("Unknown TransportState: %s", event_data["TransportState"])
+            else:
+                self.device.playing_status = sdk_status
+                if sdk_status == PlayingStatus.STOPPED:
+                    self.device.current_position = 0
+                    self.device.current_track_duration = 0
+                elif sdk_status in {PlayingStatus.PAUSED, PlayingStatus.PLAYING}:
+                    asyncio.create_task(self._sync_position())
+
         self._update_ma_state_from_sdk_cache()
+
+    async def _sync_position(self) -> None:
+        """Sync duration and position from the device."""
+        try:
+            await self.device.sync_device_duration_and_position()
+        except (WiimDeviceException, WiimRequestException) as err:
+            self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
 
     def _handle_sdk_rendering_control_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
     ) -> None:
+        """Handle RenderingControl events from the SDK."""
         self._update_ma_state_from_sdk_cache()
 
     def _handle_sdk_play_queue_event(
         self, service: UpnpService, state_variables: list[UpnpStateVariable[typing.Any]]
     ) -> None:
+        """Handle PlayQueue events from the SDK."""
         self._update_ma_state_from_sdk_cache()
 
     @property
