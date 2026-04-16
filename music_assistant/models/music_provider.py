@@ -1033,6 +1033,27 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.audiobooks.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                else:
+                    # detect a change in ProviderFeature
+                    lib_author: str | Artist | None = None
+                    prov_author: str | Artist | None = None
+                    lib_narrator: str | Artist | None = None
+                    prov_narrator: str | Artist | None = None
+                    if len(library_item.authors) > 0:
+                        lib_author = library_item.authors[0]
+                    if len(prov_item.authors) > 0:
+                        prov_author = prov_item.authors[0]
+                    if len(library_item.narrators) > 0:
+                        lib_narrator = library_item.narrators[0]
+                    if len(prov_item.narrators) > 0:
+                        prov_narrator = prov_item.narrators[0]
+                    if (isinstance(lib_author, Artist) and not isinstance(prov_author, Artist)) or (
+                        isinstance(lib_narrator, Artist) and not isinstance(prov_narrator, Artist)
+                    ):
+                        library_item = await self.mass.music.audiobooks.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
+
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
