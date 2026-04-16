@@ -53,6 +53,11 @@ def _find_pulse_server() -> str:
 
 
 def _get_pulse_server() -> str:
+    """Return the PulseAudio server path, checked fresh on each call.
+
+    Intentionally not cached — the socket may not exist at import time
+    but appear later once the audio addon has fully started.
+    """
     return _find_pulse_server()
 
 
@@ -108,12 +113,13 @@ class PASimpleStream:
             format=_pa_sample_format(bit_depth),
             rate=rate,
             channels=channels,
-    )
+        )
         error = ctypes.c_int(0)
         self._lib = lib
         self._lock = threading.Lock()
+        pulse_server = _get_pulse_server()
         self._conn: int | None = lib.pa_simple_new(
-            PULSE_SERVER.encode() if PULSE_SERVER else None,
+            pulse_server.encode() if pulse_server else None,
             app_name.encode(),
             PA_STREAM_PLAYBACK,
             sink_name.encode(),
@@ -126,7 +132,7 @@ class PASimpleStream:
         if not self._conn:
             raise OSError(
                 f"pa_simple_new failed for sink '{sink_name}' "
-                f"(pa_error={error.value}, server={PULSE_SERVER!r})"
+                f"(pa_error={error.value}, server={pulse_server!r})"
             )
 
     def write(self, data: bytes) -> None:
@@ -277,11 +283,12 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         if not ctx:
             raise OSError("pa_context_new failed")
 
-        server = PULSE_SERVER.encode() if PULSE_SERVER else None
+        pulse_server = _get_pulse_server()
+        server = pulse_server.encode() if pulse_server else None
         ret = lib.pa_context_connect(ctx, server, 0, None)
         if ret < 0:
             lib.pa_context_unref(ctx)
-            raise OSError(f"pa_context_connect failed (ret={ret})")
+            raise OSError(f"pa_context_connect failed (ret={ret}, server={pulse_server!r})")
 
         # Wait for context to become ready (max ~2s)
         for _ in range(2000):
@@ -291,10 +298,10 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 break
             if state in (PA_CONTEXT_FAILED, PA_CONTEXT_TERMINATED):
                 lib.pa_context_unref(ctx)
-                raise OSError(f"PA context failed to connect (state={state})")
+                raise OSError(f"PA context failed to connect (state={state}, server={pulse_server!r})")
         else:
             lib.pa_context_unref(ctx)
-            raise OSError("Timed out waiting for PA context to become ready")
+            raise OSError(f"Timed out waiting for PA context to become ready (server={pulse_server!r})")
 
         # Issue get_sink_info_list and pump mainloop until operation completes
         op = lib.pa_context_get_sink_info_list(ctx, sink_cb, None)
