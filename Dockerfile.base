@@ -49,8 +49,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev \
     libssh-dev \
     liblzma-dev \
-    # Allows pipewire devices to be detected when running in docker container.
-    pipewire-alsa \
     # SSL/TLS support for HTTPS
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -195,6 +193,8 @@ RUN set -x \
         libasound2 \
         # PortAudio for local audio output (sounddevice)
         libportaudio2 \
+        # Allows pipewire devices to be detected when running in docker container. (local audio)
+        pipewire-alsa \
         libvorbisidec1 \
         libflac12 \
         libavahi-client3 \
