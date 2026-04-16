@@ -2,30 +2,12 @@
 
 from music_assistant_models.player import PlayerSource
 
-SOURCE_LINE_IN = "line_in"
+# Passive sources detected via current track URI
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
-SOURCE_TV = "tv"
-SOURCE_RADIO = "radio"
 
-PLAYER_SOURCE_MAP = {
-    SOURCE_LINE_IN: PlayerSource(
-        id=SOURCE_LINE_IN,
-        name="Line-in",
-        passive=False,
-        can_play_pause=False,
-        can_next_previous=False,
-        can_seek=False,
-    ),
-    SOURCE_TV: PlayerSource(
-        id=SOURCE_TV,
-        name="TV",
-        passive=False,
-        can_play_pause=False,
-        can_next_previous=False,
-        can_seek=False,
-    ),
+PASSIVE_SOURCES: dict[str, PlayerSource] = {
     SOURCE_AIRPLAY: PlayerSource(
         id=SOURCE_AIRPLAY,
         name="AirPlay",
@@ -42,14 +24,6 @@ PLAYER_SOURCE_MAP = {
         can_next_previous=True,
         can_seek=True,
     ),
-    SOURCE_RADIO: PlayerSource(
-        id=SOURCE_RADIO,
-        name="Radio",
-        passive=True,
-        can_play_pause=True,
-        can_next_previous=True,
-        can_seek=True,
-    ),
     SOURCE_UNKNOWN: PlayerSource(
         id=SOURCE_UNKNOWN,
         name="Unknown",
@@ -59,3 +33,59 @@ PLAYER_SOURCE_MAP = {
         can_seek=True,
     ),
 }
+
+# Input modes from device.supported_input_modes (non-passive, user-selectable)
+# Keys match the display names returned by the SDK
+INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
+    "Network": PlayerSource(
+        id="network",
+        name="Network",
+        passive=False,
+        can_play_pause=True,
+        can_next_previous=True,
+        can_seek=True,
+    ),
+    "Bluetooth": PlayerSource(
+        id="bluetooth",
+        name="Bluetooth",
+        passive=False,
+        can_play_pause=True,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    "Line In": PlayerSource(
+        id="line_in",
+        name="Line In",
+        passive=False,
+        can_play_pause=False,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    "Optical": PlayerSource(
+        id="optical",
+        name="Optical",
+        passive=False,
+        can_play_pause=False,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    "HDMI": PlayerSource(
+        id="hdmi",
+        name="HDMI",
+        passive=False,
+        can_play_pause=False,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+    "Phono In": PlayerSource(
+        id="phono_in",
+        name="Phono In",
+        passive=False,
+        can_play_pause=False,
+        can_next_previous=False,
+        can_seek=False,
+    ),
+}
+
+# Reverse lookup: source ID -> SDK display name for select_source commands
+SOURCE_ID_TO_INPUT_MODE: dict[str, str] = {v.id: k for k, v in INPUT_MODE_SOURCES.items()}
