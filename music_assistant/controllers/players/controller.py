@@ -1148,6 +1148,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = f"Player {parent_player.name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
 
+        # if the target player is a member of an active group player (e.g. a syncgroup),
+        # redirect the command to that group player so it can manage the member change
+        if (
+            parent_player.type != PlayerType.GROUP
+            and parent_player.state.active_group
+            and (group_player := self.get_player(parent_player.state.active_group))
+            and group_player.type == PlayerType.GROUP
+            and PlayerFeature.SET_MEMBERS in group_player.state.supported_features
+        ):
+            self.logger.debug(
+                "Redirecting set_members from %s to its group player %s",
+                parent_player.name,
+                group_player.name,
+            )
+            await self.cmd_set_members(
+                parent_player.state.active_group, player_ids_to_add, player_ids_to_remove
+            )
+            return
+
         if parent_player.synced_to:
             # handle edge case: target player is already synced itself to another player
             # automatically ungroup it first and wait for state to propagate
@@ -2821,9 +2840,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             ):
                 continue  # already synced to this target
 
+            # also skip if the child is part of this group via its sync leader
+            # (e.g. synced to the sync leader of this syncgroup)
+            if (
+                child_player.state.active_group == target_player
+                and child_player_id in parent_player.state.group_members
+            ):
+                continue
+
             # handle edge case: child player is synced to a different player
             # automatically ungroup it first and wait for state to propagate
-            if child_player.state.synced_to and child_player.state.synced_to != target_player:
+            # but not if the child is already part of this group (via its sync leader)
+            if child_player.state.synced_to and target_player not in {
+                child_player.state.synced_to,
+                child_player.state.active_group,
+            }:
                 await self._auto_ungroup_if_synced(child_player, f"joining {parent_player.name}")
 
             # power on the player if needed
