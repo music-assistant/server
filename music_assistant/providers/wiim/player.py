@@ -7,7 +7,7 @@ import time
 import typing
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
 from wiim.exceptions import WiimDeviceException, WiimRequestException
@@ -26,7 +26,7 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.PLAYING: PlaybackState.PLAYING,
     PlayingStatus.PAUSED: PlaybackState.PAUSED,
     PlayingStatus.STOPPED: PlaybackState.IDLE,
-    PlayingStatus.LOADING: PlaybackState.UNKNOWN,  # TODO Is this the right status?
+    PlayingStatus.LOADING: PlaybackState.IDLE,
 }
 
 
@@ -41,16 +41,25 @@ class WiimPlayer(Player):
         self._attr_name = device.name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.SELECT_SOURCE,
-            # PlayerFeature.PLAY_ANNOUNCEMENT,
         }
         self._attr_can_group_with = {provider.instance_id}
         self.device = device
         self._wiim_controller = provider.wiim_controller
+
+        self._attr_device_info = DeviceInfo(
+            model=device.model_name,
+            manufacturer=device.manufacturer or "WiiM",
+            software_version=device.firmware_version,
+        )
+        self._attr_device_info.add_identifier(IdentifierType.UUID, player_id)
+        if device.ip_address:
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device.ip_address)
 
         self.current_uri: str | None = None
 
@@ -251,15 +260,8 @@ class WiimPlayer(Player):
 
         self._attr_available = self.device.available
 
-        # Update DeviceInfo if name changes
         if self.device.name != self._attr_name:
             self._attr_name = self.device.name
-
-            self._attr_device_info = DeviceInfo(
-                model=self.device.model_name,
-                manufacturer=self.device.manufacturer or "Unknown Manufacturer",
-                software_version=self.device.firmware_version,
-            )
 
         if not self._attr_available:
             # If device is unavailable, clear media-related attributes
