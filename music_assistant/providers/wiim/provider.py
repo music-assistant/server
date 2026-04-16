@@ -79,17 +79,14 @@ class WiimProvider(PlayerProvider):
             await self.try_add_player(player_id, stripped_ip_address, "Unknown", matched_location)
 
     async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        is_removed will be set to True when the provider is removed from the configuration.
-        """
+        """Handle unload/close of the provider."""
         for player in self.players:
-            # if you have any cleanup logic for the players, you can do that here.
-            # e.g. disconnecting from the player, closing connections, etc.
             self.logger.debug("Unloading player %s", player.name)
+            if isinstance(player, WiimPlayer):
+                await self.wiim_controller.remove_device(player.device.udn)
+                await player.device.disconnect()
             await self.mass.players.unregister(player.player_id)
+        await self.wiim_session.close()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
