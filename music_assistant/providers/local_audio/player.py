@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.helpers.process import check_output
 from music_assistant.models.player import Player
 
 from .constants import (
@@ -22,6 +21,12 @@ from .constants import (
 
 if sys.platform == "darwin":
     from .coreaudio_volume import set_device_mute, set_device_volume
+elif sys.platform == "linux":
+    try:
+        import pulsectl
+        _PULSECTL_AVAILABLE = True
+    except ImportError:
+        _PULSECTL_AVAILABLE = False
 
 if TYPE_CHECKING:
     from .provider import LocalAudioProvider
@@ -46,6 +51,7 @@ class LocalAudioPlayer(Player):
         device_name: str,
         hostapi_index: int,
         device_index: int,
+        pa_sink_name: str | None = None,
     ) -> None:
         """
         Initialize the Local Audio player.
@@ -55,6 +61,7 @@ class LocalAudioPlayer(Player):
         :param device_name: The device name reported by PortAudio.
         :param hostapi_index: The host API index.
         :param device_index: The PortAudio device index (maps to ALSA card on Linux).
+        :param pa_sink_name: The PulseAudio sink name for this device (Linux only).
         """
         super().__init__(provider, player_id)
         self._attr_type = PlayerType.PLAYER
@@ -73,6 +80,7 @@ class LocalAudioPlayer(Player):
         self._attr_can_group_with = set()
         self._attr_volume_level = 100
         self._device_index = device_index
+        self._pa_sink_name = pa_sink_name
         # Set when hardware volume fails, causes automatic fallback to software
         self._hardware_volume_fallback = False
 
@@ -112,12 +120,22 @@ class LocalAudioPlayer(Player):
                     self.logger.warning("CoreAudio volume control failed for %s", self.name)
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
-                # Use -c to target the specific ALSA card by index
-                rc, _ = await check_output(
-                    "amixer", "-c", str(self._device_index), "sset", "Master", f"{volume}%"
-                )
-                if rc != 0:
-                    self.logger.warning("amixer volume failed for card %d", self._device_index)
+                if _PULSECTL_AVAILABLE and self._pa_sink_name:
+                    loop = asyncio.get_running_loop()
+                    ok = await loop.run_in_executor(
+                        None, self._set_pulse_volume, self._pa_sink_name, volume
+                    )
+                    if not ok:
+                        self.logger.warning(
+                            "PulseAudio volume control failed for %s, falling back to software",
+                            self._pa_sink_name,
+                        )
+                        self._hardware_volume_fallback = True
+                else:
+                    self.logger.warning(
+                        "No PulseAudio sink available for %s, falling back to software",
+                        self.name,
+                    )
                     self._hardware_volume_fallback = True
             else:
                 self.logger.warning(
@@ -142,15 +160,61 @@ class LocalAudioPlayer(Player):
                     self.logger.warning("CoreAudio mute control failed for %s", self.name)
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
-                toggle = "mute" if muted else "unmute"
-                rc, _ = await check_output(
-                    "amixer", "-c", str(self._device_index), "sset", "Master", toggle
-                )
-                if rc != 0:
-                    self.logger.warning("amixer mute failed for card %d", self._device_index)
+                if _PULSECTL_AVAILABLE and self._pa_sink_name:
+                    loop = asyncio.get_running_loop()
+                    ok = await loop.run_in_executor(
+                        None, self._set_pulse_mute, self._pa_sink_name, muted
+                    )
+                    if not ok:
+                        self.logger.warning(
+                            "PulseAudio mute control failed for %s, falling back to software",
+                            self._pa_sink_name,
+                        )
+                        self._hardware_volume_fallback = True
+                else:
                     self._hardware_volume_fallback = True
             else:
                 self._hardware_volume_fallback = True
         except FileNotFoundError:
             self.logger.warning("Mute control command not found, falling back to software")
             self._hardware_volume_fallback = True
+
+    def _set_pulse_volume(self, pa_sink_name: str, volume: int) -> bool:
+        """Set PulseAudio sink volume. Returns True on success.
+
+        Intended to be called via run_in_executor.
+
+        :param pa_sink_name: The PulseAudio sink name.
+        :param volume: Volume level 0-100.
+        """
+        try:
+            with pulsectl.Pulse("ma-local-audio") as pulse:
+                for sink in pulse.sink_list():
+                    if sink.name == pa_sink_name:
+                        pulse.volume_set_all_chans(sink, volume / 100.0)
+                        return True
+            self.logger.warning("PA sink %s not found for volume control", pa_sink_name)
+            return False
+        except Exception as err:
+            self.logger.warning("pulsectl volume error for %s: %s", pa_sink_name, err)
+            return False
+
+    def _set_pulse_mute(self, pa_sink_name: str, muted: bool) -> bool:
+        """Set PulseAudio sink mute state. Returns True on success.
+
+        Intended to be called via run_in_executor.
+
+        :param pa_sink_name: The PulseAudio sink name.
+        :param muted: Whether to mute or unmute.
+        """
+        try:
+            with pulsectl.Pulse("ma-local-audio") as pulse:
+                for sink in pulse.sink_list():
+                    if sink.name == pa_sink_name:
+                        pulse.mute(sink, muted)
+                        return True
+            self.logger.warning("PA sink %s not found for mute control", pa_sink_name)
+            return False
+        except Exception as err:
+            self.logger.warning("pulsectl mute error for %s: %s", pa_sink_name, err)
+            return False
