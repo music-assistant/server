@@ -263,9 +263,10 @@ async def test_cleanup_after_removal_skips_idle_when_player_has_new_session_stre
     now = time.time()
     session = _make_session(now - 10, 12.5)
     player = _make_late_joiner()
+    other_session = object()
     player.set_state_from_stream = MagicMock()
     player.stream = MagicMock()
-    player.stream.session = MagicMock()
+    player.stream.session = other_session
     session.sync_clients.clear()
 
     with (
