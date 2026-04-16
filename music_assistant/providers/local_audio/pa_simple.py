@@ -171,57 +171,30 @@ class PASimpleStream:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-
 def enumerate_pa_sinks() -> list[dict[str, Any]]:
-    """Enumerate PulseAudio sinks via libpulse introspection API.
-
-    Uses pa_mainloop + pa_context synchronously — no pactl binary needed.
-    Returns list of dicts with keys:
-      - name: display name (PA sink description)
-      - pa_sink_name: internal PA sink name
-      - max_output_channels: number of channels
-      - sample_rate: sink native sample rate in Hz
-      - bit_depth: sink native bit depth (16, 24, or 32); defaults to 16
-        for unrecognised PA sample formats
-    """
-    lib = ctypes.CDLL("libpulse.so.0")
-
-    # --- function signatures ---
-    lib.pa_mainloop_new.restype = ctypes.c_void_p
-    lib.pa_mainloop_new.argtypes = []
-    lib.pa_mainloop_get_api.restype = ctypes.c_void_p
-    lib.pa_mainloop_get_api.argtypes = [ctypes.c_void_p]
-    lib.pa_mainloop_iterate.restype = ctypes.c_int
-    lib.pa_mainloop_iterate.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-    lib.pa_mainloop_free.restype = None
-    lib.pa_mainloop_free.argtypes = [ctypes.c_void_p]
-    lib.pa_context_new.restype = ctypes.c_void_p
-    lib.pa_context_new.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    lib.pa_context_connect.restype = ctypes.c_int
-    lib.pa_context_connect.argtypes = [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p,
-    ]
-    lib.pa_context_get_state.restype = ctypes.c_int
-    lib.pa_context_get_state.argtypes = [ctypes.c_void_p]
-    lib.pa_context_get_sink_info_list.restype = ctypes.c_void_p
-    lib.pa_context_get_sink_info_list.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-    ]
-    lib.pa_operation_get_state.restype = ctypes.c_int
-    lib.pa_operation_get_state.argtypes = [ctypes.c_void_p]
-    lib.pa_operation_unref.restype = None
-    lib.pa_operation_unref.argtypes = [ctypes.c_void_p]
-    lib.pa_context_disconnect.restype = None
-    lib.pa_context_disconnect.argtypes = [ctypes.c_void_p]
-    lib.pa_context_unref.restype = None
-    lib.pa_context_unref.argtypes = [ctypes.c_void_p]
-
-    # PA context states
-    PA_CONTEXT_READY = 4
-    PA_CONTEXT_FAILED = 5
-    PA_CONTEXT_TERMINATED = 6
-    # PA operation states
-    PA_OPERATION_DONE = 0
+    """Enumerate stereo-capable PulseAudio sinks via pulsectl."""
+    import pulsectl
+    sinks = []
+    with pulsectl.Pulse("ma-local-audio-enum") as pulse:
+        for sink in pulse.sink_list():
+            channels = sink.sample_spec.channels
+            if channels < 2:
+                continue
+            fmt = sink.sample_spec.format.name  # e.g. 's32le'
+            try:
+                bit_depth = int(
+                    "".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0]))
+                )
+            except ValueError:
+                bit_depth = 16
+            sinks.append({
+                "name": sink.description or sink.name,
+                "pa_sink_name": sink.name,
+                "max_output_channels": channels,
+                "sample_rate": sink.sample_spec.rate,
+                "bit_depth": bit_depth,
+            })
+    return sinks
 
     class _PASampleSpecFull(ctypes.Structure):
         _fields_ = [
