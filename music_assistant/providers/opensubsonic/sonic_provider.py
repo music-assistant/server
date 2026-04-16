@@ -83,6 +83,7 @@ CONF_NEW_ALBUMS = "recommend_new"
 CONF_PLAYED_ALBUMS = "recommend_played"
 CONF_RECO_SIZE = "recommendation_count"
 CONF_PAGE_SIZE = "pagination_size"
+CONF_RAW_FILE = "request_raw_file"
 
 CACHE_CATEGORY_PODCAST_CHANNEL = 1
 CACHE_CATEGORY_PODCAST_EPISODES = 2
@@ -104,6 +105,7 @@ class OpenSonicProvider(MusicProvider):
     _reco_limit: int = 10
     _pagination_size: int = 200
     _id_lyrics: bool = False
+    _raw_file: bool = True
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
@@ -147,6 +149,7 @@ class OpenSonicProvider(MusicProvider):
         self._reco_limit = int(str(self.config.get_value(CONF_RECO_SIZE)))
         self._pagination_size = int(str(self.config.get_value(CONF_PAGE_SIZE)))
         self._pagination_size = min(self._pagination_size, 500)
+        self._raw_file = bool(self.config.get_value(CONF_RAW_FILE))
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -782,9 +785,11 @@ class OpenSonicProvider(MusicProvider):
             seek_position = 0
 
         self.logger.debug("Streaming %s", streamdetails.item_id)
+        fmat = "raw" if self._raw_file else None
+
         try:
             resp = await self.conn.stream(
-                streamdetails.item_id, time_offset=seek_position, estimate_length=True
+                streamdetails.item_id, time_offset=seek_position, estimate_length=True, tformat=fmat
             )
         except DataNotFoundError as err:
             msg = f"Item '{streamdetails.item_id}' not found"
