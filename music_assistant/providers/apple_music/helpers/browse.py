@@ -11,7 +11,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder, Playlist, ProviderMapping
 
 if TYPE_CHECKING:
-    from music_assistant.providers.apple_music import AppleMusicProvider
+    from music_assistant.providers.apple_music.provider import AppleMusicProvider
 
 ROOT_PLAYLIST_FOLDER_ID = "p.playlistsroot"
 # Apple exposes the entire playlist hierarchy under this synthetic root. We walk the
