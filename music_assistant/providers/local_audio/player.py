@@ -54,6 +54,7 @@ class LocalAudioPlayer(Player):
         hostapi_index: int,
         device_index: int,
         pa_sink_name: str | None = None,
+        is_remap: bool = False,
     ) -> None:
         """
         Initialize the Local Audio player.
@@ -64,6 +65,7 @@ class LocalAudioPlayer(Player):
         :param hostapi_index: The host API index.
         :param device_index: The PortAudio device index (maps to ALSA card on Linux).
         :param pa_sink_name: The PulseAudio sink name for this device (Linux only).
+        :param is_remap: True if this is a remap/filter sink (not a physical ALSA sink).
         """
         super().__init__(provider, player_id)
         self._attr_type = PlayerType.PLAYER
@@ -83,6 +85,7 @@ class LocalAudioPlayer(Player):
         self._attr_volume_level = 25 if (sys.platform == "linux" and pa_sink_name) else 100
         self._device_index = device_index
         self._pa_sink_name = pa_sink_name
+        self._is_remap = is_remap
         # Set when hardware volume fails, causes automatic fallback to software
         self._hardware_volume_fallback = False
 
@@ -189,9 +192,11 @@ class LocalAudioPlayer(Player):
         """Set PA sink hardware volume ceiling via pulsectl (Linux only).
 
         Called on every startup to cap the hardware output level at the
-        configured ceiling percentage. No-op on non-Linux or if no PA sink.
+        configured ceiling percentage. Only applied to physical ALSA sinks —
+        remap/filter sinks inherit the ceiling from their parent device.
+        No-op on non-Linux, if no PA sink, or if this is a remap sink.
         """
-        if not self._pa_sink_name:
+        if not self._pa_sink_name or self._is_remap:
             return
         ceiling: int = int(
             self._provider.config.get_value(
