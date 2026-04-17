@@ -35,8 +35,6 @@ class WiimProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.logger.info("Initializing WiimProvider with config: %s", self.config)
-
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("wiim").setLevel(logging.DEBUG)
             logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
@@ -94,12 +92,6 @@ class WiimProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
-        self.logger.debug(
-            "mDNS callback: name=%s, state_change=%s, info=%s",
-            name,
-            state_change,
-            info is not None,
-        )
         if not info:
             self.logger.debug("mDNS callback: no info, returning")
             return
@@ -176,9 +168,6 @@ class WiimProvider(PlayerProvider):
         mac_address: str | None = None,
     ) -> None:
         """Try to add a WiiM device as a player."""
-        self.logger.debug(
-            "try_add_player: %s at %s (location: %s)", name, ip_address, upnp_location
-        )
         try:
             wiim_dev = await async_create_wiim_device(
                 upnp_location,
@@ -196,22 +185,15 @@ class WiimProvider(PlayerProvider):
 
         self.logger.debug("try_add_player: device created: %s (%s)", wiim_dev.name, wiim_dev.udn)
         await self.wiim_controller.add_device(wiim_dev)
-
-        # Use a WiiM-namespaced player ID to avoid colliding with DLNA, which
-        # uses the raw UDN and would repeatedly overwrite our player object.
-        # Protocol linking works via MAC/UUID/IP identifiers on DeviceInfo.
-        wiim_player_id = f"{PLAYER_ID_PREFIX}{wiim_dev.udn}"
-
         try:
             player = WiimPlayer(
                 provider=self,
-                player_id=wiim_player_id,
+                player_id=player_id,
                 device=wiim_dev,
                 mac_address=mac_address,
             )
             await player.setup()
-            self.logger.debug("try_add_player: registering player %s", wiim_player_id)
             await self.mass.players.register_or_update(player)
-            self.logger.info("WiiM player registered: %s (%s)", wiim_dev.name, wiim_player_id)
+            self.logger.info("WiiM player registered: %s (%s)", wiim_dev.name, player_id)
         except Exception:
             self.logger.exception("Failed to register WiiM player %s", wiim_dev.name)

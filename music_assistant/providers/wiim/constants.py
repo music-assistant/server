@@ -64,17 +64,17 @@ INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
         can_next_previous=False,
         can_seek=False,
     ),
-    "Optical": PlayerSource(
+    "Optical In": PlayerSource(
         id="optical",
-        name="Optical",
+        name="Optical In",
         passive=False,
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
     ),
-    "HDMI": PlayerSource(
+    "TV": PlayerSource(
         id="hdmi",
-        name="HDMI",
+        name="TV",
         passive=False,
         can_play_pause=False,
         can_next_previous=False,
