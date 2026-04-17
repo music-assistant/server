@@ -182,7 +182,9 @@ class NTSAuth:
                     artist_values = (
                         fields.get("artist_names", {}).get("arrayValue", {}).get("values", [])
                     )
-                    artists = [v.get("stringValue", "") for v in artist_values]
+                    artists = [
+                        name for v in artist_values if (name := v.get("stringValue", "").strip())
+                    ]
                     title = fields.get("song_title", {}).get("stringValue", "")
 
                     if artists or title:
