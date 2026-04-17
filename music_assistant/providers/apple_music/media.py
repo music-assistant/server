@@ -16,7 +16,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
-from .api_client import is_catalog_id
+from .helpers.utils import is_catalog_id
 from .parsers import (
     parse_album,
     parse_artist,

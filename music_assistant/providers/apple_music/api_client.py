@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType
@@ -15,36 +14,19 @@ from music_assistant_models.errors import (
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 
+from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
+
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
 
 _APPLE_API_BASE = "https://api.music.apple.com/v1"
 
-
-def is_library_id(library_id: Any) -> bool:
-    """Return True if the ID matches the Apple Music library ID format."""
-    if not isinstance(library_id, str):
-        return False
-    return bool(re.fullmatch(r"[ailp]\.[a-zA-Z0-9]+", library_id))
-
-
-def is_catalog_id(catalog_id: str) -> bool:
-    """Return True if the ID is a catalog ID (numeric or starts with 'pl.')."""
-    return catalog_id.isnumeric() or catalog_id.startswith("pl.")
-
-
-def translate_media_type_to_apple_type(media_type: MediaType) -> str:
-    """Translate a MediaType to the Apple Music API endpoint segment."""
-    match media_type:
-        case MediaType.ARTIST:
-            return "artists"
-        case MediaType.ALBUM:
-            return "albums"
-        case MediaType.TRACK:
-            return "songs"
-        case MediaType.PLAYLIST:
-            return "playlists"
-    raise MusicAssistantError(f"Unsupported media type: {media_type}")
+__all__ = [
+    "AppleMusicAPIClient",
+    "is_catalog_id",
+    "is_library_id",
+    "translate_media_type_to_apple_type",
+]
 
 
 class AppleMusicAPIClient:

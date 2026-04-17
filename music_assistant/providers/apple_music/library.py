@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
 
-from .api_client import is_catalog_id, is_library_id, translate_media_type_to_apple_type
+from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 
 if TYPE_CHECKING:

@@ -19,7 +19,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.models.music_provider import MusicProvider
 
-from .api_client import AppleMusicAPIClient, is_catalog_id, is_library_id
+from .api_client import AppleMusicAPIClient
 from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
@@ -27,6 +27,7 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
+from .helpers.utils import is_catalog_id, is_library_id
 from .library import AppleMusicLibraryManager
 from .media import AppleMusicMediaManager
 from .parsers import parse_playlist

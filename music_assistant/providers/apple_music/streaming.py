@@ -20,13 +20,13 @@ from shortuuid import uuid
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 
-from .api_client import is_library_id
 from .constants import (
     CACHE_CATEGORY_DECRYPT_KEY,
     DECRYPT_CLIENT_ID_FILENAME,
     DECRYPT_PRIVATE_KEY_FILENAME,
     WIDEVINE_BASE_PATH,
 )
+from .helpers.utils import is_library_id
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
