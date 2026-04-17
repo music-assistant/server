@@ -167,12 +167,19 @@ class SmartFade(ABC):
                         got_output = True
                         yield chunk
                 finally:
-                    if not feed_task.done():
-                        feed_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await feed_task
-                    with suppress(asyncio.CancelledError):
-                        await stderr_task
+                    # Cancel both helper tasks so neither can block this finally.
+                    # stderr_task blocks on readline() until ffmpeg closes stderr,
+                    # which only happens after proc.close() closes stdin — but
+                    # proc.close() runs via the async-with __aexit__ *after* this
+                    # finally. If the consumer aborts (GeneratorExit), awaiting
+                    # stderr_task here would deadlock and the ffmpeg process (and
+                    # temp file) would leak.
+                    for task in (feed_task, stderr_task):
+                        if not task.done():
+                            task.cancel()
+                    for task in (feed_task, stderr_task):
+                        with suppress(asyncio.CancelledError):
+                            await task
 
             if proc.returncode not in (None, 0) or not got_output:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
