@@ -72,10 +72,6 @@ class WiimProvider(PlayerProvider):
                 continue
 
             player_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
-
-            if not player_id:
-                continue
-
             await self.try_add_player(player_id, stripped_ip_address, "Unknown", matched_location)
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -127,6 +123,7 @@ class WiimProvider(PlayerProvider):
         )
 
         matched_location = None
+        upnp_device = None
         for location in potential_locations:
             upnp_device = await verify_wiim_device(location, self.wiim_session)
             if upnp_device:
@@ -138,8 +135,6 @@ class WiimProvider(PlayerProvider):
             return
 
         player_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
-        if not player_id:
-            return
 
         # Extract MAC address from mDNS properties for protocol linking
         mac_address: str | None = None

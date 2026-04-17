@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 import typing
 from typing import TYPE_CHECKING, cast
@@ -134,7 +133,6 @@ class WiimPlayer(Player):
         """Play media command."""
         stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url=stream_url)
-        self._attr_active_source = self.player_id
         self.set_current_media(
             uri=stream_url,
             title=media.title,
@@ -148,7 +146,7 @@ class WiimPlayer(Player):
         try:
             await self.device.async_play(uri=stream_url, metadata=didl_metadata)
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("play_media", err)
+            self._handle_command_error("play_media", err)
             return
         self._update_ma_state_from_sdk_cache()
 
@@ -171,7 +169,7 @@ class WiimPlayer(Player):
         try:
             await self.device.async_play()
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("play", err)
+            self._handle_command_error("play", err)
             return
         await self._sync_position()
 
@@ -180,7 +178,7 @@ class WiimPlayer(Player):
         try:
             await self.device.async_pause()
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("pause", err)
+            self._handle_command_error("pause", err)
             return
         await self._sync_position()
 
@@ -191,7 +189,7 @@ class WiimPlayer(Player):
         try:
             await self.device.async_stop()
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("stop", err)
+            self._handle_command_error("stop", err)
             return
         self._update_ma_state_from_sdk_cache()
 
@@ -200,14 +198,14 @@ class WiimPlayer(Player):
         try:
             await self.device.async_seek(position)
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("seek", err)
+            self._handle_command_error("seek", err)
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         try:
             await self.device.async_set_volume(volume_level)
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("volume_set", err)
+            self._handle_command_error("volume_set", err)
             return
         self._update_ma_state_from_sdk_cache()
 
@@ -216,7 +214,7 @@ class WiimPlayer(Player):
         try:
             await self.device.async_set_mute(muted)
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("volume_mute", err)
+            self._handle_command_error("volume_mute", err)
             return
         self._update_ma_state_from_sdk_cache()
 
@@ -232,7 +230,7 @@ class WiimPlayer(Player):
         try:
             await self.device.async_set_play_mode(sdk_mode)
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("select_source", err)
+            self._handle_command_error("select_source", err)
             return
         self._update_ma_state_from_sdk_cache()
 
@@ -257,7 +255,7 @@ class WiimPlayer(Player):
                             cast("WiimPlayer", member).device.udn
                         )
         except (WiimDeviceException, WiimRequestException) as err:
-            self._mark_unavailable("set_members", err)
+            self._handle_command_error("set_members", err)
 
     # --- SDK event handlers ---
 
@@ -269,7 +267,7 @@ class WiimPlayer(Player):
             return
         if device.supports_http_api:
             self.logger.debug("Device %s available, ensuring subscriptions", self._attr_name)
-            asyncio.create_task(self._ensure_subscriptions_and_update())
+            self.mass.create_task(self._ensure_subscriptions_and_update())
         else:
             self._update_ma_state_from_sdk_cache()
 
@@ -289,7 +287,7 @@ class WiimPlayer(Player):
                     PlayingStatus.PAUSED,
                     PlayingStatus.LOADING,
                 ):
-                    asyncio.create_task(self._sync_position())
+                    self.mass.create_task(self._sync_position())
         self._update_ma_state_from_sdk_cache()
 
     def _handle_sdk_rendering_control_event(
@@ -353,6 +351,10 @@ class WiimPlayer(Player):
                 self._attr_active_source = SOURCE_AIRPLAY
             elif device_uri.startswith("spotify:"):
                 self._attr_active_source = SOURCE_SPOTIFY
+            else:
+                self._attr_active_source = None
+        else:
+            self._attr_active_source = None
 
         # Sync current_media from device state
         if self._attr_active_source != self.player_id and (media := self.device.current_media):
@@ -401,10 +403,9 @@ class WiimPlayer(Player):
             if isinstance(player, WiimPlayer):
                 player._update_ma_state_from_sdk_cache()
 
-    def _mark_unavailable(
+    def _handle_command_error(
         self, action: str, err: WiimDeviceException | WiimRequestException
     ) -> None:
-        """Handle a command error by marking the device unavailable."""
+        """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
-        self._attr_available = False
         self.update_state()

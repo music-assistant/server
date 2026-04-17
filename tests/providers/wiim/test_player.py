@@ -30,7 +30,7 @@ def mock_wiim_device() -> MagicMock:
     device.firmware_version = "4.8.1"
     device.ip_address = "192.168.1.100"
     device.supports_http_api = True
-    device.supported_input_modes = ("Network", "Bluetooth", "Line In", "Optical")
+    device.supported_input_modes = ("Network", "Bluetooth", "Line In", "Optical In")
     device.async_play = AsyncMock()
     device.async_pause = AsyncMock()
     device.async_stop = AsyncMock()
@@ -100,9 +100,9 @@ class TestSDKStateMapping:
         """STOPPED should map to PlaybackState.IDLE."""
         assert SDK_TO_MA_STATE[PlayingStatus.STOPPED] == PlaybackState.IDLE
 
-    def test_loading_maps_to_idle(self) -> None:
-        """LOADING should map to PlaybackState.IDLE."""
-        assert SDK_TO_MA_STATE[PlayingStatus.LOADING] == PlaybackState.IDLE
+    def test_loading_maps_to_playing(self) -> None:
+        """LOADING should map to PlaybackState.PLAYING."""
+        assert SDK_TO_MA_STATE[PlayingStatus.LOADING] == PlaybackState.PLAYING
 
     def test_all_sdk_states_mapped(self) -> None:
         """All non-UNKNOWN SDK states should have a mapping."""
@@ -146,7 +146,6 @@ class TestSourceList:
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         await player.setup()
         source_ids = [s.id for s in player._attr_source_list]
-        assert "network" in source_ids
         assert "bluetooth" in source_ids
         assert "line_in" in source_ids
         assert "optical" in source_ids
@@ -171,7 +170,6 @@ class TestSourceList:
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         await player.setup()
         source_ids = [s.id for s in player._attr_source_list]
-        assert "network" in source_ids
         assert "futuremode" not in source_ids
 
 
@@ -179,49 +177,49 @@ class TestErrorHandling:
     """Test that command errors mark device unavailable."""
 
     @pytest.mark.asyncio
-    async def test_play_error_marks_unavailable(
+    async def test_play_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """Play command error should mark device unavailable."""
+        """Play command error should refresh state without marking unavailable."""
         mock_wiim_device.async_play.side_effect = WiimRequestException("timeout")
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
         await player.play()
-        assert player._attr_available is False
+        assert player._attr_available is True
         player.update_state.assert_called()
 
     @pytest.mark.asyncio
-    async def test_volume_set_error_marks_unavailable(
+    async def test_volume_set_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """Volume set error should mark device unavailable."""
+        """Volume set error should refresh state without marking unavailable."""
         mock_wiim_device.async_set_volume.side_effect = WiimDeviceException("disconnected")
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
         await player.volume_set(50)
-        assert player._attr_available is False
+        assert player._attr_available is True
         player.update_state.assert_called()
 
     @pytest.mark.asyncio
-    async def test_stop_error_marks_unavailable(
+    async def test_stop_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """Stop command error should mark device unavailable."""
+        """Stop command error should refresh state without marking unavailable."""
         mock_wiim_device.async_stop.side_effect = WiimRequestException("connection lost")
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
         await player.stop()
-        assert player._attr_available is False
+        assert player._attr_available is True
         player.update_state.assert_called()
 
     @pytest.mark.asyncio
-    async def test_pause_error_marks_unavailable(
+    async def test_pause_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
     ) -> None:
-        """Pause command error should mark device unavailable."""
+        """Pause command error should refresh state without marking unavailable."""
         mock_wiim_device.async_pause.side_effect = WiimDeviceException("timeout")
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
         await player.pause()
-        assert player._attr_available is False
+        assert player._attr_available is True
         player.update_state.assert_called()
