@@ -557,6 +557,36 @@ class TestExecuteCapabilityAction:
         mass.players.cmd_play.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_volume_range_bool_value_returns_invalid_action(self) -> None:
+        """Volume RANGE with bool value must not silently set volume to 0/1."""
+        mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1", volume_level=50)
+        action = CapabilityAction(
+            type=YandexCapabilityType.RANGE,
+            state=CapabilityActionState(instance="volume", value=True),
+        )
+        result = await execute_capability_action(mass, "p1", action, current_volume=50)
+        assert result.state.action_result.status == "ERROR"
+        assert result.state.action_result.error_code == "INVALID_ACTION"
+        mass.players.cmd_volume_set.assert_not_awaited()
+        mass.players.cmd_group_volume.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_channel_range_bool_value_returns_invalid_action(self) -> None:
+        """Channel RANGE with bool value must not silently skip tracks."""
+        mass = MockMass()
+        mass.players._players["p1"] = MockPlayer(player_id="p1")
+        action = CapabilityAction(
+            type=YandexCapabilityType.RANGE,
+            state=CapabilityActionState(instance="channel", value=True, relative=True),
+        )
+        result = await execute_capability_action(mass, "p1", action)
+        assert result.state.action_result.status == "ERROR"
+        assert result.state.action_result.error_code == "INVALID_ACTION"
+        mass.players.cmd_next_track.assert_not_awaited()
+        mass.players.cmd_previous_track.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_missing_player_returns_device_unreachable(self) -> None:
         """Player not found should return DEVICE_UNREACHABLE."""
         mass = MockMass()

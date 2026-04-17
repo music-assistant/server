@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 if TYPE_CHECKING:
-    from ya_passport_auth import SecretStr
+    from ._compat import SecretStr
 
 from .constants import (
     CLOUD_BASE_URL,

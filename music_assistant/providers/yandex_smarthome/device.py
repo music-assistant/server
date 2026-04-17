@@ -324,6 +324,23 @@ def _invalid_bool_result(cap_type: str, instance: str, value: Any) -> Capability
     )
 
 
+def _invalid_numeric_result(cap_type: str, instance: str, value: Any) -> CapabilityActionResult:
+    """Build an INVALID_ACTION result for a capability that requires a numeric value."""
+    return CapabilityActionResult(
+        type=cap_type,
+        state=CapabilityActionResultState(
+            instance=instance,
+            action_result=ActionResult(
+                status="ERROR",
+                error_code=ERROR_INVALID_ACTION,
+                error_message=(
+                    f"Expected numeric value for {cap_type}/{instance}, got {type(value).__name__}"
+                ),
+            ),
+        ),
+    )
+
+
 async def execute_capability_action(  # noqa: PLR0915
     mass: Any,
     player_id: str,
@@ -360,6 +377,14 @@ async def execute_capability_action(  # noqa: PLR0915
     )
     if requires_bool and not isinstance(value, bool):
         return _invalid_bool_result(action.type, instance, value)
+
+    # Numeric RANGE capabilities: reject bool explicitly (bool is a subclass of
+    # int in Python, so float(True)/int(False) would silently change volume or
+    # skip tracks) and any other non-numeric type.
+    if action.type == YandexCapabilityType.RANGE and (
+        isinstance(value, bool) or not isinstance(value, (int, float))
+    ):
+        return _invalid_numeric_result(action.type, instance, value)
 
     try:
         if action.type == YandexCapabilityType.ON_OFF:
