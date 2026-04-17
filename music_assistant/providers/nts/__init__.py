@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -125,8 +125,12 @@ class NTSProvider(MusicProvider):
                 self.logger.warning("NTS login failed — continuing in unauthenticated mode")
 
         # Verify API is reachable and populate mixtape stream URLs
-        await self._fetch_live_data()
-        await self._get_mixtapes()
+        try:
+            await self._fetch_live_data()
+            await self._get_mixtapes()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            msg = f"NTS API unavailable: {err}"
+            raise ProviderUnavailableError(msg) from err
 
     async def browse(self, path: str) -> Sequence[MediaItemType | BrowseFolder]:
         """Browse NTS radio stations."""
