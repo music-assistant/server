@@ -157,9 +157,14 @@ class YandexMusicStreamingManager:
             )
 
             # Always use StreamType.CUSTOM with windowed Range requests to prevent CDN drops.
-            # can_seek=True only when we can compute a byte offset (raw + known bitrate).
-            # allow_seek=True lets ffmpeg handle time-based seeking when can_seek is False.
-            can_seek = not needs_decryption and bit_rate > 0
+            # can_seek=True only for codecs where bitrate * time yields a decodable byte
+            # offset — i.e. raw MP3. MP4-container codecs (aac-mp4, flac-mp4) need the
+            # ftyp/moov init atoms at the file start, so byte-offset seeks land in mdat
+            # with no codec config and produce undecodable data. Raw FLAC frames aren't
+            # fixed-size either, so byte-rate math doesn't land on a frame boundary.
+            # allow_seek=True lets ffmpeg handle time-based seeking via -ss in those cases.
+            byte_seekable = codec.lower() in ("mp3", "mpeg")
+            can_seek = not needs_decryption and bit_rate > 0 and byte_seekable
             data: dict[str, Any] = {
                 "url": url,
                 "codec": codec,
