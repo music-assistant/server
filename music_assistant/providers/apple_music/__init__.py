@@ -69,7 +69,11 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import infer_album_type, parse_title_and_version
+from music_assistant.helpers.util import (
+    infer_album_type,
+    normalize_unicode,
+    parse_title_and_version,
+)
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.apple_music.helpers import browse_playlists
 
@@ -718,7 +722,7 @@ class AppleMusicProvider(MusicProvider):
             )
         artist = Artist(
             item_id=artist_id,
-            name=attributes.get("name"),
+            name=normalize_unicode(attributes.get("name")),
             provider=self.domain,
             provider_mappings={
                 ProviderMapping(
@@ -786,7 +790,7 @@ class AppleMusicProvider(MusicProvider):
         album = Album(
             item_id=album_id,
             provider=self.domain,
-            name=name,
+            name=normalize_unicode(name),
             version=version,
             provider_mappings={
                 ProviderMapping(
@@ -800,7 +804,7 @@ class AppleMusicProvider(MusicProvider):
         )
         if artists := relationships.get("artists"):
             album.artists = UniqueList([self._parse_artist(artist) for artist in artists["data"]])
-        elif artist_name := attributes.get("artistName"):
+        elif artist_name := normalize_unicode(attributes.get("artistName")):
             album.artists = UniqueList(
                 [
                     ItemMapping(
@@ -880,7 +884,7 @@ class AppleMusicProvider(MusicProvider):
         track = Track(
             item_id=track_id,
             provider=self.domain,
-            name=name,
+            name=normalize_unicode(name),
             version=version,
             duration=attributes.get("durationInMillis", 0) / 1000,
             provider_mappings={
@@ -904,7 +908,7 @@ class AppleMusicProvider(MusicProvider):
             artists = relationships["artists"]
             track.artists = [self._parse_artist(artist) for artist in artists["data"]]
         # 'Similar tracks' do not provide full artist details
-        elif artist_name := attributes.get("artistName"):
+        elif artist_name := normalize_unicode(attributes.get("artistName")):
             track.artists = [
                 ItemMapping(
                     media_type=MediaType.ARTIST,
