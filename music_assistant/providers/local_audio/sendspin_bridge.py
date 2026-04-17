@@ -429,19 +429,12 @@ class LocalAudioBridgeManager:
 
         self.logger.info("Found %d local audio output device(s)", len(devices))
 
-        for device in devices:
-            self.logger.debug(
-                "Enumerated sink: %s rate=%s depth=%s",
-                device.get("pa_sink_name"),
-                device.get("sample_rate"),
-                device.get("bit_depth"),
-            )        
-
         async with self._lock:
             for device in devices:
                 device_name: str = device["name"]
                 hostapi_index: int = device.get("hostapi", 0)
                 pa_sink_name: str | None = device.get("pa_sink_name")
+                is_remap: bool = device.get("is_remap", False)
                 device_uuid = get_device_uuid(device_name, hostapi_index)
                 client_id = bridge_client_id_from_uuid(device_uuid)
 
@@ -456,6 +449,7 @@ class LocalAudioBridgeManager:
                     hostapi_index=hostapi_index,
                     device_index=device.get("index", 0),
                     pa_sink_name=pa_sink_name,
+                    is_remap=is_remap,
                 )
                 await self.mass.players.register_or_update(player)
                 await player.apply_hardware_ceiling()
