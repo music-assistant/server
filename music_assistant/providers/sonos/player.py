@@ -487,11 +487,14 @@ class SonosPlayer(Player):
         self._attr_available = self.connected
         if not self.connected:
             return
-        if self.client.player.has_fixed_volume:
-            self._attr_volume_level = 100
-        elif not self.client.player.volume_muted or self.client.player.volume_level:
-            self._attr_volume_level = self.client.player.volume_level or 0
-        self._attr_volume_muted = self.client.player.volume_muted
+        # aiosonos does not expose a public "volume data initialized" accessor;
+        # guard against the race where a volume event arrives before async_init populates it
+        if getattr(self.client.player, "_volume_data", None) is not None:
+            if self.client.player.has_fixed_volume:
+                self._attr_volume_level = 100
+            elif not self.client.player.volume_muted or self.client.player.volume_level:
+                self._attr_volume_level = self.client.player.volume_level or 0
+            self._attr_volume_muted = self.client.player.volume_muted
 
         group_parent: SonosPlayer | None = None
         active_group: SonosGroup | None
