@@ -107,7 +107,7 @@ class NTSAuth:
         try:
             async with http_session.post(
                 f"{FIREBASE_REFRESH_URL}?key={NTS_FIREBASE_API_KEY}",
-                json={
+                data={
                     "grant_type": "refresh_token",
                     "refresh_token": self._refresh_token,
                 },
