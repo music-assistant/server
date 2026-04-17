@@ -27,10 +27,8 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
-from .helpers.utils import is_catalog_id, is_library_id
 from .library import AppleMusicLibraryManager
 from .media import AppleMusicMediaManager
-from .parsers import parse_playlist
 from .recommendations import AppleMusicRecommendationManager
 from .streaming import AppleMusicStreamingManager
 
@@ -212,31 +210,3 @@ class AppleMusicProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         return await self.streaming_manager.get_stream_details(item_id)
-
-    # ------------------------------------------------------------------
-    # Helpers used by sub-modules (kept here to avoid circular imports)
-    # ------------------------------------------------------------------
-
-    def is_library_id(self, library_id: object) -> bool:
-        """Check a library ID matches known format."""
-        return is_library_id(library_id)
-
-    def _is_catalog_id(self, catalog_id: str) -> bool:
-        """Check if input is a catalog id, or a library id."""
-        return is_catalog_id(catalog_id)
-
-    # ------------------------------------------------------------------
-    # Internal helpers forwarded from old __init__ (used by helpers/browse.py)
-    # ------------------------------------------------------------------
-
-    async def _get_all_items(self, endpoint: str, key: str = "data", **kwargs) -> list[dict]:
-        """Get all items from a paged list."""
-        return await self.api_client.get_all_items(endpoint, key=key, **kwargs)
-
-    async def _get_ratings(self, item_ids: list[str], media_type: MediaType) -> dict[str, bool]:
-        """Get ratings (aka favorites) for a list of item ids."""
-        return await self.api_client.get_ratings(item_ids, media_type)
-
-    def _parse_playlist(self, playlist_obj: dict, is_favourite: bool | None = None) -> Playlist:
-        """Parse Apple Music playlist object to generic layout."""
-        return parse_playlist(self, playlist_obj, is_favourite)
