@@ -120,6 +120,11 @@ CoreAudio Device
 | Volume control mode | All | `hardware` (OS-level), `software` (PCM scaling), or `disabled` |
 | Hardware volume ceiling | Linux only | Sets PA sink volume on startup to cap maximum output level (0–100, default 50) |
 
+## Expanding Outputs with Stereo Pair Remap Sinks
+
+Multi-channel sound cards (5.1, 7.1 surround) expose a single multi-channel PulseAudio sink by default. To use each channel pair as an independent MA player, PulseAudio module-remap-sink can split a multi-channel sink into individual stereo sinks — one per channel pair (front, rear, side, center/LFE). The Local Audio Out provider discovers and registers all remap sinks automatically alongside physical sinks, so no additional configuration is needed in MA once the remap sinks exist.
+For Home Assistant OS users, the companion addon Pulse Audio Stereo Pairs automates this setup. It runs as a lightweight HA addon that creates the remap sinks on startup and reacts to audio device hot-plug and unplug events, removing the need to configure remap sinks manually via pactl. Once both the addon and this provider are running, each channel pair of every multi-channel card appears as a separate player in Music Assistant.
+
 ## Notes
 
 - On Linux, multi-channel sinks (5.1, 7.1) are supported — the bridge opens a stereo stream and PulseAudio handles channel remapping automatically.
