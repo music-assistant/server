@@ -9,6 +9,7 @@ PLAYER_ID_PREFIX = "wiim_"
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
+SOURCE_NETWORK = "Network"
 
 PASSIVE_SOURCES: dict[str, PlayerSource] = {
     SOURCE_AIRPLAY: PlayerSource(
@@ -40,9 +41,9 @@ PASSIVE_SOURCES: dict[str, PlayerSource] = {
 # Input modes from device.supported_input_modes (non-passive, user-selectable)
 # Keys match the display names returned by the SDK
 INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
-    "Network": PlayerSource(
+    SOURCE_NETWORK: PlayerSource(
         id="network",
-        name="Network",
+        name=SOURCE_NETWORK,
         passive=False,
         can_play_pause=True,
         can_next_previous=True,

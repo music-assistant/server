@@ -23,6 +23,7 @@ from .constants import (
     PLAYER_ID_PREFIX,
     SOURCE_AIRPLAY,
     SOURCE_ID_TO_INPUT_MODE,
+    SOURCE_NETWORK,
     SOURCE_SPOTIFY,
     SOURCE_UNKNOWN,
 )
@@ -37,7 +38,7 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.PLAYING: PlaybackState.PLAYING,
     PlayingStatus.PAUSED: PlaybackState.PAUSED,
     PlayingStatus.STOPPED: PlaybackState.IDLE,
-    PlayingStatus.LOADING: PlaybackState.IDLE,
+    PlayingStatus.LOADING: PlaybackState.PLAYING,
 }
 
 
@@ -89,12 +90,18 @@ class WiimPlayer(Player):
     async def setup(self) -> None:
         """Handle logic when the player is set up in the Player controller."""
         for mode_name in self.device.supported_input_modes:
-            if mode_name in INPUT_MODE_SOURCES:
+            if mode_name in INPUT_MODE_SOURCES and mode_name != SOURCE_NETWORK:
                 self._attr_source_list.append(INPUT_MODE_SOURCES[mode_name])
-
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_AIRPLAY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
+        self._attr_needs_poll = True
+        self._attr_poll_interval = 30
+
+    async def poll(self) -> None:
+        """Poll player for state updates to prevent position drift."""
+        await self._sync_position()
+        self._attr_poll_interval = 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     def _handle_sdk_general_device_update(self, device: WiimDevice) -> None:
         """Handle general updates from the SDK (availability changes)."""
@@ -102,7 +109,6 @@ class WiimPlayer(Player):
             self.logger.debug("Device %s became unavailable", self._attr_name)
             self._update_ma_state_from_sdk_cache()
             return
-
         if device.supports_http_api:
             self.logger.debug("Device %s available, ensuring subscriptions", self._attr_name)
             asyncio.create_task(self._ensure_subscriptions_and_update())
@@ -122,28 +128,19 @@ class WiimPlayer(Player):
     ) -> None:
         """Handle AVTransport events from the SDK."""
         event_data = self.device.event_data
-        self.logger.debug(
-            "AVTransport event on %s: TransportState=%s, URI=%s, Duration=%s, Position=%s",
-            self._attr_name,
-            event_data.get("TransportState"),
-            event_data.get("CurrentTrackURI"),
-            event_data.get("CurrentTrackDuration"),
-            event_data.get("RelativeTimePosition"),
-        )
         if transport_state := event_data.get("TransportState"):
             try:
                 sdk_status = PlayingStatus(transport_state)
             except ValueError:
-                self.logger.warning("Unknown TransportState: %s", transport_state)
+                pass
             else:
-                if sdk_status == PlayingStatus.STOPPED:
-                    self._attr_elapsed_time = None
-                    self._attr_elapsed_time_last_updated = None
+                if sdk_status in (
+                    PlayingStatus.PLAYING,
+                    PlayingStatus.PAUSED,
+                    PlayingStatus.LOADING,
+                ):
+                    asyncio.create_task(self._sync_position())
 
-        # Sync position on every AVTransport event — not just state transitions.
-        # Gapless track changes don't change TransportState but do update
-        # the URI, duration, and position.
-        asyncio.create_task(self._sync_position())
         self._update_ma_state_from_sdk_cache()
 
     async def _sync_position(self) -> None:
@@ -154,13 +151,6 @@ class WiimPlayer(Player):
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
             return
         device_pos = self.device.current_position
-        self.logger.debug(
-            "_sync_position on %s: device_pos=%s, duration=%s, uri=%s",
-            self._attr_name,
-            device_pos,
-            self.device.current_track_duration,
-            self.device.current_track_uri,
-        )
         if device_pos is not None:
             self._attr_elapsed_time = device_pos
             self._attr_elapsed_time_last_updated = time.time()
@@ -313,7 +303,6 @@ class WiimPlayer(Player):
             image_url=media.image_url,
             duration=media.duration,
             source_id=media.source_id,
-            queue_item_id=media.queue_item_id,
             clear_all=True,
         )
         try:
@@ -355,95 +344,62 @@ class WiimPlayer(Player):
     def _update_ma_state_from_sdk_cache(self) -> None:
         """Update MA state from SDK's cache/HTTP poll attributes."""
         self._attr_available = self.device.available
-
         if self.device.name != self._attr_name:
             self._attr_name = self.device.name
 
         if not self._attr_available:
-            # If device is unavailable, clear media-related attributes
             self._attr_current_media = None
             self._attr_active_source = None
             self.update_state()
             return
 
-        # Update common attributes first
-        self._attr_volume_level = self.device.volume if self.device.volume is not None else None
+        self._attr_volume_level = self.device.volume
         self._attr_volume_muted = self.device.is_muted
 
-        # Group role and state
+        # Followers have their state derived by MA from the leader — nothing to do here.
         snapshot = self._wiim_controller.get_group_snapshot(self.device.udn)
-
         if snapshot.role == WiimGroupRole.FOLLOWER:
-            self._attr_group_members.clear()
-            try:
-                leader_device = self._wiim_controller.get_device(snapshot.leader_udn)
-                if leader_device.playing_status is not None:
-                    self._attr_playback_state = SDK_TO_MA_STATE.get(
-                        leader_device.playing_status, PlaybackState.IDLE
-                    )
-            except ValueError:
-                self.logger.debug(
-                    "Leader %s not found for follower %s",
-                    snapshot.leader_udn,
-                    self._attr_name,
-                )
-                self._attr_playback_state = PlaybackState.IDLE
-        else:
-            if self.device.playing_status is not None:
-                new_state = SDK_TO_MA_STATE.get(self.device.playing_status, PlaybackState.IDLE)
-                if (
-                    new_state == PlaybackState.PLAYING
-                    and self._attr_playback_state != PlaybackState.PLAYING
-                ):
-                    # Ensure elapsed_time is not None so the frontend can
-                    # extrapolate using elapsed_time + (now - last_updated).
-                    if self._attr_elapsed_time is None:
-                        self._attr_elapsed_time = 0
-                    self._attr_elapsed_time_last_updated = time.time()
-                self._attr_playback_state = new_state
+            self.update_state()
+            return
 
-            group_members = self._wiim_controller.get_group_members(self.device.udn)
-            self._attr_group_members = [
-                f"{PLAYER_ID_PREFIX}{m.udn}" for m in group_members if m.udn != self.device.udn
-            ]
+        # Playback state
+        if self.device.playing_status is not None:
+            self._attr_playback_state = SDK_TO_MA_STATE.get(
+                self.device.playing_status, PlaybackState.IDLE
+            )
 
-            # Active source detection: use the SDK's play_mode (set from both UPnP
-            # PlaybackStorageMedium events and HTTP polling) as the primary signal.
-            # Within Network mode, refine using the track URI to distinguish
-            # AirPlay / Spotify Connect from MA's own streams.
-            play_mode = self.device.play_mode
-            if play_mode and play_mode != "Network" and play_mode in INPUT_MODE_SOURCES:
-                self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
-            elif play_mode == "Network":
-                device_uri = self.device.current_track_uri
-                if device_uri == "wiimu_airplay":
-                    self._attr_active_source = SOURCE_AIRPLAY
-                elif device_uri and device_uri.startswith("spotify:"):
-                    self._attr_active_source = SOURCE_SPOTIFY
+        # Group members
+        group_members = self._wiim_controller.get_group_members(self.device.udn)
+        self._attr_group_members = [
+            f"{PLAYER_ID_PREFIX}{m.udn}" for m in group_members if m.udn != self.device.udn
+        ]
 
-            # Update current media from device state.
-            # For MA-sourced playback, keep the URI in sync so the queue controller
-            # can parse the queue_item_id from the stream URL on gapless transitions.
-            # For external sources, set full metadata from the device.
-            if self._attr_active_source == self.player_id:
-                device_uri = self.device.current_track_uri
-                prev_uri = self._attr_current_media.uri if self._attr_current_media else None
-                if device_uri and prev_uri != device_uri:
-                    self.logger.debug(
-                        "URI changed on %s: %s -> %s",
-                        self._attr_name,
-                        prev_uri,
-                        device_uri,
-                    )
-                    self.set_current_media(uri=device_uri)
-            elif media := self.device.current_media:
-                self.set_current_media(
-                    uri=media.uri or "",
-                    title=media.title,
-                    artist=media.artist,
-                    album=media.album,
-                    image_url=media.image_url,
-                    source_id=self._attr_active_source,
-                    duration=media.duration,
-                )
+        # Active source detection
+        device_uri = self.device.current_track_uri or ""
+        play_mode = self.device.play_mode
+        if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
+            self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
+        elif play_mode == SOURCE_NETWORK:
+            if device_uri == "wiimu_airplay":
+                self._attr_active_source = SOURCE_AIRPLAY
+            elif device_uri.startswith("spotify:"):
+                self._attr_active_source = SOURCE_SPOTIFY
+
+        # Sync current_media from device state (like DLNA).
+        # For MA-sourced playback the queue controller parses the stream URL
+        # to identify the current queue item. For external sources we also
+        # include metadata from the device.
+        if self._attr_active_source != self.player_id and (media := self.device.current_media):
+            self.set_current_media(
+                uri=media.uri or "",
+                title=media.title,
+                artist=media.artist,
+                album=media.album,
+                image_url=media.image_url,
+                source_id=self._attr_active_source,
+                duration=media.duration,
+            )
+        elif device_uri:
+            self.set_current_media(uri=device_uri)
+
         self.update_state()
