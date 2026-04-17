@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.media.albums import AlbumsController
     from music_assistant.controllers.media.artists import ArtistsController
     from music_assistant.controllers.media.tracks import TracksController
-    from music_assistant.providers.lastfm_recommendations.mbid_resolver import MBIDResolver
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.lastfm_recommendations")
 
@@ -320,14 +320,12 @@ async def parse_artist(
 
 async def parse_track(
     lastfm_track: dict[str, Any],
-    mbid_resolver: MBIDResolver,
     mass: MusicAssistant,
     provider_instance: str,
 ) -> Track | None:
     """Parse a Last.fm track and resolve it to a library or provider Track.
 
     :param lastfm_track: Raw Last.fm track dict with 'name', 'artist', 'mbid', 'duration'.
-    :param mbid_resolver: MBID resolver instance for ISRC lookups.
     :param mass: MusicAssistant instance for accessing library and providers.
     :param provider_instance: Provider instance ID to skip when searching.
     """
@@ -346,14 +344,18 @@ async def parse_track(
         external_ids.add((ExternalID.MB_RECORDING, mbid))
 
         # Streaming providers match tracks on ISRC, so enrich MBIDs with ISRCs where possible.
-        LOGGER.debug("Resolving MBID %s to ISRCs via MusicBrainz", mbid)
-        isrcs = await mbid_resolver.get_isrcs_for_recording(mbid)
-        if isrcs:
-            LOGGER.debug("Found %d ISRCs for MBID %s: %s", len(isrcs), mbid, isrcs)
-            for isrc in isrcs:
-                external_ids.add((ExternalID.ISRC, isrc))
+        mb_provider = mass.get_provider("musicbrainz")
+        if mb_provider:
+            LOGGER.debug("Resolving MBID %s to ISRCs via MusicBrainz", mbid)
+            isrcs = await cast("MusicbrainzProvider", mb_provider).get_isrcs_for_recording(mbid)
+            if isrcs:
+                LOGGER.debug("Found %d ISRCs for MBID %s: %s", len(isrcs), mbid, isrcs)
+                for isrc in isrcs:
+                    external_ids.add((ExternalID.ISRC, isrc))
+            else:
+                LOGGER.debug("No ISRCs found for MBID %s", mbid)
         else:
-            LOGGER.debug("No ISRCs found for MBID %s", mbid)
+            LOGGER.debug("MusicBrainz provider not available for ISRC lookup")
     else:
         LOGGER.debug("Track has no MBID, cannot resolve ISRCs")
 

@@ -15,7 +15,6 @@ from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
-from music_assistant.providers.lastfm_recommendations.mbid_resolver import MBIDResolver
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
 )
@@ -194,7 +193,6 @@ class LastFMRecommendationsProvider(MetadataProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.api = LastFMAPIClient(self)
-        self.mbid_resolver = MBIDResolver(self)
         self.recommendations_manager = LastFMRecommendationManager(self)
 
         self._recommendation_folders: list[RecommendationFolder] = []

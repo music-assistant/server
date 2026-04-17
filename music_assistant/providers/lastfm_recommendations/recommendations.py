@@ -49,7 +49,6 @@ class LastFMRecommendationManager:
         """
         self.provider = provider
         self.api = provider.api
-        self.mbid_resolver = provider.mbid_resolver
         self.logger = provider.logger
         self.mass = provider.mass
 
@@ -242,9 +241,7 @@ class LastFMRecommendationManager:
             self._resolved_cache[cache_key] = cached_track
             return cached_track
 
-        track = await parse_track(
-            lastfm_track, self.mbid_resolver, self.mass, self.provider.instance_id
-        )
+        track = await parse_track(lastfm_track, self.mass, self.provider.instance_id)
         if track:
             self._resolved_cache[cache_key] = track
             await self.mass.cache.set(
