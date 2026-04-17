@@ -650,6 +650,8 @@ class MetaDataController(CoreController):
             mb_release_group.title,
             mb_release_group.id,
         )
+        # Create a minimal Album object to pass the MusicBrainz release group ID
+        # to metadata providers for artwork lookup.
         temp_album = Album(
             item_id="temp",
             provider="temp",
