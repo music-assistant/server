@@ -86,7 +86,7 @@ torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0
-wiim==0.1.0
+wiim==0.1.1
 xmltodict==1.0.4
 yandex-music==2.2.0
 ytmusicapi==1.11.5
