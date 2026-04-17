@@ -128,10 +128,6 @@ CoreAudio Device
 - On Linux, hardware volume control uses `pulsectl` to set the PA sink volume directly. If `pulsectl` is unavailable the provider falls back to software volume automatically.
 - On macOS, hardware volume control uses CoreAudio. If that fails the provider falls back to software volume automatically.
 
-## Future Work
-
-- **sendspin-cli process approach**: A `sendspin_process.py` implementation exists that spawns native `sendspin daemon` processes per sink for potentially better multi-room sync. This requires PortAudio compiled with PulseAudio support (`--with-pulseaudio`) in the MA base image, which is not currently the case. See `Dockerfile.base` notes.
-
 ## Related Documentation
 
 - [Sendspin Provider](../sendspin/README.md)
