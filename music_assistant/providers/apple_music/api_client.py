@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 _APPLE_API_BASE = "https://api.music.apple.com/v1"
 
+
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
