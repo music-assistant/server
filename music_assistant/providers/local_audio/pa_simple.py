@@ -173,7 +173,12 @@ class PASimpleStream:
 
 
 def enumerate_pa_sinks() -> list[dict[str, Any]]:
-    """Enumerate stereo-capable PulseAudio sinks via pulsectl.
+    """Enumerate stereo-capable PulseAudio sinks via pactl JSON output.
+
+    Uses pactl --format=json list sinks which always returns the sink's
+    native sample rate and format regardless of active stream state —
+    unlike pulsectl/libpulse which reports the currently negotiated format
+    when streams are active (which can differ from native hardware format).
 
     Returns list of dicts with keys:
       - name: display name (PA sink description)
@@ -181,58 +186,71 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
       - max_output_channels: number of channels
       - sample_rate: sink native sample rate in Hz
       - bit_depth: sink native bit depth (16, 24, or 32)
-
-    Bit depth is resolved in priority order:
-      1. alsa.resolution_bits proplist entry (physical ALSA sinks)
-      2. alsa.resolution_bits of the master device (remap/filter sinks)
-      3. _PA_FORMAT_TO_BIT_DEPTH fallback (format may reflect active stream,
-         not native hardware, but is better than nothing)
     """
-    import pulsectl  # noqa: PLC0415
+    import json  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    # Locate pactl — prefer bundled binary, fall back to system
+    bundled = os.path.join(os.path.dirname(__file__), "bin", "pactl")
+    if os.path.isfile(bundled):
+        if not os.access(bundled, os.X_OK):
+            try:
+                os.chmod(bundled, 0o755)
+            except OSError:
+                pass
+    if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+        pactl_bin = bundled
+    elif path := shutil.which("pactl"):
+        pactl_bin = path
+    else:
+        raise FileNotFoundError(
+            "pactl not found — bundled binary missing and pulseaudio-utils not installed"
+        )
+
+    # Build environment with bundled lib dir and PULSE_SERVER
+    lib_dir = os.path.join(os.path.dirname(__file__), "lib")
+    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    ld_path = f"{lib_dir}:{existing_ld}" if existing_ld else lib_dir
+    env = {**os.environ, "LD_LIBRARY_PATH": ld_path}
+    pulse_server = _get_pulse_server()
+    if pulse_server:
+        env["PULSE_SERVER"] = pulse_server
+
+    result = subprocess.run(
+        [pactl_bin, "--format=json", "list", "sinks"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pactl exited {result.returncode}: {result.stderr.strip()}"
+        )
 
     sinks = []
-    with pulsectl.Pulse("ma-local-audio-enum") as pulse:
-        all_sinks = pulse.sink_list()
-
-        # Build resolution_bits lookup from physical ALSA sinks keyed by name
-        alsa_bits: dict[str, int] = {}
-        for sink in all_sinks:
-            bits_str = sink.proplist.get("alsa.resolution_bits")
-            if bits_str:
-                try:
-                    alsa_bits[sink.name] = int(bits_str)
-                except ValueError:
-                    pass
-
-        for sink in all_sinks:
-            channels = sink.sample_spec.channels
-            if channels < 2:
-                continue
-            sample_rate = sink.sample_spec.rate
-
-            # Resolve bit depth
-            bits_str = sink.proplist.get("alsa.resolution_bits")
-            if bits_str:
-                # Physical ALSA sink — use its own resolution bits
-                try:
-                    bit_depth = int(bits_str)
-                except ValueError:
-                    bit_depth = _PA_FORMAT_TO_BIT_DEPTH.get(sink.sample_spec.format, 16)
-            else:
-                # Remap/filter sink — look up master device's resolution bits
-                master = sink.proplist.get("device.master_device")
-                if master and master in alsa_bits:
-                    bit_depth = alsa_bits[master]
-                else:
-                    # Last resort: derive from PA format constant
-                    # (may reflect active stream format, not native hardware)
-                    bit_depth = _PA_FORMAT_TO_BIT_DEPTH.get(sink.sample_spec.format, 16)
-
-            sinks.append({
-                "name": sink.description or sink.name,
-                "pa_sink_name": sink.name,
-                "max_output_channels": channels,
-                "sample_rate": sample_rate,
-                "bit_depth": bit_depth,
-            })
+    for sink in json.loads(result.stdout):
+        name: str = sink.get("name", "")
+        desc: str = sink.get("description", name)
+        spec_str: str = sink.get("sample_specification", "")
+        try:
+            parts = spec_str.split()
+            fmt = parts[0]          # e.g. 's32le'
+            channels = int(parts[1].replace("ch", ""))
+            sample_rate = int(parts[2].replace("Hz", ""))
+            bit_depth = int(
+                "".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0]))
+            )
+        except (IndexError, ValueError):
+            continue
+        if channels < 2:
+            continue
+        sinks.append({
+            "name": desc,
+            "pa_sink_name": name,
+            "max_output_channels": channels,
+            "sample_rate": sample_rate,
+            "bit_depth": bit_depth,
+        })
     return sinks
