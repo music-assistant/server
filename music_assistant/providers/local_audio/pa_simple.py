@@ -209,7 +209,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         )
 
     # Build environment with bundled lib dir and PULSE_SERVER
-    lib_dir = os.path.join(os.path.dirname(__file__), "lib")
+    lib_dir = os.path.join(os.path.dirname(__file__), "bin", "lib")
     existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
     ld_path = f"{lib_dir}:{existing_ld}" if existing_ld else lib_dir
     env = {**os.environ, "LD_LIBRARY_PATH": ld_path}
