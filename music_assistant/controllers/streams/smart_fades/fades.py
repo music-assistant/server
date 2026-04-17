@@ -173,8 +173,14 @@ class SmartFade(ABC):
                         feed_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await feed_task
-                    with suppress(asyncio.CancelledError):
-                        await stderr_task
+                    # Bounded wait on stderr_task so its output is still captured
+                    # for error reporting on the happy/error paths, but we don't
+                    # hang on consumer abort — ffmpeg is still alive then and
+                    # stderr won't EOF until proc.close() closes stdin, which
+                    # only runs via the async-with __aexit__ *after* this finally.
+                    # wait_for cancels stderr_task on timeout so cleanup proceeds.
+                    with suppress(TimeoutError, asyncio.CancelledError):
+                        await asyncio.wait_for(stderr_task, timeout=2)
 
             if proc.returncode not in (None, 0) or not got_output:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
