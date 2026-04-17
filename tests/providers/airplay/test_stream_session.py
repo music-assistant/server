@@ -255,3 +255,24 @@ async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
     # start_at should be exactly now + min_headroom (since the next-chunk anchor would
     # have landed at now - 1.0, which is below the target).
     assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_after_removal_skips_idle_when_player_has_new_session_stream() -> None:
+    """Cleanup must not idle a player that was already re-added to another session."""
+    now = time.time()
+    session = _make_session(now - 10, 12.5)
+    player = _make_late_joiner()
+    other_session = object()
+    player.set_state_from_stream = MagicMock()
+    player.stream = MagicMock()
+    player.stream.session = other_session
+    session.sync_clients.clear()
+
+    with (
+        patch.object(session, "stop_client", new_callable=AsyncMock),
+        patch.object(session, "stop", new_callable=AsyncMock),
+    ):
+        await session._cleanup_after_removal(player)
+
+    player.set_state_from_stream.assert_not_called()
