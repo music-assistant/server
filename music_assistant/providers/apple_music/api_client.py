@@ -14,20 +14,12 @@ from music_assistant_models.errors import (
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 
-from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
+from .helpers.utils import is_library_id, translate_media_type_to_apple_type
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
 
 _APPLE_API_BASE = "https://api.music.apple.com/v1"
-
-__all__ = [
-    "AppleMusicAPIClient",
-    "is_catalog_id",
-    "is_library_id",
-    "translate_media_type_to_apple_type",
-]
-
 
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
