@@ -237,13 +237,16 @@ class NTSProvider(MusicProvider):
 
         for mixtape in mixtapes_data.get("results", []):
             alias = mixtape.get("mixtape_alias", "")
+            stream_endpoint = mixtape.get("audio_stream_endpoint", "")
+            if not alias or not stream_endpoint:
+                continue
             title = mixtape.get("title", alias)
             subtitle = mixtape.get("subtitle", "")
             description = mixtape.get("description", "")
 
             # Repopulate stream URL map each call — use_cache is on the fetch
             # below, so this function always runs and the dict stays in sync.
-            self._mixtapes[alias] = mixtape.get("audio_stream_endpoint", "")
+            self._mixtapes[alias] = stream_endpoint
 
             radios.append(
                 self._build_radio(
@@ -339,6 +342,7 @@ class NTSProvider(MusicProvider):
                     metadata = StreamMetadata(
                         title=track.get("title", title),
                         artist=track.get("artist"),
+                        description=details.get("description", ""),
                         image_url=image_url,
                     )
 
