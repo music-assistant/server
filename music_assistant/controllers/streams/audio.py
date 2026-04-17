@@ -500,7 +500,7 @@ class StreamsAudio:
                 streamdetails.uri,
             )
 
-    async def _cache_and_return_radio_result(
+    async def _cache_radio_result(
         self, url: str, stream_type: StreamType
     ) -> tuple[str, StreamType]:
         """Cache and return a radio stream resolution result."""
@@ -522,20 +522,20 @@ class StreamsAudio:
         if isinstance(err, aiohttp.ClientResponseError) and "ICY" in str(err).upper():
             self.logger.debug("ICY response detected for %s, validating Shoutcast stream", url)
             if await self._validate_shoutcast_stream(url):
-                return await self._cache_and_return_radio_result(url, StreamType.SHOUTCAST)
+                return await self._cache_radio_result(url, StreamType.SHOUTCAST)
             self.logger.warning("ICY response detected but Shoutcast validation failed for %s", url)
-            return await self._cache_and_return_radio_result(url, fallback_stream_type)
+            return await self._cache_radio_result(url, fallback_stream_type)
 
         # Other aiohttp errors - might still be Shoutcast, check it
         self.logger.debug("aiohttp error for %s, checking if legacy Shoutcast stream", url)
         if await self._validate_shoutcast_stream(url):
-            return await self._cache_and_return_radio_result(url, StreamType.SHOUTCAST)
+            return await self._cache_radio_result(url, StreamType.SHOUTCAST)
 
         # Unknown error - still try to stream
         self.logger.warning(
             "Failed to parse radio URL %s: %s - attempting direct stream", url, str(err)
         )
-        return await self._cache_and_return_radio_result(url, fallback_stream_type)
+        return await self._cache_radio_result(url, fallback_stream_type)
 
     async def resolve_radio_stream(self, url: str) -> tuple[str, StreamType]:
         """
@@ -611,7 +611,7 @@ class StreamsAudio:
         except aiohttp.ClientError as err:
             return await self._handle_client_error_for_radio_stream(url, err, stream_type)
 
-        return await self._cache_and_return_radio_result(url, stream_type)
+        return await self._cache_radio_result(url, stream_type)
 
     async def get_icy_radio_stream(
         self, url: str, streamdetails: StreamDetails
