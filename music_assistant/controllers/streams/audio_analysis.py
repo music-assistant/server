@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from math import inf
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderType
 
-from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
+from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS, LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 
 CHUNK_PROCESS_TIMEOUT = 0.8
+LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -209,6 +211,46 @@ class AudioAnalysisController:
             merged.update(row_data)
             found = True
         return merged if found else None
+
+    async def set_track_loudness(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        loudness: float,
+        loudness_album: float | None = None,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Store track loudness measurement from an external source (tags, ReplayGain, etc).
+
+        Persists the loudness values under the builtin loudness_analysis provider so
+        the runtime ebur128 analysis will not re-analyze the track on playback.
+
+        :param item_id: Provider-native item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param loudness: Integrated track loudness in LUFS.
+        :param loudness_album: Optional album-level integrated loudness in LUFS.
+        :param media_type: The media type of the item.
+        """
+        if loudness in (None, inf, -inf) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+            return
+        if (
+            loudness_album is None
+            or loudness_album in (inf, -inf)
+            or loudness_album <= LOUDNESS_MEASUREMENT_MIN_LUFS
+        ):
+            loudness_album = None
+        analysis = AudioAnalysisData(
+            loudness_integrated=loudness,
+            loudness_album=loudness_album,
+        )
+        await self.set_audio_analysis(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            aa_provider_domain=LOUDNESS_ANALYSIS_DOMAIN,
+            analysis=analysis,
+            media_type=media_type,
+        )
 
     async def get_audio_analysis_version(
         self,
