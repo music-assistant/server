@@ -38,6 +38,10 @@ CONF_REMEMBER_SESSION: Final[str] = "remember_session"
 # Player selection
 PLAYER_ID_AUTO: Final[str] = "__auto__"
 
+# yandex_music provider config key for audio quality tier (read via provider.config.get_value)
+YANDEX_MUSIC_CONF_QUALITY: Final[str] = "quality"
+YANDEX_MUSIC_LOSSLESS_QUALITIES: Final[frozenset[str]] = frozenset({"superb", "lossless"})
+
 # Defaults
 DEFAULT_DISPLAY_NAME: Final[str] = "Music Assistant"
 DEFAULT_APP_NAME: Final[str] = "Music Assistant"

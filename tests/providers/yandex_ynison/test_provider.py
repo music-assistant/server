@@ -988,10 +988,11 @@ class TestPCMNormalization:
         mock_yandex = MagicMock()
         mock_yandex.domain = "yandex_music"
         mock_yandex.type = ProviderType.MUSIC
-        mock_yandex.get_quality = MagicMock(return_value="superb")
+        mock_yandex.config.get_value = MagicMock(return_value="superb")
         provider._yandex_provider = mock_yandex
         provider._update_normalized_format()
 
+        mock_yandex.config.get_value.assert_called_with("quality")
         assert provider._normalized_format.content_type == ContentType.PCM_S24LE
         assert provider._normalized_format.sample_rate == 48000
         assert provider._normalized_format.bit_depth == 24
@@ -1004,7 +1005,7 @@ class TestPCMNormalization:
         mock_yandex = MagicMock()
         mock_yandex.domain = "yandex_music"
         mock_yandex.type = ProviderType.MUSIC
-        mock_yandex.get_quality = MagicMock(return_value="balanced")
+        mock_yandex.config.get_value = MagicMock(return_value="balanced")
         provider._yandex_provider = mock_yandex
         provider._update_normalized_format()
 

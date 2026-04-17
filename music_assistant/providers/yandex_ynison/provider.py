@@ -42,6 +42,8 @@ from .constants import (
     DEFAULT_DISPLAY_NAME,
     OUTPUT_AUTO,
     PLAYER_ID_AUTO,
+    YANDEX_MUSIC_CONF_QUALITY,
+    YANDEX_MUSIC_LOSSLESS_QUALITIES,
 )
 from .protocols import YandexMusicProviderLike
 from .streaming import (
@@ -950,17 +952,25 @@ class YandexYnisonProvider(PluginProvider):
         """Set PCM normalization profile based on config and YM quality.
 
         Priority: explicit config values > auto-detection from YM quality.
+        Auto-detection reads the quality tier from the linked yandex_music
+        provider's config (`provider.config.get_value("quality")`), since
+        yandex_music does not expose a typed accessor method.
         Auto-detection: superb/lossless → 24bit/48kHz, else → 16bit/44.1kHz.
 
         Creates fresh AudioFormat instances each time to prevent mutation by
         MA's FFMpeg._log_reader_task (which sets input_format.codec_type
         in-place on the object passed as input_format to the outer ffmpeg).
         """
-        # Start with auto-detected base from YM quality
+        # Start with auto-detected base from YM quality config
+        # (yandex_music does not expose get_quality(); read from its ProviderConfig instead)
         quality = ""
-        if self._yandex_provider and hasattr(self._yandex_provider, "get_quality"):
-            quality = self._yandex_provider.get_quality()
-        is_lossless = quality in ("superb", "lossless")
+        if self._yandex_provider is not None:
+            provider_config = getattr(self._yandex_provider, "config", None)
+            if provider_config is not None and hasattr(provider_config, "get_value"):
+                config_quality = provider_config.get_value(YANDEX_MUSIC_CONF_QUALITY)
+                if isinstance(config_quality, str):
+                    quality = config_quality
+        is_lossless = quality in YANDEX_MUSIC_LOSSLESS_QUALITIES
         base = PCM_LOSSLESS_PARAMS if is_lossless else PCM_LOSSY_PARAMS
 
         # Apply config overrides

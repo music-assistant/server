@@ -33,7 +33,3 @@ class YandexMusicProviderLike(Protocol):
     ) -> tuple[list[Any], str | None]:
         """Fetch tracks from a rotor station for radio queue replenishment."""
         ...
-
-    def get_quality(self) -> str:
-        """Return the configured audio quality tier (e.g. 'balanced', 'superb')."""
-        ...
