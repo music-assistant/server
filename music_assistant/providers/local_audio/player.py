@@ -189,31 +189,36 @@ class LocalAudioPlayer(Player):
             self._hardware_volume_fallback = True
 
     async def apply_hardware_ceiling(self) -> None:
-        """Set PA sink hardware volume ceiling via pulsectl (Linux only).
+        """Set PA sink hardware volume via pulsectl (Linux only).
 
-        Called on every startup to cap the hardware output level at the
-        configured ceiling percentage. Only applied to physical ALSA sinks —
-        remap/filter sinks inherit the ceiling from their parent device.
-        No-op on non-Linux, if no PA sink, or if this is a remap sink.
+        For physical ALSA sinks: sets volume to the configured ceiling
+        percentage to cap the maximum hardware output level.
+        For remap/filter sinks: sets volume to 100% since the parent
+        ALSA sink already holds the ceiling — applying a ceiling here
+        would double-attenuate the output.
+        No-op on non-Linux or if no PA sink.
         """
-        if not self._pa_sink_name or self._is_remap:
+        if not self._pa_sink_name:
             return
-        ceiling: int = int(
-            self._provider.config.get_value(
-                CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
+        if self._is_remap:
+            target = 100
+        else:
+            target = int(
+                self._provider.config.get_value(
+                    CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
+                )
             )
-        )
         loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(
-            None, self._set_pulse_volume, self._pa_sink_name, ceiling
+            None, self._set_pulse_volume, self._pa_sink_name, target
         )
         if ok:
             self.logger.debug(
-                "Hardware ceiling set to %d%% for sink %s", ceiling, self._pa_sink_name
+                "Volume set to %d%% for sink %s", target, self._pa_sink_name
             )
         else:
             self.logger.warning(
-                "Failed to set hardware ceiling for sink %s", self._pa_sink_name
+                "Failed to set volume for sink %s", self._pa_sink_name
             )
 
     def _set_pulse_volume(self, pa_sink_name: str, volume: int) -> bool:
