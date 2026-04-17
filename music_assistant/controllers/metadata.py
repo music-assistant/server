@@ -1,10 +1,4 @@
-"""
-All logic for metadata retrieval.
-
-TODO: This controller is getting large. Refactor into a dedicated subfolder
-with split files (controller.py, helpers.py, etc.) following the pattern
-of other controllers.
-"""
+"""All logic for metadata retrieval."""
 
 from __future__ import annotations
 
