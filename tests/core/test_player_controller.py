@@ -14,7 +14,7 @@ import contextlib
 from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.controllers.players import PlayerController
@@ -232,8 +232,8 @@ class TestPlayerAvailability:
 class TestStateForwarding:
     """Test forwarding of player state changes to related players."""
 
-    def test_sync_leader_updates_are_forwarded_to_children(self, mock_mass: MagicMock) -> None:
-        """A regular sync leader must still notify its grouped/synced children."""
+    def test_sync_leader_updates_are_forwarded_to_sync_children(self, mock_mass: MagicMock) -> None:
+        """A regular sync leader must notify children via the sync-parent callback."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
 
@@ -251,16 +251,56 @@ class TestStateForwarding:
         leader.update_state(signal_event=False)
         child.update_state(signal_event=False)
 
-        with patch.object(child, "on_group_updated") as on_group_updated:
+        with (
+            patch.object(child, "on_sync_parent_updated") as on_sync_parent_updated,
+            patch.object(child, "on_group_updated") as on_group_updated,
+        ):
             controller._forward_state_update(
                 leader,
                 {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
             )
 
-        on_group_updated.assert_called_once_with(
+        on_sync_parent_updated.assert_called_once_with(
             leader,
             {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
         )
+        on_group_updated.assert_not_called()
+
+    def test_group_updates_are_forwarded_to_children_via_group_callback(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group player must continue to notify children via the group callback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        child = MockPlayer(provider, "child", "Child")
+
+        controller._players = {"group": group_player, "child": child}
+        controller._player_throttlers = {
+            "group": Throttler(1, 0.05),
+            "child": Throttler(1, 0.05),
+        }
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["group", "child"]
+        group_player.update_state(signal_event=False)
+        child.update_state(signal_event=False)
+
+        with (
+            patch.object(child, "on_group_updated") as on_group_updated,
+            patch.object(child, "on_sync_parent_updated") as on_sync_parent_updated,
+        ):
+            controller._forward_state_update(
+                group_player,
+                {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
+            )
+
+        on_group_updated.assert_called_once_with(
+            group_player,
+            {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
+        )
+        on_sync_parent_updated.assert_not_called()
 
 
 class TestUnregisterCleanup:
