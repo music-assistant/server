@@ -234,6 +234,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         name: str = sink.get("name", "")
         desc: str = sink.get("description", name)
         spec_str: str = sink.get("sample_specification", "")
+        driver: str = sink.get("driver", "")
         try:
             parts = spec_str.split()
             fmt = parts[0]          # e.g. 's32le'
@@ -252,5 +253,6 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             "max_output_channels": channels,
             "sample_rate": sample_rate,
             "bit_depth": bit_depth,
+            "is_remap": driver == "module-remap-sink.c",
         })
     return sinks
