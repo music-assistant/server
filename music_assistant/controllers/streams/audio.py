@@ -570,6 +570,9 @@ class StreamsAudio:
 
             if headers.get("icy-metaint") is not None:
                 stream_type = StreamType.ICY
+            elif headers.get("content-type", "") in ("application/ogg", "audio/ogg"):
+                # Ogg streams (Opus/Vorbis) have in-band metadata via Vorbis comments
+                stream_type = StreamType.IN_BAND
 
             if (
                 url.endswith((".m3u", ".m3u8", ".pls"))
