@@ -107,20 +107,20 @@ async def get_config_entries(
             category="Recommendations",
         ),
         ConfigEntry(
+            key="enable_geo",
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Geographic Charts",
+            default_value=False,
+            description=("Provide 'Top Artists' and 'Top Tracks' rows for the selected country"),
+            category="Recommendations",
+        ),
+        ConfigEntry(
             key="geo_country",
             type=ConfigEntryType.STRING,
             label="Country for Geographic Charts",
             default_value="Argentina",
             description="Select country for geography-based top artists and tracks",
             options=[ConfigValueOption(country, country) for country in GEO_COUNTRIES],
-            category="Recommendations",
-        ),
-        ConfigEntry(
-            key="enable_geo",
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Geographic Charts",
-            default_value=False,
-            description=("Provide 'Top Artists' and 'Top Tracks' rows for the selected country"),
             category="Recommendations",
         ),
         ConfigEntry(
