@@ -297,6 +297,8 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     "The volume slider (0-100) will be scaled to this as the upper bound.",
     category="player_controls",
     advanced=True,
+    depends_on=CONF_VOLUME_CONTROL,
+    depends_on_value_not=VOLUME_CONTROL_NONE
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
