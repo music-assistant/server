@@ -3197,11 +3197,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:
+            # player supports volume command natively: forward to player
             await player.volume_set(device_volume)
             return
         # Handle fake volume control support
         if player.volume_control == PLAYER_CONTROL_FAKE:
-            # Fake volume stores logical volume (no scaling needed)
+            # user wants to use fake volume control - so we (optimistically) update the state
+            # and store the state in the cache. Fake volume uses the logical volume (no scaling).
             player.extra_data[ATTR_FAKE_VOLUME] = volume_level
             player.update_state()
             return
