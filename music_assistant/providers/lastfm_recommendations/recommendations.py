@@ -653,12 +653,17 @@ class LastFMRecommendationManager:
         }
         seed_names = {seed_artist.name.lower() for seed_artist in seed_artists}
 
-        for seed_artist in seed_artists:
-            mbid = seed_artist.get_external_id(ExternalID.MB_ARTIST)
-
-            similar = await self.api.get_similar_artists(
-                artist_name=seed_artist.name, artist_mbid=mbid, limit=SIMILAR_ITEMS_PER_SEED
-            )
+        similar_lists = await asyncio.gather(
+            *[
+                self.api.get_similar_artists(
+                    artist_name=seed.name,
+                    artist_mbid=seed.get_external_id(ExternalID.MB_ARTIST),
+                    limit=SIMILAR_ITEMS_PER_SEED,
+                )
+                for seed in seed_artists
+            ]
+        )
+        for similar in similar_lists:
             all_similar.extend(similar)
 
         # Deduplicate by MBID and by name: Last.fm sometimes returns the same artist twice,
@@ -725,17 +730,18 @@ class LastFMRecommendationManager:
             for seed_track in seed_tracks
         }
 
-        for seed_track in seed_tracks:
-            mbid = seed_track.get_external_id(ExternalID.MB_RECORDING)
-
-            artist_name = seed_track.artists[0].name if seed_track.artists else "Unknown Artist"
-
-            similar = await self.api.get_similar_tracks(
-                artist_name=artist_name,
-                track_name=seed_track.name,
-                track_mbid=mbid,
-                limit=SIMILAR_ITEMS_PER_SEED,
-            )
+        similar_lists = await asyncio.gather(
+            *[
+                self.api.get_similar_tracks(
+                    artist_name=seed.artists[0].name if seed.artists else "Unknown Artist",
+                    track_name=seed.name,
+                    track_mbid=seed.get_external_id(ExternalID.MB_RECORDING),
+                    limit=SIMILAR_ITEMS_PER_SEED,
+                )
+                for seed in seed_tracks
+            ]
+        )
+        for similar in similar_lists:
             all_similar.extend(similar)
 
         # Deduplicate by MBID and by artist+name: Last.fm sometimes returns the same track
