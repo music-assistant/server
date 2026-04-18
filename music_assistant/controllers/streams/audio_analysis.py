@@ -21,7 +21,7 @@ from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 
-CHUNK_PROCESS_TIMEOUT = 0.8
+CHUNK_PROCESS_TIMEOUT = 1.0
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_SCAN_BATCH_SIZE = 250
