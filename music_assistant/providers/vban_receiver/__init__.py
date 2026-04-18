@@ -303,7 +303,7 @@ class VBANReceiverProvider(PluginProvider):
         ):
             try:
                 packet = await self._vban_stream.get_packet()
-            except asyncio.QueueShutDown:  # type: ignore[attr-defined]
+            except asyncio.QueueShutDown:
                 self.logger.error(
                     "Found VBANIncomingStream queue shut down when attempting to get VBAN packet"
                 )
