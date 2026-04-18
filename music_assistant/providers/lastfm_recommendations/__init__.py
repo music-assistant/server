@@ -18,10 +18,17 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 
+from music_assistant.constants import CONF_USERNAME
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
     CONF_ACTION_CLEAR_CACHE,
+    CONF_API_KEY,
+    CONF_ENABLE_GENRE,
+    CONF_ENABLE_GEO,
+    CONF_ENABLE_GLOBAL_CHARTS,
+    CONF_ENABLE_PERSONALIZED,
+    CONF_GEO_COUNTRY,
     GEO_COUNTRIES,
     REFRESH_TASK_ID,
 )
@@ -64,23 +71,23 @@ async def get_config_entries(
 
     return (
         ConfigEntry(
-            key="api_key",
+            key=CONF_API_KEY,
             type=ConfigEntryType.SECURE_STRING,
             label="Last.fm API Key",
             required=True,
             description="Get your API key from https://www.last.fm/api/account/create",
-            value=values.get("api_key") if values else None,
+            value=values.get(CONF_API_KEY) if values else None,
         ),
         ConfigEntry(
-            key="username",
+            key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Last.fm Username",
             required=False,
             description="Your Last.fm username for genre-based recommendations (optional)",
-            value=values.get("username") if values else None,
+            value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
-            key="enable_personalized",
+            key=CONF_ENABLE_PERSONALIZED,
             type=ConfigEntryType.BOOLEAN,
             label="Enable Personalized Recommendations",
             default_value=False,
@@ -91,7 +98,7 @@ async def get_config_entries(
             category="Recommendations",
         ),
         ConfigEntry(
-            key="enable_global_charts",
+            key=CONF_ENABLE_GLOBAL_CHARTS,
             type=ConfigEntryType.BOOLEAN,
             label="Enable Global Charts",
             default_value=False,
@@ -102,7 +109,7 @@ async def get_config_entries(
             category="Recommendations",
         ),
         ConfigEntry(
-            key="enable_genre",
+            key=CONF_ENABLE_GENRE,
             type=ConfigEntryType.BOOLEAN,
             label="Enable Genre Recommendations",
             default_value=False,
@@ -113,7 +120,7 @@ async def get_config_entries(
             category="Recommendations",
         ),
         ConfigEntry(
-            key="enable_geo",
+            key=CONF_ENABLE_GEO,
             type=ConfigEntryType.BOOLEAN,
             label="Enable Geographic Charts",
             default_value=False,
@@ -121,7 +128,7 @@ async def get_config_entries(
             category="Recommendations",
         ),
         ConfigEntry(
-            key="geo_country",
+            key=CONF_GEO_COUNTRY,
             type=ConfigEntryType.STRING,
             label="Country for Geographic Charts",
             default_value="Argentina",

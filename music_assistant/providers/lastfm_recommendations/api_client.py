@@ -14,6 +14,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
+from music_assistant.providers.lastfm_recommendations.constants import CONF_API_KEY
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -57,7 +58,7 @@ class LastFMAPIClient:
             params.update(
                 {
                     "method": method,
-                    "api_key": self.provider.config.get_value("api_key"),
+                    "api_key": self.provider.config.get_value(CONF_API_KEY),
                     "format": "json",
                 }
             )

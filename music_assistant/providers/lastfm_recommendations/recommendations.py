@@ -17,9 +17,15 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import CONF_USERNAME
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
     CACHE_EXPIRATION_SECONDS,
+    CONF_ENABLE_GENRE,
+    CONF_ENABLE_GEO,
+    CONF_ENABLE_GLOBAL_CHARTS,
+    CONF_ENABLE_PERSONALIZED,
+    CONF_GEO_COUNTRY,
     RESOLUTION_BUFFER_LARGE,
     RESOLUTION_BUFFER_SMALL,
     SIMILAR_ITEMS_BUFFER,
@@ -312,7 +318,7 @@ class LastFMRecommendationManager:
 
     async def _get_personalized_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """Yield personalized recommendation folders based on the user's listening history."""
-        if not self.provider.config.get_value("enable_personalized"):
+        if not self.provider.config.get_value(CONF_ENABLE_PERSONALIZED):
             return
 
         # TODO: evaluate recent play history (e.g. last_played, last 7 days) instead of all-time
@@ -354,7 +360,7 @@ class LastFMRecommendationManager:
 
     async def _get_global_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """Yield global chart recommendation folders (worldwide top artists and tracks)."""
-        if not self.provider.config.get_value("enable_global_charts"):
+        if not self.provider.config.get_value(CONF_ENABLE_GLOBAL_CHARTS):
             return
 
         # Over-fetch so deduplication and resolution failures still leave TARGET_ITEM_COUNT.
@@ -422,10 +428,10 @@ class LastFMRecommendationManager:
 
         Requires a username to be configured.
         """
-        if not self.provider.config.get_value("enable_genre"):
+        if not self.provider.config.get_value(CONF_ENABLE_GENRE):
             return
 
-        username = self.provider.config.get_value("username")
+        username = self.provider.config.get_value(CONF_USERNAME)
         if not username or not isinstance(username, str):
             return
 
@@ -572,10 +578,10 @@ class LastFMRecommendationManager:
 
     async def _get_geo_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """Yield geography-based recommendation folders for the configured country."""
-        if not self.provider.config.get_value("enable_geo"):
+        if not self.provider.config.get_value(CONF_ENABLE_GEO):
             return
 
-        country = self.provider.config.get_value("geo_country")
+        country = self.provider.config.get_value(CONF_GEO_COUNTRY)
         if not country or not isinstance(country, str):
             return
 

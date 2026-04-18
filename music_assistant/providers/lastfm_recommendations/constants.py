@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Final
 
+CONF_API_KEY: Final[str] = "api_key"
+CONF_ENABLE_PERSONALIZED: Final[str] = "enable_personalized"
+CONF_ENABLE_GLOBAL_CHARTS: Final[str] = "enable_global_charts"
+CONF_ENABLE_GENRE: Final[str] = "enable_genre"
+CONF_ENABLE_GEO: Final[str] = "enable_geo"
+CONF_GEO_COUNTRY: Final[str] = "geo_country"
 CONF_ACTION_CLEAR_CACHE: Final[str] = "clear_cache"
 REFRESH_TASK_ID: Final[str] = "lastfm_recommendations_refresh"
 
