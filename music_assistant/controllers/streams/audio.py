@@ -133,11 +133,6 @@ class StreamsAudio:
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.streams.audio")
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._smart_fades_mixer: SmartFadesMixer | None = None
-        # Active flow-stream id per queue. A new producer (see get_queue_flow_stream)
-        # overwrites this when it starts; any older producer for the same queue
-        # that is still mid-write detects the change and bails out, preventing
-        # two concurrent producers from appending to queue.flow_mode_stream_log.
-        self._active_flow_stream_ids: dict[str, str] = {}
 
     def setup(self) -> None:
         """Set up the audio sub-controller (called after all core controllers are created)."""
@@ -1749,13 +1744,13 @@ class StreamsAudio:
         last_fadeout_part: bytes = b""
         last_streamdetails: StreamDetails | None = None
         last_play_log_entry: PlayLogEntry | None = None
-        # Claim ownership of this queue's flow stream. If another producer is
-        # still mid-write for the same queue (e.g. after a rapid track switch or
-        # a sync-group reform) it will detect the id mismatch on its next yield
-        # or playlog append and exit cleanly, preventing two concurrent
-        # producers from corrupting queue.flow_mode_stream_log.
-        flow_stream_id = shortuuid.random(length=8)
-        self._active_flow_stream_ids[queue.queue_id] = flow_stream_id
+        # Snapshot the queue's current session_id. PlayerQueues rotates this on
+        # every new stream session, so if a newer producer takes over the queue
+        # (rapid track switch, sync-group reform, dynamic leader handoff) the
+        # snapshot will no longer match and we exit cleanly on the next yield or
+        # playlog append — preventing two producers from writing to the same
+        # queue.flow_mode_stream_log.
+        flow_session_id = queue.session_id
         queue.flow_mode = True
         queue.flow_mode_stream_log = []
         if not start_queue_item:
@@ -1794,17 +1789,19 @@ class StreamsAudio:
         total_chunks_received = 0
 
         def _superseded() -> bool:
-            """Return True if a newer producer has taken over this queue."""
-            return self._active_flow_stream_ids.get(queue.queue_id) != flow_stream_id
+            """Return True if a newer stream session has taken over this queue."""
+            return queue.session_id != flow_session_id
 
         while True:
             # bail out early if a newer producer has taken over this queue,
             # so we don't append another entry to a stream log we no longer own
             if _superseded():
                 self.logger.debug(
-                    "Flow stream %s for queue %s superseded - exiting before next track",
-                    flow_stream_id,
+                    "Flow stream for queue %s superseded (session %s -> %s) "
+                    "- exiting before next track",
                     queue.display_name,
+                    flow_session_id,
+                    queue.session_id,
                 )
                 return
             # get (next) queue item to stream
@@ -1850,8 +1847,7 @@ class StreamsAudio:
             # may have taken over while we were awaiting load_next_queue_item
             if _superseded():
                 self.logger.debug(
-                    "Flow stream %s for queue %s superseded - exiting before playlog append",
-                    flow_stream_id,
+                    "Flow stream for queue %s superseded - exiting before playlog append",
                     queue.display_name,
                 )
                 return
@@ -1900,8 +1896,7 @@ class StreamsAudio:
                 # bookkeeping mutates seconds_streamed / duration on the log
                 if _superseded():
                     self.logger.debug(
-                        "Flow stream %s for queue %s superseded - stopping chunk yield",
-                        flow_stream_id,
+                        "Flow stream for queue %s superseded - stopping chunk yield",
                         queue.display_name,
                     )
                     return
@@ -2067,8 +2062,7 @@ class StreamsAudio:
         # the new producer owns queue_buffer_completed and the play log now
         if _superseded():
             self.logger.debug(
-                "Flow stream %s for queue %s superseded - skipping end-of-queue handling",
-                flow_stream_id,
+                "Flow stream for queue %s superseded - skipping end-of-queue handling",
                 queue.display_name,
             )
             return
@@ -2096,7 +2090,6 @@ class StreamsAudio:
         # only signal completion if we are still the active producer — a later
         # producer would (incorrectly) see this as its own completion otherwise
         if not _superseded():
-            self._active_flow_stream_ids.pop(queue.queue_id, None)
             # inform the queue controller that all audio data has been generated
             # so it can handle the case where new items were added after the flow stream ended
             self.mass.player_queues.queue_buffer_completed(queue.queue_id)
