@@ -334,7 +334,8 @@ class MusicbrainzProvider(MetadataProvider):
         raise InvalidDataError(msg)
 
     async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
-        """Get ISRCs for a MusicBrainz Recording ID.
+        """
+        Get ISRCs for a MusicBrainz Recording ID.
 
         :param recording_id: MusicBrainz recording ID.
         :return: List of ISRCs, or empty list if not found or on error.
