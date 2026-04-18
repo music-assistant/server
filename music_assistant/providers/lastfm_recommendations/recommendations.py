@@ -71,7 +71,7 @@ class LastFMRecommendationManager:
         self.logger.info("Cleared all recommendation caches (in-memory and persistent)")
 
     async def build_recommendation_folders(self) -> AsyncIterator[RecommendationFolder]:
-        """Yield recommendation folders as they become available, based on current config."""
+        """Yield recommendation folders across all enabled categories."""
         async for folder in self._yield_and_count(
             self._get_personalized_recommendations(), "personalized"
         ):
@@ -93,7 +93,7 @@ class LastFMRecommendationManager:
     async def _yield_and_count(
         self, source: AsyncIterator[RecommendationFolder], category_label: str
     ) -> AsyncIterator[RecommendationFolder]:
-        """Yield folders from a category and log the total once it finishes."""
+        """Yield folders from a single category."""
         count = 0
         async for folder in source:
             count += 1

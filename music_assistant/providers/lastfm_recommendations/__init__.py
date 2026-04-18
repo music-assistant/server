@@ -162,6 +162,17 @@ class LastFMRecommendationsProvider(MetadataProvider):
             translation_key="background_task.refresh_lastfm_recommendations",
         )
 
+        # Kick off an initial build on startup. Delayed so streaming providers
+        # (e.g. Spotify) finish loading first; otherwise resolution fails for items
+        # that need them, and those failures aren't cached. The scheduled task
+        # fires relative to its persisted last_run, which can be up to 6 hours
+        # out after a restart.
+        self.mass.call_later(
+            20,
+            self._refresh_recommendations,
+            task_id=f"{REFRESH_TASK_ID}_initial_{self.instance_id}",
+        )
+
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider."""
         self.mass.tasks.unregister_scheduled_task(
