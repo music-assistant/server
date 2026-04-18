@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Final
+
+CONF_ACTION_CLEAR_CACHE: Final[str] = "clear_cache"
+REFRESH_TASK_ID: Final[str] = "lastfm_recommendations_refresh"
+
 # Cache settings
 # Cache category for resolved Artist/Album/Track objects
 CACHE_CATEGORY_RESOLVED_ITEMS = 1

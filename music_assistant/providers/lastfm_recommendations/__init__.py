@@ -15,7 +15,11 @@ from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
-from music_assistant.providers.lastfm_recommendations.constants import GEO_COUNTRIES
+from music_assistant.providers.lastfm_recommendations.constants import (
+    CONF_ACTION_CLEAR_CACHE,
+    GEO_COUNTRIES,
+    REFRESH_TASK_ID,
+)
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
 )
@@ -31,9 +35,6 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
 }
-
-CONF_ACTION_CLEAR_CACHE = "clear_cache"
-REFRESH_TASK_ID = "lastfm_recommendations_refresh"
 
 
 async def setup(
@@ -162,11 +163,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
             translation_key="background_task.refresh_lastfm_recommendations",
         )
 
-        # Kick off an initial build on startup. Delayed so streaming providers
-        # (e.g. Spotify) finish loading first; otherwise resolution fails for items
-        # that need them, and those failures aren't cached. The scheduled task
-        # fires relative to its persisted last_run, which can be up to 6 hours
-        # out after a restart.
+        # Build on startup so the UI isn't empty until the next scheduled refresh.
+        # Delayed to let streaming providers finish loading before resolution runs.
         self.mass.call_later(
             20,
             self._refresh_recommendations,
@@ -198,9 +196,5 @@ class LastFMRecommendationsProvider(MetadataProvider):
             self.logger.warning("Failed to build recommendations: %s", err)
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Return this provider's recommendation folders.
-
-        On first call (before background population completes) this returns an empty list.
-        Subsequent calls return progressively more populated folders.
-        """
+        """Return this provider's recommendation folders."""
         return self._recommendation_folders

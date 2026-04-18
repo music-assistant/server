@@ -35,7 +35,8 @@ _SEARCH_SEMAPHORE = asyncio.Semaphore(SEARCH_CONCURRENCY_LIMIT)
 def _has_matching_external_ids(
     item_mapping: ItemMapping, media_item: Artist | Album | Track
 ) -> bool:
-    """Return True if the ItemMapping shares any external IDs with the media item.
+    """
+    Return True if the ItemMapping shares any external IDs with the media item.
 
     :param item_mapping: ItemMapping with external IDs from Last.fm.
     :param media_item: Artist or Track to compare against.
@@ -47,7 +48,8 @@ def _has_matching_external_ids(
 
 
 def _extract_image_url(image_array: list[dict[str, Any]]) -> str | None:
-    """Extract the largest available image URL from Last.fm's image array.
+    """
+    Extract the largest available image URL from Last.fm's image array.
 
     :param image_array: List of image dicts from Last.fm API.
     """
@@ -67,7 +69,8 @@ def _extract_image_url(image_array: list[dict[str, Any]]) -> str | None:
 def _get_streaming_providers(
     mass: MusicAssistant, item_mapping: ItemMapping, provider_instance_to_skip: str
 ) -> list[Any]:
-    """Return streaming providers that support the ItemMapping's media type.
+    """
+    Return streaming providers that support the ItemMapping's media type.
 
     :param mass: MusicAssistant instance.
     :param item_mapping: ItemMapping with the media type to search for.
@@ -99,7 +102,8 @@ async def _search_provider(
     item_mapping: ItemMapping,
     provider: Any,
 ) -> Artist | Album | Track | None:
-    """Search a single provider for a matching item.
+    """
+    Search a single provider for a matching item.
 
     :param ctrl: Controller for the media type.
     :param item_mapping: ItemMapping to search for.
@@ -132,7 +136,8 @@ async def _search_providers_concurrent(
     providers: list[Any],
     require_external_id_match: bool,
 ) -> Artist | Album | Track | None:
-    """Search multiple providers concurrently and return the best match.
+    """
+    Search multiple providers concurrently and return the best match.
 
     :param ctrl: Controller for the media type.
     :param item_mapping: ItemMapping to search for.
@@ -235,7 +240,8 @@ async def _search_providers_concurrent(
 async def _resolve_item(
     item_mapping: ItemMapping, mass: MusicAssistant, provider_instance_to_skip: str
 ) -> Artist | Album | Track | None:
-    """Resolve an ItemMapping to a library or provider item.
+    """
+    Resolve an ItemMapping to a library or provider item.
 
     :param item_mapping: ItemMapping with metadata and external IDs from Last.fm.
     :param mass: MusicAssistant instance.
@@ -285,7 +291,8 @@ async def _resolve_item(
 async def parse_artist(
     lastfm_artist: dict[str, Any], mass: MusicAssistant, provider_instance: str
 ) -> Artist | None:
-    """Parse a Last.fm artist and resolve it to a library or provider Artist.
+    """
+    Parse a Last.fm artist and resolve it to a library or provider Artist.
 
     :param lastfm_artist: Raw Last.fm artist dict with 'name' and 'mbid' fields.
     :param mass: MusicAssistant instance for accessing library and providers.
@@ -323,7 +330,8 @@ async def parse_track(
     mass: MusicAssistant,
     provider_instance: str,
 ) -> Track | None:
-    """Parse a Last.fm track and resolve it to a library or provider Track.
+    """
+    Parse a Last.fm track and resolve it to a library or provider Track.
 
     :param lastfm_track: Raw Last.fm track dict with 'name', 'artist', 'mbid', 'duration'.
     :param mass: MusicAssistant instance for accessing library and providers.
@@ -382,7 +390,8 @@ async def parse_track(
 async def parse_album(
     lastfm_album: dict[str, Any], mass: MusicAssistant, provider_instance: str
 ) -> Album | None:
-    """Parse a Last.fm album and resolve it to a library or provider Album.
+    """
+    Parse a Last.fm album and resolve it to a library or provider Album.
 
     :param lastfm_album: Raw Last.fm album dict with 'name', 'artist', 'mbid'.
     :param mass: MusicAssistant instance for accessing library and providers.

@@ -30,7 +30,8 @@ class LastFMAPIClient:
     }
 
     def __init__(self, provider: LastFMRecommendationsProvider) -> None:
-        """Initialize Last.fm API client.
+        """
+        Initialize Last.fm API client.
 
         :param provider: The Last.fm recommendations provider instance.
         """
@@ -39,7 +40,8 @@ class LastFMAPIClient:
         self.http_session: ClientSession = provider.mass.http_session
 
     async def _get_data(self, method: str, **params: Any) -> dict[str, Any]:
-        """Make a request to the Last.fm API.
+        """
+        Make a request to the Last.fm API.
 
         :param method: The Last.fm API method to call.
         :param params: Additional query parameters.
@@ -85,7 +87,8 @@ class LastFMAPIClient:
     async def get_similar_artists(
         self, artist_name: str, artist_mbid: str | None = None, limit: int = 10
     ) -> list[dict[str, Any]]:
-        """Get similar artists from Last.fm.
+        """
+        Get similar artists from Last.fm.
 
         :param artist_name: Name of the artist.
         :param artist_mbid: Optional MusicBrainz ID for more accurate matching.
@@ -127,7 +130,8 @@ class LastFMAPIClient:
         track_mbid: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Get similar tracks from Last.fm.
+        """
+        Get similar tracks from Last.fm.
 
         :param artist_name: Name of the track's artist.
         :param track_name: Name of the track.
@@ -166,7 +170,8 @@ class LastFMAPIClient:
             return []
 
     async def get_chart_top_artists(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Get global top artists chart from Last.fm.
+        """
+        Get global top artists chart from Last.fm.
 
         :param limit: Maximum number of artists to return.
         """
@@ -186,7 +191,8 @@ class LastFMAPIClient:
             return []
 
     async def get_chart_top_tracks(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Get global top tracks chart from Last.fm.
+        """
+        Get global top tracks chart from Last.fm.
 
         :param limit: Maximum number of tracks to return.
         """
@@ -204,7 +210,8 @@ class LastFMAPIClient:
             return []
 
     async def get_user_top_tags(self, username: str, limit: int = 1) -> list[dict[str, Any]]:
-        """Get a user's top tags from Last.fm.
+        """
+        Get a user's top tags from Last.fm.
 
         :param username: Last.fm username.
         :param limit: Maximum number of tags to return (default 1 for top genre).
@@ -224,7 +231,8 @@ class LastFMAPIClient:
             return []
 
     async def get_tag_top_artists(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Get top artists for a tag from Last.fm.
+        """
+        Get top artists for a tag from Last.fm.
 
         :param tag: Tag name (genre).
         :param limit: Maximum number of artists to return.
@@ -246,7 +254,8 @@ class LastFMAPIClient:
             return []
 
     async def get_tag_top_albums(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Get top albums for a tag from Last.fm.
+        """
+        Get top albums for a tag from Last.fm.
 
         :param tag: Tag name (genre).
         :param limit: Maximum number of albums to return.
@@ -266,7 +275,8 @@ class LastFMAPIClient:
             return []
 
     async def get_tag_top_tracks(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Get top tracks for a tag from Last.fm.
+        """
+        Get top tracks for a tag from Last.fm.
 
         :param tag: Tag name (genre).
         :param limit: Maximum number of tracks to return.
@@ -286,7 +296,8 @@ class LastFMAPIClient:
             return []
 
     async def get_geo_top_artists(self, country: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Get top artists for a country from Last.fm.
+        """
+        Get top artists for a country from Last.fm.
 
         :param country: Country name (e.g., "United States", "Spain").
         :param limit: Maximum number of artists to return.
@@ -310,7 +321,8 @@ class LastFMAPIClient:
             return []
 
     async def get_geo_top_tracks(self, country: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Get top tracks for a country from Last.fm.
+        """
+        Get top tracks for a country from Last.fm.
 
         :param country: Country name (e.g., "United States", "Spain").
         :param limit: Maximum number of tracks to return.

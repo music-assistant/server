@@ -44,7 +44,8 @@ class LastFMRecommendationManager:
     """Manages Last.fm recommendations."""
 
     def __init__(self, provider: LastFMRecommendationsProvider) -> None:
-        """Initialize recommendation manager.
+        """
+        Initialize recommendation manager.
 
         :param provider: The Last.fm recommendations provider instance.
         """
@@ -102,7 +103,8 @@ class LastFMRecommendationManager:
             self.logger.debug("Added %d %s recommendation folder(s)", count, category_label)
 
     async def _is_in_library(self, item_data: dict[str, Any], media_type: MediaType) -> bool:
-        """Return True if the Last.fm item already exists in the MA library.
+        """
+        Return True if the Last.fm item already exists in the MA library.
 
         :param item_data: Raw Last.fm item data (artist, album, or track dict).
         :param media_type: Type of media item to check.
@@ -156,7 +158,8 @@ class LastFMRecommendationManager:
     def _sample_items(
         self, items: list[dict[str, Any]], seed_suffix: str, target_count: int = TARGET_ITEM_COUNT
     ) -> list[dict[str, Any]]:
-        """Sample items using a 'top N + random remainder' strategy with a daily seed.
+        """
+        Sample items using a 'top N + random remainder' strategy with a daily seed.
 
         :param items: List of items to sample from (already filtered).
         :param seed_suffix: Unique suffix for random seed (to vary between recommendation types).
@@ -178,7 +181,8 @@ class LastFMRecommendationManager:
         return top_items + random_items
 
     async def _get_or_resolve_artist(self, lastfm_artist: dict[str, Any]) -> Artist | None:
-        """Return an Artist from cache (in-memory or persistent) or resolve and cache it.
+        """
+        Return an Artist from cache (in-memory or persistent) or resolve and cache it.
 
         :param lastfm_artist: Raw Last.fm artist dict.
         """
@@ -215,7 +219,8 @@ class LastFMRecommendationManager:
         return artist
 
     async def _get_or_resolve_track(self, lastfm_track: dict[str, Any]) -> Track | None:
-        """Return a Track from cache (in-memory or persistent) or resolve and cache it.
+        """
+        Return a Track from cache (in-memory or persistent) or resolve and cache it.
 
         :param lastfm_track: Raw Last.fm track dict.
         """
@@ -260,7 +265,8 @@ class LastFMRecommendationManager:
         return track
 
     async def _get_or_resolve_album(self, lastfm_album: dict[str, Any]) -> Album | None:
-        """Return an Album from cache (in-memory or persistent) or resolve and cache it.
+        """
+        Return an Album from cache (in-memory or persistent) or resolve and cache it.
 
         :param lastfm_album: Raw Last.fm album dict.
         """
@@ -411,7 +417,8 @@ class LastFMRecommendationManager:
                 )
 
     async def _get_genre_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
-        """Yield genre-based recommendation folders derived from the user's top Last.fm tag.
+        """
+        Yield genre-based recommendation folders derived from the user's top Last.fm tag.
 
         Requires a username to be configured.
         """
@@ -631,7 +638,8 @@ class LastFMRecommendationManager:
                 )
 
     async def _get_similar_artists_from_seeds(self, seed_artists: list[Artist]) -> list[Artist]:
-        """Return resolved artists similar to the given seed artists.
+        """
+        Return resolved artists similar to the given seed artists.
 
         :param seed_artists: Seed artists from the user's library.
         """
@@ -699,7 +707,8 @@ class LastFMRecommendationManager:
         return result
 
     async def _get_similar_tracks_from_seeds(self, seed_tracks: list[Track]) -> list[Track]:
-        """Return resolved tracks similar to the given seed tracks.
+        """
+        Return resolved tracks similar to the given seed tracks.
 
         :param seed_tracks: Seed tracks from the user's library.
         """
