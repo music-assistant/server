@@ -306,7 +306,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         self.logger.debug(
-            "_process_block took %.1f ms (block len=%d samples)", elapsed_ms, num_samples
+            "_process_block took %.1f ms (%d samples at %d Hz, resampled to %d samples)",
+            elapsed_ms,
+            num_samples,
+            data.input_audio_format.sample_rate,
+            len(pcm_22k),
         )
 
     def _compute_energy_and_spectral_centroids(
