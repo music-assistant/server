@@ -11,7 +11,12 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
 )
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    AuthenticationFailed,
+    InvalidToken,
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
@@ -192,6 +197,13 @@ class LastFMRecommendationsProvider(MetadataProvider):
                 "Last.fm recommendations built (%d folders)",
                 len(self._recommendation_folders),
             )
+        except (AuthenticationFailed, InvalidToken) as err:
+            self.logger.error(
+                "Last.fm authentication failed — check your API key in the provider settings: %s",
+                err,
+            )
+        except ResourceTemporarilyUnavailable as err:
+            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
         except MusicAssistantError as err:
             self.logger.warning("Failed to build recommendations: %s", err)
 

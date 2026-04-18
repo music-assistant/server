@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import (
+    AuthenticationFailed,
+    InvalidDataError,
+    InvalidToken,
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 
@@ -21,12 +27,13 @@ class LastFMAPIClient:
     BASE_URL = "https://ws.audioscrobbler.com/2.0/"
     throttler = ThrottlerManager(rate_limit=5, period=1)  # 5 requests per second
 
-    # Last.fm error codes that should be logged as warnings
-    CRITICAL_ERROR_CODES = {
-        4,  # Authentication Failed
-        10,  # Invalid API key
-        26,  # Suspended API key
-        29,  # Rate limit exceeded
+    # Map known Last.fm API error codes to MA exceptions. Unmapped codes raise
+    # InvalidDataError which callers treat as a recoverable empty response.
+    _ERROR_MAP: dict[int, type[MusicAssistantError]] = {
+        4: AuthenticationFailed,
+        10: InvalidToken,
+        26: InvalidToken,
+        29: ResourceTemporarilyUnavailable,
     }
 
     def __init__(self, provider: LastFMRecommendationsProvider) -> None:
@@ -59,30 +66,15 @@ class LastFMAPIClient:
                 response.raise_for_status()
                 data: dict[str, Any] = await response.json()
 
-                # Last.fm returns errors in the response body rather than as an HTTP status.
-                if "error" in data:
-                    error_code = data.get("error", 0)
-                    error_msg = data.get("message", "Unknown error")
+        # Last.fm returns errors in the response body rather than as an HTTP status.
+        if "error" in data:
+            error_code = int(data.get("error", 0))
+            error_msg = data.get("message", "Unknown error")
+            msg = f"Last.fm API error {error_code}: {error_msg} (method: {method})"
+            exc_cls = self._ERROR_MAP.get(error_code, InvalidDataError)
+            raise exc_cls(msg)
 
-                    if error_code in self.CRITICAL_ERROR_CODES:
-                        self.logger.warning(
-                            "Last.fm API error %s: %s (method: %s)",
-                            error_code,
-                            error_msg,
-                            method,
-                        )
-                    else:
-                        self.logger.debug(
-                            "Last.fm API error %s: %s (method: %s)",
-                            error_code,
-                            error_msg,
-                            method,
-                        )
-
-                    msg = f"Last.fm API error {error_code}: {error_msg}"
-                    raise InvalidDataError(msg)
-
-                return data
+        return data
 
     async def get_similar_artists(
         self, artist_name: str, artist_mbid: str | None = None, limit: int = 10
@@ -103,25 +95,26 @@ class LastFMAPIClient:
             params["artist"] = artist_name
             params["autocorrect"] = 1
 
+        self.logger.debug(
+            "Fetching similar artists for: %s (MBID: %s)",
+            artist_name,
+            artist_mbid or "none",
+        )
         try:
-            self.logger.debug(
-                "Fetching similar artists for: %s (MBID: %s)",
-                artist_name,
-                artist_mbid or "none",
-            )
             data = await self._get_data("artist.getSimilar", **params)
-            similar_artists: list[dict[str, Any]] | dict[str, Any] = data.get(
-                "similarartists", {}
-            ).get("artist", [])
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(similar_artists, dict):
-                return [similar_artists]
-
-            return similar_artists
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Similar artists request failed: %s", err)
             return []
+
+        similar_artists: list[dict[str, Any]] | dict[str, Any] = data.get("similarartists", {}).get(
+            "artist", []
+        )
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(similar_artists, dict):
+            return [similar_artists]
+
+        return similar_artists
 
     async def get_similar_tracks(
         self,
@@ -148,26 +141,27 @@ class LastFMAPIClient:
             params["track"] = track_name
             params["autocorrect"] = 1
 
+        self.logger.debug(
+            "Fetching similar tracks for: %s - %s (MBID: %s)",
+            artist_name,
+            track_name,
+            track_mbid or "none",
+        )
         try:
-            self.logger.debug(
-                "Fetching similar tracks for: %s - %s (MBID: %s)",
-                artist_name,
-                track_name,
-                track_mbid or "none",
-            )
             data = await self._get_data("track.getSimilar", **params)
-            similar_tracks: list[dict[str, Any]] | dict[str, Any] = data.get(
-                "similartracks", {}
-            ).get("track", [])
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(similar_tracks, dict):
-                return [similar_tracks]
-
-            return similar_tracks
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Similar tracks request failed: %s", err)
             return []
+
+        similar_tracks: list[dict[str, Any]] | dict[str, Any] = data.get("similartracks", {}).get(
+            "track", []
+        )
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(similar_tracks, dict):
+            return [similar_tracks]
+
+        return similar_tracks
 
     async def get_chart_top_artists(self, limit: int = 10) -> list[dict[str, Any]]:
         """
@@ -177,18 +171,17 @@ class LastFMAPIClient:
         """
         try:
             data = await self._get_data("chart.getTopArtists", limit=limit)
-            artists: list[dict[str, Any]] | dict[str, Any] = data.get("artists", {}).get(
-                "artist", []
-            )
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(artists, dict):
-                return [artists]
-
-            return artists
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Chart top artists request failed: %s", err)
             return []
+
+        artists: list[dict[str, Any]] | dict[str, Any] = data.get("artists", {}).get("artist", [])
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(artists, dict):
+            return [artists]
+
+        return artists
 
     async def get_chart_top_tracks(self, limit: int = 10) -> list[dict[str, Any]]:
         """
@@ -198,16 +191,17 @@ class LastFMAPIClient:
         """
         try:
             data = await self._get_data("chart.getTopTracks", limit=limit)
-            tracks: list[dict[str, Any]] | dict[str, Any] = data.get("tracks", {}).get("track", [])
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(tracks, dict):
-                return [tracks]
-
-            return tracks
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Chart top tracks request failed: %s", err)
             return []
+
+        tracks: list[dict[str, Any]] | dict[str, Any] = data.get("tracks", {}).get("track", [])
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(tracks, dict):
+            return [tracks]
+
+        return tracks
 
     async def get_user_top_tags(self, username: str, limit: int = 1) -> list[dict[str, Any]]:
         """
@@ -216,19 +210,20 @@ class LastFMAPIClient:
         :param username: Last.fm username.
         :param limit: Maximum number of tags to return (default 1 for top genre).
         """
+        self.logger.debug("Fetching top tags for user: %s", username)
         try:
-            self.logger.debug("Fetching top tags for user: %s", username)
             data = await self._get_data("user.getTopTags", user=username, limit=limit)
-            tags: list[dict[str, Any]] | dict[str, Any] = data.get("toptags", {}).get("tag", [])
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(tags, dict):
-                return [tags]
-
-            return tags
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("User top tags request failed: %s", err)
             return []
+
+        tags: list[dict[str, Any]] | dict[str, Any] = data.get("toptags", {}).get("tag", [])
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(tags, dict):
+            return [tags]
+
+        return tags
 
     async def get_tag_top_artists(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
         """
@@ -237,21 +232,22 @@ class LastFMAPIClient:
         :param tag: Tag name (genre).
         :param limit: Maximum number of artists to return.
         """
+        self.logger.debug("Fetching top artists for tag: %s (limit: %d)", tag, limit)
         try:
-            self.logger.debug("Fetching top artists for tag: %s (limit: %d)", tag, limit)
             data = await self._get_data("tag.getTopArtists", tag=tag, limit=limit)
-            artists: list[dict[str, Any]] | dict[str, Any] = data.get("topartists", {}).get(
-                "artist", []
-            )
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(artists, dict):
-                return [artists]
-
-            return artists
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Tag top artists request failed: %s", err)
             return []
+
+        artists: list[dict[str, Any]] | dict[str, Any] = data.get("topartists", {}).get(
+            "artist", []
+        )
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(artists, dict):
+            return [artists]
+
+        return artists
 
     async def get_tag_top_albums(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
         """
@@ -260,19 +256,20 @@ class LastFMAPIClient:
         :param tag: Tag name (genre).
         :param limit: Maximum number of albums to return.
         """
+        self.logger.debug("Fetching top albums for tag: %s (limit: %d)", tag, limit)
         try:
-            self.logger.debug("Fetching top albums for tag: %s (limit: %d)", tag, limit)
             data = await self._get_data("tag.getTopAlbums", tag=tag, limit=limit)
-            albums: list[dict[str, Any]] | dict[str, Any] = data.get("albums", {}).get("album", [])
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(albums, dict):
-                return [albums]
-
-            return albums
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Tag top albums request failed: %s", err)
             return []
+
+        albums: list[dict[str, Any]] | dict[str, Any] = data.get("albums", {}).get("album", [])
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(albums, dict):
+            return [albums]
+
+        return albums
 
     async def get_tag_top_tracks(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
         """
@@ -281,19 +278,20 @@ class LastFMAPIClient:
         :param tag: Tag name (genre).
         :param limit: Maximum number of tracks to return.
         """
+        self.logger.debug("Fetching top tracks for tag: %s (limit: %d)", tag, limit)
         try:
-            self.logger.debug("Fetching top tracks for tag: %s (limit: %d)", tag, limit)
             data = await self._get_data("tag.getTopTracks", tag=tag, limit=limit)
-            tracks: list[dict[str, Any]] | dict[str, Any] = data.get("tracks", {}).get("track", [])
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(tracks, dict):
-                return [tracks]
-
-            return tracks
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Tag top tracks request failed: %s", err)
             return []
+
+        tracks: list[dict[str, Any]] | dict[str, Any] = data.get("tracks", {}).get("track", [])
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(tracks, dict):
+            return [tracks]
+
+        return tracks
 
     async def get_geo_top_artists(self, country: str, limit: int = 10) -> list[dict[str, Any]]:
         """
@@ -302,23 +300,22 @@ class LastFMAPIClient:
         :param country: Country name (e.g., "United States", "Spain").
         :param limit: Maximum number of artists to return.
         """
+        self.logger.debug("Fetching geo top artists for country: %s (limit: %d)", country, limit)
         try:
-            self.logger.debug(
-                "Fetching geo top artists for country: %s (limit: %d)", country, limit
-            )
             data = await self._get_data("geo.getTopArtists", country=country, limit=limit)
-            artists: list[dict[str, Any]] | dict[str, Any] = data.get("topartists", {}).get(
-                "artist", []
-            )
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(artists, dict):
-                return [artists]
-
-            return artists
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Geo top artists request failed: %s", err)
             return []
+
+        artists: list[dict[str, Any]] | dict[str, Any] = data.get("topartists", {}).get(
+            "artist", []
+        )
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(artists, dict):
+            return [artists]
+
+        return artists
 
     async def get_geo_top_tracks(self, country: str, limit: int = 10) -> list[dict[str, Any]]:
         """
@@ -327,16 +324,17 @@ class LastFMAPIClient:
         :param country: Country name (e.g., "United States", "Spain").
         :param limit: Maximum number of tracks to return.
         """
+        self.logger.debug("Fetching geo top tracks for country: %s (limit: %d)", country, limit)
         try:
-            self.logger.debug("Fetching geo top tracks for country: %s (limit: %d)", country, limit)
             data = await self._get_data("geo.getTopTracks", country=country, limit=limit)
-            tracks: list[dict[str, Any]] | dict[str, Any] = data.get("tracks", {}).get("track", [])
-
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(tracks, dict):
-                return [tracks]
-
-            return tracks
-
-        except (TimeoutError, ClientError, InvalidDataError, KeyError):
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Geo top tracks request failed: %s", err)
             return []
+
+        tracks: list[dict[str, Any]] | dict[str, Any] = data.get("tracks", {}).get("track", [])
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(tracks, dict):
+            return [tracks]
+
+        return tracks
