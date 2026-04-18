@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import random
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ExternalID, MediaType
@@ -69,31 +70,36 @@ class LastFMRecommendationManager:
 
         self.logger.info("Cleared all recommendation caches (in-memory and persistent)")
 
-    async def build_recommendation_folders(self) -> list[RecommendationFolder]:
-        """Build all recommendation folders based on current config."""
-        folders: list[RecommendationFolder] = []
+    async def build_recommendation_folders(self) -> AsyncIterator[RecommendationFolder]:
+        """Yield recommendation folders as they become available, based on current config."""
+        async for folder in self._yield_and_count(
+            self._get_personalized_recommendations(), "personalized"
+        ):
+            yield folder
 
-        personalized = await self._get_personalized_recommendations()
-        if personalized:
-            folders.extend(personalized)
-            self.logger.debug("Added %d personalized recommendation folder(s)", len(personalized))
+        async for folder in self._yield_and_count(self._get_global_recommendations(), "global"):
+            yield folder
 
-        global_recs = await self._get_global_recommendations()
-        if global_recs:
-            folders.extend(global_recs)
-            self.logger.debug("Added %d global recommendation folder(s)", len(global_recs))
+        async for folder in self._yield_and_count(
+            self._get_genre_based_recommendations(), "genre-based"
+        ):
+            yield folder
 
-        genre = await self._get_genre_based_recommendations()
-        if genre:
-            folders.extend(genre)
-            self.logger.debug("Added %d genre-based recommendation folder(s)", len(genre))
+        async for folder in self._yield_and_count(
+            self._get_geo_based_recommendations(), "geography-based"
+        ):
+            yield folder
 
-        geo = await self._get_geo_based_recommendations()
-        if geo:
-            folders.extend(geo)
-            self.logger.debug("Added %d geography-based recommendation folder(s)", len(geo))
-
-        return folders
+    async def _yield_and_count(
+        self, source: AsyncIterator[RecommendationFolder], category_label: str
+    ) -> AsyncIterator[RecommendationFolder]:
+        """Yield folders from a category and log the total once it finishes."""
+        count = 0
+        async for folder in source:
+            count += 1
+            yield folder
+        if count:
+            self.logger.debug("Added %d %s recommendation folder(s)", count, category_label)
 
     async def _is_in_library(self, item_data: dict[str, Any], media_type: MediaType) -> bool:
         """Return True if the Last.fm item already exists in the MA library.
@@ -298,27 +304,10 @@ class LastFMRecommendationManager:
             )
         return album
 
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Return all recommendation folders for this provider.
-
-        Individual category methods return empty lists on failure, so errors should not
-        bubble up here; if they do it indicates a bug.
-        """
-        folders: list[RecommendationFolder] = []
-
-        folders.extend(await self._get_personalized_recommendations())
-        folders.extend(await self._get_global_recommendations())
-        folders.extend(await self._get_genre_based_recommendations())
-        folders.extend(await self._get_geo_based_recommendations())
-
-        return folders
-
-    async def _get_personalized_recommendations(self) -> list[RecommendationFolder]:
-        """Return personalized recommendation folders based on the user's listening history."""
-        folders: list[RecommendationFolder] = []
-
+    async def _get_personalized_recommendations(self) -> AsyncIterator[RecommendationFolder]:
+        """Yield personalized recommendation folders based on the user's listening history."""
         if not self.provider.config.get_value("enable_personalized"):
-            return folders
+            return
 
         # TODO: evaluate recent play history (e.g. last_played, last 7 days) instead of all-time
         # play_count, possibly weighted. Needs user feedback.
@@ -331,15 +320,13 @@ class LastFMRecommendationManager:
             similar_artists = await self._get_similar_artists_from_seeds(top_artists)
 
             if similar_artists:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_similar_artists",
-                        name="Discover Similar Artists",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
-                        subtitle=f"Based on your top {len(top_artists)} artists",
-                        icon="mdi-account-music-outline",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_similar_artists",
+                    name="Discover Similar Artists",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
+                    subtitle=f"Based on your top {len(top_artists)} artists",
+                    icon="mdi-account-music-outline",
                 )
 
         top_tracks = await self.mass.music.tracks.library_items(
@@ -350,25 +337,19 @@ class LastFMRecommendationManager:
             similar_tracks = await self._get_similar_tracks_from_seeds(top_tracks)
 
             if similar_tracks:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_similar_tracks",
-                        name="Discover Similar Tracks",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
-                        subtitle=f"Based on your top {len(top_tracks)} tracks",
-                        icon="mdi-music-note-outline",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_similar_tracks",
+                    name="Discover Similar Tracks",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
+                    subtitle=f"Based on your top {len(top_tracks)} tracks",
+                    icon="mdi-music-note-outline",
                 )
 
-        return folders
-
-    async def _get_global_recommendations(self) -> list[RecommendationFolder]:
-        """Return global chart recommendation folders (worldwide top artists and tracks)."""
-        folders: list[RecommendationFolder] = []
-
+    async def _get_global_recommendations(self) -> AsyncIterator[RecommendationFolder]:
+        """Yield global chart recommendation folders (worldwide top artists and tracks)."""
         if not self.provider.config.get_value("enable_global_charts"):
-            return folders
+            return
 
         # Over-fetch so deduplication and resolution failures still leave TARGET_ITEM_COUNT.
         top_artists_raw = await self.api.get_chart_top_artists(limit=RESOLUTION_BUFFER_SMALL)
@@ -391,15 +372,13 @@ class LastFMRecommendationManager:
                 )
 
             if top_artists:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_chart_top_artists",
-                        name="Global Top Artists",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(top_artists),
-                        subtitle="Most popular artists worldwide",
-                        icon="mdi-chart-line",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_chart_top_artists",
+                    name="Global Top Artists",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(top_artists),
+                    subtitle="Most popular artists worldwide",
+                    icon="mdi-chart-line",
                 )
 
         top_tracks_raw = await self.api.get_chart_top_tracks(limit=RESOLUTION_BUFFER_SMALL)
@@ -422,40 +401,34 @@ class LastFMRecommendationManager:
                 )
 
             if top_tracks:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_chart_top_tracks",
-                        name="Global Top Tracks",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(top_tracks),
-                        subtitle="Most popular tracks worldwide",
-                        icon="mdi-chart-box",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_chart_top_tracks",
+                    name="Global Top Tracks",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(top_tracks),
+                    subtitle="Most popular tracks worldwide",
+                    icon="mdi-chart-box",
                 )
 
-        return folders
-
-    async def _get_genre_based_recommendations(self) -> list[RecommendationFolder]:
-        """Return genre-based recommendation folders derived from the user's top Last.fm tag.
+    async def _get_genre_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
+        """Yield genre-based recommendation folders derived from the user's top Last.fm tag.
 
         Requires a username to be configured.
         """
-        folders: list[RecommendationFolder] = []
-
         if not self.provider.config.get_value("enable_genre"):
-            return folders
+            return
 
         username = self.provider.config.get_value("username")
         if not username or not isinstance(username, str):
-            return folders
+            return
 
         top_tags = await self.api.get_user_top_tags(username, limit=TOP_TAGS_LIMIT)
         if not top_tags:
-            return folders
+            return
 
         tag_name = top_tags[0].get("name")
         if not tag_name:
-            return folders
+            return
 
         # Over-fetch so there's enough left after library filtering and resolution failures.
         genre_artists_raw = await self.api.get_tag_top_artists(
@@ -495,15 +468,13 @@ class LastFMRecommendationManager:
                 )
 
             if genre_artists:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_genre_artists",
-                        name=f"Discover {tag_name.title()} Artists",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(genre_artists),
-                        subtitle="Top artists in your most played genre",
-                        icon="mdi-account-music",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_genre_artists",
+                    name=f"Discover {tag_name.title()} Artists",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(genre_artists),
+                    subtitle="Top artists in your most played genre",
+                    icon="mdi-account-music",
                 )
 
         genre_albums_raw = await self.api.get_tag_top_albums(
@@ -540,15 +511,13 @@ class LastFMRecommendationManager:
                 )
 
             if genre_albums:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_genre_albums",
-                        name=f"Discover {tag_name.title()} Albums",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(genre_albums),
-                        subtitle="Top albums in your most played genre",
-                        icon="mdi-album",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_genre_albums",
+                    name=f"Discover {tag_name.title()} Albums",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(genre_albums),
+                    subtitle="Top albums in your most played genre",
+                    icon="mdi-album",
                 )
 
         genre_tracks_raw = await self.api.get_tag_top_tracks(
@@ -585,29 +554,23 @@ class LastFMRecommendationManager:
                 )
 
             if genre_tracks:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_genre_tracks",
-                        name=f"Discover {tag_name.title()} Tracks",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(genre_tracks),
-                        subtitle="Top tracks in your most played genre",
-                        icon="mdi-music",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_genre_tracks",
+                    name=f"Discover {tag_name.title()} Tracks",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(genre_tracks),
+                    subtitle="Top tracks in your most played genre",
+                    icon="mdi-music",
                 )
 
-        return folders
-
-    async def _get_geo_based_recommendations(self) -> list[RecommendationFolder]:
-        """Return geography-based recommendation folders for the configured country."""
-        folders: list[RecommendationFolder] = []
-
+    async def _get_geo_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
+        """Yield geography-based recommendation folders for the configured country."""
         if not self.provider.config.get_value("enable_geo"):
-            return folders
+            return
 
         country = self.provider.config.get_value("geo_country")
         if not country or not isinstance(country, str):
-            return folders
+            return
 
         geo_artists_raw = await self.api.get_geo_top_artists(country, limit=RESOLUTION_BUFFER_SMALL)
         if geo_artists_raw:
@@ -629,15 +592,13 @@ class LastFMRecommendationManager:
                 )
 
             if geo_artists:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_geo_artists",
-                        name=f"Top artists for {country}",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(geo_artists),
-                        subtitle=f"Most popular artists in {country}",
-                        icon="mdi-earth",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_geo_artists",
+                    name=f"Top artists for {country}",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(geo_artists),
+                    subtitle=f"Most popular artists in {country}",
+                    icon="mdi-earth",
                 )
 
         geo_tracks_raw = await self.api.get_geo_top_tracks(country, limit=RESOLUTION_BUFFER_SMALL)
@@ -660,18 +621,14 @@ class LastFMRecommendationManager:
                 )
 
             if geo_tracks:
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{self.provider.instance_id}_geo_tracks",
-                        name=f"Top tracks for {country}",
-                        provider=self.provider.instance_id,
-                        items=UniqueList(geo_tracks),
-                        subtitle=f"Most popular tracks in {country}",
-                        icon="mdi-earth",
-                    )
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_geo_tracks",
+                    name=f"Top tracks for {country}",
+                    provider=self.provider.instance_id,
+                    items=UniqueList(geo_tracks),
+                    subtitle=f"Most popular tracks in {country}",
+                    icon="mdi-earth",
                 )
-
-        return folders
 
     async def _get_similar_artists_from_seeds(self, seed_artists: list[Artist]) -> list[Artist]:
         """Return resolved artists similar to the given seed artists.

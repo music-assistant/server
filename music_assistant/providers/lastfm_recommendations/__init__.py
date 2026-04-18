@@ -223,8 +223,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
 
         try:
             self.logger.info("Building Last.fm recommendations")
-            folders = await self.recommendations_manager.build_recommendation_folders()
-            self._recommendation_folders.extend(folders)
+            async for folder in self.recommendations_manager.build_recommendation_folders():
+                self._recommendation_folders.append(folder)
             self._recommendations_populated = True
             self.logger.info(
                 "Last.fm recommendations built (%d folders)",
