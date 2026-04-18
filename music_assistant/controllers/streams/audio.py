@@ -544,9 +544,6 @@ class StreamsAudio:
         Unwraps playlists and determines stream type (ICY, HLS, SHOUTCAST, HTTP).
 
         :param url: Radio stream URL to resolve
-        :return: Tuple of (resolved_url, stream_type)
-        :raises MediaNotFoundError: If stream returns 404
-        :raises InvalidDataError: If stream is inaccessible or invalid
         """
         mass = self.mass
         if cache := await mass.cache.get(
