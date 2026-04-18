@@ -53,6 +53,7 @@ class AirPlayProtocol(ABC):
         self._cli_proc: AsyncProcess | None = None
         self.commands_pipe = AsyncNamedPipeWriter(
             f"/tmp/{self.player.protocol.value}-{self.player.player_id}-{self.active_remote_id}-cmd",  # noqa: S108
+            owner_id=self.player.player_id,
         )
         self._stopped = False
         self._total_bytes_sent = 0
@@ -96,9 +97,15 @@ class AirPlayProtocol(ABC):
 
         :param force: If True, immediately kill the process without graceful shutdown.
         """
-        # always send stop command first
-        await self.send_cli_command("ACTION=STOP")
-        self._stopped = True
+        # Send STOP first and only flip ``_stopped`` once the write returns.
+        # Flipping the flag too early lets concurrent cleanup coroutines that
+        # check ``_stopped`` (e.g. ``send_cli_command`` short-circuit) assume
+        # teardown is done before STOP has actually reached the CLI child.
+        # Use try/finally so the flag still flips if the write raises.
+        try:
+            await self.send_cli_command("ACTION=STOP")
+        finally:
+            self._stopped = True
         await self.commands_pipe.remove()
         if force:
             # Kill immediately - skip write_eof() as it can block indefinitely
