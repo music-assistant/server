@@ -739,7 +739,7 @@ class LastFMRecommendationManager:
             all_similar.extend(similar)
 
         # Deduplicate by MBID and by artist+name: Last.fm sometimes returns the same track
-        # twice, once with an MBID and once without.
+        # twice, once with a MBID and once without.
         seen_mbids = set()
         seen_names = set()
         unique_similar: list[dict[str, Any]] = []
