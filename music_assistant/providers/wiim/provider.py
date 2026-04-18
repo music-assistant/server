@@ -77,11 +77,14 @@ class WiimProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         for player in self.players:
-            self.logger.debug("Unloading player %s", player.name)
-            if isinstance(player, WiimPlayer):
-                await self.wiim_controller.remove_device(player.device.udn)
-                await player.device.disconnect()
-            await self.mass.players.unregister(player.player_id)
+            wiim_player = cast("WiimPlayer", player)
+            try:
+                self.logger.debug("Unloading player %s", wiim_player.name)
+                await self.wiim_controller.remove_device(wiim_player.device.udn)
+                await wiim_player.device.disconnect()
+                await self.mass.players.unregister(wiim_player.player_id)
+            except Exception:
+                self.logger.exception("Error unloading player %s", wiim_player.name)
         await self.wiim_session.close()
 
     async def on_mdns_service_state_change(
@@ -168,7 +171,7 @@ class WiimProvider(PlayerProvider):
                 upnp_location,
                 self.wiim_session,
                 host=ip_address,
-                local_host=self.mass.webserver.publish_ip,
+                local_host=str(self.mass.streams.publish_ip),
                 polling_interval=60,
             )
         except (WiimRequestException, WiimDeviceException) as err:
@@ -192,3 +195,5 @@ class WiimProvider(PlayerProvider):
             self.logger.info("WiiM player registered: %s (%s)", wiim_dev.name, player_id)
         except Exception:
             self.logger.exception("Failed to register WiiM player %s", wiim_dev.name)
+            await self.wiim_controller.remove_device(wiim_dev.udn)
+            await wiim_dev.disconnect()

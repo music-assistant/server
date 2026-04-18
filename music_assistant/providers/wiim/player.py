@@ -75,7 +75,7 @@ class WiimPlayer(Player):
             manufacturer=device.manufacturer or "WiiM",
             software_version=device.firmware_version,
         )
-        self._attr_device_info.add_identifier(IdentifierType.UUID, player_id)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, device.udn.removeprefix("uuid:"))
         if device.ip_address:
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device.ip_address)
         if mac_address:
@@ -97,7 +97,7 @@ class WiimPlayer(Player):
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
         self._attr_needs_poll = True
-        self._attr_poll_interval = 30
+        self._attr_poll_interval = 5
 
     async def poll(self) -> None:
         """Poll player for state updates to prevent position drift."""
@@ -357,7 +357,7 @@ class WiimPlayer(Player):
             self._attr_active_source = None
 
         # Sync current_media from device state
-        if self._attr_active_source != self.player_id and (media := self.device.current_media):
+        if self._attr_active_source is not None and (media := self.device.current_media):
             self.set_current_media(
                 uri=media.uri or "",
                 title=media.title,
