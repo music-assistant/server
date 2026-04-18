@@ -73,7 +73,6 @@ class LastFMRecommendationManager:
         )
 
         self.provider._recommendation_folders.clear()
-        self.provider._recommendations_populated = False
 
         self.logger.info("Cleared all recommendation caches (in-memory and persistent)")
 

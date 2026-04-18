@@ -162,7 +162,6 @@ class LastFMRecommendationsProvider(MetadataProvider):
         self.recommendations_manager = LastFMRecommendationManager(self)
 
         self._recommendation_folders: list[RecommendationFolder] = []
-        self._recommendations_populated = False
 
         # Register recurring refresh task (default: every 6 hours).
         # Initial delay of 20s allows streaming providers to finish loading first.
@@ -193,13 +192,11 @@ class LastFMRecommendationsProvider(MetadataProvider):
     async def _refresh_recommendations(self) -> None:
         """Rebuild recommendation folders."""
         self._recommendation_folders.clear()
-        self._recommendations_populated = False
 
         try:
             self.logger.info("Building Last.fm recommendations")
             async for folder in self.recommendations_manager.build_recommendation_folders():
                 self._recommendation_folders.append(folder)
-            self._recommendations_populated = True
             self.logger.info(
                 "Last.fm recommendations built (%d folders)",
                 len(self._recommendation_folders),
