@@ -2,31 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import (
-    MediaType,
-    ProviderType,
-    StreamType,
-    VolumeNormalizationMode,
-)
+from music_assistant_models.enums import VolumeNormalizationMode
 
-from music_assistant.constants import (
-    DB_TABLE_AUDIO_ANALYSIS,
-    DB_TABLE_PROVIDER_MAPPINGS,
-    LOUDNESS_MEASUREMENT_MIN_LUFS,
-)
-from music_assistant.helpers.datetime import local_clock_time_to_utc
+from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.tags import write_replaygain_track_gain
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
-from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -40,17 +28,11 @@ if TYPE_CHECKING:
 MAX_DURATION_SECONDS = 600
 MIN_DURATION_SECONDS = 10
 
-CONF_ANALYZE_LOCAL_FILES_BACKGROUND = "analyze_local_files_background"
 CONF_WRITE_REPLAYGAIN_TAGS = "write_replaygain_tags"
 
-BACKGROUND_TASK_ID = "loudness_analysis_background"
-BACKGROUND_BATCH_SIZE = 250
-BACKGROUND_SLEEP_BETWEEN_TRACKS = 2.0
-FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
-    "filesystem_local",
-    "filesystem_smb",
-    "filesystem_nfs",
-)
+_INTEGRATED_RE = re.compile(r"Integrated loudness:.*?I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.DOTALL)
+_LRA_RE = re.compile(r"Loudness range:.*?LRA:\s*(-?\d+(?:\.\d+)?)\s*LU", re.DOTALL)
+_TRUE_PEAK_RE = re.compile(r"True peak:.*?Peak:\s*(-?\d+(?:\.\d+)?)\s*dBTP", re.DOTALL)
 
 
 @dataclass
@@ -78,19 +60,6 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, LoudnessSessionData] = {}
 
-    async def loaded_in_mass(self) -> None:
-        """Register the scheduled background analysis task (if enabled)."""
-        await super().loaded_in_mass()
-        if self.config.get_value(CONF_ANALYZE_LOCAL_FILES_BACKGROUND):
-            utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
-            self.mass.tasks.register_scheduled_task(
-                task_id=BACKGROUND_TASK_ID,
-                name="Loudness analysis for local files",
-                handler=self._analyze_local_files_background,
-                schedule=TaskSchedule.daily(hour=utc_hour, minute=utc_minute),
-                metadata={"task_domain": "loudness_analysis"},
-            )
-
     async def process_pcm_chunk(
         self,
         session_id: str,
@@ -114,10 +83,29 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 await data.ffmpeg.close()
         await super().cancel(session_id)
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Unregister the scheduled background task on provider unload."""
-        self.mass.tasks.unregister_scheduled_task(BACKGROUND_TASK_ID)
-        await super().unload(is_removed)
+    async def analyze_file(self, streamdetails: StreamDetails) -> AudioAnalysisData | None:
+        """Run ebur128 directly on a local audio file and return the measurement."""
+        if not isinstance(streamdetails.path, str) or not streamdetails.path:
+            return None
+        metrics = await _run_ebur128_on_file(streamdetails.path, streamdetails.audio_format)
+        if metrics is None:
+            return None
+        loudness, loudness_range, true_peak = metrics
+        if loudness is None or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+            return None
+        if self.config.get_value(CONF_WRITE_REPLAYGAIN_TAGS):
+            # ReplayGain 2.0: track_gain_db = -18 - loudness_lufs
+            track_gain_db = -18.0 - loudness
+            ok = await write_replaygain_track_gain(streamdetails.path, track_gain_db)
+            if ok:
+                self.logger.debug(
+                    "Background loudness: wrote ReplayGain tag to %s", streamdetails.path
+                )
+        return AudioAnalysisData(
+            loudness_integrated=round(loudness, 2),
+            loudness_range=round(loudness_range, 2) if loudness_range is not None else None,
+            true_peak=round(true_peak, 2) if true_peak is not None else None,
+        )
 
     async def _start_analysis(
         self,
@@ -157,7 +145,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             await data.ffmpeg.close()
             return
 
-        loudness = _parse_integrated_loudness(data.ffmpeg.log_history)
+        metrics = _parse_ebur128_metrics(data.ffmpeg.log_history)
         await data.ffmpeg.close()
 
         session = self._sessions.get(session_id)
@@ -174,6 +162,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             )
             return
 
+        loudness, loudness_range, true_peak = metrics
         if loudness is None:
             self.logger.debug(
                 "Could not determine loudness of %s from buffer analysis",
@@ -193,7 +182,11 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             )
             return
 
-        analysis = AudioAnalysisData(loudness_integrated=loudness)
+        analysis = AudioAnalysisData(
+            loudness_integrated=round(loudness, 2),
+            loudness_range=round(loudness_range, 2) if loudness_range is not None else None,
+            true_peak=round(true_peak, 2) if true_peak is not None else None,
+        )
         await self.mass.streams.audio_analysis.set_audio_analysis(
             item_id=session.streamdetails.item_id,
             provider_instance_id_or_domain=session.streamdetails.provider,
@@ -206,9 +199,11 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         # instead of dynamic normalization
         session.streamdetails.loudness = round(loudness, 2)
         self.logger.debug(
-            "Loudness measurement for %s: %s LUFS",
+            "Loudness measurement for %s: %s LUFS (LRA=%s LU, peak=%s dBTP)",
             session.streamdetails.uri,
             loudness,
+            loudness_range,
+            true_peak,
         )
 
     async def _send_eof(self, data: LoudnessSessionData) -> None:
@@ -219,136 +214,32 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         with contextlib.suppress(Exception):
             await data.ffmpeg.write_eof()
 
-    async def _analyze_local_files_background(self) -> None:
-        """Run one background batch of loudness analysis for local file tracks."""
-        if not self.config.get_value(CONF_ANALYZE_LOCAL_FILES_BACKGROUND):
-            return
 
-        rows = await self._find_local_tracks_missing_loudness(BACKGROUND_BATCH_SIZE)
-        if not rows:
-            self.logger.debug("Background loudness: no local tracks pending analysis")
-            return
-
-        write_tags = bool(self.config.get_value(CONF_WRITE_REPLAYGAIN_TAGS))
-        self.logger.info(
-            "Background loudness: analyzing %d local track(s), write_tags=%s",
-            len(rows),
-            write_tags,
-        )
-
-        processed = 0
-        for row in rows:
-            item_id = str(row["item_id"])
-            provider_instance = str(row["provider_instance"])
-            music_prov = self.mass.get_provider(provider_instance, provider_type=MusicProvider)
-            if music_prov is None or not music_prov.available:
-                # storage may be offline right now (e.g. NAS asleep) — stop the batch
-                # rather than churning through failures for the remaining tracks
-                self.logger.debug(
-                    "Background loudness: provider %s unavailable, aborting batch",
-                    provider_instance,
-                )
-                break
-
-            if await self._analyze_single_file(music_prov, item_id, write_tags):
-                processed += 1
-            await asyncio.sleep(BACKGROUND_SLEEP_BETWEEN_TRACKS)
-
-        self.logger.info("Background loudness: analyzed %d/%d track(s)", processed, len(rows))
-
-    async def _analyze_single_file(
-        self,
-        music_prov: MusicProvider,
-        item_id: str,
-        write_tags: bool,
-    ) -> bool:
-        """Analyze a single local file and persist the measurement."""
-        try:
-            streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
-        except Exception as err:
-            self.logger.debug(
-                "Background loudness: skipping %s (stream details failed: %s)",
-                item_id,
-                err,
-            )
-            return False
-
-        if streamdetails.stream_type != StreamType.LOCAL_FILE:
-            return False
-        if not isinstance(streamdetails.path, str) or not streamdetails.path:
-            return False
-
-        loudness = await _run_ebur128_on_file(streamdetails.path, streamdetails.audio_format)
-        if loudness is None or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
-            self.logger.debug(
-                "Background loudness: could not measure %s (result=%s)", item_id, loudness
-            )
-            return False
-
-        await self.mass.streams.audio_analysis.set_track_loudness(
-            item_id=item_id,
-            provider_instance_id_or_domain=music_prov.instance_id,
-            loudness=loudness,
-        )
-        self.logger.debug("Background loudness: %s = %.2f LUFS", item_id, loudness)
-
-        if write_tags:
-            # ReplayGain 2.0: track_gain_db = -18 - loudness_lufs
-            track_gain_db = -18.0 - loudness
-            ok = await write_replaygain_track_gain(streamdetails.path, track_gain_db)
-            if ok:
-                self.logger.debug(
-                    "Background loudness: wrote ReplayGain tag to %s", streamdetails.path
-                )
-        return True
-
-    async def _find_local_tracks_missing_loudness(self, limit: int) -> list[dict[str, object]]:
-        """Return up to N tracks from filesystem providers without a loudness measurement."""
-        filesystem_domains = tuple(
-            domain
-            for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
-        )
-        if not filesystem_domains:
-            return []
-
-        domains_sql = ", ".join(f"'{d}'" for d in filesystem_domains)
-        track_media_type = MediaType.TRACK.value
-        # audio_analysis.item_id holds the provider-native item id,
-        # so join against provider_mappings.provider_item_id (not pm.item_id,
-        # which is the integer library-row id)
-        query = (
-            f"SELECT pm.provider_item_id AS item_id, "
-            f"       pm.provider_instance AS provider_instance "
-            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
-            f"LEFT JOIN {DB_TABLE_AUDIO_ANALYSIS} aa "
-            f"  ON aa.item_id = pm.provider_item_id "
-            f"  AND aa.provider = pm.provider_instance "
-            f"  AND aa.aa_provider_domain = 'loudness_analysis' "
-            f"  AND aa.media_type = '{track_media_type}' "
-            f"WHERE pm.media_type = '{track_media_type}' "
-            f"  AND pm.provider_domain IN ({domains_sql}) "
-            f"  AND aa.id IS NULL"
-        )
-        rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
-        return [dict(r) for r in rows]
-
-
-def _parse_integrated_loudness(log_lines: Iterable[str]) -> float | None:
-    """Extract the Integrated loudness value (LUFS) from an ebur128 ffmpeg log."""
+def _parse_ebur128_metrics(
+    log_lines: Iterable[str],
+) -> tuple[float | None, float | None, float | None]:
+    """Extract (integrated_loudness, loudness_range, true_peak) from an ebur128 log."""
     log = "\n".join(log_lines)
+    integrated = _match_float(_INTEGRATED_RE, log)
+    lra = _match_float(_LRA_RE, log)
+    true_peak = _match_float(_TRUE_PEAK_RE, log)
+    return integrated, lra, true_peak
+
+
+def _match_float(pattern: re.Pattern[str], text: str) -> float | None:
+    match = pattern.search(text)
+    if not match:
+        return None
     try:
-        loudness_str = log.split("Integrated loudness")[1].split("I:")[1].split("LUFS")[0]
-        return float(loudness_str.strip())
-    except (IndexError, ValueError, AttributeError):
+        return float(match.group(1))
+    except ValueError:
         return None
 
 
-async def _run_ebur128_on_file(file_path: str, audio_format: AudioFormat) -> float | None:
-    """Run ebur128 on a local audio file and return the integrated loudness (LUFS)."""
+async def _run_ebur128_on_file(
+    file_path: str, audio_format: AudioFormat
+) -> tuple[float | None, float | None, float | None] | None:
+    """Run ebur128 on a local audio file and return the (I, LRA, TP) tuple."""
     try:
         async with FFMpeg(
             audio_input=file_path,
@@ -360,6 +251,6 @@ async def _run_ebur128_on_file(file_path: str, audio_format: AudioFormat) -> flo
             loglevel="info",
         ) as ffmpeg:
             await ffmpeg.wait()
-            return _parse_integrated_loudness(ffmpeg.log_history)
+            return _parse_ebur128_metrics(ffmpeg.log_history)
     except Exception:
         return None

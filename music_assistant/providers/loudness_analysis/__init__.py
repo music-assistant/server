@@ -7,11 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
-from .provider import (
-    CONF_ANALYZE_LOCAL_FILES_BACKGROUND,
-    CONF_WRITE_REPLAYGAIN_TAGS,
-    LoudnessAnalysisProvider,
-)
+from .provider import CONF_WRITE_REPLAYGAIN_TAGS, LoudnessAnalysisProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -41,29 +37,16 @@ async def get_config_entries(
     """Return config entries for this provider."""
     return (
         ConfigEntry(
-            key=CONF_ANALYZE_LOCAL_FILES_BACKGROUND,
-            type=ConfigEntryType.BOOLEAN,
-            label="Analyze loudness of local files in the background",
-            description=(
-                "Run a nightly background job that measures EBU R128 integrated "
-                "loudness for tracks from local filesystem providers that do not "
-                "yet have a loudness measurement. Processes up to 250 tracks per "
-                "run, one by one. Skips automatically if the storage provider is "
-                "offline at the time of the run."
-            ),
-            default_value=True,
-            required=False,
-        ),
-        ConfigEntry(
             key=CONF_WRITE_REPLAYGAIN_TAGS,
             type=ConfigEntryType.BOOLEAN,
             label="Write REPLAYGAIN_TRACK_GAIN tags back to files",
             description=(
-                "When the background loudness job produces a measurement, also "
-                "write the corresponding REPLAYGAIN_TRACK_GAIN tag back into the "
-                "audio file. Useful if other apps on your network read these tags "
-                "for their own volume normalization. Requires write access to the "
-                "file; read-only files are silently skipped."
+                "When the background audio-analysis scan produces a loudness "
+                "measurement, also write the corresponding REPLAYGAIN_TRACK_GAIN "
+                "tag back into the audio file. Useful if other apps on your "
+                "network read these tags for their own volume normalization. "
+                "Requires write access to the file; read-only files are silently "
+                "skipped."
             ),
             default_value=False,
             required=False,
