@@ -11,6 +11,7 @@ import os
 import random
 import uuid as _uuid
 from collections.abc import AsyncGenerator, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
@@ -216,8 +217,7 @@ class SmartPlaylistProvider(MusicProvider):
         if tracks:
             uris = [t.uri for t in tracks if t.uri]
             if uris:
-                # Call directly (not background task) so tracks are added before we return
-                await self.mass.music.playlists._handle_add_playlist_tracks(db_playlist_id, uris)
+                await self.mass.music.playlists.add_playlist_tracks(db_playlist_id, uris)
 
         final_playlist = await self.mass.music.playlists.get_library_item(db_playlist_id)
         # Schedule an immediate metadata refresh to build the collage image and detect genres
@@ -278,14 +278,16 @@ class SmartPlaylistProvider(MusicProvider):
         ]
 
     async def count_tracks(self, rules: dict[str, Any]) -> int:
-        """Return the total number of tracks matching the given rules.
+        """Return the number of tracks produced by the validated rules.
+
+        The count is based on the same evaluated result set used for playlist generation
+        and should be treated as approximate (limited by rules.limit and shuffling).
 
         :param rules: SmartPlaylistRules fields as dict.
-        :return: Number of matching tracks.
+        :return: Number of matching tracks in the evaluated result set.
         """
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
-        parsed_rules.limit = 99999
         tracks = await self._evaluate_rules(parsed_rules)
         return len(tracks)
 
@@ -372,9 +374,9 @@ class SmartPlaylistProvider(MusicProvider):
     async def resolve_image(self, path: str) -> str | bytes:
         """Return the smart playlist provider icon as fallback image."""
         if path == "icon.svg":
-            icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
+            icon_path = Path(__file__).parent / "icon.svg"
             async with asyncio.timeout(5):
-                return await asyncio.to_thread(lambda: open(icon_path, "rb").read())
+                return await asyncio.to_thread(icon_path.read_bytes)
         return path
 
     def _validate_rules(self, rules: SmartPlaylistRules) -> None:
@@ -384,7 +386,6 @@ class SmartPlaylistProvider(MusicProvider):
     async def _evaluate_rules(self, rules: SmartPlaylistRules) -> list[Track]:
         """Evaluate the rules and return a list of matching Track objects."""
         has_genre_filter = bool(rules.genre_ids)
-        has_artist_filter = bool(rules.artist_ids)
         has_seed_filter = bool(rules.seed_track_uri)
 
         if rules.logic == LOGIC_AND:
@@ -401,12 +402,9 @@ class SmartPlaylistProvider(MusicProvider):
                 and t.metadata.popularity >= rules.min_popularity
             ]
 
-        if (
-            has_seed_filter
-            and not has_artist_filter
-            and not rules.album_ids
-            and rules.seed_track_uri
-        ):
+        if has_seed_filter and rules.seed_track_uri:
+            # Seed mode: artist_ids and album_ids are ignored per design.
+            # Genre, favorites, popularity and year are applied as post-filters.
             seed_tracks = await self._get_similar_tracks(rules.seed_track_uri, MAX_SIMILAR_TRACKS)
             if rules.min_popularity is not None:
                 seed_tracks = [
@@ -419,15 +417,19 @@ class SmartPlaylistProvider(MusicProvider):
             if rules.favorites_only:
                 seed_tracks = [t for t in seed_tracks if t.favorite]
             if has_genre_filter and rules.logic == LOGIC_AND:
-                # Best-effort: filter seed tracks by genre name if the track has genre metadata.
-                # If a track has no genre metadata, keep it (don't exclude due to missing data).
+                # Best-effort: filter seed tracks by genre name.
+                # Only applied when genre_names is populated; skipped otherwise to avoid
+                # discarding all tracks due to unresolved names.
+                # Tracks without genre metadata are kept (don't exclude for missing data).
                 allowed_genre_names = {g.lower() for g in rules.genre_names.values()}
-                seed_tracks = [
-                    t
-                    for t in seed_tracks
-                    if not t.metadata.genres
-                    or any(g.lower() in allowed_genre_names for g in t.metadata.genres)
-                ]
+                if allowed_genre_names:
+                    seed_tracks = [
+                        t
+                        for t in seed_tracks
+                        if not t.metadata
+                        or not t.metadata.genres
+                        or any(g.lower() in allowed_genre_names for g in t.metadata.genres)
+                    ]
             existing_uris = {t.uri for t in tracks}
             for st in seed_tracks:
                 if st.uri not in existing_uris:
@@ -458,9 +460,9 @@ class SmartPlaylistProvider(MusicProvider):
 
         no_structural_filter = not has_genre and not has_artist and not has_album
 
-        # When seed is active without genre/artist/album, the similar-tracks pool is the
-        # primary result. Returning library tracks here would pollute it with unrelated content.
-        if has_seed and not has_genre and not has_artist and not has_album:
+        # When seed is active, the similar-tracks pool is the exclusive source.
+        # Genre/artist/album filters are applied as post-filters on that pool in _evaluate_rules.
+        if has_seed:
             return []
 
         if no_structural_filter and not rules.favorites_only and not has_seed:
