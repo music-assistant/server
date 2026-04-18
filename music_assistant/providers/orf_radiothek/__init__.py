@@ -620,7 +620,6 @@ class RadiothekProvider(MusicProvider):
     # MA API: Radios
     # ----------------------------
 
-    @use_cache(3600 * 24)  # Cache for 24 hours
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's radio stations and podcasts.
 
