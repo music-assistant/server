@@ -369,9 +369,8 @@ class LastFMRecommendationManager:
             resolved_artists = await asyncio.gather(
                 *[self._get_or_resolve_artist(artist_data) for artist_data in top_artists_raw]
             )
-            all_resolved = [artist for artist in resolved_artists if artist is not None]
-            deduplicated = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
-            top_artists = UniqueList(deduplicated)
+            all_resolved = [a for a in resolved_artists if a is not None]
+            top_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
             if len(top_artists) < TARGET_ITEM_COUNT:
                 self.logger.debug(
@@ -380,7 +379,7 @@ class LastFMRecommendationManager:
                     len(top_artists),
                     TARGET_ITEM_COUNT,
                     RESOLUTION_BUFFER_SMALL,
-                    len([a for a in resolved_artists if a is not None]),
+                    len(all_resolved),
                 )
 
             if top_artists:
@@ -398,9 +397,8 @@ class LastFMRecommendationManager:
             resolved_tracks = await asyncio.gather(
                 *[self._get_or_resolve_track(track_data) for track_data in top_tracks_raw]
             )
-            all_resolved_tracks = [track for track in resolved_tracks if track is not None]
-            deduplicated_tracks = list(UniqueList(all_resolved_tracks))[:TARGET_ITEM_COUNT]
-            top_tracks = UniqueList(deduplicated_tracks)
+            all_resolved_tracks = [t for t in resolved_tracks if t is not None]
+            top_tracks = list(UniqueList(all_resolved_tracks))[:TARGET_ITEM_COUNT]
 
             if len(top_tracks) < TARGET_ITEM_COUNT:
                 self.logger.debug(
@@ -465,9 +463,8 @@ class LastFMRecommendationManager:
             resolved_artists = await asyncio.gather(
                 *[self._get_or_resolve_artist(artist_data) for artist_data in sampled_artists_raw]
             )
-            all_resolved = [artist for artist in resolved_artists if artist is not None]
-            deduplicated = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
-            genre_artists = UniqueList(deduplicated)
+            all_resolved = [a for a in resolved_artists if a is not None]
+            genre_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
             if len(genre_artists) < TARGET_ITEM_COUNT:
                 self.logger.debug(
@@ -477,7 +474,7 @@ class LastFMRecommendationManager:
                     len(genre_artists),
                     TARGET_ITEM_COUNT,
                     RESOLUTION_BUFFER_SMALL,
-                    len([a for a in resolved_artists if a is not None]),
+                    len(all_resolved),
                 )
 
             if genre_artists:
@@ -601,7 +598,7 @@ class LastFMRecommendationManager:
                     len(geo_artists),
                     TARGET_ITEM_COUNT,
                     RESOLUTION_BUFFER_SMALL,
-                    len([a for a in resolved_artists if a is not None]),
+                    len(all_resolved),
                 )
 
             if geo_artists:
