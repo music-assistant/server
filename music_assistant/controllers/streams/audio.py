@@ -58,7 +58,6 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_TARGET,
     INTERNAL_PCM_FORMAT,
-    LOUDNESS_MEASUREMENT_MIN_LUFS,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
@@ -256,12 +255,6 @@ class StreamsAudio:
                         self._update_hls_radio_metadata
                     )
                     streamdetails.stream_metadata_update_interval = 5
-            # handle volume normalization details
-            if result := await mass.music.get_loudness(
-                streamdetails.item_id, streamdetails.provider, media_type=queue_item.media_type
-            ):
-                streamdetails.loudness = result[0]
-                streamdetails.loudness_album = result[1]
 
         if streamdetails.duration is None:
             if queue_item.media_item and queue_item.media_item.duration:
@@ -863,136 +856,6 @@ class StreamsAudio:
         finally:
             await remove_file(temp_file)
 
-    def attach_loudness_analyzer(
-        self,
-        audio_buffer: AudioBuffer,
-        streamdetails: StreamDetails,
-        max_duration_seconds: int = 600,
-        min_duration_seconds: int = 10,
-    ) -> None:
-        """
-        Attach a loudness measurement job to an AudioBuffer.
-
-        Registers a chunk callback that feeds raw PCM into an FFmpeg ebur128 process.
-        After max_duration_seconds of audio (or EOF), the measurement is finalized
-        and stored via mass.music.set_loudness.
-
-        :param audio_buffer: The AudioBuffer to observe.
-        :param streamdetails: Stream details for the track being buffered.
-        :param max_duration_seconds: Maximum seconds of audio to analyze.
-        :param min_duration_seconds: Minimum seconds of audio required to persist the result.
-        """
-        item_id = streamdetails.item_id
-        provider = streamdetails.provider
-        media_type = streamdetails.media_type
-        pcm_format = audio_buffer.pcm_format
-
-        chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=10)
-        chunks_received = 0
-
-        async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
-            nonlocal chunks_received
-            if chunks_received >= max_duration_seconds:
-                return
-            if is_last_chunk:
-                # EOF
-                await chunk_queue.put(None)
-                return
-            chunks_received += 1
-            await chunk_queue.put(pcm_data)
-            if chunks_received >= max_duration_seconds:
-                # signal we have enough data
-                await chunk_queue.put(None)
-
-        async def _chunk_generator() -> AsyncGenerator[bytes, None]:
-            """Yield chunks from the queue until None (EOF/done)."""
-            while True:
-                chunk = await chunk_queue.get()
-                if chunk is None:
-                    break
-                yield chunk
-
-        async def _run_analysis() -> None:
-            """Run the ebur128 measurement in a background FFmpeg process."""
-            try:
-                async with FFMpeg(
-                    audio_input=_chunk_generator(),
-                    input_format=pcm_format,
-                    output_format=pcm_format,
-                    audio_output="NULL",
-                    filter_params=["ebur128=framelog=verbose"],
-                    collect_log_history=True,
-                    loglevel="info",
-                ) as ffmpeg_proc:
-                    await ffmpeg_proc.wait()
-
-                    if chunks_received < min_duration_seconds:
-                        self.logger.debug(
-                            "Loudness analysis for %s skipped: "
-                            "insufficient audio data (%s/%s seconds analyzed)",
-                            streamdetails.uri,
-                            chunks_received,
-                            min_duration_seconds,
-                        )
-                        return
-
-                    log_lines_str = "\n".join(ffmpeg_proc.log_history)
-                    try:
-                        loudness_str = (
-                            log_lines_str.split("Integrated loudness")[1]
-                            .split("I:")[1]
-                            .split("LUFS")[0]
-                        )
-                        loudness = float(loudness_str.strip())
-                    except (IndexError, ValueError, AttributeError):
-                        self.logger.debug(
-                            "Could not determine loudness of %s from buffer analysis",
-                            streamdetails.uri,
-                        )
-                        return
-
-                    if loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
-                        self.logger.debug(
-                            "Loudness measurement for %s discarded: "
-                            "%s LUFS is below the reliability threshold (%s LUFS)",
-                            streamdetails.uri,
-                            loudness,
-                            LOUDNESS_MEASUREMENT_MIN_LUFS,
-                        )
-                        return
-
-                    await self.mass.music.set_loudness(
-                        item_id, provider, loudness, media_type=media_type
-                    )
-                    # update the in-memory streamdetails so subsequent seeks
-                    # can use measurement-based normalization instead of dynamic
-                    streamdetails.loudness = loudness
-                    self.logger.debug(
-                        "Loudness measurement for %s: %s LUFS",
-                        streamdetails.uri,
-                        loudness,
-                    )
-            except Exception as err:
-                self.logger.debug("Loudness analysis from buffer failed: %s", err)
-
-        async def _attach() -> None:
-            # check if loudness already exists
-            if await self.mass.music.get_loudness(item_id, provider, media_type=media_type):
-                return
-            self.logger.debug("Attached loudness analyzer to buffer for %s", streamdetails.uri)
-            audio_buffer.register_chunk_callback(_on_chunk)
-
-            def _on_cancel() -> None:
-                if chunk_queue.full():
-                    chunk_queue.get_nowait()
-                chunk_queue.put_nowait(None)
-
-            audio_buffer.register_cancel_callback(_on_cancel)
-            # start the FFmpeg analysis process
-            await _run_analysis()
-
-        self.mass.create_task(_attach)
-
     def get_player_dsp_details(
         self, player: Player, group_preventing_dsp: bool = False
     ) -> DSPDetails:
@@ -1282,6 +1145,21 @@ class StreamsAudio:
         filter_params: list[str] = []
 
         logger = self.logger.getChild("queue_item_stream")
+
+        # hydrate loudness from audio analysis (just-in-time, so that a measurement
+        # completed during a previous play is picked up here). A live analyzer run
+        # may have already populated streamdetails.loudness in memory — don't clobber
+        # that, and don't clobber a value set upstream by the music provider.
+        if streamdetails.loudness is None:
+            if analysis := await self.mass.streams.audio_analysis.get_audio_analysis(
+                streamdetails.item_id,
+                streamdetails.provider,
+                media_type=streamdetails.media_type,
+            ):
+                if analysis.loudness_integrated is not None:
+                    streamdetails.loudness = round(analysis.loudness_integrated, 2)
+                if analysis.loudness_album is not None and streamdetails.loudness_album is None:
+                    streamdetails.loudness_album = round(analysis.loudness_album, 2)
 
         # re-evaluate normalization mode: the background loudness analyzer may have
         # updated streamdetails.loudness since get_stream_details was called

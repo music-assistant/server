@@ -18,7 +18,8 @@ from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from mutagen._vorbis import VCommentDict
 from mutagen.apev2 import APEv2
-from mutagen.mp4 import MP4Tags
+from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]
+from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
@@ -1385,3 +1386,64 @@ async def get_embedded_image(input_file: str) -> bytes | None:
         args, stdin=False, stdout=True, stderr=None, name="ffmpeg_image"
     ) as ffmpeg:
         return await ffmpeg.read(-1)
+
+
+async def write_replaygain_track_gain(path: str, track_gain_db: float) -> bool:
+    """
+    Write the REPLAYGAIN_TRACK_GAIN tag to an audio file.
+
+    Returns True when the tag was successfully written and saved, False
+    when the file format is unsupported or the file cannot be written to.
+
+    :param path: Absolute path to the audio file.
+    :param track_gain_db: ReplayGain value in dB (gain correction, not loudness).
+    """
+    return await asyncio.to_thread(_write_replaygain_track_gain_sync, path, track_gain_db)
+
+
+def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
+    try:
+        audio = mutagen.File(path)  # type: ignore[attr-defined]
+    except Exception as err:
+        LOGGER.debug("mutagen could not open %s: %s", path, err)
+        return False
+    if audio is None:
+        return False
+
+    if audio.tags is None:
+        try:
+            audio.add_tags()
+        except Exception as err:
+            LOGGER.debug("could not initialise tags on %s: %s", path, err)
+            return False
+
+    # ReplayGain 2.0 format: "-5.30 dB" (two decimals, space, dB suffix)
+    gain_str = f"{track_gain_db:.2f} dB"
+    tags = audio.tags
+
+    try:
+        if isinstance(tags, ID3):
+            tags.delall("TXXX:REPLAYGAIN_TRACK_GAIN")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                TXXX(  # type: ignore[no-untyped-call]
+                    encoding=3, desc="REPLAYGAIN_TRACK_GAIN", text=gain_str
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    gain_str.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            tags["REPLAYGAIN_TRACK_GAIN"] = gain_str
+        else:
+            return False
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not write replaygain tag to %s: %s", path, err)
+        return False
+    except Exception as err:
+        LOGGER.warning("unexpected failure writing replaygain tag to %s: %s", path, err)
+        return False
