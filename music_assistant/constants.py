@@ -12,6 +12,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
@@ -290,7 +291,7 @@ CONF_ENTRY_MIN_VOLUME = ConfigEntry(
     category="player_controls",
     advanced=True,
     depends_on=CONF_VOLUME_CONTROL,
-    depends_on_value_not=VOLUME_CONTROL_NONE
+    depends_on_value_not=PLAYER_CONTROL_NONE,
 )
 
 CONF_ENTRY_MAX_VOLUME = ConfigEntry(
@@ -304,7 +305,7 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     category="player_controls",
     advanced=True,
     depends_on=CONF_VOLUME_CONTROL,
-    depends_on_value_not=VOLUME_CONTROL_NONE
+    depends_on_value_not=PLAYER_CONTROL_NONE,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
