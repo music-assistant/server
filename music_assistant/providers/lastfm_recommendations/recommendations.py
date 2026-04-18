@@ -372,16 +372,6 @@ class LastFMRecommendationManager:
             all_resolved = [a for a in resolved_artists if a is not None]
             top_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
-            if len(top_artists) < TARGET_ITEM_COUNT:
-                self.logger.debug(
-                    "Global Top Artists: only %d/%d items after resolution "
-                    "(requested %d, resolved %d)",
-                    len(top_artists),
-                    TARGET_ITEM_COUNT,
-                    RESOLUTION_BUFFER_SMALL,
-                    len(all_resolved),
-                )
-
             if top_artists:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_artists",
@@ -399,16 +389,6 @@ class LastFMRecommendationManager:
             )
             all_resolved_tracks = [t for t in resolved_tracks if t is not None]
             top_tracks = list(UniqueList(all_resolved_tracks))[:TARGET_ITEM_COUNT]
-
-            if len(top_tracks) < TARGET_ITEM_COUNT:
-                self.logger.debug(
-                    "Global Top Tracks: only %d/%d items after resolution "
-                    "(requested %d, resolved %d)",
-                    len(top_tracks),
-                    TARGET_ITEM_COUNT,
-                    RESOLUTION_BUFFER_SMALL,
-                    len(all_resolved_tracks),
-                )
 
             if top_tracks:
                 yield RecommendationFolder(
@@ -466,17 +446,6 @@ class LastFMRecommendationManager:
             all_resolved = [a for a in resolved_artists if a is not None]
             genre_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
-            if len(genre_artists) < TARGET_ITEM_COUNT:
-                self.logger.debug(
-                    "Genre Artists (%s): only %d/%d items after resolution "
-                    "(requested %d, resolved %d)",
-                    tag_name,
-                    len(genre_artists),
-                    TARGET_ITEM_COUNT,
-                    RESOLUTION_BUFFER_SMALL,
-                    len(all_resolved),
-                )
-
             if genre_artists:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_artists",
@@ -508,17 +477,6 @@ class LastFMRecommendationManager:
             )
             all_resolved_albums = [album for album in resolved_albums if album is not None]
             genre_albums = list(UniqueList(all_resolved_albums))[:TARGET_ITEM_COUNT]
-
-            if len(genre_albums) < TARGET_ITEM_COUNT:
-                self.logger.debug(
-                    "Genre Albums (%s): only %d/%d items after resolution "
-                    "(requested %d, resolved %d)",
-                    tag_name,
-                    len(genre_albums),
-                    TARGET_ITEM_COUNT,
-                    RESOLUTION_BUFFER_SMALL,
-                    len(all_resolved_albums),
-                )
 
             if genre_albums:
                 yield RecommendationFolder(
@@ -552,17 +510,6 @@ class LastFMRecommendationManager:
             all_resolved_genre_tracks = [track for track in resolved_tracks if track is not None]
             genre_tracks = list(UniqueList(all_resolved_genre_tracks))[:TARGET_ITEM_COUNT]
 
-            if len(genre_tracks) < TARGET_ITEM_COUNT:
-                self.logger.debug(
-                    "Genre Tracks (%s): only %d/%d items after resolution "
-                    "(requested %d, resolved %d)",
-                    tag_name,
-                    len(genre_tracks),
-                    TARGET_ITEM_COUNT,
-                    RESOLUTION_BUFFER_SMALL,
-                    len(all_resolved_genre_tracks),
-                )
-
             if genre_tracks:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_tracks",
@@ -590,17 +537,6 @@ class LastFMRecommendationManager:
             all_resolved = [artist for artist in resolved_artists if artist is not None]
             geo_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
-            if len(geo_artists) < TARGET_ITEM_COUNT:
-                self.logger.debug(
-                    "Geo Top Artists (%s): only %d/%d items after resolution "
-                    "(requested %d, resolved %d)",
-                    country,
-                    len(geo_artists),
-                    TARGET_ITEM_COUNT,
-                    RESOLUTION_BUFFER_SMALL,
-                    len(all_resolved),
-                )
-
             if geo_artists:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_geo_artists",
@@ -618,17 +554,6 @@ class LastFMRecommendationManager:
             )
             all_resolved_geo_tracks = [track for track in resolved_tracks if track is not None]
             geo_tracks = list(UniqueList(all_resolved_geo_tracks))[:TARGET_ITEM_COUNT]
-
-            if len(geo_tracks) < TARGET_ITEM_COUNT:
-                self.logger.debug(
-                    "Geo Top Tracks (%s): only %d/%d items after resolution "
-                    "(requested %d, resolved %d)",
-                    country,
-                    len(geo_tracks),
-                    TARGET_ITEM_COUNT,
-                    RESOLUTION_BUFFER_SMALL,
-                    len(all_resolved_geo_tracks),
-                )
 
             if geo_tracks:
                 yield RecommendationFolder(
@@ -702,17 +627,7 @@ class LastFMRecommendationManager:
                 for artist_data in unique_similar[:SIMILAR_ITEMS_BUFFER]
             ]
         )
-        result = [artist for artist in resolved_artists if artist is not None]
-
-        if len(result) < len(resolved_artists):
-            self.logger.debug(
-                "Similar artists: %d/%d resolved successfully (%d failed)",
-                len(result),
-                len(resolved_artists),
-                len(resolved_artists) - len(result),
-            )
-
-        return result
+        return [artist for artist in resolved_artists if artist is not None]
 
     async def _get_similar_tracks_from_seeds(self, seed_tracks: list[Track]) -> list[Track]:
         """
