@@ -51,3 +51,51 @@ IMAGE_SIZE_PRIORITY = ["mega", "extralarge", "large", "medium", "small"]
 
 # Suffix used to identify Last.fm placeholder images to filter out
 IMAGE_PLACEHOLDER_SUFFIX = "/default.png"
+
+# Curated list of popular countries for Last.fm geo charts.
+# Last.fm API expects full country names (not ISO codes).
+# Covers major music markets and can be expanded based on user requests.
+GEO_COUNTRIES = [
+    "Argentina",
+    "Australia",
+    "Austria",
+    "Belgium",
+    "Brazil",
+    "Canada",
+    "China",
+    "Czech Republic",
+    "Denmark",
+    "Finland",
+    "France",
+    "Germany",
+    "Greece",
+    "Hungary",
+    "Iceland",
+    "India",
+    "Ireland",
+    "Israel",
+    "Italy",
+    "Japan",
+    "Lithuania",
+    "Mexico",
+    "Netherlands",
+    "New Zealand",
+    "Norway",
+    "Philippines",
+    "Poland",
+    "Portugal",
+    "Serbia",
+    "Singapore",
+    "Slovenia",
+    "South Africa",
+    "South Korea",
+    "Spain",
+    "Sweden",
+    "Switzerland",
+    "Thailand",
+    "Turkey",
+    "Ukraine",
+    "United Arab Emirates",
+    "United Kingdom",
+    "United States",
+]

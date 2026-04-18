@@ -15,6 +15,7 @@ from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
+from music_assistant.providers.lastfm_recommendations.constants import GEO_COUNTRIES
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
 )
@@ -33,54 +34,6 @@ SUPPORTED_FEATURES = {
 
 CONF_ACTION_CLEAR_CACHE = "clear_cache"
 REFRESH_TASK_ID = "lastfm_recommendations_refresh"
-
-# Curated list of popular countries for Last.fm geo charts
-# Last.fm API expects full country names (not ISO codes)
-# This list covers major music markets and can be expanded based on user requests
-GEO_COUNTRIES = [
-    "Argentina",
-    "Australia",
-    "Austria",
-    "Belgium",
-    "Brazil",
-    "Canada",
-    "China",
-    "Czech Republic",
-    "Denmark",
-    "Finland",
-    "France",
-    "Germany",
-    "Greece",
-    "Hungary",
-    "Iceland",
-    "India",
-    "Ireland",
-    "Israel",
-    "Italy",
-    "Japan",
-    "Lithuania",
-    "Mexico",
-    "Netherlands",
-    "New Zealand",
-    "Norway",
-    "Philippines",
-    "Poland",
-    "Portugal",
-    "Serbia",
-    "Singapore",
-    "Slovenia",
-    "South Africa",
-    "South Korea",
-    "Spain",
-    "Sweden",
-    "Switzerland",
-    "Thailand",
-    "Turkey",
-    "Ukraine",
-    "United Arab Emirates",
-    "United Kingdom",
-    "United States",
-]
 
 
 async def setup(
