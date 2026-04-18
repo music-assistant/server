@@ -408,4 +408,4 @@ class WiimPlayer(Player):
     ) -> None:
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
-        self.update_state()
+        self._update_ma_state_from_sdk_cache()
