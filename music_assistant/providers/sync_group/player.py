@@ -355,7 +355,16 @@ class SyncGroupPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Handle SET_MEMBERS command on the player."""
+        """Handle SET_MEMBERS command on the player.
+
+        Rapid-fire calls from controllers (e.g. a Home Assistant automation
+        that adds members one-by-one) are coalesced upstream in
+        ``PlayersController.cmd_set_members``, so by the time we get here the
+        delta already represents the net change across the debounce window.
+
+        :param player_ids_to_add: Player ids to add to the group.
+        :param player_ids_to_remove: Player ids to remove from the group.
+        """
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
@@ -457,7 +466,7 @@ class SyncGroupPlayer(Player):
                 await self.mass.players._handle_cmd_stop(self.sync_leader.player_id)
             await self._dissolve_syncgroup()
 
-        elif self.sync_leader:
+        elif self.sync_leader and (final_players_to_add or final_players_to_remove):
             # just a regular member(s) added/removed action,
             # we can simply update the syncgroup members on the sync leader.
             # `active_protocol_domain` is derived from live state, so the
@@ -483,6 +492,13 @@ class SyncGroupPlayer(Player):
         """Handle callback when a group member of the group player is updated."""
         self._update_attributes()
         super().on_group_member_updated(member_player, changed_values)
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        # cancel any pending debounced set_members for this target so a late
+        # flush doesn't land on a gone group
+        self.mass.players._cancel_pending_set_members(self.player_id)
+        await super().on_unload()
 
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
@@ -545,6 +561,8 @@ class SyncGroupPlayer(Player):
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
+        # a pending coalesced set_members must not fire against a dissolved group
+        self.mass.players._cancel_pending_set_members(self.player_id)
         if sync_leader := self.sync_leader:
             # dissolve the temporary syncgroup from the sync leader
             sync_children = [

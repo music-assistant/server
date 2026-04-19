@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,6 +29,7 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_set_members = AsyncMock()
     mass.players._handle_set_members = AsyncMock()
+    mass.players._cancel_pending_set_members = MagicMock()
     # get_player_lock is an async context manager (used by syncgroup to lock the sync leader)
     lock_ctx = AsyncMock()
     lock_ctx.__aenter__.return_value = None
@@ -41,8 +44,14 @@ def _make_mock_mass() -> MagicMock:
     wait_ctx.__aexit__.return_value = False
     mass.players.wait_for_player_update = MagicMock(return_value=wait_ctx)
     mass.players.trigger_player_update = MagicMock()
-    mass.call_later = MagicMock()
-    mass.cancel_timer = MagicMock()
+
+    # create_task must produce a real asyncio.Task so anything scheduling
+    # internal tasks still works.
+    def _create_task(target: Any, *args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        coro = target(*args) if inspect.iscoroutinefunction(target) else target
+        return asyncio.ensure_future(coro)
+
+    mass.create_task = MagicMock(side_effect=_create_task)
     mass.config = MagicMock()
     mass.config.get_base_player_config.return_value = MagicMock(
         name=None, default_name="Test Group", get_value=MagicMock(return_value=True)
@@ -488,7 +497,6 @@ class TestSetMembersDoesNotRegisterIncompatible:
         sgp._attr_group_members = ["leader"]
 
         await sgp.set_members(player_ids_to_add=["incompatible"])
-
         # incompatible must NOT linger in the internal member list
         assert "incompatible" not in sgp._attr_group_members
         # and the leader was never asked to add it (the call may still happen
@@ -513,7 +521,6 @@ class TestSetMembersDoesNotRegisterIncompatible:
         sgp._attr_group_members = ["leader"]
 
         await sgp.set_members(player_ids_to_add=["compatible"])
-
         assert "compatible" in sgp._attr_group_members
         mass.players._handle_set_members.assert_awaited_once()
         kwargs = mass.players._handle_set_members.await_args.kwargs
@@ -533,8 +540,8 @@ class TestSetMembersDoesNotRegisterIncompatible:
         sgp._attr_group_members = []
 
         await sgp.set_members(player_ids_to_add=["member"])
-
         # member is registered so a future _form_syncgroup can pick it as leader
         assert "member" in sgp._attr_group_members
         # but _handle_set_members on the leader is not called (no leader yet)
         mass.players._handle_set_members.assert_not_awaited()
+

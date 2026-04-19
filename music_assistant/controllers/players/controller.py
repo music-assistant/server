@@ -21,6 +21,7 @@ import contextlib
 import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import UserRole
@@ -104,7 +105,11 @@ from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
-from .constants import PlayerLockPurpose
+from .constants import (
+    SET_MEMBERS_DEBOUNCE,
+    SET_MEMBERS_TASK_ID_PREFIX,
+    PlayerLockPurpose,
+)
 from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
@@ -125,6 +130,21 @@ CACHE_CATEGORY_PLAYER_POWER = 1
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
+
+
+@dataclass
+class _SetMembersBatch:
+    """One open coalesce batch for cmd_set_members on a given target player.
+
+    Callers merge their delta into ``add`` / ``remove`` and await ``future``.
+    When the debounce timer fires the batch is removed from the open-batches
+    dict and flushed; the future is resolved after the flush completes, so
+    every caller that contributed to this batch unblocks together.
+    """
+
+    add: set[str] = field(default_factory=set)
+    remove: set[str] = field(default_factory=set)
+    future: asyncio.Future[None] = field(default_factory=asyncio.Future)
 
 
 class PlayerController(ProtocolLinkingMixin, CoreController):
@@ -154,6 +174,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
+        # Open coalesce batch per (resolved) target player id. Home Assistant
+        # automations often fire multiple add/remove commands in a burst against
+        # the same sync leader; batching here collapses that burst into one call
+        # to _handle_set_members, avoiding repeated protocol teardown+restart
+        # cycles (notably AirPlay cliraop). Callers await the batch's future so
+        # grouping commands still complete in order from the caller's POV.
+        self._open_set_members_batches: dict[str, _SetMembersBatch] = {}
         # Subscribers for player state updates (called with player + changed_values)
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]
@@ -1133,7 +1160,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         Join/unjoin given player(s) to/from target player.
 
-        Will add the given player(s) to the target player (sync leader or group player).
+        Rapid-fire calls (e.g. a Home Assistant automation that fires several
+        add/remove commands at once) against the same resolved target are
+        coalesced into a single forwarded ``_handle_set_members`` call. Each
+        call merges its delta into a per-target open batch and (re)arms a
+        short debounce timer — avoiding the teardown/restart churn that
+        per-call forwarding would otherwise cause on protocol players (most
+        notably AirPlay cliraop processes). Covers sync groups, universal
+        groups, and direct Sonos/AirPlay/Snapcast/... grouping in one place.
+
+        The call blocks until the batch containing this call's delta has been
+        flushed, so command ordering from the caller's POV (e.g.
+        ``await cmd_ungroup(); await cmd_set_members(...)``) is preserved.
 
         :param target_player: player_id of the syncgroup leader or group player.
         :param player_ids_to_add: List of player_id's to add to the target player.
@@ -1149,7 +1187,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             raise UnsupportedFeaturedException(msg)
 
         # if the target player is a member of an active group player (e.g. a syncgroup),
-        # redirect the command to that group player so it can manage the member change
+        # redirect the command to that group player so it can manage the member change.
+        # Redirect synchronously (before debounce) so we coalesce against the
+        # final target, not the pre-redirect one.
         if (
             parent_player.type != PlayerType.GROUP
             and parent_player.state.active_group
@@ -1167,15 +1207,104 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             return
 
-        if parent_player.synced_to:
-            # handle edge case: target player is already synced itself to another player
-            # automatically ungroup it first and wait for state to propagate
-            await self._auto_ungroup_if_synced(parent_player, "setting members")
+        # Merge this call's delta into the currently open batch for this target.
+        # An add supersedes a prior remove (and vice versa) on the same player.
+        # If there's no open batch (either no prior caller, or a prior batch has
+        # already started flushing), we start a fresh one so we can never see
+        # our future resolved by a flush that didn't include our delta.
+        target_id = parent_player.player_id
+        batch = self._open_set_members_batches.get(target_id)
+        if batch is None:
+            batch = _SetMembersBatch()
+            self._open_set_members_batches[target_id] = batch
+        for pid in player_ids_to_add or []:
+            batch.remove.discard(pid)
+            batch.add.add(pid)
+        for pid in player_ids_to_remove or []:
+            batch.add.discard(pid)
+            batch.remove.add(pid)
 
-        # Use lock for playback commands to prevent protocol switches from
-        # racing with concurrent play_media / play_index / resume calls.
-        async with self.get_player_lock(parent_player.player_id, PlayerLockPurpose.PLAYBACK):
-            await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
+        # (Re)arm the debounce timer. ``mass.call_later`` with ``task_id``
+        # cancels any already-pending timer for the same target — the debounce
+        # reset we want on rapid successive calls. The scheduled callback is a
+        # SYNC wrapper that spawns the async flush as an untracked task, so a
+        # re-armed timer can never abort the in-flight flush task.
+        self.mass.call_later(
+            SET_MEMBERS_DEBOUNCE,
+            self._schedule_set_members_flush,
+            target_id,
+            task_id=f"{SET_MEMBERS_TASK_ID_PREFIX}_{target_id}",
+        )
+
+        # Wait for the batch's flush to complete. Other callers that merge into
+        # the same batch await the same future, so they all unblock together.
+        await asyncio.shield(batch.future)
+
+    def _schedule_set_members_flush(self, target_player_id: str) -> None:
+        """Timer callback: start the flush as an untracked task (no task_id)."""
+        batch = self._open_set_members_batches.pop(target_player_id, None)
+        if batch is None:
+            return
+        self.mass.create_task(self._flush_set_members_batch(target_player_id, batch))
+
+    async def _flush_set_members_batch(
+        self, target_player_id: str, batch: _SetMembersBatch
+    ) -> None:
+        """Apply a sealed set_members batch and resolve its future."""
+        try:
+            if not batch.add and not batch.remove:
+                return
+            parent_player = self.get_player(target_player_id)
+            if parent_player is None:
+                self.logger.debug(
+                    "Dropping coalesced set_members for gone player %s", target_player_id
+                )
+                return
+            player_ids_to_add = sorted(batch.add)
+            player_ids_to_remove = sorted(batch.remove)
+            self.logger.debug(
+                "Flushing coalesced set_members on %s: add=%s remove=%s",
+                parent_player.name,
+                player_ids_to_add,
+                player_ids_to_remove,
+            )
+
+            if parent_player.synced_to:
+                # target player is itself synced to another player; ungroup it
+                # first and wait for state to propagate before forwarding.
+                await self._auto_ungroup_if_synced(parent_player, "setting members")
+
+            # Play lock prevents protocol switches from racing with
+            # concurrent play_media / play_index / resume / stop calls.
+            async with self.get_player_lock(
+                parent_player.player_id, PlayerLockPurpose.PLAYBACK
+            ):
+                await self._handle_set_members(
+                    parent_player,
+                    player_ids_to_add or None,
+                    player_ids_to_remove or None,
+                )
+        except Exception as err:
+            if not batch.future.done():
+                batch.future.set_exception(err)
+            raise
+        else:
+            if not batch.future.done():
+                batch.future.set_result(None)
+
+    def _cancel_pending_set_members(self, target_player_id: str) -> None:
+        """Cancel a pending debounced set_members for this target.
+
+        Only cancels the debounce timer and any open (not yet flushing) batch.
+        An already-running flush task is left alone — otherwise calling this
+        from inside the flush path (e.g. ``_dissolve_syncgroup`` during a
+        coalesced dissolve) would cancel ourselves and leave the group in an
+        inconsistent state.
+        """
+        self.mass.cancel_timer(f"{SET_MEMBERS_TASK_ID_PREFIX}_{target_player_id}")
+        batch = self._open_set_members_batches.pop(target_player_id, None)
+        if batch is not None and not batch.future.done():
+            batch.future.cancel()
 
     @api_command("players/cmd/group")
     @handle_player_command

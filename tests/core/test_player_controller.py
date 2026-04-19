@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -36,6 +37,52 @@ def mock_mass() -> MagicMock:
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
     mass.get_providers = MagicMock(return_value=[])
+
+    # cmd_set_members coalesces rapid-fire grouping calls via a debounce timer
+    # (mass.call_later) that spawns an async flush task (mass.create_task).
+    # Mimic the production behaviour: call_later schedules on the event loop
+    # with ~0 delay so concurrent callers can all merge into the same open
+    # batch before the timer fires on the next tick. A re-arm with the same
+    # task_id cancels the prior handle.
+    pending_timers: dict[str, asyncio.TimerHandle] = {}
+
+    def _call_later(
+        _delay: float, target: Any, *args: Any, task_id: str | None = None, **_kwargs: Any
+    ) -> asyncio.TimerHandle | MagicMock:
+        def _fire() -> None:
+            if task_id is not None:
+                pending_timers.pop(task_id, None)
+            result = target(*args)
+            if asyncio.iscoroutine(result):
+                asyncio.ensure_future(result)
+
+        # Sync tests may call through paths that schedule timers (e.g.
+        # update_state). When there's no running loop, returning a MagicMock
+        # is fine — those timers don't affect the test's behaviour.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return MagicMock()
+
+        if task_id is not None and (existing := pending_timers.get(task_id)):
+            existing.cancel()
+        handle = loop.call_later(0, _fire)
+        if task_id is not None:
+            pending_timers[task_id] = handle
+        return handle
+
+    def _cancel_timer(task_id: str) -> None:
+        if handle := pending_timers.pop(task_id, None):
+            handle.cancel()
+
+    def _create_task(target: Any, *args: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        coro = target if asyncio.iscoroutine(target) else target(*args)
+        return asyncio.ensure_future(coro)
+
+    mass.call_later = MagicMock(side_effect=_call_later)
+    mass.create_task = MagicMock(side_effect=_create_task)
+    mass.cancel_timer = MagicMock(side_effect=_cancel_timer)
+    mass.cancel_task = MagicMock()
     return mass
 
 
@@ -191,8 +238,10 @@ class TestGroupUngroup:
 
         controller._handle_cmd_power = mock_handle_cmd_power  # type: ignore[method-assign]
 
-        # Execute group command
+        # Execute group command. cmd_set_members defers _handle_set_members
+        # through mass.call_later (debounce); yield once to let the flush run.
         await controller.cmd_group("member", "leader")
+        await asyncio.sleep(0)
 
         # Verify set_members was called
         assert set_members_called
@@ -227,6 +276,249 @@ class TestPlayerAvailability:
         # This should either skip the unavailable player or raise an exception
         with contextlib.suppress(Exception):
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
+
+
+class TestSetMembersDebounce:
+    """Test that rapid-fire cmd_set_members calls coalesce to one _handle call."""
+
+    async def test_rapid_adds_on_same_target_coalesce(self, mock_mass: MagicMock) -> None:
+        """Three back-to-back adds on the same target collapse into one handle call."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"test"}
+        leader._attr_group_members = []
+        member_a = MockPlayer(provider, "member_a", "Member A")
+        member_b = MockPlayer(provider, "member_b", "Member B")
+        member_c = MockPlayer(provider, "member_c", "Member C")
+        for p in (member_a, member_b, member_c):
+            p._attr_powered = True
+
+        controller._players = {
+            "leader": leader,
+            "member_a": member_a,
+            "member_b": member_b,
+            "member_c": member_c,
+        }
+        controller._player_throttlers = {
+            pid: Throttler(1, 0.05) for pid in ("leader", "member_a", "member_b", "member_c")
+        }
+        mock_mass.players = controller
+        leader.update_state(signal_event=False)
+        for p in (member_a, member_b, member_c):
+            p.update_state(signal_event=False)
+
+        handle_calls: list[tuple[set[str], set[str]]] = []
+
+        async def _track(
+            _parent: Any,
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            handle_calls.append((set(player_ids_to_add or []), set(player_ids_to_remove or [])))
+
+        controller._handle_set_members = _track  # type: ignore[assignment]
+
+        # Fire three adds concurrently so they all merge into the same open
+        # batch before the debounce timer fires on the next loop tick.
+        await asyncio.gather(
+            controller.cmd_set_members("leader", player_ids_to_add=["member_a"]),
+            controller.cmd_set_members("leader", player_ids_to_add=["member_b"]),
+            controller.cmd_set_members("leader", player_ids_to_add=["member_c"]),
+        )
+
+        assert len(handle_calls) == 1
+        adds, removes = handle_calls[0]
+        assert adds == {"member_a", "member_b", "member_c"}
+        assert removes == set()
+
+    async def test_add_then_remove_same_player_nets_to_remove(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An add followed by a remove on the same player forwards only the remove."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"test"}
+        member_x = MockPlayer(provider, "member_x", "Member X")
+        member_x._attr_powered = True
+
+        controller._players = {"leader": leader, "member_x": member_x}
+        controller._player_throttlers = {
+            "leader": Throttler(1, 0.05),
+            "member_x": Throttler(1, 0.05),
+        }
+        mock_mass.players = controller
+        leader.update_state(signal_event=False)
+        member_x.update_state(signal_event=False)
+
+        handle_calls: list[tuple[set[str], set[str]]] = []
+
+        async def _track(
+            _parent: Any,
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            handle_calls.append((set(player_ids_to_add or []), set(player_ids_to_remove or [])))
+
+        controller._handle_set_members = _track  # type: ignore[assignment]
+
+        await asyncio.gather(
+            controller.cmd_set_members("leader", player_ids_to_add=["member_x"]),
+            controller.cmd_set_members("leader", player_ids_to_remove=["member_x"]),
+        )
+
+        assert len(handle_calls) == 1
+        adds, removes = handle_calls[0]
+        assert removes == {"member_x"}
+        assert "member_x" not in adds
+
+    async def test_unrelated_targets_dont_block_each_other(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Rapid adds on two different targets are each forwarded once."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader_a = MockPlayer(provider, "leader_a", "Leader A")
+        leader_a._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader_a._attr_can_group_with = {"test"}
+        leader_b = MockPlayer(provider, "leader_b", "Leader B")
+        leader_b._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader_b._attr_can_group_with = {"test"}
+        member_x = MockPlayer(provider, "member_x", "Member X")
+        member_x._attr_powered = True
+        member_y = MockPlayer(provider, "member_y", "Member Y")
+        member_y._attr_powered = True
+
+        controller._players = {
+            "leader_a": leader_a,
+            "leader_b": leader_b,
+            "member_x": member_x,
+            "member_y": member_y,
+        }
+        controller._player_throttlers = {
+            pid: Throttler(1, 0.05)
+            for pid in ("leader_a", "leader_b", "member_x", "member_y")
+        }
+        mock_mass.players = controller
+        for p in (leader_a, leader_b, member_x, member_y):
+            p.update_state(signal_event=False)
+
+        handle_calls: list[tuple[str, set[str]]] = []
+
+        async def _track(
+            parent: Any,
+            player_ids_to_add: list[str] | None = None,
+            _player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            handle_calls.append((parent.player_id, set(player_ids_to_add or [])))
+
+        controller._handle_set_members = _track  # type: ignore[assignment]
+
+        await asyncio.gather(
+            controller.cmd_set_members("leader_a", player_ids_to_add=["member_x"]),
+            controller.cmd_set_members("leader_b", player_ids_to_add=["member_y"]),
+        )
+
+        assert {c[0] for c in handle_calls} == {"leader_a", "leader_b"}
+        assert len(handle_calls) == 2
+
+    async def test_caller_awaits_until_flush_completes(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """cmd_set_members must not return before _handle_set_members ran."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"test"}
+        leader._attr_group_members = []
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_powered = True
+
+        controller._players = {"leader": leader, "member": member}
+        controller._player_throttlers = {
+            "leader": Throttler(1, 0.05),
+            "member": Throttler(1, 0.05),
+        }
+        mock_mass.players = controller
+        leader.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+
+        handle_call_finished = False
+
+        async def _track(
+            _parent: Any,
+            _player_ids_to_add: list[str] | None = None,
+            _player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            nonlocal handle_call_finished
+            # Yield once inside the handler so the caller would clearly still
+            # be blocked if cmd_set_members was returning early.
+            await asyncio.sleep(0)
+            handle_call_finished = True
+
+        controller._handle_set_members = _track  # type: ignore[assignment]
+
+        await controller.cmd_set_members("leader", player_ids_to_add=["member"])
+        # when cmd_set_members returns, the flush must already have completed.
+        assert handle_call_finished
+
+    async def test_cancel_drops_pending_delta(self, mock_mass: MagicMock) -> None:
+        """_cancel_pending_set_members drops the open batch before the flush."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"test"}
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_powered = True
+
+        controller._players = {"leader": leader, "member": member}
+        controller._player_throttlers = {
+            "leader": Throttler(1, 0.05),
+            "member": Throttler(1, 0.05),
+        }
+        mock_mass.players = controller
+        leader.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+
+        # Override call_later to defer firing entirely so we can cancel before
+        # the flush runs. cancel_timer is a real no-op here (the handle is a
+        # MagicMock from the default override).
+        def _deferred_call_later(
+            _delay: float, _target: Any, *_args: Any, **_kwargs: Any
+        ) -> MagicMock:
+            return MagicMock()
+
+        mock_mass.call_later = MagicMock(side_effect=_deferred_call_later)
+        mock_mass.cancel_timer = MagicMock()
+
+        handled = MagicMock()
+        controller._handle_set_members = handled  # type: ignore[method-assign]
+
+        # Spawn the caller as a task — with the deferred call_later, its
+        # await on batch.future will block indefinitely until we cancel.
+        caller = asyncio.create_task(
+            controller.cmd_set_members("leader", player_ids_to_add=["member"])
+        )
+        await asyncio.sleep(0)  # let cmd_set_members register the batch
+
+        assert "leader" in controller._open_set_members_batches
+        controller._cancel_pending_set_members("leader")
+
+        assert "leader" not in controller._open_set_members_batches
+        handled.assert_not_called()
+        # the awaiting caller is unblocked via cancelled future -> CancelledError
+        with contextlib.suppress(asyncio.CancelledError):
+            await caller
 
 
 class TestStateForwarding:
