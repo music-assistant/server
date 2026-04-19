@@ -614,16 +614,17 @@ class SpotifyProvider(MusicProvider):
         )
         total = spotify_result.get("total", 0)
         items = spotify_result.get("items", [])
-        # me/tracks returns item["track"], playlists/{id}/items returns item["item"]
-        item_key = "track" if is_liked_songs else "item"
+        # playlists/{id}/items is transitioning from item["track"] to item["item"]
+        # during Spotify's Feb 2026 rollout, so accept either shape.
         for index, item in enumerate(items, 1):
             # Spotify wraps/recycles items for offsets beyond the playlist size,
             # so we need to break when we've reached the total.
             if (offset + index) > total:
                 break
-            if not (item and item.get(item_key) and item[item_key].get("id")):
+            track_data = item and (item.get("item") or item.get("track"))
+            if not (track_data and track_data.get("id")):
                 continue
-            track = parse_track(item[item_key], self)
+            track = parse_track(track_data, self)
             track.position = offset + index
             result.append(track)
         return result
@@ -704,9 +705,10 @@ class SpotifyProvider(MusicProvider):
             uri = f"playlists/{prov_playlist_id}/items"
             spotify_result = await self._get_data(uri, limit=1, offset=pos - 1)
             for item in spotify_result["items"]:
-                if not (item and item["item"] and item["item"]["id"]):
+                track_data = item and (item.get("item") or item.get("track"))
+                if not (track_data and track_data.get("id")):
                     continue
-                track_uris.append({"uri": f"spotify:track:{item['item']['id']}"})
+                track_uris.append({"uri": f"spotify:track:{track_data['id']}"})
         data = {"items": track_uris}
         await self._delete_data(f"playlists/{prov_playlist_id}/items", data=data)
 
