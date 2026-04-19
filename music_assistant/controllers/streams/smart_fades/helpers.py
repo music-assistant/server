@@ -9,18 +9,8 @@ import numpy.typing as npt
 SMART_CROSSFADE_DURATION = 45
 
 
-def get_bpm_diff_percentage(bpm1: float, bpm2: float) -> float:
-    """Calculate BPM difference percentage between two BPM values.
-
-    :param bpm1: First BPM value.
-    :param bpm2: Second BPM value.
-    """
-    return abs(1.0 - bpm1 / bpm2) * 100
-
-
 def extrapolate_downbeats(
     downbeats: npt.NDArray[np.float32],
-    tempo_factor: float,
     buffer_size: float = SMART_CROSSFADE_DURATION,
     bpm: float | None = None,
 ) -> npt.NDArray[np.float32]:
@@ -30,7 +20,6 @@ def extrapolate_downbeats(
     that does not have any detected downbeats.
 
     :param downbeats: Array of detected downbeat positions in seconds.
-    :param tempo_factor: Tempo adjustment factor for time stretching.
     :param buffer_size: Maximum buffer size in seconds.
     :param bpm: Optional BPM for validation when extrapolating with only 2 downbeats.
     """
@@ -43,20 +32,15 @@ def extrapolate_downbeats(
 
         # Only extrapolate if interval matches BPM within 15% tolerance
         if abs(interval - expected_interval) / expected_interval < 0.15:
-            # Adjust detected downbeats for time stretching first
-            adjusted_downbeats = downbeats / tempo_factor
-            last_downbeat = adjusted_downbeats[-1]
+            last_downbeat = float(downbeats[-1])
 
             # If the last downbeat is close to the buffer end, no extrapolation needed
             if last_downbeat >= buffer_size - 5:
-                return adjusted_downbeats
+                return downbeats
 
-            # Adjust the interval for time stretching
-            adjusted_interval = interval / tempo_factor
-
-            # Extrapolate forward from last adjusted downbeat using adjusted interval
+            # Extrapolate forward from last downbeat
             extrapolated = []
-            current_pos = last_downbeat + adjusted_interval
+            current_pos = last_downbeat + interval
             max_extrapolation_distance = 25.0  # Don't extrapolate more than 25s
 
             while (
@@ -64,54 +48,45 @@ def extrapolate_downbeats(
                 and (current_pos - last_downbeat) <= max_extrapolation_distance
             ):
                 extrapolated.append(current_pos)
-                current_pos += adjusted_interval
+                current_pos += interval
 
             if extrapolated:
-                # Combine adjusted detected downbeats and extrapolated downbeats
-                return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
+                return np.concatenate([downbeats, np.array(extrapolated)])
 
-            return adjusted_downbeats
+            return downbeats
         # else: interval doesn't match BPM, fall through to return original
 
     if len(downbeats) < 2:
-        # Need at least 2 downbeats to extrapolate
-        return downbeats / tempo_factor
+        return downbeats
 
-    # Adjust detected downbeats for time stretching first
-    adjusted_downbeats = downbeats / tempo_factor
-    last_downbeat = adjusted_downbeats[-1]
+    last_downbeat = float(downbeats[-1])
 
     # If the last downbeat is close to the buffer end, no extrapolation needed
     if last_downbeat >= buffer_size - 5:
-        return adjusted_downbeats
+        return downbeats
 
-    # Calculate intervals from ORIGINAL downbeats (before time stretching)
+    # Calculate intervals between downbeats
     intervals = np.diff(downbeats)
     median_interval = float(np.median(intervals))
     std_interval = float(np.std(intervals))
 
     # Only extrapolate if intervals are consistent (low standard deviation)
     if std_interval > 0.2:
-        return adjusted_downbeats
+        return downbeats
 
-    # Adjust the interval for time stretching
-    # When slowing down (tempo_factor < 1.0), intervals get longer
-    adjusted_interval = median_interval / tempo_factor
-
-    # Extrapolate forward from last adjusted downbeat using adjusted interval
+    # Extrapolate forward from last downbeat using median interval
     extrapolated = []
-    current_pos = last_downbeat + adjusted_interval
+    current_pos = last_downbeat + median_interval
     max_extrapolation_distance = 25.0  # Don't extrapolate more than 25s
 
     while current_pos < buffer_size and (current_pos - last_downbeat) <= max_extrapolation_distance:
         extrapolated.append(current_pos)
-        current_pos += adjusted_interval
+        current_pos += median_interval
 
     if extrapolated:
-        # Combine adjusted detected downbeats and extrapolated downbeats
-        return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
+        return np.concatenate([downbeats, np.array(extrapolated)])
 
-    return adjusted_downbeats
+    return downbeats
 
 
 def compute_gradual_tempo_steps(
@@ -136,6 +111,13 @@ def compute_gradual_tempo_steps(
     n_steps = min(min_steps, len(downbeats))
     if n_steps < 1:
         return [(0.0, end_ratio)]
+
+    # Evenly sample timestamps across the full window when we have more than needed
+    if len(downbeats) > n_steps:
+        indices = np.round(np.linspace(0, len(downbeats) - 1, n_steps)).astype(int)
+        selected_downbeats = downbeats[indices]
+    else:
+        selected_downbeats = downbeats[:n_steps]
 
     # S-curve (sigmoid) with steepness adapted to keep max step within budget
     if n_steps == 1:
@@ -162,7 +144,7 @@ def compute_gradual_tempo_steps(
 
     steps: list[tuple[float, float]] = []
     for i in range(n_steps):
-        timestamp = float(downbeats[i]) if i < len(downbeats) else float(downbeats[-1])
+        timestamp = float(selected_downbeats[i])
         ratio = start_ratio + (end_ratio - start_ratio) * float(sigmoid_values[i])
         steps.append((timestamp, round(ratio, 6)))
 

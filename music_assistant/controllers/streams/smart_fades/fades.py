@@ -257,7 +257,6 @@ class SmartCrossFade(SmartFade):
         # Extrapolate downbeats for better bar calculation
         self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
             self.fade_out_downbeats,
-            tempo_factor=1.0,
             bpm=self.fade_out_bpm,
         )
 
@@ -300,10 +299,14 @@ class SmartCrossFade(SmartFade):
                 SMART_CROSSFADE_DURATION,
             )
 
-        # Adjust crossfade duration to align with outgoing track's downbeats
+        # Adjust crossfade duration to align with outgoing track's downbeats.
+        # When stretching, only consider downbeats after the stretch window
+        # to ensure the outgoing track has reached the target tempo.
+        crossfade_start = SMART_CROSSFADE_DURATION - crossfade_duration
         crossfade_duration = self._adjust_crossfade_to_downbeats(
             crossfade_duration=crossfade_duration,
             fadein_start_pos=fadein_start_pos,
+            min_downbeat_pos=crossfade_start if is_stretched else 0.0,
         )
 
         # Compensate crossfade duration for time-stretch compression.
@@ -417,13 +420,6 @@ class SmartCrossFade(SmartFade):
 
         self.filters.append(GradualTimeStretchFilter(self.logger, tempo_steps))
 
-        # Re-extrapolate downbeats with actual tempo factor for time-stretched audio
-        self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
-            self.fade_out_downbeats,
-            tempo_factor=bpm_ratio,
-            bpm=self.fade_out_bpm,
-        )
-
     def _calculate_crossfade_duration(self, crossfade_bars: int) -> float:
         """Calculate final crossfade duration based on musical bars and BPM."""
         # Calculate crossfade duration based on incoming track's BPM
@@ -522,6 +518,7 @@ class SmartCrossFade(SmartFade):
         self,
         crossfade_duration: float,
         fadein_start_pos: float | None,
+        min_downbeat_pos: float = 0.0,
     ) -> float:
         """Adjust crossfade duration to align with outgoing track's downbeats."""
         # If we don't have downbeats or beat alignment is disabled, return original duration
@@ -547,6 +544,8 @@ class SmartCrossFade(SmartFade):
         later_downbeat = None
 
         for downbeat in self.extrapolated_fadeout_downbeats:
+            if downbeat < min_downbeat_pos:
+                continue
             if downbeat <= ideal_start_pos:
                 earlier_downbeat = downbeat
             elif downbeat > ideal_start_pos and later_downbeat is None:
