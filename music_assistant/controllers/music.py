@@ -11,7 +11,6 @@ from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
-from math import inf
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
@@ -110,7 +109,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 38
+DB_SCHEMA_VERSION: Final[int] = 39
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -1091,64 +1090,6 @@ class MusicController(CoreController):
         await ctrl.match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
-
-    async def set_loudness(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        loudness: float,
-        album_loudness: float | None = None,
-        media_type: MediaType = MediaType.TRACK,
-    ) -> None:
-        """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return
-        if loudness in (None, inf, -inf) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
-            # skip invalid or unreliable values (ebur128 reports -70 LUFS on near-silence)
-            return
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        values = {
-            "item_id": item_id,
-            "media_type": media_type.value,
-            "provider": prov_key,
-            "loudness": loudness,
-        }
-        if (
-            album_loudness not in (None, inf, -inf)
-            and album_loudness > LOUDNESS_MEASUREMENT_MIN_LUFS
-        ):
-            values["loudness_album"] = album_loudness
-        await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
-
-    async def get_loudness(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        media_type: MediaType = MediaType.TRACK,
-    ) -> tuple[float, float | None] | None:
-        """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return None
-        # prefer domain for streaming providers as the catalog is the same across instances
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        db_row = await self.database.get_row(
-            DB_TABLE_LOUDNESS_MEASUREMENTS,
-            {
-                "item_id": item_id,
-                "media_type": media_type.value,
-                "provider": prov_key,
-            },
-        )
-        if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
-            loudness = round(db_row["loudness"], 2)
-            loudness_album = db_row["loudness_album"]
-            loudness_album = (
-                None if loudness_album in (None, inf, -inf) else round(loudness_album, 2)
-            )
-            return (loudness, loudness_album)
-
-        return None
 
     @api_command("music/mark_played")
     async def mark_item_played(
@@ -2706,6 +2647,25 @@ class MusicController(CoreController):
                 f"WHERE loudness_album <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
             )
 
+        if prev_version <= 38:
+            # migrate loudness measurements to the unified audio_analysis table
+            # under the new builtin loudness_analysis provider, then drop the
+            # legacy table. album loudness rides along when present.
+            await self._database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_AUDIO_ANALYSIS} "
+                f"(media_type, item_id, provider, aa_provider_domain, "
+                f" analysis_data, analysis_version) "
+                f"SELECT media_type, item_id, provider, 'loudness_analysis', "
+                f"       json_object("
+                f"           'loudness_integrated', loudness, "
+                f"           'loudness_album', loudness_album"
+                f"       ), 1 "
+                f"FROM {DB_TABLE_LOUDNESS_MEASUREMENTS} "
+                f"WHERE loudness IS NOT NULL "
+                f"  AND loudness > {LOUDNESS_MEASUREMENT_MIN_LUFS}"
+            )
+            await self._database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}")
+
         # save changes
         await self._database.commit()
 
@@ -2975,17 +2935,6 @@ class MusicController(CoreController):
         )
 
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [loudness] REAL,
-                    [loudness_album] REAL,
-                    UNIQUE(media_type,item_id,provider));"""
-        )
-
-        await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
                     [id] INTEGER PRIMARY KEY AUTOINCREMENT,
                     [media_type] TEXT NOT NULL,
@@ -3098,11 +3047,6 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
-        )
-        # index on loudness measurements table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
-            f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
         )
         # indexes on genre_media_item_mapping table
         await self.database.execute(

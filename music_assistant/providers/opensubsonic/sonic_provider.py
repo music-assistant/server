@@ -190,7 +190,7 @@ class OpenSonicProvider(MusicProvider):
                 else None
             )
             self.mass.create_task(
-                self.mass.music.set_loudness(
+                self.mass.streams.audio_analysis.set_track_loudness(
                     item.id,
                     self.instance_id,
                     track_loudness,
