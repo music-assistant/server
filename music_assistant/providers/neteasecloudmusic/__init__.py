@@ -30,8 +30,8 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
-    UnsupportedFeaturedException,
     UnplayableMediaError,
+    UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
     Album,
