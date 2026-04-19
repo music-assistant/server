@@ -19,8 +19,14 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     Filter,
     FrequencySweepFilter,
-    TimeStretchFilter,
+    GradualTimeStretchFilter,
     TrimFilter,
+)
+from music_assistant.controllers.streams.smart_fades.helpers import (
+    SMART_CROSSFADE_DURATION,
+    compute_gradual_tempo_steps,
+    extrapolate_downbeats,
+    generate_synthetic_timestamps,
 )
 from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.process import AsyncProcess
@@ -29,8 +35,6 @@ from music_assistant.models.audio_analysis import AudioAnalysisData
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
-
-SMART_CROSSFADE_DURATION = 45
 
 
 class SmartFade(ABC):
@@ -274,20 +278,18 @@ class SmartCrossFade(SmartFade):
         # Calculate initial crossfade duration (may be adjusted later for downbeat alignment)
         crossfade_duration = self._calculate_crossfade_duration(crossfade_bars=crossfade_bars)
 
-        # Add time stretch filter if needed
-        if (
+        # Add gradual time stretch filter if needed
+        is_stretched = (
             0.1 < bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold
             and crossfade_bars > 4
-        ):
-            self.filters.append(TimeStretchFilter(logger=self.logger, stretch_ratio=bpm_ratio))
-            # Re-extrapolate downbeats with actual tempo factor for time-stretched audio
-            self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
-                self.fade_out_downbeats,
-                tempo_factor=bpm_ratio,
-                bpm=self.fade_out_bpm,
-            )
+        )
+        if is_stretched:
+            self._apply_gradual_time_stretch(bpm_ratio, bpm_diff_percent, crossfade_duration)
 
-        if fadein_start_pos and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION:
+        if (
+            fadein_start_pos is not None
+            and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
+        ):
             self.filters.append(TrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos))
         else:
             self.logger.log(
@@ -303,6 +305,12 @@ class SmartCrossFade(SmartFade):
             crossfade_duration=crossfade_duration,
             fadein_start_pos=fadein_start_pos,
         )
+
+        # Compensate crossfade duration for time-stretch compression.
+        # acrossfade operates in output time, but downbeat alignment was done in input time.
+        # Stretching compresses the output, so we divide by bpm_ratio to keep alignment.
+        if is_stretched:
+            crossfade_duration = crossfade_duration / bpm_ratio
 
         # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
         avg_bpm = (self.fade_out_bpm + self.fade_in_bpm) / 2
@@ -362,6 +370,69 @@ class SmartCrossFade(SmartFade):
             logger=self.logger, crossfade_duration=crossfade_duration
         )
         self.filters.append(crossfade_filter)
+
+    def _apply_gradual_time_stretch(
+        self,
+        bpm_ratio: float,
+        bpm_diff_percent: float,
+        crossfade_duration: float,
+    ) -> None:
+        """Apply gradual time stretch in the 10s window before the crossfade.
+
+        The S-curve ramp completes right when the crossfade begins, so both
+        tracks are at matched BPM during the entire overlap.
+
+        :param bpm_ratio: Target tempo ratio (fade_in_bpm / fade_out_bpm).
+        :param bpm_diff_percent: BPM difference as a percentage.
+        :param crossfade_duration: Duration of the crossfade in seconds.
+        """
+        stretch_duration = 10.0
+        crossfade_start = SMART_CROSSFADE_DURATION - crossfade_duration
+        stretch_start = max(0.0, crossfade_start - stretch_duration)
+        stretch_end = crossfade_start
+
+        # Collect timing points within the stretch window
+        beat_mask = (self.fade_out_beats >= stretch_start) & (self.fade_out_beats <= stretch_end)
+        db_mask = (self.extrapolated_fadeout_downbeats >= stretch_start) & (
+            self.extrapolated_fadeout_downbeats <= stretch_end
+        )
+        window_beats = self.fade_out_beats[beat_mask] - stretch_start
+        window_downbeats = self.extrapolated_fadeout_downbeats[db_mask] - stretch_start
+
+        # >3% BPM diff: beat-level stepping (more steps = smoother)
+        # <=3%: downbeat-level stepping, fall back to beats if too few
+        if bpm_diff_percent > 3.0:
+            stretch_timestamps = window_beats
+        elif len(window_downbeats) >= 2:
+            stretch_timestamps = window_downbeats
+        else:
+            stretch_timestamps = window_beats
+
+        # Fall back to synthetic timestamps when < 2 real timestamps
+        if len(stretch_timestamps) < 2:
+            stretch_timestamps = generate_synthetic_timestamps(
+                stretch_end - stretch_start, self.fade_out_bpm
+            )
+
+        tempo_steps = compute_gradual_tempo_steps(
+            start_ratio=1.0,
+            end_ratio=bpm_ratio,
+            downbeats=stretch_timestamps,
+        )
+        if not tempo_steps:
+            tempo_steps = [(0.0, bpm_ratio)]
+
+        # Shift timestamps back to buffer-relative coordinates for FFmpeg
+        tempo_steps = [(ts + stretch_start, ratio) for ts, ratio in tempo_steps]
+
+        self.filters.append(GradualTimeStretchFilter(self.logger, tempo_steps))
+
+        # Re-extrapolate downbeats with actual tempo factor for time-stretched audio
+        self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
+            self.fade_out_downbeats,
+            tempo_factor=bpm_ratio,
+            bpm=self.fade_out_bpm,
+        )
 
     def _calculate_crossfade_duration(self, crossfade_bars: int) -> float:
         """Calculate final crossfade duration based on musical bars and BPM."""
@@ -602,106 +673,3 @@ class StandardCrossFade(SmartFade):
         else:
             async for chunk in post_crossfade:
                 yield chunk
-
-
-# HELPER METHODS
-def get_bpm_diff_percentage(bpm1: float, bpm2: float) -> float:
-    """Calculate BPM difference percentage between two BPM values."""
-    return abs(1.0 - bpm1 / bpm2) * 100
-
-
-def extrapolate_downbeats(
-    downbeats: npt.NDArray[np.float32],
-    tempo_factor: float,
-    buffer_size: float = SMART_CROSSFADE_DURATION,
-    bpm: float | None = None,
-) -> npt.NDArray[np.float32]:
-    """Extrapolate downbeats based on actual intervals when detection is incomplete.
-
-    This is needed when we want to perform beat alignment in an 'atmospheric' outro
-    that does not have any detected downbeats.
-
-    Args:
-        downbeats: Array of detected downbeat positions in seconds
-        tempo_factor: Tempo adjustment factor for time stretching
-        buffer_size: Maximum buffer size in seconds
-        bpm: Optional BPM for validation when extrapolating with only 2 downbeats
-    """
-    # Handle case with exactly 2 downbeats (with BPM validation)
-    if len(downbeats) == 2 and bpm is not None:
-        interval = float(downbeats[1] - downbeats[0])
-
-        # Expected interval for this BPM (assuming 4/4 time signature)
-        expected_interval = (60.0 / bpm) * 4
-
-        # Only extrapolate if interval matches BPM within 15% tolerance
-        if abs(interval - expected_interval) / expected_interval < 0.15:
-            # Adjust detected downbeats for time stretching first
-            adjusted_downbeats = downbeats / tempo_factor
-            last_downbeat = adjusted_downbeats[-1]
-
-            # If the last downbeat is close to the buffer end, no extrapolation needed
-            if last_downbeat >= buffer_size - 5:
-                return adjusted_downbeats
-
-            # Adjust the interval for time stretching
-            adjusted_interval = interval / tempo_factor
-
-            # Extrapolate forward from last adjusted downbeat using adjusted interval
-            extrapolated = []
-            current_pos = last_downbeat + adjusted_interval
-            max_extrapolation_distance = 125.0  # Don't extrapolate more than 25s
-
-            while (
-                current_pos < buffer_size
-                and (current_pos - last_downbeat) <= max_extrapolation_distance
-            ):
-                extrapolated.append(current_pos)
-                current_pos += adjusted_interval
-
-            if extrapolated:
-                # Combine adjusted detected downbeats and extrapolated downbeats
-                return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
-
-            return adjusted_downbeats
-        # else: interval doesn't match BPM, fall through to return original
-
-    if len(downbeats) < 2:
-        # Need at least 2 downbeats to extrapolate
-        return downbeats / tempo_factor
-
-    # Adjust detected downbeats for time stretching first
-    adjusted_downbeats = downbeats / tempo_factor
-    last_downbeat = adjusted_downbeats[-1]
-
-    # If the last downbeat is close to the buffer end, no extrapolation needed
-    if last_downbeat >= buffer_size - 5:
-        return adjusted_downbeats
-
-    # Calculate intervals from ORIGINAL downbeats (before time stretching)
-    intervals = np.diff(downbeats)
-    median_interval = float(np.median(intervals))
-    std_interval = float(np.std(intervals))
-
-    # Only extrapolate if intervals are consistent (low standard deviation)
-    if std_interval > 0.2:
-        return adjusted_downbeats
-
-    # Adjust the interval for time stretching
-    # When slowing down (tempo_factor < 1.0), intervals get longer
-    adjusted_interval = median_interval / tempo_factor
-
-    # Extrapolate forward from last adjusted downbeat using adjusted interval
-    extrapolated = []
-    current_pos = last_downbeat + adjusted_interval
-    max_extrapolation_distance = 25.0  # Don't extrapolate more than 25s
-
-    while current_pos < buffer_size and (current_pos - last_downbeat) <= max_extrapolation_distance:
-        extrapolated.append(current_pos)
-        current_pos += adjusted_interval
-
-    if extrapolated:
-        # Combine adjusted detected downbeats and extrapolated downbeats
-        return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
-
-    return adjusted_downbeats
