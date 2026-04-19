@@ -77,13 +77,35 @@ class SendspinLocalAudioBridge:
     def is_registered(self) -> bool:
         """Return whether the bridge is registered with Sendspin."""
         return self._sendspin_client is not None
+        
+    @property
+    def _configured_audio_format(self) -> tuple[int, int]:
+        """Return (sample_rate, bit_depth) from player config, defaulting to bridge defaults."""
+        if not self._bridge_client_id:
+            return BRIDGE_SAMPLE_RATE, BRIDGE_BIT_DEPTH
+        raw = self.mass.config.get_raw_player_config_value(
+            self._bridge_client_id, "sample_rates", None
+        )
+        if not raw or not isinstance(raw, list) or not raw:
+            return BRIDGE_SAMPLE_RATE, BRIDGE_BIT_DEPTH
+        # Take the highest configured sample rate/bit depth
+        best_rate, best_depth = BRIDGE_SAMPLE_RATE, BRIDGE_BIT_DEPTH
+        for entry in raw:
+            try:
+                rate_str, depth_str = entry.split("||")
+                rate, depth = int(rate_str), int(depth_str)
+                if rate > best_rate or (rate == best_rate and depth > best_depth):
+                    best_rate, best_depth = rate, depth
+            except (ValueError, AttributeError):
+                continue
+        return best_rate, best_depth        
 
     async def start(self) -> None:
         """Register the local audio device as an external Sendspin client."""
         hostapi_index: int = self.device_info.get("hostapi", 0)
         device_uuid = get_device_uuid(self.device_name, hostapi_index)
         self._bridge_client_id = bridge_client_id_from_uuid(device_uuid)
-
+        sample_rate, bit_depth = self._configured_audio_format
         # Pre-register identifier so protocol linking matches our LocalAudioPlayer
         if sendspin_prov := self._get_sendspin_provider():
             sendspin_prov.register_bridge_identifiers(
@@ -105,8 +127,8 @@ class SendspinLocalAudioBridge:
                     SupportedAudioFormat(
                         codec=AudioCodec.PCM,
                         channels=BRIDGE_CHANNELS,
-                        sample_rate=BRIDGE_SAMPLE_RATE,
-                        bit_depth=BRIDGE_BIT_DEPTH,
+                        sample_rate=sample_rate,
+                        bit_depth=bit_depth,
                     )
                 ],
                 buffer_capacity=1_000,
@@ -134,7 +156,7 @@ class SendspinLocalAudioBridge:
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
             )
-            self._bridge_role.setup_audio_requirements()
+            self._bridge_role.setup_audio_requirements(sample_rate=sample_rate, bit_depth=bit_depth)
 
         self.logger.info(
             "Sendspin bridge registered for %s (client_id=%s)",
@@ -204,6 +226,8 @@ class SendspinLocalAudioBridge:
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
         """Apply software volume scaling if configured, reading current player state."""
+        sample_rate, bit_depth = self._configured_audio_format
+        dtype = np.int16 if bit_depth == 16 else np.int32
         if self.player.volume_control_mode != VOLUME_CONTROL_SOFTWARE:
             return pcm_data
         if self.player.volume_muted:
@@ -211,24 +235,29 @@ class SendspinLocalAudioBridge:
         volume = self.player.volume_level
         if volume is None or volume >= 100:
             return pcm_data
-        samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
+        samples = np.frombuffer(pcm_data, dtype=dtype).copy()
         scale = volume / 100.0
-        samples = np.clip(samples * scale, -32768, 32767).astype(np.int16)
+        clip_max = 32767 if bit_depth == 16 else 2147483647
+        clip_min = -32768 if bit_depth == 16 else -2147483648
+        samples = np.clip(samples * scale, clip_min, clip_max).astype(dtype)
         return samples.tobytes()
 
     async def _audio_writer(self) -> None:
         """Write queued audio data to the soundcard."""
         loop = asyncio.get_running_loop()
+        sample_rate, bit_depth = self._configured_audio_format
+        dtype = "int16" if bit_depth == 16 else "int32"
         try:
             self._output_stream = sd.RawOutputStream(
                 device=self.device_index,
-                samplerate=BRIDGE_SAMPLE_RATE,
+                samplerate=sample_rate,
                 channels=BRIDGE_CHANNELS,
-                dtype="int16",
+                dtype=dtype,
                 blocksize=DEFAULT_BUFFER_FRAMES,
             )
             self._output_stream.start()
             self.logger.debug("Audio output stream opened for %s", self.device_name)
+            self.logger.info("Audio output stream rate: %s", sample_rate)
 
             while True:
                 data = await self._write_queue.get()

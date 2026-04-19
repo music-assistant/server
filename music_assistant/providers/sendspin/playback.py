@@ -1162,10 +1162,13 @@ class SendspinPlaybackSession:
                             channels=preferred_fmt.channels,
                         )
                 elif isinstance(role, BridgePlayerRole):
+                    req = role.get_audio_requirements()
+                    sample_rate = req.sample_rate if req else BRIDGE_SAMPLE_RATE
+                    bit_depth = req.bit_depth if req else BRIDGE_BIT_DEPTH
                     return AudioFormat(
                         content_type=ContentType.from_bit_depth(BRIDGE_BIT_DEPTH),
-                        sample_rate=BRIDGE_SAMPLE_RATE,
-                        bit_depth=BRIDGE_BIT_DEPTH,
+                        sample_rate=sample_rate,
+                        bit_depth=bit_depth,
                         channels=BRIDGE_CHANNELS,
                     )
         return _PCM_FORMAT

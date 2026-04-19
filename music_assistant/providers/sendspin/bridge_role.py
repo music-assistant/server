@@ -92,13 +92,17 @@ class BridgePlayerRole(Role):
         """Return role family name."""
         return "player"
 
-    def setup_audio_requirements(self) -> None:
+    def setup_audio_requirements(
+        self,
+        sample_rate: int = BRIDGE_SAMPLE_RATE,
+        bit_depth: int = BRIDGE_BIT_DEPTH,
+        ) -> None:
         """Set up audio requirements for bridge PCM format."""
         self._audio_requirements = AudioRequirements(
-            sample_rate=BRIDGE_SAMPLE_RATE,
-            bit_depth=BRIDGE_BIT_DEPTH,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
             channels=BRIDGE_CHANNELS,
-            transformer=None,  # Raw PCM, no encoding
+            transformer=None,
         )
 
     def get_audio_requirements(self) -> AudioRequirements | None:

@@ -54,10 +54,11 @@ from PIL import Image
 
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
-
+from music_assistant.constants import create_sample_rates_config_entry
 from .constants import (
     CONF_SENDSPIN_STATIC_DELAY,
     DEFAULT_SENDSPIN_STATIC_DELAY,
+    BRIDGE_PREFIX,
 )
 from .helpers import mac_from_bridge_client_id
 from .playback import SendspinPlaybackSession
@@ -914,7 +915,8 @@ class SendspinPlayer(SendspinBasePlayer):
                     advanced=False,
                 )
             )
-
+        if self.player_id.startswith(BRIDGE_PREFIX):
+            entries.append(create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24))
         return entries
 
     async def on_unload(self) -> None:
