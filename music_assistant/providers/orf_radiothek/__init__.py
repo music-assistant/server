@@ -1,4 +1,5 @@
-"""ORF Radiothek / ORF Sound provider for Music Assistant.
+"""
+ORF Radiothek / ORF Sound provider for Music Assistant.
 
 Features:
 - Live radios (ORF stations + privates) from ORF bundle.json
@@ -621,7 +622,8 @@ class RadiothekProvider(MusicProvider):
     # ----------------------------
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's radio stations and podcasts.
+        """
+        Browse this provider's radio stations and podcasts.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
