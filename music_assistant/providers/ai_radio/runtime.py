@@ -5,41 +5,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
 from collections import defaultdict
-from contextlib import suppress
 from copy import deepcopy
-from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
-import aiofiles
 from aiohttp import ClientTimeout
-from music_assistant_models.enums import MediaType, QueueOption
+from music_assistant_models.enums import MediaType, ProviderFeature, QueueOption
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
-from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
-    CONF_ELEVENLABS_API_KEY,
-    CONF_OPENAI_API_KEY,
-    DEFAULT_ELEVENLABS_MODEL,
     DEFAULT_LLM_INSTRUCTIONS,
-    DEFAULT_LLM_MODEL,
-    DEFAULT_MAX_TOKENS,
-    DEFAULT_OPENAI_BASE_URL,
-    DEFAULT_OPENAI_TIMEOUT_SECONDS,
-    DEFAULT_OPENAI_TTS_INSTRUCTIONS,
-    DEFAULT_OPENAI_TTS_MODEL,
-    DEFAULT_OPENAI_TTS_VOICE,
-    DEFAULT_SECTION_STORE_PATH,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TTS_PROVIDER,
-    DEFAULT_TTS_TIMEOUT_SECONDS,
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     VALID_WEB_SEARCH_MODES,
@@ -61,7 +42,6 @@ from .models import (
     soft_limit_text,
     track_songinfo,
     utc_now_iso,
-    write_id3_tags,
 )
 
 if TYPE_CHECKING:
@@ -69,6 +49,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import PlayableMediaItemType
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.plugin import PluginProvider
 
 
 class AIRadioRuntimeMixin:
@@ -180,13 +161,7 @@ class AIRadioRuntimeMixin:
             sections=len(generated_sections),
         )
         run_id = session.session_id[:8]
-        batch_id = "playlist"
-        audio_sections = await self._synthesize_sections(
-            station=station,
-            generated_sections=generated_sections,
-            run_id=run_id,
-            batch_id=batch_id,
-        )
+        audio_sections = await self._synthesize_sections(generated_sections=generated_sections)
 
         entries, track_count = self._compose_entries(tracks=tracks, sections=audio_sections)
         if not entries:
@@ -199,12 +174,6 @@ class AIRadioRuntimeMixin:
         )
 
         target_provider = str(station.get("target_playlist_provider") or "builtin")
-        if audio_sections and target_provider != "builtin":
-            self.logger.warning(
-                "Non-builtin target provider with generated local sections is unsupported; "
-                "falling back to builtin"
-            )
-            target_provider = "builtin"
 
         station_name = str(station.get("name") or "AI Radio").strip()
         timezone_name = str(station.get("general", {}).get("timezone") or "UTC")
@@ -356,8 +325,6 @@ class AIRadioRuntimeMixin:
                 sections_planned=len(filtered_sections),
             )
             generated_sections = await self._generate_sections(station, filtered_sections)
-            run_id = session.session_id[:8]
-            batch_id = f"dynamic_{batch_index:03d}"
             self._set_session_progress(
                 session,
                 "generating_tts",
@@ -366,12 +333,7 @@ class AIRadioRuntimeMixin:
                 batch_index=batch_index + 1,
                 sections=len(generated_sections),
             )
-            audio_sections = await self._synthesize_sections(
-                station=station,
-                generated_sections=generated_sections,
-                run_id=run_id,
-                batch_id=batch_id,
-            )
+            audio_sections = await self._synthesize_sections(generated_sections=generated_sections)
             entries, _track_count = self._compose_entries(batch_tracks, audio_sections)
             if not entries:
                 raise AIRadioError("Dynamic batch produced no queue entries")
@@ -391,9 +353,6 @@ class AIRadioRuntimeMixin:
                 media=cast("list[Any]", entries),
                 option=option,
             )
-            if is_first:
-                with suppress(Exception):
-                    await self.mass.player_queues.play(queue_id)
 
             track_entry_local_indices = [
                 index for index, uri in enumerate(entries) if "://track/" in uri
@@ -851,30 +810,14 @@ class AIRadioRuntimeMixin:
 
     async def _synthesize_sections(
         self,
-        station: dict[str, Any],
         generated_sections: list[GeneratedSection],
-        run_id: str,
-        batch_id: str,
     ) -> list[AudioSection]:
-        """Convert generated section texts to audio files."""
+        """Convert generated section texts to playable TTS URIs."""
         output: list[AudioSection] = []
         if not generated_sections:
             return output
-        provider = str(station.get("general", {}).get("tts_provider", DEFAULT_TTS_PROVIDER))
-        self.logger.info(
-            "TTS synthesis started: provider=%s sections=%d run=%s/%s",
-            provider,
-            len(generated_sections),
-            run_id,
-            batch_id,
-        )
-        base_dir = await self._get_section_store_base_path(station)
-        station_id = str(station.get("id", "station"))
-        run_dir = base_dir / slugify(station_id) / run_id / batch_id
-        await asyncio.to_thread(run_dir.mkdir, parents=True, exist_ok=True)
+        self.logger.info("TTS synthesis started: sections=%d", len(generated_sections))
         for index, section in enumerate(generated_sections):
-            file_stem = f"{index:03d}_{slugify(section.section_id)}"
-            file_path = run_dir / f"{file_stem}.mp3"
             started = perf_counter()
             self.logger.info(
                 "TTS section %d/%d: section=%s chars=%d",
@@ -884,32 +827,18 @@ class AIRadioRuntimeMixin:
                 len(section.text),
             )
             try:
-                audio_bytes = await self._render_tts(station=station, text=section.text)
+                section_uri = await self._render_tts(text=section.text)
             except Exception:
                 self.logger.exception(
-                    "TTS synthesis failed: section=%s run=%s/%s",
+                    "TTS synthesis failed: section=%s",
                     section.section_id,
-                    run_id,
-                    batch_id,
                 )
                 raise
-            async with aiofiles.open(file_path, "wb") as file_handle:
-                await file_handle.write(audio_bytes)
-            title = f"{section.section_name} [{run_id}]"
-            cover_art_path = Path(__file__).with_name("air.png")
-            await asyncio.to_thread(
-                write_id3_tags,
-                str(file_path),
-                title,
-                "AI Radio",
-                str(cover_art_path) if cover_art_path.exists() else None,
-            )
             self.logger.debug(
-                "TTS section done: section=%s bytes=%d elapsed=%.2fs file=%s",
+                "TTS section done: section=%s elapsed=%.2fs uri=%s",
                 section.section_id,
-                len(audio_bytes),
                 perf_counter() - started,
-                file_path,
+                section_uri,
             )
             output.append(
                 AudioSection(
@@ -917,16 +846,10 @@ class AIRadioRuntimeMixin:
                     section_id=section.section_id,
                     section_name=section.section_name,
                     insert_at_index=section.insert_at_index,
-                    file_path=str(file_path),
-                    uri=create_uri(MediaType.TRACK, "builtin", str(file_path)),
+                    uri=section_uri,
                 )
             )
-        self.logger.info(
-            "TTS synthesis finished: sections=%d run=%s/%s",
-            len(output),
-            run_id,
-            batch_id,
-        )
+        self.logger.info("TTS synthesis finished: sections=%d", len(output))
         return output
 
     def _compose_entries(
@@ -1253,278 +1176,80 @@ class AIRadioRuntimeMixin:
         return mode
 
     async def _generate_text(self, station: dict[str, Any], prompt: str, web_mode: str) -> str:
-        """Generate one section text using the configured LLM."""
+        """Generate one section text using the configured AI_QUERY plugin feature."""
         general = cast("dict[str, Any]", station.get("general", {}))
-        model = str(general.get("model") or DEFAULT_LLM_MODEL)
-        instructions = str(general.get("instructions") or DEFAULT_LLM_INSTRUCTIONS)
-        temperature = coerce_float(
-            general.get("temperature"),
-            DEFAULT_TEMPERATURE,
-        )
-        max_tokens = coerce_int(
-            general.get("max_tokens"),
-            DEFAULT_MAX_TOKENS,
-        )
-        openai_base_url = DEFAULT_OPENAI_BASE_URL
-        self.logger.debug(
-            "LLM request prepared: model=%s web_mode=%s prompt_chars=%d "
-            "temperature=%.2f max_tokens=%d",
-            model,
-            web_mode,
-            len(prompt),
-            temperature,
-            max_tokens,
-        )
-        api_key = str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip()
-        if not api_key:
-            self.logger.error(
-                "AI Radio text generation failed: OpenAI API key is missing in plugin config"
-            )
-            raise AIRadioError("OpenAI API key is missing in plugin config")
-
-        if web_mode == "disabled":
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            data = await self._openai_request_json(
-                api_key=api_key,
-                path="/chat/completions",
-                payload=payload,
-                base_url=openai_base_url,
-            )
-            choices = data.get("choices") if isinstance(data, dict) else None
-            if not isinstance(choices, list) or not choices:
-                raise AIRadioError("OpenAI chat completion returned no choices")
-            message = choices[0].get("message", {})
-            content = message.get("content")
-            if not isinstance(content, str) or not content.strip():
-                raise AIRadioError("OpenAI chat completion returned empty content")
-            self.logger.debug(
-                "LLM chat/completions response received: chars=%d",
-                len(content.strip()),
-            )
-            return content.strip()
-
-        payload = {
-            "model": model,
-            "input": prompt,
-            "tools": [
-                {
-                    "type": "web_search",
-                    "search_context_size": "medium",
-                    "external_web_access": True,
-                }
-            ],
-            "include": ["web_search_call.action.sources"],
-            "instructions": instructions,
-        }
+        instructions = str(general.get("instructions") or DEFAULT_LLM_INSTRUCTIONS).strip()
+        query_parts: list[str] = []
+        if instructions:
+            query_parts.append(f"Program instructions:\n{instructions}")
         if web_mode == "force":
-            payload["tool_choice"] = "required"
-        data = await self._openai_request_json(
-            api_key=api_key,
-            path="/responses",
-            payload=payload,
-            base_url=openai_base_url,
+            query_parts.append(
+                "Web mode: force. Use current up-to-date information where relevant."
+            )
+        elif web_mode == "allow":
+            query_parts.append(
+                "Web mode: allow. Use current information if it improves the answer."
+            )
+        query_parts.append(
+            f"Task: Write one concise spoken radio section.\n\n{prompt}\n\nReturn plain text only."
         )
-        output_text = data.get("output_text") if isinstance(data, dict) else None
-        if isinstance(output_text, str) and output_text.strip():
-            self.logger.debug(
-                "LLM responses API output_text received: chars=%d",
-                len(output_text.strip()),
-            )
-            return output_text.strip()
-        output = data.get("output", []) if isinstance(data, dict) else []
-        chunks: list[str] = []
-        if isinstance(output, list):
-            for item in output:
-                if not isinstance(item, dict):
-                    continue
-                content = item.get("content", [])
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "output_text":
-                        text = block.get("text")
-                        if isinstance(text, str) and text.strip():
-                            chunks.append(text.strip())
-        if chunks:
-            joined = "\n".join(chunks).strip()
-            self.logger.debug(
-                "LLM responses API output content received: chunks=%d chars=%d",
-                len(chunks),
-                len(joined),
-            )
-            return "\n".join(chunks).strip()
-        raise AIRadioError("OpenAI responses API returned no output text")
-
-    async def _render_tts(self, station: dict[str, Any], text: str) -> bytes:
-        """Render text to MP3 bytes."""
-        general = cast("dict[str, Any]", station.get("general", {}))
-        provider = str(general.get("tts_provider") or DEFAULT_TTS_PROVIDER).strip().lower()
-        self.logger.debug("TTS render prepared: provider=%s text_chars=%d", provider, len(text))
-        if provider == "openai":
-            api_key = str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip()
-            if not api_key:
-                self.logger.error("AI Radio TTS failed: OpenAI API key is missing in plugin config")
-                raise AIRadioError("OpenAI API key is missing in plugin config")
-            openai_base_url = DEFAULT_OPENAI_BASE_URL
-            model = str(general.get("openai_tts_model") or DEFAULT_OPENAI_TTS_MODEL)
-            voice = str(general.get("openai_tts_voice") or DEFAULT_OPENAI_TTS_VOICE)
-            instructions = str(
-                general.get("openai_tts_instructions") or DEFAULT_OPENAI_TTS_INSTRUCTIONS
-            )
-            payload: dict[str, Any] = {
-                "model": model,
-                "voice": voice,
-                "input": text,
-                "format": "mp3",
-            }
-            if instructions.strip():
-                payload["instructions"] = instructions.strip()
-            audio = await self._openai_request_bytes(
-                api_key=api_key,
-                path="/audio/speech",
-                payload=payload,
-                accept="audio/mpeg",
-                base_url=openai_base_url,
-            )
-            self.logger.debug(
-                "OpenAI TTS rendered: model=%s voice=%s bytes=%d",
-                model,
-                voice,
-                len(audio),
-            )
-            return audio
-
-        if provider == "elevenlabs":
-            api_key = str(self.config.get_value(CONF_ELEVENLABS_API_KEY) or "").strip()
-            if not api_key:
-                self.logger.error(
-                    "AI Radio TTS failed: ElevenLabs API key is missing in plugin config"
-                )
-                raise AIRadioError("ElevenLabs API key is missing in plugin config")
-            voice_id = str(general.get("elevenlabs_voice_id") or "").strip()
-            if not voice_id:
-                self.logger.error("AI Radio TTS failed: no ElevenLabs voice_id configured")
-                raise AIRadioError("No ElevenLabs voice_id configured")
-            model_id = str(general.get("elevenlabs_model") or DEFAULT_ELEVENLABS_MODEL)
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
-            timeout_seconds = max(5, DEFAULT_TTS_TIMEOUT_SECONDS)
-            async with self.mass.http_session.post(
-                url,
-                json={"text": text, "model_id": model_id},
-                headers={"xi-api-key": api_key, "accept": "audio/mpeg"},
-                timeout=ClientTimeout(total=timeout_seconds),
-            ) as response:
-                data = await response.read()
-                if response.status >= 400:
-                    raise AIRadioError(
-                        f"ElevenLabs TTS failed ({response.status}): {data.decode(errors='ignore')}"
-                    )
-                if not data:
-                    raise AIRadioError("ElevenLabs TTS returned empty audio")
-                self.logger.debug(
-                    "ElevenLabs TTS rendered: model=%s voice_id=%s bytes=%d",
-                    model_id,
-                    voice_id,
-                    len(data),
-                )
-                return data
-
-        self.logger.error("AI Radio TTS failed: unsupported tts_provider '%s'", provider)
-        raise AIRadioError(f"Unsupported tts_provider: {provider}")
-
-    async def _openai_request_json(
-        self,
-        api_key: str,
-        path: str,
-        payload: dict[str, Any],
-        base_url: str,
-    ) -> dict[str, Any]:
-        """Execute an OpenAI request and parse JSON response."""
-        raw = await self._openai_request_bytes(
-            api_key=api_key,
-            path=path,
-            payload=payload,
-            accept="application/json",
-            base_url=base_url,
-        )
-        try:
-            parsed = json_loads(raw)
-        except Exception as err:
-            raise AIRadioError(f"Invalid JSON from OpenAI for {path}") from err
-        if not isinstance(parsed, dict):
-            raise AIRadioError(f"Unexpected OpenAI response type for {path}")
-        return parsed
-
-    async def _openai_request_bytes(
-        self,
-        api_key: str,
-        path: str,
-        payload: dict[str, Any],
-        accept: str,
-        base_url: str,
-    ) -> bytes:
-        """Execute an OpenAI request and return raw bytes."""
-        url = f"{base_url.rstrip('/')}{path}"
-        started = perf_counter()
+        query = "\n\n".join(query_parts)
+        plugin = self._get_ai_plugin()
         self.logger.debug(
-            "OpenAI request: path=%s accept=%s payload_keys=%s",
-            path,
-            accept,
-            sorted(payload.keys()),
+            "AI query prepared: plugin=%s web_mode=%s query_chars=%d",
+            plugin.instance_id,
+            web_mode,
+            len(query),
         )
-        async with self.mass.http_session.post(
-            url,
-            json=payload,
-            headers={
-                "authorization": f"Bearer {api_key}",
-                "content-type": "application/json",
-                "accept": accept,
-            },
-            timeout=ClientTimeout(total=DEFAULT_OPENAI_TIMEOUT_SECONDS),
-        ) as response:
-            data = await response.read()
-            if response.status >= 400:
-                raise AIRadioError(
-                    f"OpenAI request failed ({response.status}) for {path}: "
-                    f"{data.decode(errors='ignore')}"
-                )
-            self.logger.debug(
-                "OpenAI request done: path=%s status=%d bytes=%d elapsed=%.2fs",
-                path,
-                response.status,
-                len(data),
-                perf_counter() - started,
+        response = await plugin.ai_query(query)
+        if not response or not str(response).strip():
+            raise AIRadioError(
+                f"AI provider '{plugin.instance_id}' returned an empty response for section text"
             )
-            return data
+        text = str(response).strip()
+        self.logger.debug(
+            "AI query response received: plugin=%s chars=%d",
+            plugin.instance_id,
+            len(text),
+        )
+        return text
 
-    async def _get_section_store_base_path(self, station: dict[str, Any]) -> Path:
-        """Resolve the section output base path within MA storage."""
-        general = cast("dict[str, Any]", station.get("general", {}))
-        configured = str(general.get("section_store_path") or "").strip()
-        if not configured:
-            configured = DEFAULT_SECTION_STORE_PATH
+    async def _render_tts(self, text: str) -> str:
+        """Render text to a playable URI using the configured TTS plugin feature."""
+        plugin = self._get_tts_plugin()
+        self.logger.debug(
+            "TTS render prepared: plugin=%s text_chars=%d", plugin.instance_id, len(text)
+        )
+        stream_details = await plugin.get_tts_message(text)
+        uri = str(getattr(stream_details, "path", "") or "").strip()
+        if uri:
+            return uri
+        raise AIRadioError(
+            f"TTS provider '{plugin.instance_id}' returned no direct stream path in StreamDetails.path"
+        )
 
-        storage_root = await asyncio.to_thread(Path(self.mass.storage_path).resolve)
-        candidate = Path(configured)
+    def _get_ai_plugin(self) -> PluginProvider:
+        """Return the plugin used for AI_QUERY tasks."""
+        plugins = sorted(
+            self.mass.get_plugins_by_feature(ProviderFeature.AI_QUERY),
+            key=lambda plugin: plugin.instance_id,
+        )
+        if not plugins:
+            raise AIRadioError(
+                "No AI provider available. Configure a plugin with ProviderFeature.AI_QUERY "
+                "(for example Home Assistant with an ai_task entity)."
+            )
+        return plugins[0]
 
-        if not candidate.is_absolute():
-            if not is_safe_path(configured):
-                raise AIRadioError("section_store_path contains invalid path components")
-            candidate = storage_root / candidate
-
-        resolved = await asyncio.to_thread(candidate.resolve)
-        if resolved != storage_root and not str(resolved).startswith(str(storage_root) + os.sep):
-            raise AIRadioError("section_store_path must be within the MA storage directory")
-
-        await asyncio.to_thread(resolved.mkdir, parents=True, exist_ok=True)
-        return resolved
+    def _get_tts_plugin(self) -> PluginProvider:
+        """Return the plugin used for TTS tasks."""
+        plugins = sorted(
+            self.mass.get_plugins_by_feature(ProviderFeature.TTS),
+            key=lambda plugin: plugin.instance_id,
+        )
+        if not plugins:
+            raise AIRadioError(
+                "No TTS provider available. Configure a plugin with ProviderFeature.TTS "
+                "(for example Home Assistant with a TTS entity)."
+            )
+        return plugins[0]

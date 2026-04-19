@@ -7,11 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from .constants import (
-    CONF_ELEVENLABS_API_KEY,
-    CONF_OPENAI_API_KEY,
-    CONF_UI_AUTO_REFRESH_SECONDS,
-)
+from .constants import CONF_UI_AUTO_REFRESH_SECONDS
 
 
 async def get_config_entries(
@@ -29,19 +25,6 @@ async def get_config_entries(
             type=ConfigEntryType.LABEL,
             label="Click (?) to open AI Radio User Interface",
             description=web_ui_url,
-        ),
-        ConfigEntry(
-            key=CONF_OPENAI_API_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            label="OpenAI API Key",
-            description="Required for AI text generation and OpenAI TTS.",
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_ELEVENLABS_API_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            label="ElevenLabs API Key",
-            required=False,
         ),
         ConfigEntry(
             key=CONF_UI_AUTO_REFRESH_SECONDS,

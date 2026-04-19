@@ -14,8 +14,6 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
-    CONF_ELEVENLABS_API_KEY,
-    CONF_OPENAI_API_KEY,
     CONF_UI_AUTO_REFRESH_SECONDS,
     DEFAULT_MAX_CONCURRENT_RUNS,
     SUPPORTED_FEATURES,
@@ -65,13 +63,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         await asyncio.to_thread(self._storage_dir.mkdir, parents=True, exist_ok=True)
         await self._load_sections()
         await self._load_stations()
-        openai_key_set = bool(str(self.config.get_value(CONF_OPENAI_API_KEY) or "").strip())
-        elevenlabs_key_set = bool(str(self.config.get_value(CONF_ELEVENLABS_API_KEY) or "").strip())
-        if not (openai_key_set or elevenlabs_key_set):
-            self.logger.warning(
-                "AI Radio has no TTS/LLM API keys configured yet. "
-                "Set OpenAI and/or ElevenLabs keys in plugin settings before running stations."
-            )
         self.logger.info(
             "AI Radio initialized for instance '%s' with %d stations and %d sections",
             self.instance_id,

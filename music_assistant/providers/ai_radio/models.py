@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-import mutagen.id3 as mutagen_id3
-
 from .constants import EMPTY_SECTION_ID
 
 
@@ -69,7 +67,6 @@ class AudioSection:
     section_id: str
     section_name: str
     insert_at_index: int
-    file_path: str
     uri: str
 
 
@@ -236,36 +233,3 @@ def coerce_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def write_id3_tags(
-    mp3_path: str, title: str, artist: str, cover_art_path: str | None = None
-) -> None:
-    """Write simple ID3 metadata to an MP3 file."""
-    id3: Any = mutagen_id3
-    try:
-        tags = id3.ID3(mp3_path)
-    except id3.ID3NoHeaderError:
-        tags = id3.ID3()
-    tags.delall("TIT2")
-    tags.add(id3.TIT2(encoding=1, text=title))
-    tags.delall("TPE1")
-    tags.add(id3.TPE1(encoding=1, text=artist))
-    tags.delall("TPE2")
-    tags.add(id3.TPE2(encoding=1, text=artist))
-    tags.delall("TALB")
-    tags.add(id3.TALB(encoding=1, text="AI Radio Sections"))
-    if cover_art_path:
-        with open(cover_art_path, "rb") as cover_file:
-            cover_data = cover_file.read()
-        tags.delall("APIC")
-        tags.add(
-            id3.APIC(
-                encoding=3,
-                mime="image/png",
-                type=3,
-                desc="Cover",
-                data=cover_data,
-            )
-        )
-    tags.save(mp3_path, v2_version=3)

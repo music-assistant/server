@@ -60,9 +60,7 @@ def test_normalize_general_uses_known_schema_only() -> None:
     raw_general = {
         "timezone": "Europe/Berlin",
         "location": {"city": "Berlin", "country": "DE"},
-        "model": "gpt-4o-mini",
-        "temperature": "0.5",
-        "max_tokens": "1200",
+        "instructions": "Keep it concise and conversational.",
         "weather_provider": "open_meteo",
         "weather_timeout_seconds": "30",
         "foo": "bar",
@@ -72,8 +70,7 @@ def test_normalize_general_uses_known_schema_only() -> None:
 
     assert normalized["timezone"] == "Europe/Berlin"
     assert normalized["location"] == {"city": "Berlin", "country": "DE"}
-    assert normalized["temperature"] == 0.5
-    assert normalized["max_tokens"] == 1200
+    assert normalized["instructions"] == "Keep it concise and conversational."
     assert normalized["weather_timeout_seconds"] == 30
     assert "foo" not in normalized
 

@@ -16,14 +16,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.helpers.json import async_json_dumps, async_json_loads
 
 from .constants import (
-    DEFAULT_ELEVENLABS_MODEL,
-    DEFAULT_LLM_MODEL,
-    DEFAULT_MAX_TOKENS,
-    DEFAULT_OPENAI_TTS_MODEL,
-    DEFAULT_OPENAI_TTS_VOICE,
-    DEFAULT_SECTION_STORE_PATH,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TTS_PROVIDER,
+    DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     EMPTY_SECTION_ID,
@@ -207,12 +200,12 @@ class AIRadioStorageMixin:
             value = source_general.get(key, defaults[key])
             return str(value or defaults[key]).strip() or str(defaults[key])
 
-        def _number(key: str, cast_type: type[int | float]) -> int | float:
+        def _int(key: str) -> int:
             value = source_general.get(key, defaults[key])
             try:
-                return cast_type(value)
+                return int(value)
             except (TypeError, ValueError):
-                return cast_type(defaults[key])
+                return int(defaults[key])
 
         return {
             "timezone": _text("timezone"),
@@ -220,26 +213,9 @@ class AIRadioStorageMixin:
                 "city": str(location.get("city", "")).strip(),
                 "country": str(location.get("country", "")).strip(),
             },
-            "model": _text("model"),
-            "temperature": _number("temperature", float),
-            "max_tokens": _number("max_tokens", int),
             "instructions": str(source_general.get("instructions", defaults["instructions"])),
-            "section_store_path": _text("section_store_path"),
             "weather_provider": _text("weather_provider"),
-            "weather_timeout_seconds": _number("weather_timeout_seconds", int),
-            "tts_provider": _text("tts_provider"),
-            "openai_tts_model": _text("openai_tts_model"),
-            "openai_tts_voice": _text("openai_tts_voice"),
-            "openai_tts_instructions": str(
-                source_general.get(
-                    "openai_tts_instructions",
-                    defaults["openai_tts_instructions"],
-                )
-            ),
-            "elevenlabs_model": _text("elevenlabs_model"),
-            "elevenlabs_voice_id": str(
-                source_general.get("elevenlabs_voice_id", defaults["elevenlabs_voice_id"])
-            ).strip(),
+            "weather_timeout_seconds": _int("weather_timeout_seconds"),
         }
 
     def _upsert_embedded_sections_from_station(self, station: dict[str, Any]) -> bool:
@@ -503,30 +479,9 @@ class AIRadioStorageMixin:
                     "city": "",
                     "country": "",
                 },
-                "model": DEFAULT_LLM_MODEL,
-                "temperature": DEFAULT_TEMPERATURE,
-                "max_tokens": DEFAULT_MAX_TOKENS,
-                "instructions": (
-                    "Host personality: warm, sharp, music-literate, and slightly "
-                    "premium without sounding formal. Program instructions: "
-                    "write for spoken delivery, keep segments concise, avoid "
-                    "bullet-point phrasing, avoid clichés, mention concrete "
-                    "details when available, and maintain a believable radio flow "
-                    "between sections."
-                ),
-                "section_store_path": DEFAULT_SECTION_STORE_PATH,
+                "instructions": DEFAULT_LLM_INSTRUCTIONS,
                 "weather_provider": DEFAULT_WEATHER_PROVIDER,
                 "weather_timeout_seconds": DEFAULT_WEATHER_TIMEOUT_SECONDS,
-                "tts_provider": DEFAULT_TTS_PROVIDER,
-                "openai_tts_model": DEFAULT_OPENAI_TTS_MODEL,
-                "openai_tts_voice": DEFAULT_OPENAI_TTS_VOICE,
-                "openai_tts_instructions": (
-                    "Delivery instructions: confident radio host, natural pacing, "
-                    "clear sentence endings, subtle energy lift on intros and "
-                    "transitions, and a warm close without exaggerated theatrics."
-                ),
-                "elevenlabs_model": DEFAULT_ELEVENLABS_MODEL,
-                "elevenlabs_voice_id": "",
             },
             "section_ids": default_section_ids,
             "sections": deepcopy(default_sections),

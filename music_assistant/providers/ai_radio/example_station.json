@@ -18,17 +18,7 @@
     },
     "weather_provider": "open_meteo",
     "weather_timeout_seconds": 20,
-    "model": "gpt-4o-mini",
-    "temperature": 0.7,
-    "max_tokens": 900,
-    "instructions": "Host personality: warm, sharp, music-literate, and slightly premium without sounding formal. Program instructions: write for spoken delivery, keep segments concise, avoid bullet-point phrasing, avoid clichés, mention concrete details when available, and maintain a believable radio flow between sections.",
-    "section_store_path": "ai_radio_sections",
-    "tts_provider": "openai",
-    "openai_tts_model": "gpt-4o-mini-tts",
-    "openai_tts_voice": "ballad",
-    "openai_tts_instructions": "Delivery instructions: confident radio host, natural pacing, clear sentence endings, subtle energy lift on intros and transitions, and a warm close without exaggerated theatrics.",
-    "elevenlabs_model": "eleven_multilingual_v2",
-    "elevenlabs_voice_id": ""
+    "instructions": "Host personality: warm, sharp, music-literate, and slightly premium without sounding formal. Program instructions: write for spoken delivery, keep segments concise, avoid bullet-point phrasing, avoid clichés, mention concrete details when available, and maintain a believable radio flow between sections."
   },
   "sections": [
     {
