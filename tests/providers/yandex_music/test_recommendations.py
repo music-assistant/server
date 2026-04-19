@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Album, Playlist, RecommendationFolder, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    Playlist,
+    RecommendationFolder,
+    Track,
+)
 
 from music_assistant.providers.yandex_music.constants import (
     BROWSE_NAMES_EN,
@@ -849,5 +855,48 @@ async def test_recommendations_returns_empty_list_when_all_none(provider_mock: M
     provider_mock._pick_random_tag_for_category = return_no_tag
 
     result = await YandexMusicProvider.recommendations(provider_mock)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_similar_artists_returns_parsed(provider_mock: Mock) -> None:
+    """get_similar_artists parses each artist from the underlying client."""
+    yandex_artists = [Mock(), Mock(), Mock()]
+    provider_mock.client.get_similar_artists = AsyncMock(return_value=yandex_artists)
+
+    parsed = [Mock(spec=Artist) for _ in yandex_artists]
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_artist",
+        side_effect=parsed,
+    ):
+        result = await YandexMusicProvider.get_similar_artists(provider_mock, "42", limit=10)
+
+    provider_mock.client.get_similar_artists.assert_awaited_once_with("42", limit=10)
+    assert result == parsed
+
+
+@pytest.mark.asyncio
+async def test_get_similar_artists_skips_invalid(provider_mock: Mock) -> None:
+    """get_similar_artists skips artists that fail to parse."""
+    yandex_artists = [Mock(), Mock()]
+    provider_mock.client.get_similar_artists = AsyncMock(return_value=yandex_artists)
+
+    parsed_ok = Mock(spec=Artist)
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_artist",
+        side_effect=[InvalidDataError("missing id"), parsed_ok],
+    ):
+        result = await YandexMusicProvider.get_similar_artists(provider_mock, "99")
+
+    assert result == [parsed_ok]
+
+
+@pytest.mark.asyncio
+async def test_get_similar_artists_empty(provider_mock: Mock) -> None:
+    """get_similar_artists returns [] when client returns no artists."""
+    provider_mock.client.get_similar_artists = AsyncMock(return_value=[])
+
+    result = await YandexMusicProvider.get_similar_artists(provider_mock, "42")
 
     assert result == []

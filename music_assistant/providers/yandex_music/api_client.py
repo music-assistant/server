@@ -263,26 +263,66 @@ class YandexMusicClient:
         :param total_played_seconds: Seconds played (for trackFinished, skip).
         :return: True if the request succeeded.
         """
-        payload: dict[str, Any] = {
-            "type": feedback_type,
-            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        }
-        if feedback_type == "radioStarted":
-            payload["from"] = "YandexMusicDesktopAppWindows"
-        if track_id is not None:
-            payload["trackId"] = track_id
-        if total_played_seconds is not None:
-            payload["totalPlayedSeconds"] = total_played_seconds
-        if batch_id is not None:
-            payload["batchId"] = batch_id
+        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
-        async def _post(c: ClientAsync) -> bool:
-            url = f"{c.base_url}/rotor/station/{station_id}/feedback"
-            await c._request.post(url, payload)
-            return True
+        async def _send(c: ClientAsync) -> bool:
+            if feedback_type == "radioStarted":
+                return bool(
+                    await c.rotor_station_feedback_radio_started(
+                        station_id,
+                        from_="YandexMusicDesktopAppWindows",
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            if feedback_type == "trackStarted":
+                if track_id is None:
+                    return False
+                return bool(
+                    await c.rotor_station_feedback_track_started(
+                        station_id,
+                        track_id=track_id,
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            if feedback_type == "trackFinished":
+                if track_id is None:
+                    return False
+                return bool(
+                    await c.rotor_station_feedback_track_finished(
+                        station_id,
+                        track_id=track_id,
+                        total_played_seconds=float(total_played_seconds or 0),
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            if feedback_type == "skip":
+                if track_id is None:
+                    return False
+                return bool(
+                    await c.rotor_station_feedback_skip(
+                        station_id,
+                        track_id=track_id,
+                        total_played_seconds=float(total_played_seconds or 0),
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            return bool(
+                await c.rotor_station_feedback(
+                    station_id,
+                    type_=feedback_type,
+                    timestamp=timestamp,
+                    track_id=track_id,
+                    total_played_seconds=total_played_seconds,
+                    batch_id=batch_id,
+                )
+            )
 
         try:
-            result = await self._call_no_retry(_post)
+            result = await self._call_no_retry(_send)
             LOGGER.debug(
                 "Rotor feedback %s track_id=%s total_played_seconds=%s",
                 feedback_type,
@@ -561,27 +601,20 @@ class YandexMusicClient:
         """Get an album with its tracks.
 
         Uses the same semantics as the web client: albums/{id}/with-tracks
-        with resumeStream, richTracks, withListeningFinished when the library
-        passes them through.
+        with resumeStream, richTracks, withListeningFinished.
 
         :param album_id: Album ID.
         :return: Album object with tracks or None if not found.
         """
-
-        async def _fetch(c: ClientAsync) -> YandexAlbum | None:
-            try:
-                return await c.albums_with_tracks(
+        try:
+            return await self._call_with_retry(
+                lambda c: c.albums_with_tracks(
                     album_id,
                     resumeStream=True,
                     richTracks=True,
                     withListeningFinished=True,
                 )
-            except TypeError:
-                # Older yandex-music may not accept these kwargs
-                return await c.albums_with_tracks(album_id)
-
-        try:
-            return await self._call_with_retry(_fetch)
+            )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching album with tracks %s: %s", album_id, err)
             return None
@@ -617,6 +650,59 @@ class YandexMusicClient:
             return result.albums or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching artist albums %s: %s", artist_id, err)
+            return []
+
+    async def get_pins(self) -> Any | None:
+        """Get the user's pinned items (artists/albums/playlists/waves).
+
+        :return: PinsList object or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.pins())
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching pins: %s", err)
+            return None
+
+    async def get_music_history(self) -> Any | None:
+        """Get the user's listening history (grouped by day).
+
+        :return: MusicHistory object or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.music_history())
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching music history: %s", err)
+            return None
+
+    async def get_artist_about(self, artist_id: str) -> Any | None:
+        """Get artist enrichment info: description, monthly listeners, links.
+
+        :param artist_id: Artist ID.
+        :return: ArtistAbout object or None on error/missing.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.artists_about(artist_id))
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching artist about %s: %s", artist_id, err)
+            return None
+
+    async def get_similar_artists(
+        self, artist_id: str, limit: int = DEFAULT_LIMIT
+    ) -> list[YandexArtist]:
+        """Get artists similar to the given one.
+
+        :param artist_id: Artist ID.
+        :param limit: Maximum number of artists.
+        :return: List of similar artist objects.
+        """
+        try:
+            result = await self._call_with_retry(lambda c: c.artists_similar(artist_id))
+            if result is None or not result.similar_artists:
+                return []
+            similar: list[YandexArtist] = result.similar_artists
+            return similar[:limit]
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching similar artists %s: %s", artist_id, err)
             return []
 
     async def get_artist_tracks(
@@ -738,7 +824,9 @@ class YandexMusicClient:
         def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
             if not raw or not isinstance(raw, dict):
                 return None
-            download_info = raw.get("download_info")
+            # yandex-music v3 no longer normalises camelCase keys inside
+            # Response.result, so /get-file-info returns "downloadInfo" as-is.
+            download_info = raw.get("download_info") or raw.get("downloadInfo")
             if not download_info or not download_info.get("url"):
                 return None
 

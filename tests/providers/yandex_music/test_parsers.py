@@ -95,6 +95,56 @@ def test_parse_artist_with_cover(provider_stub: ProviderStub) -> None:
         assert "avatars.yandex.net" in (result.metadata.images[0].path or "")
 
 
+def test_parse_artist_with_about(provider_stub: ProviderStub) -> None:
+    """parse_artist enriches description and popularity from ArtistAbout."""
+    artist_obj = _artist_from_fixture(FIXTURES_DIR / "artists" / "with_cover.json")
+    assert artist_obj is not None
+
+    about = type(
+        "ArtistAbout",
+        (),
+        {
+            "description": "Singer-songwriter from somewhere.",
+            "stats": type("Stats", (), {"last_month_listeners": 250_000})(),
+        },
+    )()
+
+    result = parse_artist(cast("YandexMusicProvider", provider_stub), artist_obj, about=about)
+    assert result.metadata.description == "Singer-songwriter from somewhere."
+    # 250000 // 10000 == 25
+    assert result.metadata.popularity == 25
+
+
+def test_parse_artist_about_missing_fields(provider_stub: ProviderStub) -> None:
+    """parse_artist tolerates ArtistAbout with missing description/stats."""
+    artist_obj = _artist_from_fixture(FIXTURES_DIR / "artists" / "with_cover.json")
+    assert artist_obj is not None
+
+    about = type("ArtistAbout", (), {"description": None, "stats": None})()
+
+    result = parse_artist(cast("YandexMusicProvider", provider_stub), artist_obj, about=about)
+    assert result.metadata.description is None
+    assert result.metadata.popularity is None
+
+
+def test_parse_artist_about_clamps_popularity(provider_stub: ProviderStub) -> None:
+    """parse_artist caps very large monthly listeners at popularity 100."""
+    artist_obj = _artist_from_fixture(FIXTURES_DIR / "artists" / "with_cover.json")
+    assert artist_obj is not None
+
+    about = type(
+        "ArtistAbout",
+        (),
+        {
+            "description": "",
+            "stats": type("Stats", (), {"last_month_listeners": 50_000_000})(),
+        },
+    )()
+
+    result = parse_artist(cast("YandexMusicProvider", provider_stub), artist_obj, about=about)
+    assert result.metadata.popularity == 100
+
+
 @pytest.mark.parametrize("example", ALBUM_FIXTURES, ids=lambda val: val.stem)
 def test_parse_album(example: pathlib.Path, provider_stub: ProviderStub) -> None:
     """Test we can parse albums from fixture JSON."""

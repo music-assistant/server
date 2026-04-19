@@ -166,12 +166,10 @@ async def test_get_my_wave_tracks_empty_sequence_returns_empty() -> None:
     underlying.tracks.assert_not_awaited()
 
 
-async def test_send_rotor_station_feedback_posts() -> None:
-    """send_rotor_station_feedback POSTs to rotor feedback endpoint."""
+async def test_send_rotor_station_feedback_track_started() -> None:
+    """send_rotor_station_feedback delegates trackStarted to public helper."""
     client, underlying = _make_client()
-
-    underlying._request = mock.AsyncMock()
-    underlying.base_url = "https://api.music.yandex.net"
+    underlying.rotor_station_feedback_track_started = mock.AsyncMock(return_value=True)
 
     result = await client.send_rotor_station_feedback(
         "user:onyourwave",
@@ -181,13 +179,197 @@ async def test_send_rotor_station_feedback_posts() -> None:
     )
 
     assert result is True
-    underlying._request.post.assert_awaited_once()
-    call_args = underlying._request.post.await_args
-    assert "rotor/station/user:onyourwave/feedback" in call_args[0][0]
-    body = call_args[0][1]
-    assert body["type"] == "trackStarted"
-    assert body["trackId"] == "12345"
-    assert body["batchId"] == "batch_xyz"
+    underlying.rotor_station_feedback_track_started.assert_awaited_once()
+    args, kwargs = underlying.rotor_station_feedback_track_started.await_args
+    assert args[0] == "user:onyourwave"
+    assert kwargs["track_id"] == "12345"
+    assert kwargs["batch_id"] == "batch_xyz"
+    assert "timestamp" in kwargs
+
+
+async def test_send_rotor_station_feedback_radio_started() -> None:
+    """send_rotor_station_feedback delegates radioStarted to public helper with from_."""
+    client, underlying = _make_client()
+    underlying.rotor_station_feedback_radio_started = mock.AsyncMock(return_value=True)
+
+    result = await client.send_rotor_station_feedback(
+        "user:onyourwave",
+        "radioStarted",
+        batch_id="batch_xyz",
+    )
+
+    assert result is True
+    underlying.rotor_station_feedback_radio_started.assert_awaited_once()
+    _, kwargs = underlying.rotor_station_feedback_radio_started.await_args
+    assert kwargs["from_"] == "YandexMusicDesktopAppWindows"
+    assert kwargs["batch_id"] == "batch_xyz"
+
+
+async def test_send_rotor_station_feedback_track_finished() -> None:
+    """send_rotor_station_feedback delegates trackFinished with total_played_seconds."""
+    client, underlying = _make_client()
+    underlying.rotor_station_feedback_track_finished = mock.AsyncMock(return_value=True)
+
+    result = await client.send_rotor_station_feedback(
+        "user:onyourwave",
+        "trackFinished",
+        track_id="12345",
+        total_played_seconds=42,
+        batch_id="batch_xyz",
+    )
+
+    assert result is True
+    underlying.rotor_station_feedback_track_finished.assert_awaited_once()
+    _, kwargs = underlying.rotor_station_feedback_track_finished.await_args
+    assert kwargs["track_id"] == "12345"
+    assert kwargs["total_played_seconds"] == 42.0
+    assert kwargs["batch_id"] == "batch_xyz"
+
+
+async def test_send_rotor_station_feedback_skip() -> None:
+    """send_rotor_station_feedback delegates skip to public helper."""
+    client, underlying = _make_client()
+    underlying.rotor_station_feedback_skip = mock.AsyncMock(return_value=True)
+
+    result = await client.send_rotor_station_feedback(
+        "user:onyourwave",
+        "skip",
+        track_id="12345",
+        total_played_seconds=10,
+    )
+
+    assert result is True
+    underlying.rotor_station_feedback_skip.assert_awaited_once()
+    _, kwargs = underlying.rotor_station_feedback_skip.await_args
+    assert kwargs["track_id"] == "12345"
+    assert kwargs["total_played_seconds"] == 10.0
+
+
+# -- get_similar_artists ------------------------------------------------------
+
+
+async def test_get_similar_artists_returns_list() -> None:
+    """get_similar_artists returns the similar_artists list from artists_similar()."""
+    client, underlying = _make_client()
+    similar = [type("Artist", (), {"id": i, "name": f"A{i}"})() for i in (1, 2, 3)]
+    result_obj = type("ArtistSimilar", (), {"similar_artists": similar})()
+    underlying.artists_similar = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_similar_artists("100")
+
+    underlying.artists_similar.assert_awaited_once_with("100")
+    assert result == similar
+
+
+async def test_get_similar_artists_respects_limit() -> None:
+    """get_similar_artists truncates results to the requested limit."""
+    client, underlying = _make_client()
+    similar = [type("Artist", (), {"id": i})() for i in range(10)]
+    result_obj = type("ArtistSimilar", (), {"similar_artists": similar})()
+    underlying.artists_similar = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_similar_artists("100", limit=3)
+
+    assert len(result) == 3
+    assert [a.id for a in result] == [0, 1, 2]
+
+
+async def test_get_similar_artists_handles_none_response() -> None:
+    """get_similar_artists returns [] when underlying call returns None."""
+    client, underlying = _make_client()
+    underlying.artists_similar = mock.AsyncMock(return_value=None)
+
+    result = await client.get_similar_artists("100")
+
+    assert result == []
+
+
+async def test_get_similar_artists_handles_empty_field() -> None:
+    """get_similar_artists returns [] when similar_artists is empty/None."""
+    client, underlying = _make_client()
+    result_obj = type("ArtistSimilar", (), {"similar_artists": None})()
+    underlying.artists_similar = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_similar_artists("100")
+
+    assert result == []
+
+
+async def test_get_similar_artists_returns_empty_on_network_error() -> None:
+    """get_similar_artists returns [] when underlying raises NetworkError."""
+    client, underlying = _make_client()
+    underlying.artists_similar = mock.AsyncMock(
+        side_effect=[NetworkError("timeout"), NetworkError("again")]
+    )
+
+    result = await client.get_similar_artists("100")
+
+    assert result == []
+
+
+# -- get_pins / get_music_history / get_artist_about -------------------------
+
+
+async def test_get_pins_returns_list_object() -> None:
+    """get_pins forwards the underlying pins() result."""
+    client, underlying = _make_client()
+    pins_obj = type("PinsList", (), {"pins": [type("Pin", (), {"type": "album_item"})()]})()
+    underlying.pins = mock.AsyncMock(return_value=pins_obj)
+
+    result = await client.get_pins()
+
+    underlying.pins.assert_awaited_once_with()
+    assert result is pins_obj
+
+
+async def test_get_pins_returns_none_on_network_error() -> None:
+    """get_pins returns None when retries are exhausted."""
+    client, underlying = _make_client()
+    underlying.pins = mock.AsyncMock(side_effect=NetworkError("boom"))
+
+    result = await client.get_pins()
+
+    assert result is None
+
+
+async def test_get_music_history_returns_object() -> None:
+    """get_music_history forwards the underlying music_history() result."""
+    client, underlying = _make_client()
+    history = type("MusicHistory", (), {"history_tabs": []})()
+    underlying.music_history = mock.AsyncMock(return_value=history)
+
+    result = await client.get_music_history()
+
+    underlying.music_history.assert_awaited_once_with()
+    assert result is history
+
+
+async def test_get_music_history_returns_none_on_network_error() -> None:
+    """get_music_history returns None on persistent NetworkError."""
+    client, underlying = _make_client()
+    underlying.music_history = mock.AsyncMock(side_effect=NetworkError("boom"))
+
+    assert await client.get_music_history() is None
+
+
+async def test_get_artist_about_returns_object() -> None:
+    """get_artist_about forwards the underlying artists_about() result."""
+    client, underlying = _make_client()
+    about = type("ArtistAbout", (), {"description": "x", "stats": None})()
+    underlying.artists_about = mock.AsyncMock(return_value=about)
+
+    result = await client.get_artist_about("42")
+
+    underlying.artists_about.assert_awaited_once_with("42")
+    assert result is about
+
+
+async def test_get_artist_about_returns_none_on_network_error() -> None:
+    """get_artist_about returns None on persistent NetworkError."""
+    client, underlying = _make_client()
+    underlying.artists_about = mock.AsyncMock(side_effect=NetworkError("boom"))
+
+    assert await client.get_artist_about("42") is None
 
 
 # -- LRC regex tests ---------------------------------------------------------
@@ -360,6 +542,41 @@ async def test_get_dashboard_stations_returns_personalized_stations() -> None:
     assert station_id == "mood:sad"
     assert name == "Грустное"  # station.name takes priority over rup_title
     underlying.rotor_stations_dashboard.assert_called_once()
+
+
+# -- get_track_file_info: response key normalization -------------------------
+
+
+async def test_get_track_file_info_parses_camelcase_download_info() -> None:
+    """get_track_file_info parses the v3-style camelCase ``downloadInfo`` key.
+
+    The yandex-music v3 client no longer recursively normalises camelCase keys
+    inside ``Response.result``. The raw JSON for /get-file-info comes back as
+    ``{"downloadInfo": {...}}`` — the provider must accept both shapes.
+    """
+    client, underlying = _make_client()
+
+    raw_response = {
+        "downloadInfo": {
+            "trackId": "132401416",
+            "quality": "lossless",
+            "codec": "flac-mp4",
+            "bitrate": 0,
+            "transport": "raw",
+            "url": "https://example.com/flac-mp4.bin",
+            "realId": "132401416",
+        }
+    }
+    underlying._request = mock.MagicMock()
+    underlying._request.get = mock.AsyncMock(return_value=raw_response)
+    underlying.base_url = "https://api.music.yandex.net"
+
+    result = await client.get_track_file_info("132401416")
+
+    assert result is not None
+    assert result["url"] == "https://example.com/flac-mp4.bin"
+    assert result["codec"] == "flac-mp4"
+    assert result["needs_decryption"] is False
 
 
 async def test_get_dashboard_stations_empty_on_error() -> None:
