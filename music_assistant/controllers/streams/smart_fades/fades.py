@@ -377,15 +377,7 @@ class SmartCrossFade(SmartFade):
         bpm_diff_percent: float,
         crossfade_duration: float,
     ) -> None:
-        """Apply gradual time stretch in the 10s window before the crossfade.
-
-        The S-curve ramp completes right when the crossfade begins, so both
-        tracks are at matched BPM during the entire overlap.
-
-        :param bpm_ratio: Target tempo ratio (fade_in_bpm / fade_out_bpm).
-        :param bpm_diff_percent: BPM difference as a percentage.
-        :param crossfade_duration: Duration of the crossfade in seconds.
-        """
+        """Apply gradual time stretch in the 10s window before the crossfade."""
         stretch_duration = 10.0
         crossfade_start = SMART_CROSSFADE_DURATION - crossfade_duration
         stretch_start = max(0.0, crossfade_start - stretch_duration)
