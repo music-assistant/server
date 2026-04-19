@@ -293,7 +293,7 @@ class SmartCrossFade(SmartFade):
         else:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
-                "Skipping beat alignment: not enough audio after trim (%.1fs + %.1fs > %.1fs)",
+                "Skipping beat alignment: not enough audio after trim (%s + %.1fs > %.1fs)",
                 fadein_start_pos,
                 crossfade_duration,
                 SMART_CROSSFADE_DURATION,

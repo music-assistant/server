@@ -51,7 +51,7 @@ def extrapolate_downbeats(
                 current_pos += interval
 
             if extrapolated:
-                return np.concatenate([downbeats, np.array(extrapolated)])
+                return np.concatenate([downbeats, np.array(extrapolated, dtype=np.float32)])
 
             return downbeats
         # else: interval doesn't match BPM, fall through to return original
@@ -84,7 +84,7 @@ def extrapolate_downbeats(
         current_pos += median_interval
 
     if extrapolated:
-        return np.concatenate([downbeats, np.array(extrapolated)])
+        return np.concatenate([downbeats, np.array(extrapolated, dtype=np.float32)])
 
     return downbeats
 
