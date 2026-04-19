@@ -16,10 +16,22 @@ _LOGGER = logging.getLogger("named_pipe")
 class AsyncNamedPipeWriter:
     """Async writer for named pipes."""
 
-    def __init__(self, pipe_path: str) -> None:
-        """Initialize named pipe writer."""
+    def __init__(self, pipe_path: str, owner_id: str | None = None) -> None:
+        """
+        Initialize named pipe writer.
+
+        :param pipe_path: Filesystem path of the named pipe.
+        :param owner_id: Optional identifier (e.g. player_id) included in log
+            messages so silent failures can be correlated to a specific device.
+        """
         self._pipe_path = pipe_path
+        self._owner_id = owner_id
         self._write_fd: int | None = None
+
+    @property
+    def _log_owner(self) -> str:
+        """Return a short descriptor for logging (owner_id or pipe path)."""
+        return self._owner_id or self._pipe_path
 
     @property
     def path(self) -> str:
@@ -53,7 +65,11 @@ class AsyncNamedPipeWriter:
                     time.sleep(0.05)
                     continue
                 raise
-        _LOGGER.warning("Could not open pipe %s: no reader after retries", self._pipe_path)
+        _LOGGER.warning(
+            "Could not open pipe %s (owner=%s): no reader after retries",
+            self._pipe_path,
+            self._log_owner,
+        )
         return False
 
     async def write(self, data: bytes) -> None:
@@ -61,6 +77,12 @@ class AsyncNamedPipeWriter:
 
         def _write() -> None:
             if not self._ensure_write_fd():
+                _LOGGER.debug(
+                    "Named pipe write failed: no writable fd for pipe %s (owner=%s, %d bytes dropped)",
+                    self._pipe_path,
+                    self._log_owner,
+                    len(data),
+                )
                 return
             try:
                 assert self._write_fd is not None
@@ -72,6 +94,12 @@ class AsyncNamedPipeWriter:
                         with suppress(Exception):
                             os.close(self._write_fd)
                         self._write_fd = None
+                    _LOGGER.debug(
+                        "Named pipe write failed (EPIPE) on %s (owner=%s, %d bytes dropped): reader closed",
+                        self._pipe_path,
+                        self._log_owner,
+                        len(data),
+                    )
                 else:
                     raise
 

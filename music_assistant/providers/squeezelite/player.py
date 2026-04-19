@@ -207,7 +207,10 @@ class SqueezelitePlayer(Player):
             self.multi_client_stream = None
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
-                tg.create_task(client.stop())
+                if self.type == PlayerType.PROTOCOL:
+                    tg.create_task(client.power(False))
+                else:
+                    tg.create_task(client.stop())
         self.update_state()
 
     async def play(self) -> None:
@@ -389,6 +392,10 @@ class SqueezelitePlayer(Player):
             if self.client.device_type in PLAYER_DEVICE_TYPES
             else PlayerType.PROTOCOL
         )
+        if self.type == PlayerType.PLAYER:
+            self._attr_supported_features.add(PlayerFeature.POWER)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.POWER)
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
         old_state = self._attr_playback_state
