@@ -30,6 +30,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
+    UnsupportedFeaturedException,
     UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
@@ -2010,4 +2011,4 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 media_type=MediaType.TRACK,
                 allow_seek=True,
             )
-        raise MediaNotFoundError(f"Unsupported media type {media_type}")
+        raise UnsupportedFeaturedException(f"Unsupported media type {media_type}")
