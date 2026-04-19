@@ -1576,21 +1576,31 @@ class Player(ABC):
         """Return the FINAL volume level based on the playercontrol which may have been set-up."""
         volume_control = self.volume_control
         if volume_control == PLAYER_CONTROL_FAKE:
+            # Fake volume is already stored as logical (0-100)
             return int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
         if volume_control == PLAYER_CONTROL_NATIVE:
-            return self.volume_level
+            # Scale device volume back to logical (0-100)
+            if self.volume_level is None:
+                return None
+            return self.mass.players.scale_volume_from_device(self.player_id, self.volume_level)
         if volume_control == PLAYER_CONTROL_NONE:
             return None
         # handle protocol player as volume control
         if control := self.mass.players.get_player(volume_control):
             if control.volume_level is not None:
-                return control.volume_level
+                return self.mass.players.scale_volume_from_device(
+                    self.player_id, control.volume_level
+                )
         # handle player control for volume if set
         if player_control := self.mass.players.get_player_control(volume_control):
             if player_control.volume_level is not None:
-                return player_control.volume_level
+                return self.mass.players.scale_volume_from_device(
+                    self.player_id, player_control.volume_level
+                )
         # control not (yet) available or has no volume, fall back to native
-        return self.volume_level
+        if self.volume_level is None:
+            return None
+        return self.mass.players.scale_volume_from_device(self.player_id, self.volume_level)
 
     @cached_property
     @final

@@ -12,6 +12,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
@@ -117,6 +118,8 @@ CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS: Final[str] = "volume_normalization_
 CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
+CONF_MIN_VOLUME: Final[str] = "min_volume"
+CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
@@ -275,6 +278,34 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_MIN_VOLUME = ConfigEntry(
+    key=CONF_MIN_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=0,
+    label="Minimum volume",
+    description="Minimum device volume. "
+    "The volume slider (0-100) will be scaled to this as the lower bound.",
+    category="player_controls",
+    advanced=True,
+    depends_on=CONF_VOLUME_CONTROL,
+    depends_on_value_not=PLAYER_CONTROL_NONE,
+)
+
+CONF_ENTRY_MAX_VOLUME = ConfigEntry(
+    key=CONF_MAX_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=100,
+    label="Maximum volume",
+    description="Maximum device volume. "
+    "The volume slider (0-100) will be scaled to this as the upper bound.",
+    category="player_controls",
+    advanced=True,
+    depends_on=CONF_VOLUME_CONTROL,
+    depends_on_value_not=PLAYER_CONTROL_NONE,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
@@ -912,6 +943,7 @@ ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
 ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
+ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
@@ -923,7 +955,6 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
-ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
