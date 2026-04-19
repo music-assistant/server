@@ -307,8 +307,6 @@ class SmartCrossFade(SmartFade):
         )
 
         # Compensate crossfade duration for time-stretch compression.
-        # acrossfade operates in output time, but downbeat alignment was done in input time.
-        # Stretching compresses the output, so we divide by bpm_ratio to keep alignment.
         if is_stretched:
             crossfade_duration = crossfade_duration / bpm_ratio
 
