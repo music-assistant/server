@@ -2535,20 +2535,12 @@ class KionMusicProvider(MusicProvider):
 
         Sends trackStarted when the track is currently playing (is_playing=True).
         trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
-
-        Also auto-enables "Don't stop the music" for any queue playing a radio track
-        so that MA refills the queue via get_similar_tracks when < 5 tracks remain.
         """
-        # Radio feedback always enabled
         if media_type != MediaType.TRACK:
             return
         track_id, station_id = _parse_radio_item_id(prov_item_id)
         if not station_id:
             return
-        # Auto-enable "Don't stop the music" on every on_played call for radio tracks.
-        # Calling on every invocation (not just is_playing=True) ensures it fires even
-        # for short tracks that finish before the 30-second periodic callback.
-        self._ensure_dont_stop_the_music(prov_item_id)
         if is_playing:
             if station_id == ROTOR_STATION_MY_MIX:
                 batch_id = self._my_wave_batch_id
@@ -2561,91 +2553,6 @@ class KionMusicProvider(MusicProvider):
                 track_id=track_id,
                 batch_id=batch_id,
             )
-            # Remove duplicate call that was under is_playing guard.
-            # _ensure_dont_stop_the_music is now called unconditionally above.
-
-    def _ensure_dont_stop_the_music(self, prov_item_id: str) -> None:
-        """Enable 'Don't stop the music' on queues playing this specific radio item.
-
-        Iterates all queues and enables the setting on queues whose current track
-        mapping matches this exact composite item_id (track_id@station_id) for this
-        provider instance.
-
-        Also sets queue.radio_source directly to the current track because
-        enqueued_media_items is empty for BrowseFolder-initiated playback, which
-        normally prevents MA's auto-fill from triggering. Setting radio_source
-        directly bypasses that gap so _fill_radio_tracks runs when < 5 tracks remain.
-        """
-        for queue in self.mass.player_queues:
-            current = queue.current_item
-            if current is None or current.media_item is None:
-                continue
-            item = current.media_item
-            # Match by provider instance and exact composite item_id
-            for mapping in getattr(item, "provider_mappings", []):
-                if (
-                    mapping.provider_instance == self.instance_id
-                    and mapping.item_id == prov_item_id
-                ):
-                    # Set radio_source directly so MA's fill mechanism works even when
-                    # the queue was started from a BrowseFolder (enqueued_media_items empty).
-                    if not queue.radio_source and isinstance(item, Track):
-                        queue.radio_source = [item]
-                    if not queue.dont_stop_the_music_enabled:
-                        try:
-                            self.mass.player_queues.set_dont_stop_the_music(
-                                queue.queue_id, dont_stop_the_music_enabled=True
-                            )
-                            self.logger.info(
-                                "Auto-enabled 'Don't stop the music' for queue %s (radio station)",
-                                queue.display_name,
-                            )
-                        except Exception as err:
-                            self.logger.debug(
-                                "Could not enable 'Don't stop the music' for queue %s: %s",
-                                queue.display_name,
-                                err,
-                            )
-                    break
-
-    def _ensure_dont_stop_the_music_for_queue(self, queue_id: str | None) -> None:
-        """Enable 'Don't stop the music' for a specific queue by ID.
-
-        Faster variant of _ensure_dont_stop_the_music used from on_streamed where
-        queue_id is available directly, avoiding iteration over all queues.
-        """
-        if not queue_id:
-            return
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
-            return
-        current = queue.current_item
-        if current is None or current.media_item is None:
-            return
-        item = current.media_item
-        for mapping in getattr(item, "provider_mappings", []):
-            if (
-                mapping.provider_instance == self.instance_id
-                and RADIO_TRACK_ID_SEP in mapping.item_id
-            ):
-                if not queue.radio_source and isinstance(item, Track):
-                    queue.radio_source = [item]
-                if not queue.dont_stop_the_music_enabled:
-                    try:
-                        self.mass.player_queues.set_dont_stop_the_music(
-                            queue_id, dont_stop_the_music_enabled=True
-                        )
-                        self.logger.info(
-                            "Auto-enabled 'Don't stop the music' for queue %s (radio)",
-                            queue.display_name,
-                        )
-                    except Exception as err:
-                        self.logger.debug(
-                            "Could not enable 'Don't stop the music' for queue %s: %s",
-                            queue.display_name,
-                            err,
-                        )
-                break
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Report stream completion for My Mix rotor feedback.
@@ -2653,13 +2560,9 @@ class KionMusicProvider(MusicProvider):
         Sends trackFinished or skip with actual seconds_streamed so Kion
         can improve recommendations.
         """
-        # Radio feedback always enabled
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
             return
-        # Also ensure Don't stop the music is active — on_streamed fires even for
-        # very short tracks and we have queue_id here directly.
-        self._ensure_dont_stop_the_music_for_queue(streamdetails.queue_id)
         seconds = int(streamdetails.seconds_streamed or 0)
         duration = streamdetails.duration or 0
         feedback_type = "trackFinished" if duration and seconds >= max(0, duration - 10) else "skip"
