@@ -258,3 +258,119 @@ async def test_get_track_file_info_builds_signed_params(
     assert params["sign"] == expected_sign
     # Kion API expects 43 chars (one trailing '=' stripped from b64 of SHA-256).
     assert len(params["sign"]) == 43
+
+
+# ─── get_track_lyrics / get_track_lyrics_from_track ───────────────────────────
+
+
+def _make_track_with_lyrics(
+    track_id: str = "42",
+    lyrics_available: bool = True,
+    lyrics_text: str | None = "Just a line of plain lyrics",
+) -> mock.AsyncMock:
+    """Build a KionTrack-like mock whose get_lyrics_async() yields lyrics_text."""
+    track = mock.AsyncMock()
+    track.id = track_id
+    track.lyrics_available = lyrics_available
+    if lyrics_text is None:
+        track.get_lyrics_async = mock.AsyncMock(return_value=None)
+    else:
+        track_lyrics = mock.AsyncMock()
+        track_lyrics.fetch_lyrics_async = mock.AsyncMock(return_value=lyrics_text)
+        track.get_lyrics_async = mock.AsyncMock(return_value=track_lyrics)
+    return track
+
+
+async def test_get_track_lyrics_from_track_synced_detects_lrc(
+    client: KionMusicClient,
+) -> None:
+    """LRC timestamps anywhere in the payload flag lyrics as synced."""
+    track = _make_track_with_lyrics(
+        lyrics_text="[ar:Artist]\n[00:12.34]First line\n[01:03.5]Second line",
+    )
+
+    text, synced = await client.get_track_lyrics_from_track(track)
+
+    assert text is not None
+    assert synced is True
+
+
+async def test_get_track_lyrics_from_track_plain_detects_unsynced(
+    client: KionMusicClient,
+) -> None:
+    """Text without LRC timestamps is reported as non-synced."""
+    track = _make_track_with_lyrics(lyrics_text="Line one\nLine two\nLine three")
+
+    text, synced = await client.get_track_lyrics_from_track(track)
+
+    assert text == "Line one\nLine two\nLine three"
+    assert synced is False
+
+
+async def test_get_track_lyrics_from_track_unavailable_skips_fetch(
+    client: KionMusicClient,
+) -> None:
+    """lyrics_available=False returns (None, False) without calling get_lyrics_async."""
+    track = _make_track_with_lyrics(lyrics_available=False)
+
+    result = await client.get_track_lyrics_from_track(track)
+
+    assert result == (None, False)
+    track.get_lyrics_async.assert_not_called()
+
+
+async def test_get_track_lyrics_from_track_empty_metadata_returns_none(
+    client: KionMusicClient,
+) -> None:
+    """When get_lyrics_async() yields None, return (None, False)."""
+    track = _make_track_with_lyrics(lyrics_text=None)
+
+    assert await client.get_track_lyrics_from_track(track) == (None, False)
+
+
+async def test_get_track_lyrics_from_track_empty_text_returns_none(
+    client: KionMusicClient,
+) -> None:
+    """Empty lyrics text is treated as unavailable."""
+    track = _make_track_with_lyrics(lyrics_text="")
+
+    assert await client.get_track_lyrics_from_track(track) == (None, False)
+
+
+async def test_get_track_lyrics_from_track_swallows_network_error(
+    client: KionMusicClient,
+) -> None:
+    """Network errors during lyric fetch don't bubble — return (None, False)."""
+    track = mock.AsyncMock()
+    track.id = "42"
+    track.lyrics_available = True
+    track.get_lyrics_async = mock.AsyncMock(side_effect=NetworkError("boom"))
+
+    assert await client.get_track_lyrics_from_track(track) == (None, False)
+
+
+async def test_get_track_lyrics_delegates_to_from_track(
+    client: KionMusicClient,
+) -> None:
+    """get_track_lyrics(track_id) fetches the track, then delegates."""
+    mock_client = mock.AsyncMock()
+    track = _make_track_with_lyrics(lyrics_text="[00:01.00]hi")
+    mock_client.tracks = mock.AsyncMock(return_value=[track])
+    client._client = mock_client
+
+    text, synced = await client.get_track_lyrics("42")
+
+    assert text is not None
+    assert synced is True
+    mock_client.tracks.assert_awaited_once()
+
+
+async def test_get_track_lyrics_missing_track_returns_none(
+    client: KionMusicClient,
+) -> None:
+    """Empty result from tracks([id]) returns (None, False)."""
+    mock_client = mock.AsyncMock()
+    mock_client.tracks = mock.AsyncMock(return_value=[])
+    client._client = mock_client
+
+    assert await client.get_track_lyrics("42") == (None, False)

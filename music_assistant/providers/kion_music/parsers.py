@@ -318,11 +318,14 @@ def parse_track(
         track.metadata.explicit = track_obj.content_warning == "explicit"
 
     # Lyrics
+    # Core metadata controller checks `metadata.lyrics` first when picking
+    # the provider's own lyrics, so always populate `.lyrics` — otherwise
+    # synced-only LRC would be skipped and replaced by fallback metadata
+    # providers (lrclib/genius).
     if lyrics:
+        track.metadata.lyrics = lyrics
         if lyrics_synced:
             track.metadata.lrc_lyrics = lyrics
-        else:
-            track.metadata.lyrics = lyrics
 
     return track
 
