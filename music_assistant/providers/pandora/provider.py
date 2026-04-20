@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -40,8 +41,11 @@ from .constants import (
     ACCOUNT_FLAG_HIGH_QUALITY,
     CONF_QUALITY,
     LOGIN_ENDPOINT,
+    PLAYBACK_RESUMED_ENDPOINT,
     PLAYLIST_FRAGMENT_ENDPOINT,
     QUALITY_HIGH,
+    RETRY_REASON_AUTH,
+    RETRY_REASON_STREAM_VIOLATION,
     STATIONS_ENDPOINT,
 )
 from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
@@ -54,7 +58,8 @@ class PandoraStationSession:
     """Manages streaming state for a single Pandora station."""
 
     def __init__(self, station_id: str):
-        """Initialize a new station streaming session.
+        """
+        Initialize a new station streaming session.
 
         Args:
             station_id: The Pandora station ID.
@@ -76,6 +81,10 @@ class PandoraStationSession:
         if track_idx >= len(tracks):
             return 0
         return int(tracks[track_idx].get("trackLength", 0))
+
+
+class StreamViolationError(InvalidDataError):
+    """Error raised when Pandora detects concurrent streaming on multiple devices."""
 
 
 class PandoraProvider(MusicProvider):
@@ -176,14 +185,20 @@ class PandoraProvider(MusicProvider):
             ) from err
 
     async def _api_request(
-        self, method: str, url: str, data: dict[str, Any] | None = None, retry: bool = True
+        self,
+        method: str,
+        url: str,
+        data: dict[str, Any] | None = None,
+        exhausted_retry_reasons: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
-        """Make an API request to Pandora.
+        """
+        Make an API request to Pandora.
 
         :param method: HTTP method (GET, POST, etc.)
         :param url: API endpoint URL
         :param data: Optional JSON data to send
-        :param retry: Whether to retry once on 401 authentication errors
+        :param exhausted_retry_reasons: Set of retry reasons already attempted for this request.
+            Pass a pre-populated set to prevent specific retry strategies from being attempted.
         """
         if not self._csrf_token or not self._auth_token:
             await self.close()
@@ -197,18 +212,48 @@ class PandoraProvider(MusicProvider):
             ) as response:
                 # Check status BEFORE parsing JSON
                 if response.status == 401:
-                    if retry:
+                    if RETRY_REASON_AUTH not in exhausted_retry_reasons:
                         # Auth token expired, re-authenticate and retry once
                         username = str(self.config.get_value(CONF_USERNAME))
                         password = str(self.config.get_value(CONF_PASSWORD))
                         await self._authenticate(username, password)
-                        return await self._api_request(method, url, data, retry=False)
+                        return await self._api_request(
+                            method,
+                            url,
+                            data,
+                            exhausted_retry_reasons=exhausted_retry_reasons | {RETRY_REASON_AUTH},
+                        )
                     await self.close()
                     raise LoginFailed("Pandora authentication failed after retry")
-
                 if response.status == 404:
                     await self.close()
                     raise MediaNotFoundError("Resource not found")
+                if response.status == 429:
+                    # Another device may already be streaming on this account.
+                    # Parse the body to confirm it is a STREAM_VIOLATION.
+                    try:
+                        error_body: dict[str, Any] = await response.json()
+                    except (aiohttp.ContentTypeError, json.JSONDecodeError) as err:
+                        raise InvalidDataError(
+                            "Unable to parse error 429 response body from Pandora"
+                        ) from err
+                    if error_body.get("errorString") == "STREAM_VIOLATION":
+                        if RETRY_REASON_STREAM_VIOLATION not in exhausted_retry_reasons:
+                            self.logger.warning(
+                                "Pandora stream is already active on another device. "
+                                "Automatically taking over the stream and retrying the request."
+                            )
+                            await self.takeover_stream()
+                            return await self._api_request(
+                                method,
+                                url,
+                                data,
+                                exhausted_retry_reasons=exhausted_retry_reasons
+                                | {RETRY_REASON_STREAM_VIOLATION},
+                            )
+                        raise StreamViolationError("STREAM_VIOLATION")
+                    # This is some other, not concurrent streaming error kind of 429
+                    raise ProviderUnavailableError(f"Pandora rate-limited (HTTP 429): {error_body}")
                 if response.status >= 500:
                     await self.close()
                     raise ProviderUnavailableError("Pandora server error")
@@ -331,9 +376,11 @@ class PandoraProvider(MusicProvider):
             if cached is not None:
                 return cached
 
+        is_stream_start = fragment_index == 0
+
         fragment_data = {
             "stationId": session.station_id,
-            "isStationStart": fragment_index == 0,
+            "isStationStart": is_stream_start,
             "fragmentRequestReason": "Normal",
             "audioFormat": "mp3-hifi" if self._use_high_quality() else "aacplus",
             "startingAtTrackId": None,
@@ -346,6 +393,12 @@ class PandoraProvider(MusicProvider):
                 "POST",
                 PLAYLIST_FRAGMENT_ENDPOINT,
                 data=fragment_data,
+                # Mark stream violation retry as already exhausted for non-initial fragments
+                # this prevents us from fighting with the concurrent streaming limit
+                # if the user starts a stream on a different device while MA is already playing.
+                exhausted_retry_reasons=frozenset()
+                if is_stream_start
+                else frozenset({RETRY_REASON_STREAM_VIOLATION}),
             )
 
             # Store in session cache
@@ -380,13 +433,21 @@ class PandoraProvider(MusicProvider):
         except MediaNotFoundError:
             await self.close()
             raise
+        except StreamViolationError:
+            self.logger.warning(
+                "Pandora stream is already active on another device. "
+                "To manually take over the stream on this device, use the "
+                "'Take over stream' button on the provider configuration page.",
+            )
+            raise
         except InvalidDataError as err:
-            await self.close()
             self.logger.error("Invalid fragment data for station %s: %s", session.station_id, err)
+            await self.close()
             raise
 
     async def _handle_stream_request(self, request: web.Request) -> web.Response:
-        """Handle dynamic stream request.
+        """
+        Handle dynamic stream request.
 
         Map track numbers to Pandora fragments and redirect to audio URLs.
         """
@@ -557,9 +618,28 @@ class PandoraProvider(MusicProvider):
             await self.http_session.close()
 
     def _use_high_quality(self) -> bool:
-        """Whether high quality audio should be requested from Pandora.
+        """
+        Whether high quality audio should be requested from Pandora.
 
         This allows a graceful fallback to standard quality if the account is not eligible for
         high-quality streaming, while still respecting the user's preference if they are eligible.
         """
         return self._high_quality_available and self.config.get_value(CONF_QUALITY) == QUALITY_HIGH
+
+    async def takeover_stream(self) -> None:
+        """
+        Force Pandora to end any other active session and resume here.
+
+        This sends "forceActive=true" to the playbackResumed endpoint, which instructs Pandora to
+        terminate any conflicting stream on other devices. The user must manually restart playback
+        in MA after clicking the config button that triggers this call.
+        """
+        self.logger.debug("Sending playbackResumed request to Pandora to attempt stream takeover.")
+        await self._api_request(
+            "POST",
+            PLAYBACK_RESUMED_ENDPOINT,
+            data={"forceActive": True},
+            # This is called as part of handling a STREAM_VIOLATION 429, so mark that reason as
+            # already exhausted to prevent _api_request from retrying on another 429.
+            exhausted_retry_reasons=frozenset({RETRY_REASON_STREAM_VIOLATION}),
+        )

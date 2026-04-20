@@ -1,7 +1,9 @@
 """All constants for Music Assistant."""
 
 import json
+import os
 import pathlib
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -10,6 +12,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
@@ -28,7 +31,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 29
+API_SCHEMA_VERSION: Final[int] = 30
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -115,6 +118,8 @@ CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS: Final[str] = "volume_normalization_
 CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
+CONF_MIN_VOLUME: Final[str] = "min_volume"
+CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
@@ -159,11 +164,15 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
-DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+
+# Loudness measurements at or below this value are considered unreliable:
+# ebur128 reports ~-70 LUFS when it receives near-silence or very little
+# audio (e.g. when a stream was cancelled early).
+LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:
@@ -269,6 +278,34 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_MIN_VOLUME = ConfigEntry(
+    key=CONF_MIN_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=0,
+    label="Minimum volume",
+    description="Minimum device volume. "
+    "The volume slider (0-100) will be scaled to this as the lower bound.",
+    category="player_controls",
+    advanced=True,
+    depends_on=CONF_VOLUME_CONTROL,
+    depends_on_value_not=PLAYER_CONTROL_NONE,
+)
+
+CONF_ENTRY_MAX_VOLUME = ConfigEntry(
+    key=CONF_MAX_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=100,
+    label="Maximum volume",
+    description="Maximum device volume. "
+    "The volume slider (0-100) will be scaled to this as the upper bound.",
+    category="player_controls",
+    advanced=True,
+    depends_on=CONF_VOLUME_CONTROL,
+    depends_on_value_not=PLAYER_CONTROL_NONE,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
@@ -906,6 +943,7 @@ ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
 ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
+ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
@@ -917,7 +955,6 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
-ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -971,17 +1008,20 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PAUSE,
 }
 
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
-    ("airplay", False),
-    ("chromecast", False),
-    ("dlna", False),
-    ("sonos", True),
-    ("bluesound", True),
-    ("heos", True),
-    ("party", False),
+    # the callable is a precondition that must return True for the provider to be setup
+    ("airplay", False, lambda: True),
+    ("chromecast", False, lambda: True),
+    ("dlna", False, lambda: True),
+    ("sonos", True, lambda: True),
+    ("bluesound", True, lambda: True),
+    ("heos", True, lambda: True),
+    ("party", False, lambda: True),
+    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

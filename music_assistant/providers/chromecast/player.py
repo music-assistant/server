@@ -82,7 +82,6 @@ class ChromecastPlayer(Player):
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
@@ -92,7 +91,6 @@ class ChromecastPlayer(Player):
         }
         self._attr_name = self.cast_info.friendly_name
         self._attr_available = False
-        self._attr_powered = False
         self._attr_needs_poll = True
         self._attr_type = player_type
         # Disable TV's by default
@@ -163,7 +161,10 @@ class ChromecastPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
-        await asyncio.to_thread(self.cc.media_controller.stop)
+        if self.type == PlayerType.GROUP:
+            await asyncio.to_thread(self.cc.media_controller.stop)
+        else:
+            await asyncio.to_thread(self.cc.quit_app)
 
     async def play(self) -> None:
         """Send PLAY command to given player."""
@@ -186,7 +187,7 @@ class ChromecastPlayer(Player):
         await asyncio.to_thread(self.cc.media_controller.seek, position)
 
     async def power(self, powered: bool) -> None:
-        """Send POWER command to given player."""
+        """Send POWER command to given player (only for Cast Groups)."""
         if powered:
             await self._launch_app()
             self._attr_active_source = None
@@ -258,9 +259,7 @@ class ChromecastPlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
-        # only update status of media controller if player is on
-        if not self.powered:
-            return
+        # only update status of media controller if media controller is active
         if not self.cc.media_controller.is_active:
             return
         try:
@@ -289,7 +288,7 @@ class ChromecastPlayer(Player):
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
-        if not self.powered:
+        if self.powered is False:
             return
         if not self.cc.media_controller.status.player_is_playing:
             return
@@ -436,24 +435,20 @@ class ChromecastPlayer(Player):
             self._attr_static_group_members = self._attr_group_members.copy()
             self._attr_supported_features = {
                 PlayerFeature.PLAY_MEDIA,
+                # only cast groups can be powered on/off as a group,
+                # so only add the POWER feature for groups
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.PAUSE,
                 PlayerFeature.ENQUEUE,
             }
+            self._attr_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
 
         # update player status
         self._attr_name = self.cast_info.friendly_name
         self._attr_volume_level = round(status.volume_level * 100)
         self._attr_volume_muted = status.volume_muted
-        new_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
-        self._attr_powered = new_powered
-        if self._attr_powered and not new_powered and self.type == PlayerType.GROUP:
-            # group is being powered off, update group childs
-            for child_id in self.group_members:
-                if child := self.mass.players.get_player(child_id):
-                    child.update_state()
         self.update_state()
 
     def on_new_media_status(self, status: MediaStatus) -> None:

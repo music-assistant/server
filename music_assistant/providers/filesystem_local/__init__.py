@@ -1075,7 +1075,7 @@ class LocalFileSystemProvider(MusicProvider):
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
             self.mass.create_task(
-                self.mass.music.set_loudness(
+                self.mass.streams.audio_analysis.set_track_loudness(
                     track.item_id,
                     self.instance_id,
                     tags.track_loudness,
@@ -1331,7 +1331,7 @@ class LocalFileSystemProvider(MusicProvider):
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
             self.mass.create_task(
-                self.mass.music.set_loudness(
+                self.mass.streams.audio_analysis.set_track_loudness(
                     audio_book.item_id,
                     self.instance_id,
                     tags.track_loudness,
@@ -1459,7 +1459,7 @@ class LocalFileSystemProvider(MusicProvider):
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
             self.mass.create_task(
-                self.mass.music.set_loudness(
+                self.mass.streams.audio_analysis.set_track_loudness(
                     episode.item_id,
                     self.instance_id,
                     tags.track_loudness,

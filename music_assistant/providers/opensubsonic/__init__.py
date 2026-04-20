@@ -17,6 +17,7 @@ from .sonic_provider import (
     CONF_OVERRIDE_OFFSET,
     CONF_PAGE_SIZE,
     CONF_PLAYED_ALBUMS,
+    CONF_RAW_FILE,
     CONF_RECO_FAVES,
     CONF_RECO_SIZE,
     OpenSonicProvider,
@@ -158,6 +159,14 @@ async def get_config_entries(
             required=True,
             description="How many recommendations from each enabled type should be included.",
             default_value=10,
+        ),
+        ConfigEntry(
+            key=CONF_RAW_FILE,
+            type=ConfigEntryType.BOOLEAN,
+            label="No Transcoding For Streams",
+            required=False,
+            description="Request that the server provide the original source file without applying any transcoding rules.",
+            default_value=True,
         ),
         ConfigEntry(
             key=CONF_PAGE_SIZE,
