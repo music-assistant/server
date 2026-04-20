@@ -283,9 +283,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def _process_block(self, data: SmartFadesData, *, last: bool = False) -> None:
         """Resample accumulated PCM buffer and extract features."""
+        start_time = time.perf_counter()
         pcm_raw = np.concatenate(data.pcm_buffer)
         data.pcm_buffer.clear()
         data.pcm_samples = 0
+        num_samples = len(pcm_raw)
 
         if data.resampler is not None:
             pcm_22k = await asyncio.to_thread(data.resampler.resample_chunk, pcm_raw, last)
@@ -294,17 +296,22 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         data.total_pcm_samples += len(pcm_22k)
 
-        start_time = time.perf_counter()
         feats, _ = await asyncio.gather(
             data.features.process_pcm(pcm_22k),
             asyncio.to_thread(self._compute_energy_and_spectral_centroids, pcm_22k, data),
         )
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         if feats.size:
             data.beats_feature_blocks.append(feats)
 
-        self.logger.log(VERBOSE_LOG_LEVEL, "Processed 10s of PCM chunks in %.1fms", elapsed_ms)
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        self.logger.debug(
+            "_process_block took %.1f ms (%d samples at %d Hz, resampled to %d samples)",
+            elapsed_ms,
+            num_samples,
+            data.input_audio_format.sample_rate,
+            len(pcm_22k),
+        )
 
     def _compute_energy_and_spectral_centroids(
         self, pcm_22k: np.ndarray, data: SmartFadesData
