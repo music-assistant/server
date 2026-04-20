@@ -19,6 +19,7 @@ from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     MediaItemImage,
+    MediaItemType,
     Playlist,
     ProviderMapping,
     Track,
@@ -192,6 +193,18 @@ class SmartPlaylistProvider(MusicProvider):
             self._names_store.pop(prov_item_id, None)
             await self._flush_rules_to_disk()
         return True
+
+    async def on_item_updated(self, item: MediaItemType) -> None:
+        """Sync library playlist name changes back to the in-memory/disk store."""
+        if not isinstance(item, Playlist):
+            return
+        for mapping in item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                prov_id = mapping.item_id
+                if prov_id in self._names_store and self._names_store[prov_id] != item.name:
+                    self._names_store[prov_id] = item.name
+                    await self._flush_rules_to_disk()
+                break
 
     # --- API commands ---
 
