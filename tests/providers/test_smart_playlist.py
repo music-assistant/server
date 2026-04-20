@@ -156,15 +156,15 @@ async def test_rules_persist_to_disk(tmp_path: Any) -> None:
     config.get_value.return_value = "GLOBAL"
 
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
     plugin._rules_dir = str(rules_dir)
-    plugin._rules_store = {}
-    plugin._names_store = {}
 
     rules = SmartPlaylistRules(genre_ids=[1, 2], favorites_only=True)
     await plugin._save_rules("42", rules)
 
     # Simulate reload
     plugin2 = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin2.handle_async_init()
     plugin2._rules_dir = str(rules_dir)
     plugin2._rules_store = {}
     plugin2._names_store = {}
