@@ -12,6 +12,7 @@ Review the GitHub pull request: $ARGUMENTS.
 1. Run `gh pr view` to get PR details and description.
 2. Run `gh pr diff` to see all changes.
 3. Compare the local commit hash with the remote PR head commit.
+   - Make sure to do your work in a git worktree to avoid affecting the checked out branch of the reviewer.
    - If they don't match, run `gh pr checkout` to check out the PR locally.
    - **HARD STOP**: If `gh pr checkout` fails for ANY reason, STOP immediately. Do NOT attempt workarounds (git fetch, alternative methods). Do NOT proceed with the review using only diffs. Alert about the failure and wait for instructions.
    - After checkout, verify the local commit hash matches the remote one. If they still don't match, STOP.
