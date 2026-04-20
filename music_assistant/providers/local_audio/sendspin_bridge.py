@@ -23,11 +23,8 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
+from .constants import DEFAULT_BUFFER_FRAMES, VOLUME_CONTROL_SOFTWARE
 from .player import LocalAudioPlayer, get_device_uuid
-
-# Constants formerly imported from .constants — defined here since they were removed upstream
-DEFAULT_BUFFER_FRAMES: int = 1024
-VOLUME_CONTROL_SOFTWARE: str = "software"
 
 if sys.platform == "linux":
     from .pa_simple import PASimpleStream, enumerate_pa_sinks
@@ -461,7 +458,7 @@ class LocalAudioBridgeManager:
                     pa_sink_name=pa_sink_name,
                 )
                 await self.mass.players.register_or_update(player)
-                # Restore cached volume/mute state before registering bridge
+                # Restore cached volume/mute state from previous session
                 await player.restore_state()
 
                 bridge = SendspinLocalAudioBridge(
