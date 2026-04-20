@@ -49,6 +49,11 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
 }
 
+# When searching, the duration is compared with the full duration to check if it's a preview track etc. 
+# Sometimes, for non preview tracks, the duration is off by a bit compared to the full duration so any differences below
+# this tolerance are acceptable
+SEARCH_DURATION_COMPARISON_TOLERANCE=1000
+
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -143,7 +148,7 @@ class SoundcloudMusicProvider(MusicProvider):
             elif media_type == "track" and MediaType.TRACK in media_types:
                 duration = item.get("duration", 0)
                 full_duration = item.get("full_duration", 0)
-                if full_duration == 0 or abs(duration - full_duration) < 5000:
+                if abs(duration - full_duration) < SEARCH_DURATION_COMPARISON_TOLERANCE:
                     # skip preview/snippet tracks (e.g. in case of free accounts)
                     # where duration is significantly shorter than full_duration
                     result.tracks = [*result.tracks, await self._parse_track(item)]
