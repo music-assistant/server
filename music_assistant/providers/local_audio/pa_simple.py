@@ -108,6 +108,7 @@ class PASimpleStream:
     """
 
     def __init__(self, sink_name: str, app_name: str, rate: int, channels: int, bit_depth: int = 16) -> None:
+        """Open a synchronous PCM playback stream to the named PulseAudio sink."""
         lib = _get_lib()
         spec = _PASampleSpec(
             format=_pa_sample_format(bit_depth),
@@ -166,9 +167,11 @@ class PASimpleStream:
                 self._lib.pa_simple_free(conn)
 
     def __enter__(self) -> PASimpleStream:
+        """Enter context manager."""
         return self
 
     def __exit__(self, *_: object) -> None:
+        """Exit context manager and close the stream."""
         self.close()
 
 
@@ -217,12 +220,13 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
     if pulse_server:
         env["PULSE_SERVER"] = pulse_server
 
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603
         [pactl_bin, "--format=json", "list", "sinks"],
         capture_output=True,
         text=True,
         timeout=5,
         env=env,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
