@@ -4,7 +4,7 @@
   "domain": "smart_playlist",
   "name": "Smart Playlists",
   "description": "Create dynamic or fixed playlists based on rules like genres, artists, albums, favorites and similar tracks.",
-  "codeowners": [],
+  "codeowners": ["@dmoo500"],
   "requirements": [],
   "documentation": "",
   "multi_instance": false,
