@@ -140,6 +140,7 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     secondary_types: list[str] | None = None
     secondary_type_ids: list[str] | None = None
     artist_credit: list[MusicBrainzArtistCredit] | None = None
+    barcode: str | None = None
 
     @classmethod
     def from_raw(cls, data: Any) -> MusicBrainzReleaseGroup:
@@ -485,9 +486,13 @@ class MusicbrainzProvider(MetadataProvider):
             for rg, release_date in self._get_release_groups_with_dates(recording, track_name):
                 rg_id = rg.id
                 if rg_id in all_release_groups:
-                    _, existing_date = all_release_groups[rg_id]
+                    existing_rg, existing_date = all_release_groups[rg_id]
                     if release_date and (not existing_date or release_date < existing_date):
+                        if not rg.barcode:
+                            rg.barcode = existing_rg.barcode
                         all_release_groups[rg_id] = (rg, release_date)
+                    elif rg.barcode and not existing_rg.barcode:
+                        existing_rg.barcode = rg.barcode
                 else:
                     all_release_groups[rg_id] = (rg, release_date)
 
@@ -548,14 +553,21 @@ class MusicbrainzProvider(MetadataProvider):
                     continue
 
             release_date = release.get("date", "") or ""
+            barcode = release.get("barcode") or None
 
             # Keep the earliest release date per release group
             if rg_id in seen:
-                _, existing_date = seen[rg_id]
+                existing_rg, existing_date = seen[rg_id]
                 if release_date and (not existing_date or release_date < existing_date):
-                    seen[rg_id] = (MusicBrainzReleaseGroup.from_raw(rg), release_date)
+                    mb_rg = MusicBrainzReleaseGroup.from_raw(rg)
+                    mb_rg.barcode = barcode or existing_rg.barcode
+                    seen[rg_id] = (mb_rg, release_date)
+                elif barcode and not existing_rg.barcode:
+                    existing_rg.barcode = barcode
             else:
-                seen[rg_id] = (MusicBrainzReleaseGroup.from_raw(rg), release_date)
+                mb_rg = MusicBrainzReleaseGroup.from_raw(rg)
+                mb_rg.barcode = barcode
+                seen[rg_id] = (mb_rg, release_date)
 
         return list(seen.values())
 
