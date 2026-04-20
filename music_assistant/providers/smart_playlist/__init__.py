@@ -10,7 +10,7 @@ import asyncio
 import os
 import random
 import uuid as _uuid
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +25,6 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
-from music_assistant.constants import PlaylistPlayableItem
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
@@ -108,6 +107,17 @@ class SmartPlaylistProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         if is_removed:
+            # Smart playlists only exist as long as this provider is installed.
+            # When the provider is removed, the playlists must be explicitly removed
+            # from the MA library — otherwise orphaned entries remain, because MA
+            # has no other mechanism to clean up provider-owned playlists on removal.
+            for playlist_id in list(self._rules_store):
+                try:
+                    await self.mass.music.remove_item_from_library(MediaType.PLAYLIST, playlist_id)
+                except Exception as exc:
+                    self.logger.debug(
+                        "Could not remove playlist %s from library: %s", playlist_id, exc
+                    )
             for filename in await asyncio.to_thread(os.listdir, self._rules_dir):
                 filepath = os.path.join(self._rules_dir, filename)
                 await asyncio.to_thread(os.remove, filepath)
@@ -127,9 +137,7 @@ class SmartPlaylistProvider(MusicProvider):
             raise MediaNotFoundError(msg)
         return self._build_playlist(prov_playlist_id, rules)
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, page: int = 0
-    ) -> Sequence[PlaylistPlayableItem]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Evaluate rules and return fresh tracks.
 
         Returns a full batch on page 0; empty list on subsequent pages.
@@ -496,7 +504,7 @@ class SmartPlaylistProvider(MusicProvider):
     async def _evaluate_or(self, rules: SmartPlaylistRules) -> list[Track]:
         """Evaluate rules with OR logic: track must match ANY active filter."""
         track_sets: dict[str, Track] = {}
-        fetch_limit = rules.limit * 5
+        fetch_limit = min(rules.limit * 5, 2000)
 
         if rules.favorites_only:
             for track in await self._get_library_tracks(favorite=True, limit=fetch_limit):
@@ -518,11 +526,7 @@ class SmartPlaylistProvider(MusicProvider):
                     track_sets[track.uri] = track
 
         if rules.album_ids:
-            all_tracks = (
-                await self._get_library_tracks(limit=fetch_limit * 2)
-                if not rules.artist_ids
-                else list(track_sets.values())
-            )
+            all_tracks = await self._get_library_tracks(limit=fetch_limit * 2)
             album_id_set = set(rules.album_ids)
             for track in all_tracks:
                 if track.album and int(track.album.item_id) in album_id_set and track.uri:
@@ -593,7 +597,7 @@ class SmartPlaylistProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.isfile, rules_file):
             return
         try:
-            data = await asyncio.to_thread(read_json, rules_file)
+            data = await read_json(rules_file)
             for playlist_id, entry in data.items():
                 if isinstance(entry, dict) and "rules" in entry:
                     # New format: {"name": "...", "rules": {...}}
@@ -618,4 +622,4 @@ class SmartPlaylistProvider(MusicProvider):
             pid: {"name": self._names_store.get(pid, pid), "rules": r.to_dict()}
             for pid, r in self._rules_store.items()
         }
-        await asyncio.to_thread(write_json, rules_file, data)
+        await write_json(rules_file, data)

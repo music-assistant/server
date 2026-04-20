@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import aiofiles
 from music_assistant_models.errors import InvalidDataError
+
+from music_assistant.helpers.json import json_dumps, json_loads
 
 LOGIC_AND = "AND"
 LOGIC_OR = "OR"
@@ -124,13 +126,13 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
         raise InvalidDataError(msg)
 
 
-def read_json(path: str) -> dict[str, Any]:
-    """Read a JSON file and return its contents (blocking - run in a thread)."""
-    with open(path, encoding="utf-8") as fh:
-        return cast("dict[str, Any]", json.load(fh))
+async def read_json(path: str) -> dict[str, Any]:
+    """Read a JSON file and return its contents."""
+    async with aiofiles.open(path, encoding="utf-8") as fh:
+        return cast("dict[str, Any]", json_loads(await fh.read()))
 
 
-def write_json(path: str, data: dict[str, Any]) -> None:
-    """Write data as JSON to a file (blocking - run in a thread)."""
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
+async def write_json(path: str, data: dict[str, Any]) -> None:
+    """Write data as JSON to a file."""
+    async with aiofiles.open(path, "w", encoding="utf-8") as fh:
+        await fh.write(json_dumps(data, indent=True))
