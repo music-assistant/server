@@ -868,11 +868,13 @@ class MusicAssistant:
         self.config.set_default(CONF_DEFAULT_PROVIDERS_SETUP, set())
         default_providers_setup = set(self.config.get(CONF_DEFAULT_PROVIDERS_SETUP))
         changes_made = False
-        for default_provider, require_mdns in DEFAULT_PROVIDERS:
+        for default_provider, require_mdns, precondition in DEFAULT_PROVIDERS:
             if default_provider in default_providers_setup:
                 # already processed/setup before, skip
                 continue
             if not (manifest := self._provider_manifests.get(default_provider)):
+                continue
+            if not precondition():
                 continue
             if require_mdns:
                 # if mdns discovery is required, check if we have seen any mdns entries

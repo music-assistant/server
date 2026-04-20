@@ -18,7 +18,10 @@ RUN uv venv $VIRTUAL_ENV
 # pre-install ALL requirements into the venv
 # comes at a cost of a slightly larger image size but is faster to start
 # because we do not have to install dependencies at runtime
+# --index-strategy: allow PyPI packages when also using the PyTorch extra index
+# https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
 RUN uv pip install \
+    --index-strategy unsafe-best-match \
     -r requirements_all.txt
 
 # Install PyAV from pre-built wheel (built against system FFmpeg in base image)

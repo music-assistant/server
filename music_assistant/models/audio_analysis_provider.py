@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
 @dataclass
@@ -141,6 +142,23 @@ class AudioAnalysisProvider(Provider):
             await self._finalize(session_id)
         finally:
             self._sessions.pop(session_id, None)
+
+    async def analyze_file(
+        self,
+        streamdetails: StreamDetails,
+    ) -> AudioAnalysisData | None:
+        """
+        Run analysis directly on a local audio file.
+
+        Used by the AudioAnalysisController's background scan. Providers that can
+        analyze a file without going through live PCM streaming (e.g. by handing
+        the path to FFmpeg/librosa/etc.) should override this. Default returns
+        None, meaning the provider does not support file-based analysis.
+
+        :param streamdetails: StreamDetails for the item being analyzed.
+            Contains the local file path and audio format.
+        """
+        return None
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""

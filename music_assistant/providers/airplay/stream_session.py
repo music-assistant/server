@@ -86,29 +86,62 @@ class AirPlayStreamSession:
             with suppress(asyncio.CancelledError):
                 await self._audio_source_task
         await asyncio.gather(
-            *[self.remove_client(x) for x in self.sync_clients],
+            *[self.remove_client(x, reason="session stop") for x in self.sync_clients],
         )
 
-    async def remove_client(self, airplay_player: AirPlayPlayer) -> None:
-        """Remove a sync client from the session."""
+    async def remove_client(
+        self, airplay_player: AirPlayPlayer, reason: str = "client removed"
+    ) -> None:
+        """
+        Remove a sync client from the session.
+
+        :param airplay_player: The player to remove from the session.
+        :param reason: Short human-readable reason for the removal, used in teardown logs.
+        """
         async with self._lock:
             if airplay_player not in self.sync_clients:
                 return
             self.sync_clients.remove(airplay_player)
-        await self.stop_client(airplay_player)
-        airplay_player.set_state_from_stream(PlaybackState.IDLE)
-        # If this was the last client, stop the session
-        if not self.sync_clients:
-            await self.stop()
-            return
+        await self._cleanup_after_removal(airplay_player, reason=reason)
 
-    async def stop_client(self, airplay_player: AirPlayPlayer) -> None:
+    async def _cleanup_after_removal(
+        self, airplay_player: AirPlayPlayer, reason: str = "client removed"
+    ) -> None:
+        """
+        Clean up processes and state after a client has been removed from sync_clients.
+
+        :param airplay_player: The player whose processes should be stopped.
+        :param reason: Short human-readable reason, forwarded to stop_client for logging.
+        """
+        stream = airplay_player.stream
+        if stream is not None and stream.session != self:
+            stream = None
+        await self.stop_client(airplay_player, reason=reason)
+        # Only set IDLE if the player's stream still belongs to this session,
+        # otherwise a re-add to a new session may have already set a new state.
+        if stream is not None:
+            airplay_player.set_state_from_stream(PlaybackState.IDLE, stream=stream)
+        # Re-check sync_clients under the lock to avoid racing with add_client.
+        async with self._lock:
+            should_stop = not self.sync_clients
+        if should_stop:
+            await self.stop()
+
+    async def stop_client(
+        self, airplay_player: AirPlayPlayer, reason: str = "stop_client called"
+    ) -> None:
         """
         Stop a client's stream and ffmpeg.
 
         :param airplay_player: The player to stop.
-        :param force: If True, kill CLI process immediately.
+        :param reason: Short human-readable reason for the teardown, used in debug logs.
         """
+        self.prov.logger.debug(
+            "AirPlay session teardown: session=%s client=%s reason=%s",
+            id(self),
+            airplay_player.player_id,
+            reason,
+        )
         ffmpeg = self._player_ffmpeg.pop(airplay_player.player_id, None)
         # note that we use kill instead of graceful close here,
         # because otherwise it can take a very long time for the process to exit.
@@ -121,15 +154,25 @@ class AirPlayStreamSession:
         """Add a sync client to the session as a late joiner.
 
         Uses the PCM ring buffer to prime the late joiner's pipeline so it
-        starts playing quickly.  All work happens under the lock to ensure
+        starts playing quickly. All work happens under the lock to ensure
         ``seconds_streamed`` and the buffer are consistent.
 
+        Devices generally cannot honour an NTP start anchor that is in the
+        past — they just play whatever the pipe gives them, trailing the
+        group by the deficit. To stay in sync we therefore push the late
+        joiner's ``start_at`` into the future (at least ``wait_start`` ahead
+        of now) and trim the corresponding amount from the head of the
+        buffered PCM, so the first sample we send maps to the correct future
+        stream position.
+
         1. Snapshot the ring buffer and calculate how many seconds it holds.
-        2. NTP = ``start_time + (seconds_streamed - buffer_seconds)`` — the
-           first byte in the buffer maps to that stream position.
-        3. Start ffmpeg+CLI, write the buffer into ffmpeg (primes the pipe
-           while cliraop is still connecting), then add to sync_clients so
-           the audio streamer continues seamlessly from where the buffer ends.
+        2. Map the buffer's first byte to its stream position; if the
+           resulting NTP start is in the past, shift it forward to
+           ``now + min_headroom`` and trim that many seconds from the buffer
+           head so timing stays aligned with the rest of the group.
+        3. Start ffmpeg+CLI, write the (possibly trimmed) buffer into ffmpeg
+           to prime the pipe while cliraop is still connecting, then add to
+           sync_clients so the audio streamer continues seamlessly.
         """
         async with self._lock:
             if not self.sync_clients:
@@ -139,6 +182,7 @@ class AirPlayStreamSession:
                 return
             now = time.time()
             pcm_sample_size = self.pcm_format.pcm_sample_size
+            frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
             # Snapshot the buffer and calculate its duration
             buffered_pcm = bytes(self._pcm_buffer)
             buffer_seconds = len(buffered_pcm) / pcm_sample_size
@@ -146,35 +190,52 @@ class AirPlayStreamSession:
             first_byte_pos = self.seconds_streamed - buffer_seconds
             start_at = self.start_time + first_byte_pos
 
-            # If start_at is in the past (or too close to now), prepend silence
-            # to prime the pipeline while cliraop connects. The device will use
-            # NTP sync to discard past-due silence and start playing at the
-            # correct position — the silence just keeps the pipe fed.
-            # Scale the headroom with the configured AirPlay latency so devices
-            # with a longer wait_start still land with a positive start offset.
-            min_headroom = max(2.0, self.wait_start)
-            deficit = 0.0
-            if start_at < now + min_headroom:
-                deficit = (now + min_headroom) - start_at
-                silence_bytes = int(deficit * pcm_sample_size)
-                frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
-                silence_bytes -= silence_bytes % frame_size
-                if silence_bytes > 0:
-                    buffered_pcm = b"\x00" * silence_bytes + buffered_pcm
+            # The audio we hand to ffmpeg → cliraop must be bit-aligned with
+            # ``start_at``: the first sample sent should be the one that should
+            # play at ``start_at``. cliraop buffers ``wait_start`` seconds of
+            # audio before starting playback, so we keep ``start_at`` at least
+            # that far in the future (using the larger of the session's
+            # existing wait_start and the late joiner's own).
+            min_headroom = max(self.wait_start, airplay_player.wait_start / 1000)
+            target_start_at = now + min_headroom
+            trim_seconds = 0.0
+            if start_at < target_start_at:
+                # Shift start_at forward so the device has time to prep, and
+                # trim the buffer head by the same amount so the first sample
+                # we send is the one that should play at the new start_at.
+                trim_seconds = target_start_at - start_at
+                trim_bytes = int(trim_seconds * pcm_sample_size)
+                trim_bytes -= trim_bytes % frame_size
+                if trim_bytes >= len(buffered_pcm):
+                    # Nothing left of the buffer after the trim. Drop it and
+                    # let the audio_streamer feed the late joiner from the
+                    # next chunk. Set start_at to the current live position;
+                    # the clamp below may still move it later to preserve
+                    # the required headroom.
+                    buffered_pcm = b""
+                    start_at = self.start_time + self.seconds_streamed
+                else:
+                    buffered_pcm = buffered_pcm[trim_bytes:]
+                    # Advance start_at by exactly the trimmed duration so the
+                    # NTP anchor matches the first sample we actually send.
+                    start_at += trim_bytes / pcm_sample_size
+                # Make sure start_at still leaves enough lead time for slow
+                # connections / very-far-behind joiners.
+                start_at = max(start_at, target_start_at)
 
             start_ntp = unix_time_to_ntp(start_at)
 
             self.prov.logger.debug(
                 "Late joiner %s: sending %.2fs of buffered audio, "
                 "stream_pos=%.2fs, first_byte_pos=%.2fs, "
-                "start_at is %.2fs from now (min_headroom=%.2fs, deficit=%.2fs)",
+                "start_at is %.2fs from now (min_headroom=%.2fs, trimmed=%.2fs)",
                 airplay_player.player_id,
                 len(buffered_pcm) / pcm_sample_size,
                 self.seconds_streamed,
                 first_byte_pos,
                 start_at - now,
                 min_headroom,
-                deficit,
+                trim_seconds,
             )
 
             # Start ffmpeg+CLI and immediately write the buffered PCM.
@@ -190,7 +251,7 @@ class AirPlayStreamSession:
                     airplay_player.player_id,
                     err,
                 )
-                await self.stop_client(airplay_player)
+                await self.stop_client(airplay_player, reason="late joiner start/prime failed")
                 return
 
             # Now add to sync_clients — the audio streamer's next chunk
@@ -213,7 +274,7 @@ class AirPlayStreamSession:
                     airplay_player.player_id,
                     time.time() - now,
                 )
-                self.mass.create_task(self.remove_client(airplay_player))
+                await self.remove_client(airplay_player, reason="late joiner connection timeout")
 
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Stream audio to all players."""
@@ -276,7 +337,7 @@ class AirPlayStreamSession:
             results = await asyncio.gather(*write_tasks, return_exceptions=True)
 
             # Check for write errors or timeouts
-            players_to_remove: list[AirPlayPlayer] = []
+            players_to_remove: list[tuple[AirPlayPlayer, str]] = []
             for i, result in enumerate(results):
                 if i >= len(sync_clients):
                     continue
@@ -287,19 +348,25 @@ class AirPlayStreamSession:
                         "Removing player %s from session: stopped reading data (write timeout)",
                         player.player_id,
                     )
-                    players_to_remove.append(player)
+                    players_to_remove.append((player, "audio write timeout"))
                 elif isinstance(result, Exception):
                     self.prov.logger.warning(
                         "Removing player %s from session due to write error: %s",
                         player.player_id,
                         result,
                     )
-                    players_to_remove.append(player)
+                    players_to_remove.append((player, f"audio write error: {result}"))
 
-            for player in players_to_remove:
-                self.mass.create_task(self.remove_client(player))
+            # Remove failed players from sync_clients immediately under the lock
+            # so they are excluded from future write cycles. Only defer process
+            # cleanup (_cleanup_after_removal) — this prevents fire-and-forget
+            # remove_client calls from racing with a subsequent add_client when
+            # a player is being moved between groups.
+            for player, removal_reason in players_to_remove:
+                if player in self.sync_clients:
+                    self.sync_clients.remove(player)
+                self.mass.create_task(self._cleanup_after_removal(player, reason=removal_reason))
 
-            # Return False if all clients were removed (or scheduled for removal)
             remaining_clients = len(sync_clients) - len(players_to_remove)
             return remaining_clients > 0
 
