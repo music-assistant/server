@@ -11,6 +11,8 @@ from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
 from music_assistant.helpers.tags import (
     _parse_apev2_tags,
+    _parse_id3_tags,
+    _parse_mp4_tags,
     _parse_vorbis_tags,
     parse_tags_mutagen,
     split_artists,
@@ -378,22 +380,10 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
 
 
 def test_parse_vorbis_multi_value_releasetype() -> None:
-    """Picard writes MB album type as repeated Vorbis fields; both values must be kept."""
+    """Repeated RELEASETYPE Vorbis fields are joined into a single value."""
     mock_tags = _create_mock_vorbis_tags({"RELEASETYPE": ["album", "live"]})
     result = _parse_vorbis_tags(mock_tags)
     assert result.get("musicbrainzalbumtype") == "album;live"
-
-
-def test_parse_vorbis_multi_value_musicbrainz_albumtype() -> None:
-    """MUSICBRAINZ_ALBUMTYPE takes precedence and also supports multi-value."""
-    mock_tags = _create_mock_vorbis_tags(
-        {
-            "MUSICBRAINZ_ALBUMTYPE": ["album", "compilation"],
-            "RELEASETYPE": ["ignored"],
-        }
-    )
-    result = _parse_vorbis_tags(mock_tags)
-    assert result.get("musicbrainzalbumtype") == "album;compilation"
 
 
 def _create_mock_apev2_tags(tag_dict: dict[str, str]) -> MagicMock:
@@ -446,6 +436,13 @@ def test_parse_apev2_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzreleasegroupid") == "mb-rg-id"
 
 
+def test_parse_apev2_multi_value_musicbrainz_albumtype() -> None:
+    """Null-separated MUSICBRAINZ_ALBUMTYPE values are joined into a single value."""
+    mock_tags = _create_mock_apev2_tags({"MUSICBRAINZ_ALBUMTYPE": "album\x00live"})
+    result = _parse_apev2_tags(mock_tags)
+    assert result.get("musicbrainzalbumtype") == "album;live"
+
+
 def test_parse_apev2_tags_genre_multi_value() -> None:
     """Test that APEv2 genre with multiple values is parsed correctly."""
     mock_tags = _create_mock_apev2_tags(
@@ -495,6 +492,23 @@ def test_parse_apev2_tags_single_artist() -> None:
     # Plural keys should not be set
     assert "artists" not in result
     assert "albumartists" not in result
+
+
+def test_parse_mp4_multi_value_musicbrainz_albumtype() -> None:
+    """Multi-value MP4 freeform album type entries are joined into a single value."""
+    mock_tags = MagicMock()
+    mock_tags.__contains__ = lambda _, key: key == "----:com.apple.iTunes:MusicBrainz Album Type"
+    mock_tags.__getitem__ = lambda _, _k: [b"album", b"live"]
+    result = _parse_mp4_tags(mock_tags)
+    assert result.get("musicbrainzalbumtype") == "album;live"
+
+
+def test_parse_id3_multi_value_musicbrainz_albumtype() -> None:
+    """Multi-value TXXX:MusicBrainz Album Type frame entries are joined into a single value."""
+    frame = MagicMock()
+    frame.text = ["album", "live"]
+    result = _parse_id3_tags({"TXXX:MusicBrainz Album Type": frame})
+    assert result.get("musicbrainzalbumtype") == "album;live"
 
 
 def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:

@@ -1118,12 +1118,8 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
         result["compilation"] = compilation
 
     # album type may be multi-value (repeated fields); join them
-    if albumtypes := _vorbis_get_multi(tags, "MUSICBRAINZ_ALBUMTYPE"):
-        result["musicbrainzalbumtype"] = ";".join(albumtypes)
-    # RELEASETYPE is an alternative tag name for the same field
-    if not result.get("musicbrainzalbumtype"):
-        if releasetypes := _vorbis_get_multi(tags, "RELEASETYPE"):
-            result["musicbrainzalbumtype"] = ";".join(releasetypes)
+    if releasetypes := _vorbis_get_multi(tags, "RELEASETYPE"):
+        result["musicbrainzalbumtype"] = ";".join(releasetypes)
 
     # ReplayGain tags
     if rg_track := _vorbis_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):
