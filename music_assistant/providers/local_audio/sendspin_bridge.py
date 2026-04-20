@@ -23,15 +23,14 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
-from .constants import DEFAULT_BUFFER_FRAMES, VOLUME_CONTROL_SOFTWARE
+from .constants import CACHE_CATEGORY_PREV_STATE, DEFAULT_BUFFER_FRAMES, DEFAULT_PLAYER_VOLUME, VOLUME_CONTROL_SOFTWARE
 from .player import LocalAudioPlayer, get_device_uuid
 
 if sys.platform == "linux":
     from .pa_simple import PASimpleStream, enumerate_pa_sinks
-else:
-    import sounddevice as sd
 
 if TYPE_CHECKING:
+    import sounddevice as sd  # noqa: F401
     from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
     from aiosendspin.server.roles import AudioChunk
 
@@ -78,6 +77,7 @@ class SendspinLocalAudioBridge:
         self._bridge_client_id: str | None = None
         self._bridge_role: BridgePlayerRole | None = None
         self._is_streaming = False
+        self._logged_chunk_fmt: bool = False
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._output_stream: Any | None = None  # sd.RawOutputStream on Darwin
@@ -151,13 +151,17 @@ class SendspinLocalAudioBridge:
             self.logger.error("No BridgePlayerRole found for %s", self.device_name)
             return
 
+        # Restore last volume from cache, fall back to default
+        init_volume = self.player._attr_volume_level
+        init_muted = self.player._attr_volume_muted
+
         self._bridge_role.set_callbacks(
             on_audio_chunk=self._on_audio_chunk,
             on_volume_change=self._on_volume_change,
             on_mute_change=self._on_mute_change,
             on_stream_start=self._on_bridge_stream_start,
             on_stream_end=self._on_bridge_stream_end,
-            initial_volume=25,
+            initial_volume=init_volume,
         )
         self._bridge_role.setup_audio_requirements(
             sample_rate=self.sample_rate,
@@ -221,7 +225,7 @@ class SendspinLocalAudioBridge:
         """Handle an incoming audio chunk."""
         if not self._is_streaming:
             return
-        if not hasattr(self, "_logged_chunk_fmt"):
+        if not self._logged_chunk_fmt:
             self.logger.debug(
                 "First chunk: len=%d  sample_rate=%d bit_depth=%d",
                 len(chunk.data), self.sample_rate, self.bit_depth,
@@ -261,8 +265,8 @@ class SendspinLocalAudioBridge:
         # 16-bit
         if scale is None:
             return pcm_data
-        samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
-        scaled = np.clip(samples.astype(np.float64) * scale, -32768, 32767)
+        samples_16 = np.frombuffer(pcm_data, dtype=np.int16).copy()
+        scaled = np.clip(samples_16.astype(np.float64) * scale, -32768, 32767)
         return scaled.astype(np.int16).tobytes()
 
     async def _audio_writer(self) -> None:
@@ -274,18 +278,18 @@ class SendspinLocalAudioBridge:
 
     async def _audio_writer_pulse(self) -> None:
         """Write queued audio to a PA sink via PASimpleStream (Linux)."""
-        loop = asyncio.get_running_loop()
         stream: PASimpleStream | None = None
-        write_future: asyncio.Future | None = None
+        write_future: asyncio.Future[None] | None = None
         try:
             self.logger.debug(
                 "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
                 self.pa_sink_name, self.sample_rate, BRIDGE_CHANNELS, self.bit_depth,
             )
-            stream = await loop.run_in_executor(
+            assert self.pa_sink_name is not None  # guarded by Linux-only call path
+            stream = await self.mass.loop.run_in_executor(
                 None,
                 lambda: PASimpleStream(
-                    sink_name=self.pa_sink_name,
+                    sink_name=self.pa_sink_name,  # type: ignore[arg-type]
                     app_name="music-assistant",
                     rate=self.sample_rate,
                     channels=BRIDGE_CHANNELS,
@@ -299,7 +303,7 @@ class SendspinLocalAudioBridge:
                 if data is None or not self._is_streaming:
                     break
                 data = self._apply_software_volume(data)
-                write_future = loop.run_in_executor(None, stream.write, data)
+                write_future = self.mass.loop.run_in_executor(None, stream.write, data)
                 await write_future
                 write_future = None
 
@@ -314,15 +318,15 @@ class SendspinLocalAudioBridge:
                     await asyncio.shield(write_future)
             if stream is not None:
                 with suppress(Exception):
-                    await loop.run_in_executor(None, stream.close)
+                    await self.mass.loop.run_in_executor(None, stream.close)
             if self._writer_task is asyncio.current_task():
                 self._writer_task = None
 
     async def _audio_writer_sounddevice(self) -> None:
         """Write queued audio to a sounddevice output stream (Darwin)."""
-        loop = asyncio.get_running_loop()
+        import sounddevice as _sd  # noqa: PLC0415
         try:
-            self._output_stream = sd.RawOutputStream(
+            self._output_stream = _sd.RawOutputStream(
                 device=self.device_index,
                 samplerate=self.sample_rate,
                 channels=BRIDGE_CHANNELS,
@@ -338,11 +342,11 @@ class SendspinLocalAudioBridge:
                     break
                 data = self._apply_software_volume(data)
                 try:
-                    await loop.run_in_executor(None, self._output_stream.write, data)
-                except sd.PortAudioError as err:
+                    await self.mass.loop.run_in_executor(None, self._output_stream.write, data)
+                except _sd.PortAudioError as err:
                     self.logger.error("PortAudio error for %s: %s", self.device_name, err)
                     break
-        except sd.PortAudioError as err:
+        except _sd.PortAudioError as err:
             self.logger.error(
                 "Failed to open sounddevice stream for %s: %s", self.device_name, err
             )
@@ -394,6 +398,11 @@ class LocalAudioBridgeManager:
     """Manages Sendspin bridges for all local audio output devices."""
 
     def __init__(self, provider: LocalAudioProvider) -> None:
+        """
+        Initialize the bridge manager.
+
+        :param provider: The Local Audio provider instance.
+        """
         self.provider = provider
         self.mass = provider.mass
         self.logger = provider.logger.getChild("bridge_manager")
@@ -414,9 +423,8 @@ class LocalAudioBridgeManager:
             self.logger.debug("Sendspin provider not available, skipping device enumeration")
             return
 
-        loop = asyncio.get_running_loop()
         try:
-            devices: list[dict[str, Any]] = await loop.run_in_executor(
+            devices: list[dict[str, Any]] = await self.mass.loop.run_in_executor(
                 None, self._enumerate_output_devices
             )
         except Exception as err:
@@ -434,7 +442,6 @@ class LocalAudioBridgeManager:
                 device_name: str = device["name"]
                 hostapi_index: int = device.get("hostapi", 0)
                 pa_sink_name: str | None = device.get("pa_sink_name")
-                is_remap: bool = device.get("is_remap", False)
                 device_uuid = get_device_uuid(device_name, hostapi_index)
                 client_id = bridge_client_id_from_uuid(device_uuid)
 
@@ -449,10 +456,10 @@ class LocalAudioBridgeManager:
                     hostapi_index=hostapi_index,
                     device_index=device.get("index", 0),
                     pa_sink_name=pa_sink_name,
-                    is_remap=is_remap,
                 )
                 await self.mass.players.register_or_update(player)
-                await player.apply_hardware_ceiling()
+                # Restore cached volume/mute state before registering bridge
+                await player.restore_state()
 
                 bridge = SendspinLocalAudioBridge(
                     self.provider, player, device, sendspin_server
@@ -492,20 +499,20 @@ class LocalAudioBridgeManager:
             return enumerate_pa_sinks()
 
         # Darwin / other: sounddevice path
-        import sounddevice as sd  # noqa: PLC0415
+        import sounddevice as _sd  # noqa: PLC0415
         devices: list[dict[str, Any]] = []
-        for idx, dev in enumerate(sd.query_devices()):
+        for idx, dev in enumerate(_sd.query_devices()):
             if dev.get("max_output_channels", 0) < 2:
                 continue
             try:
-                test_stream = sd.RawOutputStream(
+                test_stream = _sd.RawOutputStream(
                     device=idx,
                     samplerate=BRIDGE_SAMPLE_RATE,
                     channels=BRIDGE_CHANNELS,
                     dtype="int16",
                 )
                 test_stream.close()
-            except sd.PortAudioError:
+            except _sd.PortAudioError:
                 continue
             dev_with_index = dict(dev)
             dev_with_index["index"] = idx
