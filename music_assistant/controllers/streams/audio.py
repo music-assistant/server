@@ -587,7 +587,7 @@ class StreamsAudio:
         """
         Resolve a streaming radio URL.
 
-        Unwraps playlists and determines stream type (ICY, HLS, SHOUTCAST, HTTP).
+        Unwraps playlists and determines stream type (ICY, HLS, SHOUTCAST, IN_BAND, HTTP).
 
         :param url: Radio stream URL to resolve
         """
@@ -2144,10 +2144,10 @@ class StreamsAudio:
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes, None]:
         """
-        Get (radio) audio stream from legacy Shoutcast server using raw socket connection.
+        Yield audio from a legacy Shoutcast server, with ICY metadata parsed inline.
 
-        Legacy Shoutcast servers return "ICY 200 OK" instead of "HTTP/1.1 200 OK",
-        which aiohttp cannot parse. This function handles the connection manually.
+        :param url: Shoutcast stream URL.
+        :param streamdetails: StreamDetails to update with ICY metadata as it arrives.
         """
         self.logger.debug("Start streaming from legacy Shoutcast server: %s", url)
 
@@ -2244,10 +2244,13 @@ class StreamsAudio:
 
     def _parse_icy_metadata(self, meta_data: bytes, streamdetails: StreamDetails) -> None:
         """
-        Parse ICY metadata and update streamdetails with stream title.
+        Parse ICY metadata and update streamdetails.
 
-        :param meta_data: Raw metadata bytes from ICY stream.
-        :param streamdetails: StreamDetails object to update with parsed title.
+        Sets the cleaned stream title and, when the title parses as "Artist - Track",
+        triggers a radio-artwork metadata update.
+
+        :param meta_data: Raw metadata bytes from an ICY stream chunk.
+        :param streamdetails: StreamDetails to update with parsed title and metadata.
         """
         if not meta_data:
             return
@@ -2297,9 +2300,7 @@ class StreamsAudio:
 
     async def _validate_shoutcast_stream(self, url: str) -> bool:
         """
-        Validate if a URL is a legacy Shoutcast stream that returns "ICY 200 OK".
-
-        Makes a raw socket connection to check the response line.
+        Return True if the URL responds with a legacy Shoutcast "ICY 200 OK" line.
 
         :param url: The URL to validate.
         """
