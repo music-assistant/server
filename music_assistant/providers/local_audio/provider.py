@@ -1,7 +1,7 @@
 """Local Audio Out player provider for Music Assistant."""
-
 from __future__ import annotations
 
+import ctypes
 import sys
 
 from music_assistant.models.player_provider import PlayerProvider
@@ -19,7 +19,6 @@ class LocalAudioProvider(PlayerProvider):
         if sys.platform == "linux":
             # Verify libpulse-simple is present before we try to do anything
             try:
-                import ctypes
                 ctypes.CDLL("libpulse-simple.so.0")
             except OSError as err:
                 raise RuntimeError(
