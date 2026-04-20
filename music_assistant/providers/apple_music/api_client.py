@@ -89,6 +89,7 @@ class AppleMusicAPIClient:
                 raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
             response.raise_for_status()
 
+    @throttle_with_retries
     async def put_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> dict[str, Any]:
         """PUT data to the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
