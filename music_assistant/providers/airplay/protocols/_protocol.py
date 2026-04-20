@@ -83,8 +83,9 @@ class AirPlayProtocol(ABC):
         # repeat sending the volume level to the player because some players seem
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
-        volume = 0 if self.player.volume_muted else self.player.volume_level
-        self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
+        if not self.player.protocol_parent_id or self.player.is_volume_control_for_parent:
+            volume = 0 if self.player.volume_muted else self.player.volume_level
+            self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         # we also need to send the metadata after connection, because some players (e.g. Sonos)
         # simply won't start playback until they receive the metadata ?!
         # reset checksum so the resend isn't blocked by deduplication

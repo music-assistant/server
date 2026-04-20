@@ -288,6 +288,7 @@ class AirPlayProvider(PlayerProvider):
             ignore_volume_report = (
                 self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
                 or player.device_info.manufacturer.lower() == "apple"
+                or (player.protocol_parent_id and not player.is_volume_control_for_parent)
             )
             if path == "/ctrl-int/1/nextitem":
                 self.mass.create_task(self.mass.players.cmd_next_track(player_id))

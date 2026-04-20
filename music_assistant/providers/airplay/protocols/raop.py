@@ -72,6 +72,13 @@ class RaopStream(AirPlayProtocol):
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
 
+        # Omit -volume when parent handles volume natively to avoid dB curve mismatch drift.
+        volume_args = (
+            ["-volume", str(self.player.volume_level)]
+            if not self.player.protocol_parent_id or self.player.is_volume_control_for_parent
+            else []
+        )
+
         cliraop_args = [
             cli_binary,
             "-ntpstart",
@@ -80,8 +87,7 @@ class RaopStream(AirPlayProtocol):
             str(self.player.raop_discovery_info.port),
             "-latency",
             str(self.player.output_buffer_duration_ms),
-            "-volume",
-            str(self.player.volume_level),
+            *volume_args,
             *extra_args,
             "-dacp",
             cast("AirPlayProvider", self.prov).dacp_id,

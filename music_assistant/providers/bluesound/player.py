@@ -29,6 +29,7 @@ from music_assistant.providers.bluesound.const import (
     PLAYER_SOURCE_MAP,
     POLL_STATE_DYNAMIC,
     POLL_STATE_STATIC,
+    SOURCE_AIRPLAY,
 )
 
 if TYPE_CHECKING:
@@ -363,9 +364,9 @@ class BluesoundPlayer(Player):
         self._attr_elapsed_time = self.status.seconds
         self._attr_elapsed_time_last_updated = time.time()
 
-        # Only allow volume reports when playing Bluesound as native input
-        # E.g. Airplay reports are on a different scale, causing volume jumps
-        if self.status.input_id is None:
+        # Only allow volume reports when playing Bluesound as native input.
+        # AirPlay reports are on a different scale, causing volume jumps.
+        if self.status.input_id is None and self.status.service != SOURCE_AIRPLAY:
             if self.sync_status.volume == -1:
                 # -1 is fixed volume
                 self._attr_volume_level = 100

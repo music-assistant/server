@@ -1099,6 +1099,17 @@ class Player(ABC):
 
     @property
     @final
+    def is_volume_control_for_parent(self) -> bool:
+        """Check if this protocol player is the volume control for its parent."""
+        if not self.__attr_protocol_parent_id:
+            return False
+        parent = self.mass.players.get_player(self.__attr_protocol_parent_id)
+        if not parent:
+            return False
+        return parent.volume_control == self.player_id
+
+    @property
+    @final
     def active_output_protocol(self) -> str | None:
         """Return the currently active output protocol ID."""
         return self.__attr_active_output_protocol
