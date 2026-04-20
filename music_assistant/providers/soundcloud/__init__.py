@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -127,13 +127,6 @@ class SoundcloudMusicProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
-        searchtypes = []
-        if MediaType.ARTIST in media_types:
-            searchtypes.append("artist")
-        if MediaType.TRACK in media_types:
-            searchtypes.append("track")
-        if MediaType.PLAYLIST in media_types:
-            searchtypes.append("playlist")
 
         media_types = [
             x for x in media_types if x in (MediaType.ARTIST, MediaType.TRACK, MediaType.PLAYLIST)
@@ -141,15 +134,18 @@ class SoundcloudMusicProvider(MusicProvider):
         if not media_types:
             return result
 
-        searchresult = await self._soundcloud.search(search_query, limit)
+        searchresult = await self._soundcloud.search(quote(search_query), limit)
 
         for item in searchresult["collection"]:
             media_type = item["kind"]
             if media_type == "user" and MediaType.ARTIST in media_types:
                 result.artists = [*result.artists, await self._parse_artist(item)]
             elif media_type == "track" and MediaType.TRACK in media_types:
-                if item.get("duration") == item.get("full_duration"):
-                    # skip if it's a preview track (e.g. in case of free accounts)
+                duration = item.get("duration", 0)
+                full_duration = item.get("full_duration", 0)
+                if full_duration == 0 or abs(duration - full_duration) < 5000:
+                    # skip preview/snippet tracks (e.g. in case of free accounts)
+                    # where duration is significantly shorter than full_duration
                     result.tracks = [*result.tracks, await self._parse_track(item)]
             elif media_type == "playlist" and MediaType.PLAYLIST in media_types:
                 result.playlists = [*result.playlists, await self._parse_playlist(item)]
