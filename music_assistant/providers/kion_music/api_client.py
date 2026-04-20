@@ -18,11 +18,11 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
-from yandex_music import Album as YandexAlbum
-from yandex_music import Artist as YandexArtist
+from yandex_music import Album as KionAlbum
+from yandex_music import Artist as KionArtist
 from yandex_music import ClientAsync, MixLink, Search, TrackShort
-from yandex_music import Playlist as YandexPlaylist
-from yandex_music import Track as YandexTrack
+from yandex_music import Playlist as KionPlaylist
+from yandex_music import Track as KionTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
@@ -190,7 +190,7 @@ class KionMusicClient:
         self,
         station_id: str,
         queue: str | int | None = None,
-    ) -> tuple[list[YandexTrack], str | None]:
+    ) -> tuple[list[KionTrack], str | None]:
         """Get tracks from a rotor station (e.g. user:onyourwave or track:1234).
 
         :param station_id: Station ID (e.g. ROTOR_STATION_MY_MIX or "track:1234" for similar).
@@ -230,7 +230,7 @@ class KionMusicClient:
 
     async def get_my_wave_tracks(
         self, queue: str | int | None = None
-    ) -> tuple[list[YandexTrack], str | None]:
+    ) -> tuple[list[KionTrack], str | None]:
         """Get tracks from the My Mix radio station.
 
         :param queue: Optional track ID of the last track from the previous batch (API uses it for
@@ -320,7 +320,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching liked tracks: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
 
-    async def get_liked_albums(self, batch_size: int = 50) -> list[YandexAlbum]:
+    async def get_liked_albums(self, batch_size: int = 50) -> list[KionAlbum]:
         """Get user's liked albums with full details (including cover art).
 
         The users_likes_albums endpoint returns minimal album data without
@@ -345,7 +345,7 @@ class KionMusicClient:
         if not album_ids:
             return []
         # Fetch full album details in batches to get cover_uri and other metadata
-        full_albums: list[YandexAlbum] = []
+        full_albums: list[KionAlbum] = []
         for i in range(0, len(album_ids), batch_size):
             batch = album_ids[i : i + batch_size]
             try:
@@ -363,7 +363,7 @@ class KionMusicClient:
                         full_albums.append(like.album)
         return full_albums
 
-    async def get_liked_artists(self) -> list[YandexArtist]:
+    async def get_liked_artists(self) -> list[KionArtist]:
         """Get user's liked artists.
 
         :return: List of liked artist objects.
@@ -380,7 +380,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching liked artists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked artists") from err
 
-    async def get_user_playlists(self) -> list[YandexPlaylist]:
+    async def get_user_playlists(self) -> list[KionPlaylist]:
         """Get user's playlists.
 
         :return: List of playlist objects.
@@ -397,7 +397,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching playlists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlists") from err
 
-    async def get_liked_playlists(self) -> list[YandexPlaylist]:
+    async def get_liked_playlists(self) -> list[KionPlaylist]:
         """Get user's liked/saved editorial playlists.
 
         :return: List of liked playlist objects.
@@ -446,7 +446,7 @@ class KionMusicClient:
 
     # Get single items
 
-    async def get_track(self, track_id: str) -> YandexTrack | None:
+    async def get_track(self, track_id: str) -> KionTrack | None:
         """Get a single track by ID.
 
         :param track_id: Track ID.
@@ -466,7 +466,7 @@ class KionMusicClient:
         it's in synced LRC format (with timestamps) or plain text.
 
         Note: This method fetches the track first to check lyrics_available. If you
-        already have the YandexTrack object, use get_track_lyrics_from_track() to
+        already have the KionTrack object, use get_track_lyrics_from_track() to
         avoid a redundant API call.
 
         :param track_id: Track ID.
@@ -487,13 +487,13 @@ class KionMusicClient:
             LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
             return None, False
 
-    async def get_track_lyrics_from_track(self, track: YandexTrack) -> tuple[str | None, bool]:
+    async def get_track_lyrics_from_track(self, track: KionTrack) -> tuple[str | None, bool]:
         """Get lyrics for an already-fetched track.
 
-        Avoids the extra tracks([track_id]) API call when the YandexTrack object
+        Avoids the extra tracks([track_id]) API call when the KionTrack object
         is already available.
 
-        :param track: YandexTrack object (already fetched).
+        :param track: KionTrack object (already fetched).
         :return: Tuple of (lyrics_text, is_synced). Returns (None, False) if unavailable.
         """
         track_id = getattr(track, "id", None) or getattr(track, "track_id", "unknown")
@@ -524,7 +524,7 @@ class KionMusicClient:
             LOGGER.debug("Unexpected error fetching lyrics for track %s: %s", track_id, err)
             return None, False
 
-    async def get_tracks(self, track_ids: list[str]) -> list[YandexTrack]:
+    async def get_tracks(self, track_ids: list[str]) -> list[KionTrack]:
         """Get multiple tracks by IDs.
 
         :param track_ids: List of track IDs.
@@ -541,7 +541,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching tracks (retry failed): %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch tracks") from err
 
-    async def get_album(self, album_id: str) -> YandexAlbum | None:
+    async def get_album(self, album_id: str) -> KionAlbum | None:
         """Get a single album by ID.
 
         :param album_id: Album ID.
@@ -554,7 +554,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching album %s: %s", album_id, err)
             return None
 
-    async def get_album_with_tracks(self, album_id: str) -> YandexAlbum | None:
+    async def get_album_with_tracks(self, album_id: str) -> KionAlbum | None:
         """Get an album with its tracks.
 
         Uses the same semantics as the web client: albums/{id}/with-tracks
@@ -565,7 +565,7 @@ class KionMusicClient:
         :return: Album object with tracks or None if not found.
         """
 
-        async def _fetch(c: ClientAsync) -> YandexAlbum | None:
+        async def _fetch(c: ClientAsync) -> KionAlbum | None:
             try:
                 return await c.albums_with_tracks(
                     album_id,
@@ -583,7 +583,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching album with tracks %s: %s", album_id, err)
             return None
 
-    async def get_artist(self, artist_id: str) -> YandexArtist | None:
+    async def get_artist(self, artist_id: str) -> KionArtist | None:
         """Get a single artist by ID.
 
         :param artist_id: Artist ID.
@@ -598,7 +598,7 @@ class KionMusicClient:
 
     async def get_artist_albums(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
-    ) -> list[YandexAlbum]:
+    ) -> list[KionAlbum]:
         """Get artist's albums.
 
         :param artist_id: Artist ID.
@@ -618,7 +618,7 @@ class KionMusicClient:
 
     async def get_artist_tracks(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
-    ) -> list[YandexTrack]:
+    ) -> list[KionTrack]:
         """Get artist's top tracks.
 
         :param artist_id: Artist ID.
@@ -636,7 +636,7 @@ class KionMusicClient:
             LOGGER.error("Error fetching artist tracks %s: %s", artist_id, err)
             return []
 
-    async def get_playlist(self, user_id: str, playlist_id: str) -> YandexPlaylist | None:
+    async def get_playlist(self, user_id: str, playlist_id: str) -> KionPlaylist | None:
         """Get a playlist by ID.
 
         :param user_id: User ID (owner of the playlist).
@@ -829,7 +829,7 @@ class KionMusicClient:
             LOGGER.debug("Error fetching new playlists: %s", err)
             return None
 
-    async def get_albums(self, album_ids: list[str]) -> list[YandexAlbum]:
+    async def get_albums(self, album_ids: list[str]) -> list[KionAlbum]:
         """Get multiple albums by IDs.
 
         :param album_ids: List of album IDs.
@@ -842,7 +842,7 @@ class KionMusicClient:
             LOGGER.debug("Error fetching albums: %s", err)
             return []
 
-    async def get_playlists(self, playlist_ids: list[str]) -> list[YandexPlaylist]:
+    async def get_playlists(self, playlist_ids: list[str]) -> list[KionPlaylist]:
         """Get multiple playlists by IDs (format: 'uid:kind').
 
         :param playlist_ids: List of playlist IDs in 'uid:kind' format.
@@ -855,7 +855,7 @@ class KionMusicClient:
             LOGGER.debug("Error fetching playlists: %s", err)
             return []
 
-    async def get_tag_playlists(self, tag_id: str) -> list[YandexPlaylist]:
+    async def get_tag_playlists(self, tag_id: str) -> list[KionPlaylist]:
         """Get playlists for a specific tag (mood, era, activity, genre, etc.).
 
         Tags are used for curated collections like 'chill', '80s', 'workout', 'rock', etc.

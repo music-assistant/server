@@ -398,11 +398,11 @@ class KionMusicProvider(MusicProvider):
             if total_track_count >= effective_limit:
                 break
 
-            yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
+            raw_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
             if batch_id:
                 self._my_wave_batch_id = batch_id
                 last_batch_id = batch_id
-            if not self._my_wave_radio_started_sent and yandex_tracks:
+            if not self._my_wave_radio_started_sent and raw_tracks:
                 sent = await self.client.send_rotor_station_feedback(
                     ROTOR_STATION_MY_MIX,
                     "radioStarted",
@@ -411,7 +411,7 @@ class KionMusicProvider(MusicProvider):
                 if sent:
                     self._my_wave_radio_started_sent = True
             first_track_id_this_batch = None
-            for yt in yandex_tracks:
+            for yt in raw_tracks:
                 if total_track_count >= effective_limit:
                     break
 
@@ -430,7 +430,7 @@ class KionMusicProvider(MusicProvider):
             if (
                 first_track_id_this_batch is None
                 or not batch_id
-                or not yandex_tracks
+                or not raw_tracks
                 or total_track_count >= effective_limit
             ):
                 break
@@ -1046,13 +1046,13 @@ class KionMusicProvider(MusicProvider):
                 path,
                 state.last_track_id,
             )
-            yandex_tracks, batch_id = await self.client.get_rotor_station_tracks(
+            raw_tracks, batch_id = await self.client.get_rotor_station_tracks(
                 station_id, queue=state.last_track_id
             )
             if batch_id:
                 state.batch_id = batch_id
 
-            if not state.radio_started_sent and yandex_tracks:
+            if not state.radio_started_sent and raw_tracks:
                 sent = await self.client.send_rotor_station_feedback(
                     station_id,
                     "radioStarted",
@@ -1063,7 +1063,7 @@ class KionMusicProvider(MusicProvider):
 
             tracks: list[Track] = []
             first_track_id: str | None = None
-            for yt in yandex_tracks:
+            for yt in raw_tracks:
                 if len(state.seen_track_ids) >= max_tracks:
                     break
                 track = self._parse_my_wave_track(yt, state.seen_track_ids)
@@ -1409,14 +1409,14 @@ class KionMusicProvider(MusicProvider):
         :return: Track object.
         :raises MediaNotFoundError: If track not found.
         """
-        yandex_track = await self.client.get_track(track_id)
-        if not yandex_track:
+        raw_track = await self.client.get_track(track_id)
+        if not raw_track:
             raise MediaNotFoundError(f"Track {track_id} not found")
 
         # Use the already-fetched track object to avoid a duplicate API call
-        lyrics, lyrics_synced = await self.client.get_track_lyrics_from_track(yandex_track)
+        lyrics, lyrics_synced = await self.client.get_track_lyrics_from_track(raw_track)
 
-        return parse_track(self, yandex_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
+        return parse_track(self, raw_track, lyrics=lyrics, lyrics_synced=lyrics_synced)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by ID.
@@ -1525,10 +1525,10 @@ class KionMusicProvider(MusicProvider):
                 if len(self._my_wave_seen_track_ids) >= max_tracks_config:
                     break
 
-                yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
+                raw_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
                 if batch_id:
                     self._my_wave_batch_id = batch_id
-                if not self._my_wave_radio_started_sent and yandex_tracks:
+                if not self._my_wave_radio_started_sent and raw_tracks:
                     sent = await self.client.send_rotor_station_feedback(
                         ROTOR_STATION_MY_MIX,
                         "radioStarted",
@@ -1537,11 +1537,11 @@ class KionMusicProvider(MusicProvider):
                     if sent:
                         self._my_wave_radio_started_sent = True
 
-                if not yandex_tracks:
+                if not raw_tracks:
                     break
 
                 first_track_id_this_batch = None
-                for yt in yandex_tracks:
+                for yt in raw_tracks:
                     if len(self._my_wave_seen_track_ids) >= max_tracks_config:
                         break
 
@@ -1656,9 +1656,9 @@ class KionMusicProvider(MusicProvider):
         """
         track_id, _ = _parse_radio_item_id(prov_track_id)
         station_id = f"track:{track_id}"
-        yandex_tracks, _ = await self.client.get_rotor_station_tracks(station_id, queue=None)
+        raw_tracks, _ = await self.client.get_rotor_station_tracks(station_id, queue=None)
         tracks = []
-        for yt in yandex_tracks[:limit]:
+        for yt in raw_tracks[:limit]:
             try:
                 tracks.append(parse_track(self, yt))
             except InvalidDataError as err:
@@ -1739,12 +1739,12 @@ class KionMusicProvider(MusicProvider):
             if len(seen_track_ids) >= max_tracks_config:
                 break
 
-            yandex_tracks, _ = await self.client.get_my_wave_tracks(queue=queue)
-            if not yandex_tracks:
+            raw_tracks, _ = await self.client.get_my_wave_tracks(queue=queue)
+            if not raw_tracks:
                 break
 
             first_track_id_this_batch = None
-            for yt in yandex_tracks:
+            for yt in raw_tracks:
                 if len(seen_track_ids) >= max_tracks_config:
                     break
 

@@ -27,17 +27,17 @@ from music_assistant.helpers.util import parse_title_and_version
 
 from .constants import (
     IMAGE_SIZE_LARGE,
+    KION_SYSTEM_OWNER_NAMES,
     PROVIDER_DISPLAY_NAME_EN,
     PROVIDER_DISPLAY_NAME_RU,
     WEB_BASE_URL,
-    YANDEX_SYSTEM_OWNER_NAMES,
 )
 
 if TYPE_CHECKING:
-    from yandex_music import Album as YandexAlbum
-    from yandex_music import Artist as YandexArtist
-    from yandex_music import Playlist as YandexPlaylist
-    from yandex_music import Track as YandexTrack
+    from yandex_music import Album as KionAlbum
+    from yandex_music import Artist as KionArtist
+    from yandex_music import Playlist as KionPlaylist
+    from yandex_music import Track as KionTrack
 
     from .provider import KionMusicProvider
 
@@ -69,7 +69,7 @@ def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str |
     return f"https://{cover_uri.replace('%%', size)}"
 
 
-def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artist:
+def parse_artist(provider: KionMusicProvider, artist_obj: KionArtist) -> Artist:
     """Parse Kion artist object to MA Artist model.
 
     :param provider: The KION Music provider instance.
@@ -77,7 +77,7 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
     :return: Music Assistant Artist model.
     """
     if artist_obj.id is None:
-        raise InvalidDataError("Yandex artist missing id")
+        raise InvalidDataError("Kion artist missing id")
     artist_id = str(artist_obj.id)
     artist = Artist(
         item_id=artist_id,
@@ -124,7 +124,7 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
     return artist
 
 
-def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
+def parse_album(provider: KionMusicProvider, album_obj: KionAlbum) -> Album:
     """Parse Kion album object to MA Album model.
 
     :param provider: The KION Music provider instance.
@@ -132,7 +132,7 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
     :return: Music Assistant Album model.
     """
     if album_obj.id is None:
-        raise InvalidDataError("Yandex album missing id")
+        raise InvalidDataError("Kion album missing id")
     name, version = parse_title_and_version(
         album_obj.title or "Unknown Album",
         album_obj.version or None,
@@ -222,7 +222,7 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
 
 def parse_track(
     provider: KionMusicProvider,
-    track_obj: YandexTrack,
+    track_obj: KionTrack,
     lyrics: str | None = None,
     lyrics_synced: bool = False,
 ) -> Track:
@@ -235,7 +235,7 @@ def parse_track(
     :return: Music Assistant Track model.
     """
     if track_obj.id is None:
-        raise InvalidDataError("Yandex track missing id")
+        raise InvalidDataError("Kion track missing id")
     name, version = parse_title_and_version(
         track_obj.title or "Unknown Track",
         track_obj.version or None,
@@ -313,7 +313,7 @@ def parse_track(
 
 
 def parse_playlist(
-    provider: KionMusicProvider, playlist_obj: YandexPlaylist, owner_name: str | None = None
+    provider: KionMusicProvider, playlist_obj: KionPlaylist, owner_name: str | None = None
 ) -> Playlist:
     """Parse Kion playlist object to MA Playlist model.
 
@@ -340,7 +340,7 @@ def parse_playlist(
             owner_name = get_canonical_provider_name(provider)
 
     # Normalize all known system account name variants to locale-aware canonical form
-    if owner_name and owner_name.lower() in YANDEX_SYSTEM_OWNER_NAMES:
+    if owner_name and owner_name.lower() in KION_SYSTEM_OWNER_NAMES:
         owner_name = get_canonical_provider_name(provider)
 
     playlist = Playlist(

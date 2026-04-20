@@ -51,7 +51,7 @@ PROVIDER_DISPLAY_NAME_EN: Final[str] = "KION Music"
 
 # Known API-returned system owner name variants (all locales/capitalizations)
 # All entries are lowercase; compare with owner_name.lower() for case-insensitive lookup
-YANDEX_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
+KION_SYSTEM_OWNER_NAMES: Final[frozenset[str]] = frozenset(
     {
         "кион музыка",
         "кион.музыка",
