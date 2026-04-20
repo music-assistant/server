@@ -40,7 +40,7 @@ class TestWebSearchFallback:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        provider.http_session = MagicMock()  # type: ignore[assignment]
+        provider.http_session = MagicMock()
         provider.http_session.get = MagicMock(return_value=mock_resp)
 
         provider._api_get = AsyncMock(  # type: ignore[method-assign]
@@ -72,7 +72,7 @@ class TestWebSearchFallback:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        provider.http_session = MagicMock()  # type: ignore[assignment]
+        provider.http_session = MagicMock()
         provider.http_session.get = MagicMock(return_value=mock_resp)
 
         provider._api_get = AsyncMock(  # type: ignore[method-assign]
@@ -103,7 +103,7 @@ class TestWebSearchFallback:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        provider.http_session = MagicMock()  # type: ignore[assignment]
+        provider.http_session = MagicMock()
         provider.http_session.get = MagicMock(return_value=mock_resp)
 
         result = await provider._web_search_fallback("nope", [MediaType.ARTIST], limit=10)
@@ -118,7 +118,7 @@ class TestWebSearchFallback:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        provider.http_session = MagicMock()  # type: ignore[assignment]
+        provider.http_session = MagicMock()
         provider.http_session.get = MagicMock(return_value=mock_resp)
 
         result = await provider._web_search_fallback("test", [MediaType.ARTIST], limit=10)
