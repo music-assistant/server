@@ -151,6 +151,7 @@ AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "pro
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
+CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
 MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
 THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup"
@@ -212,6 +213,16 @@ class MetaDataController(CoreController):
                 "The retrieval of additional rich metadata is a process that is executed slowly "
                 "in the background to not overload these free services with requests. "
                 "You can speedup the process by storing the images and other metadata locally.",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_RADIO_METADATA_LOOKUP,
+                type=ConfigEntryType.BOOLEAN,
+                label="Enable artist/track artwork lookup for radio streams",
+                required=False,
+                default_value=True,
+                description="Look up artist and track artwork for radio streams "
+                "from online sources when the station provides Artist - Track metadata.\n\n"
+                "When disabled, radio streams show only the station logo (when available).",
             ),
             ConfigEntry(
                 key=CONF_THUMB_CACHE_MAX_SIZE,
@@ -1161,6 +1172,10 @@ class MetaDataController(CoreController):
 
         :param streamdetails: StreamDetails to update with artwork.
         """
+        if not self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_ENABLE_RADIO_METADATA_LOOKUP, True
+        ):
+            return
         if not streamdetails.stream_metadata:
             return
         if not streamdetails.stream_metadata.artist or not streamdetails.stream_metadata.title:
