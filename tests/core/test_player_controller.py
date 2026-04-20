@@ -334,9 +334,7 @@ class TestSetMembersDebounce:
         assert adds == {"member_a", "member_b", "member_c"}
         assert removes == set()
 
-    async def test_add_then_remove_same_player_nets_to_remove(
-        self, mock_mass: MagicMock
-    ) -> None:
+    async def test_add_then_remove_same_player_nets_to_remove(self, mock_mass: MagicMock) -> None:
         """An add followed by a remove on the same player forwards only the remove."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -377,9 +375,7 @@ class TestSetMembersDebounce:
         assert removes == {"member_x"}
         assert "member_x" not in adds
 
-    async def test_unrelated_targets_dont_block_each_other(
-        self, mock_mass: MagicMock
-    ) -> None:
+    async def test_unrelated_targets_dont_block_each_other(self, mock_mass: MagicMock) -> None:
         """Rapid adds on two different targets are each forwarded once."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -402,8 +398,7 @@ class TestSetMembersDebounce:
             "member_y": member_y,
         }
         controller._player_throttlers = {
-            pid: Throttler(1, 0.05)
-            for pid in ("leader_a", "leader_b", "member_x", "member_y")
+            pid: Throttler(1, 0.05) for pid in ("leader_a", "leader_b", "member_x", "member_y")
         }
         mock_mass.players = controller
         for p in (leader_a, leader_b, member_x, member_y):
@@ -428,9 +423,7 @@ class TestSetMembersDebounce:
         assert {c[0] for c in handle_calls} == {"leader_a", "leader_b"}
         assert len(handle_calls) == 2
 
-    async def test_caller_awaits_until_flush_completes(
-        self, mock_mass: MagicMock
-    ) -> None:
+    async def test_caller_awaits_until_flush_completes(self, mock_mass: MagicMock) -> None:
         """cmd_set_members must not return before _handle_set_members ran."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)

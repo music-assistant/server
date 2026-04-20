@@ -544,4 +544,3 @@ class TestSetMembersDoesNotRegisterIncompatible:
         assert "member" in sgp._attr_group_members
         # but _handle_set_members on the leader is not called (no leader yet)
         mass.players._handle_set_members.assert_not_awaited()
-
