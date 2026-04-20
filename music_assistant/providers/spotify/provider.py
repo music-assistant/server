@@ -635,7 +635,7 @@ class SpotifyProvider(MusicProvider):
         return [
             parse_album(item, self)
             async for item in self._get_all_items(
-                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation"
+                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation", limit=10
             )
             if (item and item["id"])
         ]
@@ -1121,10 +1121,9 @@ class SpotifyProvider(MusicProvider):
         return chapters_data
 
     async def _get_all_items(
-        self, endpoint: str, key: str = "items", **kwargs: Any
+        self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Get all items from a paged list."""
-        limit = 50
         offset = 0
         # do single request to get the etag (which we use as checksum for caching)
         cache_checksum = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
