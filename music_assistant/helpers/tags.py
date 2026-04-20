@@ -898,11 +898,11 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     if tags.get("cpil"):  # type: ignore[no-untyped-call]
         result["compilation"] = "1" if tags["cpil"] else "0"
 
-    # Album type (MusicBrainz)
+    # album type may be multi-value; join them
     if "----:com.apple.iTunes:MusicBrainz Album Type" in tags:
-        result["musicbrainzalbumtype"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:MusicBrainz Album Type"]
-        )
+        albumtypes = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:MusicBrainz Album Type"])
+        if albumtypes:
+            result["musicbrainzalbumtype"] = ";".join(albumtypes)
 
     # ReplayGain tags
     if "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN" in tags:
@@ -971,6 +971,9 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
         result["musicbrainzalbumartistid"] = tags["TXXX:MusicBrainz Album Artist Id"].text
     if "TXXX:MusicBrainz Artist Id" in tags:
         result["musicbrainzartistid"] = tags["TXXX:MusicBrainz Artist Id"].text
+    # album type may be multi-value; join them
+    if "TXXX:MusicBrainz Album Type" in tags:
+        result["musicbrainzalbumtype"] = ";".join(tags["TXXX:MusicBrainz Album Type"].text)
 
     # Additional tags
     if "TXXX:BARCODE" in tags:
@@ -1114,13 +1117,13 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     if compilation := _vorbis_get_single(tags, "COMPILATION"):
         result["compilation"] = compilation
 
-    # Album type (MusicBrainz)
-    if albumtype := _vorbis_get_single(tags, "MUSICBRAINZ_ALBUMTYPE"):
-        result["musicbrainzalbumtype"] = albumtype
-    # Also check RELEASETYPE which is an alternative tag name
+    # album type may be multi-value (repeated fields); join them
+    if albumtypes := _vorbis_get_multi(tags, "MUSICBRAINZ_ALBUMTYPE"):
+        result["musicbrainzalbumtype"] = ";".join(albumtypes)
+    # RELEASETYPE is an alternative tag name for the same field
     if not result.get("musicbrainzalbumtype"):
-        if releasetype := _vorbis_get_single(tags, "RELEASETYPE"):
-            result["musicbrainzalbumtype"] = releasetype
+        if releasetypes := _vorbis_get_multi(tags, "RELEASETYPE"):
+            result["musicbrainzalbumtype"] = ";".join(releasetypes)
 
     # ReplayGain tags
     if rg_track := _vorbis_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):
@@ -1259,9 +1262,9 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
     if compilation := _apev2_get_single(tags, "Compilation"):
         result["compilation"] = compilation
 
-    # Album type
-    if albumtype := _apev2_get_single(tags, "MUSICBRAINZ_ALBUMTYPE"):
-        result["musicbrainzalbumtype"] = albumtype
+    # album type may be multi-value; join them
+    if albumtypes := _apev2_get_multi(tags, "MUSICBRAINZ_ALBUMTYPE"):
+        result["musicbrainzalbumtype"] = ";".join(albumtypes)
 
     # ReplayGain tags
     if rg_track := _apev2_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):

@@ -377,6 +377,25 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzrecordingid") == "mb-track-id"
 
 
+def test_parse_vorbis_multi_value_releasetype() -> None:
+    """Picard writes MB album type as repeated Vorbis fields; both values must be kept."""
+    mock_tags = _create_mock_vorbis_tags({"RELEASETYPE": ["album", "live"]})
+    result = _parse_vorbis_tags(mock_tags)
+    assert result.get("musicbrainzalbumtype") == "album;live"
+
+
+def test_parse_vorbis_multi_value_musicbrainz_albumtype() -> None:
+    """MUSICBRAINZ_ALBUMTYPE takes precedence and also supports multi-value."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "MUSICBRAINZ_ALBUMTYPE": ["album", "compilation"],
+            "RELEASETYPE": ["ignored"],
+        }
+    )
+    result = _parse_vorbis_tags(mock_tags)
+    assert result.get("musicbrainzalbumtype") == "album;compilation"
+
+
 def _create_mock_apev2_tags(tag_dict: dict[str, str]) -> MagicMock:
     r"""Create a mock APEv2 tags object.
 
