@@ -12,7 +12,7 @@
   ],
   "documentation": "https://music-assistant.io/music-providers/kion-music/",
   "requirements": [
-    "yandex-music==2.2.0"
+    "yandex-music==3.0.0"
   ],
   "multi_instance": true
 }

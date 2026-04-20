@@ -726,7 +726,9 @@ class KionMusicClient:
         def _parse_file_info_result(raw: dict[str, Any] | None) -> dict[str, Any] | None:
             if not raw or not isinstance(raw, dict):
                 return None
-            download_info = raw.get("download_info")
+            # yandex-music v3 no longer normalises camelCase keys inside
+            # Response.result, so /get-file-info returns "downloadInfo" as-is.
+            download_info = raw.get("download_info") or raw.get("downloadInfo")
             if not download_info or not download_info.get("url"):
                 return None
 

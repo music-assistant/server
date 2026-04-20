@@ -11,6 +11,7 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
 )
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -75,6 +76,8 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
     :param artist_obj: Kion artist object.
     :return: Music Assistant Artist model.
     """
+    if artist_obj.id is None:
+        raise InvalidDataError("Yandex artist missing id")
     artist_id = str(artist_obj.id)
     artist = Artist(
         item_id=artist_id,
@@ -128,6 +131,8 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
     :param album_obj: Kion album object.
     :return: Music Assistant Album model.
     """
+    if album_obj.id is None:
+        raise InvalidDataError("Yandex album missing id")
     name, version = parse_title_and_version(
         album_obj.title or "Unknown Album",
         album_obj.version or None,
@@ -229,6 +234,8 @@ def parse_track(
     :param lyrics_synced: Whether lyrics are in synced LRC format.
     :return: Music Assistant Track model.
     """
+    if track_obj.id is None:
+        raise InvalidDataError("Yandex track missing id")
     name, version = parse_title_and_version(
         track_obj.title or "Unknown Track",
         track_obj.version or None,
