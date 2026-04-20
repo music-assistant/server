@@ -133,7 +133,7 @@ def parse_artist(
             artist.metadata.description = description
         stats = getattr(about, "stats", None)
         monthly = getattr(stats, "last_month_listeners", None) if stats else None
-        if monthly:
+        if monthly is not None:
             artist.metadata.popularity = max(0, min(100, monthly // 10000))
 
     return artist

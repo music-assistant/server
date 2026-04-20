@@ -858,7 +858,12 @@ class YandexMusicClient:
                     transport,
                 )
                 return parsed
-        except (BadRequestError, NetworkError) as err:
+        except (
+            BadRequestError,
+            NetworkError,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+        ) as err:
             LOGGER.debug(
                 "get-file-info for track %s: %s %s",
                 track_id,
