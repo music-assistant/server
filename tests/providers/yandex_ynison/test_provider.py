@@ -42,6 +42,15 @@ from music_assistant.providers.yandex_ynison.streaming import (
 from music_assistant.providers.yandex_ynison.ynison_client import YnisonState
 
 
+def _stub_attr(obj: object, name: str, value: Any) -> None:
+    """Assign ``value`` to ``obj.name`` bypassing mypy method-assign and ruff B010.
+
+    Used in tests to replace a real instance method on a strictly typed object
+    (e.g. ``provider.mass.get_provider``) with a MagicMock.
+    """
+    setattr(obj, name, value)
+
+
 def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
     """Create a mock ProviderConfig."""
     defaults: dict[str, Any] = {
@@ -1116,7 +1125,7 @@ class TestResolveTokenBorrowMode:
         provider = _make_provider()
         provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token="ym-music-token")
-        provider.mass.get_provider = MagicMock(return_value=ym)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
         result = await provider._resolve_token()
 
@@ -1127,7 +1136,7 @@ class TestResolveTokenBorrowMode:
         provider = _make_provider()
         provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token=None, x_token="ym-x-token")
-        provider.mass.get_provider = MagicMock(return_value=ym)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
         with patch(
             "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
@@ -1144,7 +1153,7 @@ class TestResolveTokenBorrowMode:
         provider = _make_provider()
         provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token=None, x_token=None)
-        provider.mass.get_provider = MagicMock(return_value=ym)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
         with pytest.raises(LoginFailed, match="no credentials"):
             await provider._resolve_token()
@@ -1153,7 +1162,7 @@ class TestResolveTokenBorrowMode:
         """Raises LoginFailed with a distinct 'not loaded' message when YM is missing."""
         provider = _make_provider()
         provider._ym_instance_id = "ym-inst"
-        provider.mass.get_provider = MagicMock(return_value=None)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=None))
 
         with pytest.raises(LoginFailed, match="not loaded"):
             await provider._resolve_token()
@@ -1164,7 +1173,7 @@ class TestResolveTokenBorrowMode:
         provider._ym_instance_id = "some-other-id"
         wrong = _make_ym_provider_stub()
         wrong.domain = "spotify"  # not yandex_music
-        provider.mass.get_provider = MagicMock(return_value=wrong)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=wrong))
 
         with pytest.raises(LoginFailed, match="not a Yandex Music"):
             await provider._resolve_token()
@@ -1186,9 +1195,10 @@ class TestRefreshYnisonToken:
         provider = _make_provider()
         provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token="stale", x_token="ym-x-token")
-        provider.mass.get_provider = MagicMock(return_value=ym)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
         # Ensure config writes are not invoked
-        provider._update_config_value = MagicMock()
+        mock_update_config = MagicMock()
+        _stub_attr(provider, "_update_config_value", mock_update_config)
 
         with patch(
             "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
@@ -1199,14 +1209,14 @@ class TestRefreshYnisonToken:
 
         assert result.get_secret() == "fresh-token"
         mock_refresh.assert_awaited_once()
-        provider._update_config_value.assert_not_called()
+        mock_update_config.assert_not_called()
 
     async def test_borrow_mode_raises_without_x_token(self) -> None:
         """Raises LoginFailed when YM has no x_token for refresh."""
         provider = _make_provider()
         provider._ym_instance_id = "ym-inst"
         ym = _make_ym_provider_stub(token="only-token", x_token=None)
-        provider.mass.get_provider = MagicMock(return_value=ym)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=ym))
 
         with pytest.raises(LoginFailed, match="no x_token"):
             await provider._refresh_ynison_token()
@@ -1215,7 +1225,7 @@ class TestRefreshYnisonToken:
         """Raises LoginFailed with a distinct 'not loaded' message on reactive refresh."""
         provider = _make_provider()
         provider._ym_instance_id = "ym-inst"
-        provider.mass.get_provider = MagicMock(return_value=None)
+        _stub_attr(provider.mass, "get_provider", MagicMock(return_value=None))
 
         with pytest.raises(LoginFailed, match="not loaded"):
             await provider._refresh_ynison_token()
@@ -1229,7 +1239,7 @@ class TestYandexProviderMatch:
         provider = _make_provider()
         provider._ym_instance_id = "wanted"
         other = _make_ym_provider_stub(instance_id="other")
-        provider.mass.get_providers = MagicMock(return_value=[other])
+        _stub_attr(provider.mass, "get_providers", MagicMock(return_value=[other]))
 
         await provider._check_yandex_provider_match()
 
@@ -1241,7 +1251,7 @@ class TestYandexProviderMatch:
         provider._ym_instance_id = "wanted"
         wanted = _make_ym_provider_stub(instance_id="wanted")
         other = _make_ym_provider_stub(instance_id="other")
-        provider.mass.get_providers = MagicMock(return_value=[other, wanted])
+        _stub_attr(provider.mass, "get_providers", MagicMock(return_value=[other, wanted]))
 
         await provider._check_yandex_provider_match()
 
@@ -1252,7 +1262,7 @@ class TestYandexProviderMatch:
         provider = _make_provider()
         provider._ym_instance_id = None
         ym = _make_ym_provider_stub(instance_id="any")
-        provider.mass.get_providers = MagicMock(return_value=[ym])
+        _stub_attr(provider.mass, "get_providers", MagicMock(return_value=[ym]))
 
         await provider._check_yandex_provider_match()
 

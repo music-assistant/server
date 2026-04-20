@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-from provider import get_config_entries
+from music_assistant.providers.yandex_ynison import get_config_entries
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_TOKEN,
     CONF_YM_INSTANCE,
