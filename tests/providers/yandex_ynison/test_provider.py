@@ -18,16 +18,17 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import LoginFailed, UnsupportedFeaturedException
 from ya_passport_auth import SecretStr
 
-from music_assistant.providers.yandex_ynison.config_helpers import find_sibling_token
+from music_assistant.providers.yandex_ynison.config_helpers import list_yandex_music_instances
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
     CONF_TOKEN,
-    CONF_X_TOKEN,
+    CONF_YM_INSTANCE,
     DEFAULT_DISPLAY_NAME,
     PLAYER_ID_AUTO,
+    YM_INSTANCE_OWN,
 )
 from music_assistant.providers.yandex_ynison.provider import (
     _API_MAX_RETRIES,
@@ -45,7 +46,7 @@ def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
     """Create a mock ProviderConfig."""
     defaults: dict[str, Any] = {
         CONF_TOKEN: "test-music-token",
-        CONF_X_TOKEN: None,
+        CONF_YM_INSTANCE: YM_INSTANCE_OWN,
         CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
         CONF_ALLOW_PLAYER_SWITCH: True,
         CONF_PUBLISH_NAME: DEFAULT_DISPLAY_NAME,
@@ -1065,58 +1066,197 @@ class TestPCMNormalization:
         assert collected == []
 
 
-class TestResolveToken:
-    """Tests for _resolve_token self-healing logic."""
+def _make_ym_provider_stub(
+    instance_id: str = "ym-inst",
+    token: str | None = None,
+    x_token: str | None = None,
+) -> MagicMock:
+    """Build a stub yandex_music provider with a config exposing token/x_token."""
+    values: dict[str, Any] = {"token": token, "x_token": x_token}
+    ym_config = MagicMock()
+    ym_config.get_value.side_effect = values.get
+    ym = MagicMock()
+    ym.instance_id = instance_id
+    ym.domain = "yandex_music"
+    ym.type = ProviderType.MUSIC
+    ym.config = ym_config
+    return ym
 
-    async def test_prefers_x_token_refresh(self) -> None:
-        """When x_token is available, refreshes music token instead of using stored one."""
+
+class TestResolveTokenOwnMode:
+    """_resolve_token in own mode (manual token, no refresh)."""
+
+    async def test_returns_stored_token(self) -> None:
+        """Returns the manually configured music token as-is."""
         provider = _make_provider()
         provider.config = _make_mock_config(
-            {CONF_TOKEN: "old-stored-token", CONF_X_TOKEN: "my-x-token"}
+            {CONF_TOKEN: "manual-token", CONF_YM_INSTANCE: YM_INSTANCE_OWN}
         )
-
-        with patch(
-            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
-            new_callable=AsyncMock,
-            return_value=SecretStr("fresh-music-token"),
-        ) as mock_refresh:
-            result = await provider._resolve_token()
-
-        assert result.get_secret() == "fresh-music-token"
-        mock_refresh.assert_awaited_once()
-
-    async def test_falls_back_to_stored_on_refresh_failure(self) -> None:
-        """Falls back to stored token when x_token refresh fails with non-auth error."""
-        provider = _make_provider()
-        provider.config = _make_mock_config(
-            {CONF_TOKEN: "old-stored-token", CONF_X_TOKEN: "my-x-token"}
-        )
-
-        with patch(
-            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
-            new_callable=AsyncMock,
-            side_effect=TimeoutError("network"),
-        ):
-            result = await provider._resolve_token()
-
-        assert result.get_secret() == "old-stored-token"
-
-    async def test_uses_stored_token_when_no_x_token(self) -> None:
-        """Returns stored music token when x_token is not configured."""
-        provider = _make_provider()
-        provider.config = _make_mock_config({CONF_TOKEN: "stored", CONF_X_TOKEN: None})
+        provider._ym_instance_id = None
 
         result = await provider._resolve_token()
 
-        assert result.get_secret() == "stored"
+        assert result.get_secret() == "manual-token"
 
-    async def test_raises_when_no_tokens(self) -> None:
-        """Raises LoginFailed when neither token is configured."""
+    async def test_raises_when_no_token(self) -> None:
+        """Raises LoginFailed when CONF_TOKEN is empty."""
         provider = _make_provider()
-        provider.config = _make_mock_config({CONF_TOKEN: None, CONF_X_TOKEN: None})
+        provider.config = _make_mock_config({CONF_TOKEN: None, CONF_YM_INSTANCE: YM_INSTANCE_OWN})
+        provider._ym_instance_id = None
 
         with pytest.raises(LoginFailed, match="No Yandex Music token"):
             await provider._resolve_token()
+
+
+class TestResolveTokenBorrowMode:
+    """_resolve_token in borrow mode (reads from linked yandex_music instance)."""
+
+    async def test_uses_ym_token_when_available(self) -> None:
+        """Returns the music token from the linked YM instance config."""
+        provider = _make_provider()
+        provider._ym_instance_id = "ym-inst"
+        ym = _make_ym_provider_stub(token="ym-music-token")
+        provider.mass.get_provider = MagicMock(return_value=ym)
+
+        result = await provider._resolve_token()
+
+        assert result.get_secret() == "ym-music-token"
+
+    async def test_refreshes_in_memory_when_only_x_token(self) -> None:
+        """Falls back to in-memory refresh via x_token; does not write config."""
+        provider = _make_provider()
+        provider._ym_instance_id = "ym-inst"
+        ym = _make_ym_provider_stub(token=None, x_token="ym-x-token")
+        provider.mass.get_provider = MagicMock(return_value=ym)
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
+            new_callable=AsyncMock,
+            return_value=SecretStr("fresh-token"),
+        ) as mock_refresh:
+            result = await provider._resolve_token()
+
+        assert result.get_secret() == "fresh-token"
+        mock_refresh.assert_awaited_once()
+
+    async def test_raises_when_ym_has_no_credentials(self) -> None:
+        """Raises LoginFailed when YM instance config has neither token nor x_token."""
+        provider = _make_provider()
+        provider._ym_instance_id = "ym-inst"
+        ym = _make_ym_provider_stub(token=None, x_token=None)
+        provider.mass.get_provider = MagicMock(return_value=ym)
+
+        with pytest.raises(LoginFailed, match="no credentials"):
+            await provider._resolve_token()
+
+    async def test_raises_when_ym_instance_unavailable(self) -> None:
+        """Raises LoginFailed with a distinct 'not loaded' message when YM is missing."""
+        provider = _make_provider()
+        provider._ym_instance_id = "ym-inst"
+        provider.mass.get_provider = MagicMock(return_value=None)
+
+        with pytest.raises(LoginFailed, match="not loaded"):
+            await provider._resolve_token()
+
+    async def test_raises_when_linked_provider_is_not_yandex_music(self) -> None:
+        """Stale/edited instance id pointing at a non-YM provider yields a clear error."""
+        provider = _make_provider()
+        provider._ym_instance_id = "some-other-id"
+        wrong = _make_ym_provider_stub()
+        wrong.domain = "spotify"  # not yandex_music
+        provider.mass.get_provider = MagicMock(return_value=wrong)
+
+        with pytest.raises(LoginFailed, match="not a Yandex Music"):
+            await provider._resolve_token()
+
+
+class TestRefreshYnisonToken:
+    """_refresh_ynison_token on YnisonClient auth-failure callback."""
+
+    async def test_own_mode_raises_login_failed(self) -> None:
+        """In own mode, no refresh path — surface LoginFailed for manual re-entry."""
+        provider = _make_provider()
+        provider._ym_instance_id = None
+
+        with pytest.raises(LoginFailed, match="re-enter"):
+            await provider._refresh_ynison_token()
+
+    async def test_borrow_mode_refreshes_from_ym_x_token(self) -> None:
+        """Reads x_token from linked YM and refreshes in-memory only."""
+        provider = _make_provider()
+        provider._ym_instance_id = "ym-inst"
+        ym = _make_ym_provider_stub(token="stale", x_token="ym-x-token")
+        provider.mass.get_provider = MagicMock(return_value=ym)
+        # Ensure config writes are not invoked
+        provider._update_config_value = MagicMock()
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
+            new_callable=AsyncMock,
+            return_value=SecretStr("fresh-token"),
+        ) as mock_refresh:
+            result = await provider._refresh_ynison_token()
+
+        assert result.get_secret() == "fresh-token"
+        mock_refresh.assert_awaited_once()
+        provider._update_config_value.assert_not_called()
+
+    async def test_borrow_mode_raises_without_x_token(self) -> None:
+        """Raises LoginFailed when YM has no x_token for refresh."""
+        provider = _make_provider()
+        provider._ym_instance_id = "ym-inst"
+        ym = _make_ym_provider_stub(token="only-token", x_token=None)
+        provider.mass.get_provider = MagicMock(return_value=ym)
+
+        with pytest.raises(LoginFailed, match="no x_token"):
+            await provider._refresh_ynison_token()
+
+    async def test_borrow_mode_raises_when_ym_not_loaded(self) -> None:
+        """Raises LoginFailed with a distinct 'not loaded' message on reactive refresh."""
+        provider = _make_provider()
+        provider._ym_instance_id = "ym-inst"
+        provider.mass.get_provider = MagicMock(return_value=None)
+
+        with pytest.raises(LoginFailed, match="not loaded"):
+            await provider._refresh_ynison_token()
+
+
+class TestYandexProviderMatch:
+    """_check_yandex_provider_match obeys _ym_instance_id in borrow mode."""
+
+    async def test_borrow_mode_ignores_other_ym_instances(self) -> None:
+        """Does not link to a YM instance with a different instance_id."""
+        provider = _make_provider()
+        provider._ym_instance_id = "wanted"
+        other = _make_ym_provider_stub(instance_id="other")
+        provider.mass.get_providers = MagicMock(return_value=[other])
+
+        await provider._check_yandex_provider_match()
+
+        assert provider._yandex_provider is None
+
+    async def test_borrow_mode_matches_on_instance_id(self) -> None:
+        """Links to the specific YM instance requested by config."""
+        provider = _make_provider()
+        provider._ym_instance_id = "wanted"
+        wanted = _make_ym_provider_stub(instance_id="wanted")
+        other = _make_ym_provider_stub(instance_id="other")
+        provider.mass.get_providers = MagicMock(return_value=[other, wanted])
+
+        await provider._check_yandex_provider_match()
+
+        assert provider._yandex_provider is wanted
+
+    async def test_own_mode_accepts_any_ym(self) -> None:
+        """In own mode, the first available yandex_music provider is used."""
+        provider = _make_provider()
+        provider._ym_instance_id = None
+        ym = _make_ym_provider_stub(instance_id="any")
+        provider.mass.get_providers = MagicMock(return_value=[ym])
+
+        await provider._check_yandex_provider_match()
+
+        assert provider._yandex_provider is ym
 
 
 # ------------------------------------------------------------------
@@ -1142,69 +1282,38 @@ class TestInstanceNamePostfix:
 
 
 # ------------------------------------------------------------------
-# Sibling token detection
+# Yandex Music instance enumeration
 # ------------------------------------------------------------------
 
 
-class TestSiblingTokenDetection:
-    """Tests for find_sibling_token."""
+class TestListYandexMusicInstances:
+    """Tests for list_yandex_music_instances."""
 
-    def test_finds_sibling_token(self) -> None:
-        """Detects token from an existing sibling ynison instance."""
-        mass = _make_mock_mass()
-        mass.config.decrypt_string = lambda s: s
-        mass.config.get = MagicMock(
-            return_value={
-                "inst1": {
-                    "domain": "yandex_ynison",
-                    "instance_id": "inst1",
-                    "values": {CONF_TOKEN: "sibling-token", CONF_X_TOKEN: "sibling-x-token"},
-                }
-            }
-        )
-        token, x_token = find_sibling_token(mass, instance_id="inst2")
-        assert token == "sibling-token"
-        assert x_token == "sibling-x-token"
-
-    def test_skips_own_instance(self) -> None:
-        """Does not reuse its own token."""
-        mass = _make_mock_mass()
-        mass.config.get = MagicMock(
-            return_value={
-                "inst1": {
-                    "domain": "yandex_ynison",
-                    "instance_id": "inst1",
-                    "values": {CONF_TOKEN: "my-token"},
-                }
-            }
-        )
-        token, x_token = find_sibling_token(mass, instance_id="inst1")
-        assert token is None
-        assert x_token is None
-
-    def test_returns_none_when_no_siblings(self) -> None:
-        """Returns None when no sibling instances exist."""
+    def test_returns_empty_when_none_configured(self) -> None:
+        """Empty list when no yandex_music instances exist."""
         mass = _make_mock_mass()
         mass.config.get = MagicMock(return_value={})
-        token, x_token = find_sibling_token(mass, instance_id=None)
-        assert token is None
-        assert x_token is None
+        assert list_yandex_music_instances(mass) == []
 
-    def test_skips_other_domains(self) -> None:
-        """Ignores instances from other provider domains."""
+    def test_lists_instances_with_display_name(self) -> None:
+        """Returns (instance_id, display_name) pairs for yandex_music domains."""
         mass = _make_mock_mass()
         mass.config.get = MagicMock(
             return_value={
-                "inst1": {
-                    "domain": "yandex_music",
-                    "instance_id": "inst1",
-                    "values": {CONF_TOKEN: "other-token"},
-                }
+                "ym-a": {"domain": "yandex_music", "name": "Main Account"},
+                "ym-b": {"domain": "yandex_music", "name": "Family"},
+                "ynison-1": {"domain": "yandex_ynison", "name": "Ynison"},
             }
         )
-        token, x_token = find_sibling_token(mass, instance_id=None)
-        assert token is None
-        assert x_token is None
+        result = list_yandex_music_instances(mass)
+        assert sorted(result) == [("ym-a", "Main Account"), ("ym-b", "Family")]
+
+    def test_falls_back_to_instance_id_when_name_missing(self) -> None:
+        """Uses instance_id as display name when 'name' is absent."""
+        mass = _make_mock_mass()
+        mass.config.get = MagicMock(return_value={"ym-a": {"domain": "yandex_music"}})
+        result = list_yandex_music_instances(mass)
+        assert result == [("ym-a", "ym-a")]
 
 
 class TestPCMFrameAlignment:

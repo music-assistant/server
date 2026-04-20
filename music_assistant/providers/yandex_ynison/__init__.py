@@ -6,27 +6,23 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-from music_assistant_models.errors import LoginFailed
 
-from .config_helpers import find_sibling_token
+from .config_helpers import list_yandex_music_instances
 from .constants import (
-    CONF_ACTION_AUTH_QR,
-    CONF_ACTION_CLEAR_AUTH,
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
     CONF_OUTPUT_BIT_DEPTH,
     CONF_OUTPUT_SAMPLE_RATE,
     CONF_PUBLISH_NAME,
-    CONF_REMEMBER_SESSION,
     CONF_TOKEN,
-    CONF_X_TOKEN,
+    CONF_YM_INSTANCE,
     DEFAULT_DISPLAY_NAME,
     OUTPUT_AUTO,
     PLAYER_ID_AUTO,
+    YM_INSTANCE_OWN,
 )
 from .provider import YandexYnisonProvider
-from .yandex_auth import perform_qr_auth
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -47,8 +43,8 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
+    instance_id: str | None = None,  # noqa: ARG001 — required by MA callback signature
+    action: str | None = None,  # noqa: ARG001 — required by MA callback signature
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
@@ -61,109 +57,77 @@ async def get_config_entries(
     if "display_name" in values and CONF_PUBLISH_NAME not in values:
         values[CONF_PUBLISH_NAME] = values.pop("display_name")
 
-    # Pre-fill token from sibling instance if this instance has no token yet
-    sibling_token, sibling_x_token = find_sibling_token(mass, instance_id)
-    if not values.get(CONF_TOKEN) and sibling_token:
-        values[CONF_TOKEN] = sibling_token
-        if sibling_x_token:
-            values[CONF_X_TOKEN] = sibling_x_token
+    # Discover available yandex_music instances for borrow-mode dropdown
+    ym_instances = list_yandex_music_instances(mass)
+    ym_instance_ids = {inst_id for inst_id, _ in ym_instances}
 
-    # Handle QR auth action
-    if action == CONF_ACTION_AUTH_QR:
-        session_id = values.get("session_id")
-        if not session_id:
-            raise LoginFailed("Missing session_id for QR authentication")
-        x_token, music_token = await perform_qr_auth(mass, str(session_id))
-        values[CONF_TOKEN] = music_token
-        if values.get(CONF_REMEMBER_SESSION, True):
-            values[CONF_X_TOKEN] = x_token
+    # Determine the currently selected source (borrow vs own)
+    selected = cast("str | None", values.get(CONF_YM_INSTANCE))
+    if selected is None:
+        # Preserve existing own-token configs on upgrade (CONF_TOKEN already set
+        # but CONF_YM_INSTANCE absent). Only auto-select borrowing for truly
+        # fresh installs with no stored token and exactly one YM instance.
+        has_manual_token = bool(values.get(CONF_TOKEN))
+        if has_manual_token:
+            selected = YM_INSTANCE_OWN
         else:
-            values[CONF_X_TOKEN] = None
+            selected = ym_instances[0][0] if len(ym_instances) == 1 else YM_INSTANCE_OWN
+    borrowing = selected != YM_INSTANCE_OWN and selected in ym_instance_ids
 
-    # Handle clear auth action
-    if action == CONF_ACTION_CLEAR_AUTH:
-        values[CONF_TOKEN] = None
-        values[CONF_X_TOKEN] = None
-
-    # Check if user is authenticated
-    is_authenticated = bool(values.get(CONF_TOKEN))
-    token_from_sibling = is_authenticated and sibling_token == values.get(CONF_TOKEN)
-
-    # Dynamic label text
-    if not is_authenticated:
+    # Dynamic label
+    if borrowing:
+        ym_name = next((name for inst_id, name in ym_instances if inst_id == selected), selected)
+        label_text = f"Borrowing credentials from Yandex Music instance '{ym_name}'."
+    elif selected != YM_INSTANCE_OWN:
+        # Referenced YM instance is not currently configured
         label_text = (
-            "Scan a QR code with the Yandex app on your phone to authenticate.\n\n"
-            "Alternatively, you can enter a music token manually in the advanced settings."
-        )
-    elif action == CONF_ACTION_AUTH_QR:
-        label_text = "Authenticated to Yandex Music. Don't forget to save to complete setup."
-    elif token_from_sibling:
-        label_text = (
-            "Authenticated to Yandex Music (token reused from existing instance).\n"
-            "Re-authenticate if you need a different account."
+            "Selected Yandex Music instance is not available. "
+            "Re-select below or fall back to manual token."
         )
     else:
-        label_text = "Authenticated to Yandex Music."
+        label_text = (
+            "Using a manually entered Yandex Music token. Token refresh is not "
+            "automatic in this mode — prefer borrowing from a Yandex Music "
+            "instance if possible."
+        )
+
+    # Build dropdown options: one per YM instance + "Use own token" sentinel
+    source_options = [
+        ConfigValueOption(f"Yandex Music: {name}", inst_id) for inst_id, name in ym_instances
+    ]
+    source_options.append(ConfigValueOption("Use own token (manual entry)", YM_INSTANCE_OWN))
+
+    # Guard against a stale selection pointing at a removed YM instance — the
+    # UI would otherwise render with a default that isn't in `options`.
+    dropdown_default = selected if borrowing or selected == YM_INSTANCE_OWN else YM_INSTANCE_OWN
 
     return (
-        # Status label
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
             label=label_text,
         ),
-        # QR authentication (primary)
         ConfigEntry(
-            key=CONF_ACTION_AUTH_QR,
-            type=ConfigEntryType.ACTION,
-            label="Login with QR code",
-            description="Opens a QR code page — scan it with the Yandex app on your phone.",
-            action=CONF_ACTION_AUTH_QR,
-            action_label="Login with QR code",
-            hidden=is_authenticated,
+            key=CONF_YM_INSTANCE,
+            type=ConfigEntryType.STRING,
+            label="Yandex Music source",
+            description="Borrow OAuth credentials from a linked Yandex Music provider "
+            "instance. Requires configuring Yandex Music first. Select 'Use own token' "
+            "to enter a music token manually.",
+            options=source_options,
+            default_value=dropdown_default,
+            required=True,
         ),
-        # Remember session toggle
-        ConfigEntry(
-            key=CONF_REMEMBER_SESSION,
-            type=ConfigEntryType.BOOLEAN,
-            label="Remember session (auto-refresh token)",
-            description="When enabled, stores a long-lived session token to automatically "
-            "refresh your music token when it expires. When disabled, you must "
-            "re-authenticate manually when the token expires.",
-            default_value=True,
-            hidden=is_authenticated,
-        ),
-        # Clear auth
-        ConfigEntry(
-            key=CONF_ACTION_CLEAR_AUTH,
-            type=ConfigEntryType.ACTION,
-            label="Reset authentication",
-            description="Clear the current authentication details.",
-            action=CONF_ACTION_CLEAR_AUTH,
-            action_label="Reset authentication",
-            hidden=not is_authenticated,
-        ),
-        # Token (populated by QR action or manual entry)
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Yandex Music Token",
-            description="Music token — populated automatically by QR login, "
-            "or enter manually. See the documentation for how to obtain it.",
-            required=True,
-            hidden=is_authenticated,
+            description="Manually pasted Yandex Music OAuth token. Only needed when "
+            "not borrowing from a Yandex Music instance.",
+            required=not borrowing,
+            hidden=borrowing,
             value=cast("str", values.get(CONF_TOKEN)) if values else None,
         ),
-        # x_token (internal, always hidden)
-        ConfigEntry(
-            key=CONF_X_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Session token",
-            hidden=True,
-            required=False,
-            value=cast("str", values.get(CONF_X_TOKEN)) if values else None,
-        ),
-        # Target MA player
         ConfigEntry(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
@@ -185,7 +149,6 @@ async def get_config_entries(
             ],
             required=True,
         ),
-        # Allow manual player switching
         ConfigEntry(
             key=CONF_ALLOW_PLAYER_SWITCH,
             type=ConfigEntryType.BOOLEAN,
@@ -195,7 +158,6 @@ async def get_config_entries(
             "configured default player.",
             default_value=True,
         ),
-        # Output sample rate
         ConfigEntry(
             key=CONF_OUTPUT_SAMPLE_RATE,
             type=ConfigEntryType.STRING,
@@ -211,7 +173,6 @@ async def get_config_entries(
             ],
             advanced=True,
         ),
-        # Output bit depth
         ConfigEntry(
             key=CONF_OUTPUT_BIT_DEPTH,
             type=ConfigEntryType.STRING,
@@ -226,7 +187,6 @@ async def get_config_entries(
             ],
             advanced=True,
         ),
-        # Device name in Yandex Music app
         ConfigEntry(
             key=CONF_PUBLISH_NAME,
             type=ConfigEntryType.STRING,
@@ -235,7 +195,6 @@ async def get_config_entries(
             default_value=DEFAULT_DISPLAY_NAME,
             advanced=True,
         ),
-        # Device ID (internal, hidden)
         ConfigEntry(
             key=CONF_DEVICE_ID,
             type=ConfigEntryType.STRING,
