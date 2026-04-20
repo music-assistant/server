@@ -23,7 +23,7 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
-from .constants import CACHE_CATEGORY_PREV_STATE, DEFAULT_BUFFER_FRAMES, DEFAULT_PLAYER_VOLUME, VOLUME_CONTROL_SOFTWARE
+from .constants import DEFAULT_BUFFER_FRAMES, DEFAULT_PLAYER_VOLUME, VOLUME_CONTROL_SOFTWARE
 from .player import LocalAudioPlayer, get_device_uuid
 
 if sys.platform == "linux":
