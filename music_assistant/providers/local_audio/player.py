@@ -1,5 +1,4 @@
 """Local Audio Player implementation."""
-
 from __future__ import annotations
 
 import asyncio
@@ -13,9 +12,11 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.models.player import Player
 
 from .constants import (
+    CACHE_CATEGORY_PREV_STATE,
     CONF_HARDWARE_VOLUME_CEILING,
     CONF_VOLUME_CONTROL,
     DEFAULT_HARDWARE_VOLUME_CEILING,
+    DEFAULT_PLAYER_VOLUME,
     DEVICE_UUID_NAMESPACE,
     VOLUME_CONTROL_HARDWARE,
     VOLUME_CONTROL_SOFTWARE,
@@ -82,7 +83,7 @@ class LocalAudioPlayer(Player):
         device_uuid = get_device_uuid(device_name, hostapi_index)
         self._attr_device_info.add_identifier(IdentifierType.UUID, device_uuid)
         self._attr_can_group_with = set()
-        self._attr_volume_level = 25 if (sys.platform == "linux" and pa_sink_name) else 100
+        self._attr_volume_level = DEFAULT_PLAYER_VOLUME
         self._device_index = device_index
         self._pa_sink_name = pa_sink_name
         self._is_remap = is_remap
@@ -101,11 +102,34 @@ class LocalAudioPlayer(Player):
         # On other platforms, volume control mode is configured at provider level
         return str(self._provider.config.get_value(CONF_VOLUME_CONTROL) or VOLUME_CONTROL_HARDWARE)
 
+    async def restore_state(self) -> None:
+        """Restore cached volume/mute state from a previous session."""
+        if last_state := await self.mass.cache.get(
+            key=self.player_id,
+            provider=self._provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
+        ):
+            self._attr_volume_muted = last_state[0]
+            self._attr_volume_level = last_state[1]
+        else:
+            self._attr_volume_muted = False
+            self._attr_volume_level = DEFAULT_PLAYER_VOLUME
+
+    async def _save_state(self) -> None:
+        """Persist current volume/mute state to cache."""
+        await self.mass.cache.set(
+            key=self.player_id,
+            data=[self._attr_volume_muted, self._attr_volume_level],
+            provider=self._provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
+        )
+
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command."""
         self._attr_volume_level = volume_level
         if self.volume_control_mode == VOLUME_CONTROL_HARDWARE:
             await self._set_hardware_volume(volume_level)
+        await self._save_state()
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
@@ -114,6 +138,7 @@ class LocalAudioPlayer(Player):
         mode = self.volume_control_mode
         if mode == VOLUME_CONTROL_HARDWARE:
             await self._set_hardware_mute(muted)
+        await self._save_state()
         self.update_state()
 
     async def _set_hardware_volume(self, volume: int) -> None:
