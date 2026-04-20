@@ -91,7 +91,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LYRICS,
 }
 
-_QR_ROUTE_UNREGISTER_ATTR = "_ncm_qr_route_unregister"
+_QR_ROUTE_UNREGISTER: dict[str, Any] = {}
 _HTTP_TIMEOUT = ClientTimeout(total=20)
 _LRC_TIMESTAMP_PATTERN = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]")
 _LRC_META_TAG_PATTERN = re.compile(r"^\[[a-zA-Z]+:.*\]$")
@@ -168,7 +168,6 @@ class NcmApiClient:
             )
         }
         if cookie:
-            req_params["cookie"] = cookie
             headers["Cookie"] = cookie
         url = f"{self._base_url}/{path.lstrip('/')}"
         try:
@@ -265,22 +264,11 @@ def _with_pc_os_cookie(cookie: str) -> str:
     return "; ".join(kept)
 
 
-def _get_qr_unregister_map(mass: MusicAssistant) -> dict[str, Any]:
-    """Return per-MA-process QR unregister map for this provider."""
-    route_map = getattr(mass, _QR_ROUTE_UNREGISTER_ATTR, None)
-    if isinstance(route_map, dict):
-        return route_map
-    route_map = {}
-    setattr(mass, _QR_ROUTE_UNREGISTER_ATTR, route_map)
-    return route_map
-
-
-def _clear_qr_route(mass: MusicAssistant, route_path: str | None) -> None:
+def _clear_qr_route(route_path: str | None) -> None:
     """Unregister one temporary QR route if present."""
     if not route_path:
         return
-    route_map = _get_qr_unregister_map(mass)
-    if unregister := route_map.pop(route_path, None):
+    if unregister := _QR_ROUTE_UNREGISTER.pop(route_path, None):
         if callable(unregister):
             with suppress(RuntimeError):
                 unregister()
@@ -313,7 +301,7 @@ def _register_qr_auth_page(
         return f"data:{mime_type};base64,{b64}"
 
     route_path = f"/auth/neteasecloudmusic/qr/{session_id}"
-    _clear_qr_route(mass, route_path)
+    _clear_qr_route(route_path)
 
     async def _serve_qr(_: web.Request) -> web.Response:
         return web.Response(
@@ -323,7 +311,7 @@ def _register_qr_auth_page(
         )
 
     unregister = mass.webserver.register_dynamic_route(route_path, _serve_qr, "GET")
-    _get_qr_unregister_map(mass)[route_path] = unregister
+    _QR_ROUTE_UNREGISTER[route_path] = unregister
     return f"{route_path.lstrip('/')}?ts={int(time.time())}"
 
 
@@ -341,14 +329,14 @@ def _decode_qr_data_url(data_url: str) -> tuple[bytes, str] | None:
         return None
 
 
-def _clear_auth(mass: MusicAssistant, values: dict[str, ConfigValueType]) -> None:
+def _clear_auth(values: dict[str, ConfigValueType]) -> None:
     """Clear stored authentication fields."""
     route_path = _get_qr_route_path(values)
     values[CONF_COOKIE] = None
     values[CONF_UID] = None
     values[CONF_QR_KEY] = None
     values[CONF_QR_PAGE_URL] = None
-    _clear_qr_route(mass, route_path)
+    _clear_qr_route(route_path)
 
 
 def _has_qr_pending(values: dict[str, ConfigValueType]) -> bool:
@@ -376,7 +364,7 @@ async def _resolve_uid(client: NcmApiClient, cookie: str) -> str:
 
 async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType]) -> None:
     """Start QR login flow and auto-poll once for quick setup."""
-    _clear_qr_route(mass, _get_qr_route_path(values))
+    _clear_qr_route(_get_qr_route_path(values))
     base_url = str(values.get(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL).strip()
     client = NcmApiClient(mass.http_session, base_url)
 
@@ -456,7 +444,7 @@ async def _check_qr_auth(
         if not cookie:
             raise LoginFailed("QR login succeeded but API response did not include cookie")
         uid = await _resolve_uid(client, cookie)
-        _clear_qr_route(mass, route_path)
+        _clear_qr_route(route_path)
         values[CONF_COOKIE] = cookie
         values[CONF_UID] = uid
         values[CONF_QR_KEY] = None
@@ -464,7 +452,7 @@ async def _check_qr_auth(
         return
     if code == 800:
         route_path = _get_qr_route_path(values)
-        _clear_qr_route(mass, route_path)
+        _clear_qr_route(route_path)
         values[CONF_QR_KEY] = None
         values[CONF_QR_PAGE_URL] = None
         raise InvalidDataError("QR code expired, please generate a new one")
@@ -599,7 +587,7 @@ async def get_config_entries(
         values = {}
     try:
         if action == CONF_ACTION_CLEAR_AUTH:
-            _clear_auth(mass, values)
+            _clear_auth(values)
         elif action == CONF_ACTION_START_QR_AUTH:
             await _start_qr_auth(mass, values)
         elif action == CONF_ACTION_CHECK_QR_AUTH:
@@ -635,7 +623,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             route_path = _get_qr_route_path(
                 {CONF_QR_PAGE_URL: str(self.config.get_value(CONF_QR_PAGE_URL) or "")}
             )
-            _clear_qr_route(self.mass, route_path)
+            _clear_qr_route(route_path)
         await super().unload(is_removed)
 
     def _get_item_mapping(self, media_type: MediaType, item_id: str, name: str) -> ItemMapping:
