@@ -558,23 +558,9 @@ class SendspinBridgeManager:
                 )
                 return
 
-            # Detect an already-connected Sendspin client with this bridge client_id.
-            # Happens on MA restart when the JS Cast receiver reconnects to the
-            # Sendspin server before Chromecast discovery fires. Also check the
-            # LA-bit MAC variant (AirPlay uses locally-administered MAC, Chromecast
-            # uses the real one).
-            existing_client_id: str | None = None
-            if sendspin_server.get_client(bridge_client_id):
-                existing_client_id = bridge_client_id
-            elif not cast_player.cast_info.is_audio_group:
-                la_variant_mac = _toggle_locally_administered_bit(
-                    bridge_client_id[len(BRIDGE_PREFIX) :]
-                )
-                if la_variant_mac:
-                    la_variant_id = f"{BRIDGE_PREFIX}{la_variant_mac}"
-                    if sendspin_server.get_client(la_variant_id):
-                        existing_client_id = la_variant_id
-
+            existing_client_id = self._find_existing_sendspin_client(
+                sendspin_server, bridge_client_id, cast_player
+            )
             if existing_client_id:
                 self.logger.info(
                     "Sendspin client %s already registered — claiming existing player for %s",
@@ -649,6 +635,32 @@ class SendspinBridgeManager:
                 unsub()
         self._rebridge_unsubs.clear()
         await self.stop_all()
+
+    def _find_existing_sendspin_client(
+        self,
+        sendspin_server: SendspinServer,
+        bridge_client_id: str,
+        cast_player: ChromecastPlayer,
+    ) -> str | None:
+        """
+        Return a matching already-registered Sendspin client_id, if any.
+
+        Happens on MA restart when the JS Cast receiver reconnects to the
+        Sendspin server before Chromecast discovery fires. Also checks the
+        LA-bit MAC variant (AirPlay uses locally-administered MAC, Chromecast
+        uses the real one).
+        """
+        if sendspin_server.get_client(bridge_client_id):
+            return bridge_client_id
+        if cast_player.cast_info.is_audio_group:
+            return None
+        la_variant_mac = _toggle_locally_administered_bit(bridge_client_id[len(BRIDGE_PREFIX) :])
+        if not la_variant_mac:
+            return None
+        la_variant_id = f"{BRIDGE_PREFIX}{la_variant_mac}"
+        if sendspin_server.get_client(la_variant_id):
+            return la_variant_id
+        return None
 
     def _subscribe_rebridge_on_disconnect(
         self, cast_player: ChromecastPlayer, client_id: str
