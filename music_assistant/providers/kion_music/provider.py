@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Sequence
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -46,17 +46,21 @@ from .constants import (
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
+    CONF_QUALITY,
     CONF_TOKEN,
     DEFAULT_BASE_URL,
     DISCOVERY_INITIAL_TRACKS,
     FOR_YOU_FOLDER_ID,
     IMAGE_SIZE_MEDIUM,
     LIKED_TRACKS_PLAYLIST_ID,
+    LISTENING_HISTORY_FOLDER_ID,
     MY_WAVE_BATCH_SIZE,
     MY_WAVE_PLAYLIST_ID,
     MY_WAVES_FOLDER_ID,
     MY_WAVES_SET_FOLDER_ID,
+    PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
+    QUALITY_LOSSLESS,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_MIX,
@@ -252,6 +256,14 @@ class KionMusicProvider(MusicProvider):
         if subpath == WAVES_LANDING_FOLDER_ID:
             return await self._browse_waves_landing(path, path_parts)
 
+        # Pinned items folder
+        if subpath == PINNED_ITEMS_FOLDER_ID:
+            return await self._browse_pins()
+
+        # Listening history folder
+        if subpath == LISTENING_HISTORY_FOLDER_ID:
+            return await self._browse_history()
+
         # Handle direct tag subpath (when folder is played by URI, the full path
         # "picks/category/tag" is lost and only the tag slug arrives as subpath).
         # Skip the API call for standard top-level folders that are never tag slugs.
@@ -268,6 +280,8 @@ class KionMusicProvider(MusicProvider):
             WAVES_LANDING_FOLDER_ID,
             FOR_YOU_FOLDER_ID,
             COLLECTION_FOLDER_ID,
+            PINNED_ITEMS_FOLDER_ID,
+            LISTENING_HISTORY_FOLDER_ID,
         }
         if subpath and subpath not in _known_folders:
             # Handle direct wave station_id (e.g. "activity:workout") passed when
@@ -346,6 +360,26 @@ class KionMusicProvider(MusicProvider):
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVES_SET_FOLDER_ID}",
                 name=names.get(MY_WAVES_SET_FOLDER_ID, "AI Mix Sets"),
+                is_playable=False,
+            )
+        )
+        # Pinned items — user-pinned artists/albums/playlists/waves
+        folders.append(
+            BrowseFolder(
+                item_id=PINNED_ITEMS_FOLDER_ID,
+                provider=self.instance_id,
+                path=f"{base}{PINNED_ITEMS_FOLDER_ID}",
+                name=names.get(PINNED_ITEMS_FOLDER_ID, "Pinned"),
+                is_playable=False,
+            )
+        )
+        # Listening history — recently played tracks/albums
+        folders.append(
+            BrowseFolder(
+                item_id=LISTENING_HISTORY_FOLDER_ID,
+                provider=self.instance_id,
+                path=f"{base}{LISTENING_HISTORY_FOLDER_ID}",
+                name=names.get(LISTENING_HISTORY_FOLDER_ID, "Listening History"),
                 is_playable=False,
             )
         )
@@ -677,6 +711,94 @@ class KionMusicProvider(MusicProvider):
                 )
             )
         return folders
+
+    async def _browse_pins(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse user's pinned items (artists/albums/playlists from Kion Pins).
+
+        Resolves each pin to its full media item via existing single-item lookups.
+        Wave pins are skipped — MA has no native concept for them.
+
+        Pins are resolved concurrently via ``asyncio.gather`` so latency is
+        dominated by the slowest lookup rather than their sum. Individual
+        failures (``MediaNotFoundError`` / ``InvalidDataError``) are skipped
+        without aborting the batch.
+
+        :return: List of resolved media items.
+        """
+        pins_list = await self.client.get_pins()
+        pins = getattr(pins_list, "pins", None) if pins_list else None
+        if not pins:
+            return []
+
+        tasks: list[Coroutine[Any, Any, MediaItemType]] = []
+        pin_descs: list[str] = []
+        for pin in pins:
+            pin_type = getattr(pin, "type", None)
+            data = getattr(pin, "data", None)
+            if data is None:
+                continue
+            if pin_type == "artist_item" and getattr(data, "id", None) is not None:
+                tasks.append(self.get_artist(str(data.id)))
+                pin_descs.append(f"artist:{data.id}")
+            elif pin_type == "album_item" and getattr(data, "id", None) is not None:
+                tasks.append(self.get_album(str(data.id)))
+                pin_descs.append(f"album:{data.id}")
+            elif pin_type == "playlist_item":
+                uid = getattr(data, "uid", None)
+                kind = getattr(data, "kind", None)
+                if uid is not None and kind is not None:
+                    tasks.append(self.get_playlist(f"{uid}:{kind}"))
+                    pin_descs.append(f"playlist:{uid}:{kind}")
+
+        if not tasks:
+            return []
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        items: list[MediaItemType] = []
+        for desc, result in zip(pin_descs, results, strict=True):
+            if isinstance(result, (MediaNotFoundError, InvalidDataError)):
+                self.logger.debug("Skipping pin %s: %s", desc, result)
+            elif isinstance(result, BaseException):
+                raise result
+            else:
+                items.append(result)
+        return items
+
+    async def _browse_history(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse user's recent listening history (flattened across days).
+
+        Filters to ``type == "track"`` entries only — album/playlist context
+        items in the history feed are dropped. Tracks are de-duplicated by
+        id and returned in most-recent-first order.
+
+        :return: List of recently played Track items.
+        """
+        history = await self.client.get_music_history()
+        tabs = getattr(history, "history_tabs", None) if history else None
+        if not tabs:
+            return []
+
+        seen_track_ids: set[str] = set()
+        tracks: list[Track] = []
+        for tab in tabs:
+            groups = getattr(tab, "items", None) or []
+            for group in groups:
+                history_items = getattr(group, "tracks", None) or []
+                for hist_item in history_items:
+                    if getattr(hist_item, "type", None) != "track":
+                        continue
+                    full = getattr(getattr(hist_item, "data", None), "full_model", None)
+                    if full is None or getattr(full, "id", None) is None:
+                        continue
+                    track_key = str(full.id)
+                    if track_key in seen_track_ids:
+                        continue
+                    seen_track_ids.add(track_key)
+                    try:
+                        tracks.append(parse_track(self, full))
+                    except InvalidDataError as err:
+                        self.logger.debug("Skipping history track: %s", err)
+        return tracks
 
     async def _browse_picks(
         self, path: str, path_parts: list[str]
@@ -1363,16 +1485,19 @@ class KionMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 30)
     async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get artist details by ID.
+        """Get artist details by ID, enriched with description and listener stats.
 
         :param prov_artist_id: The provider artist ID.
         :return: Artist object.
         :raises MediaNotFoundError: If artist not found.
         """
-        artist = await self.client.get_artist(prov_artist_id)
+        artist, about = await asyncio.gather(
+            self.client.get_artist(prov_artist_id),
+            self.client.get_artist_about(prov_artist_id),
+        )
         if not artist:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
-        return parse_artist(self, artist)
+        return parse_artist(self, artist, about=about)
 
     @use_cache(3600 * 24 * 30)
     async def get_album(self, prov_album_id: str) -> Album:
@@ -1664,6 +1789,23 @@ class KionMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing similar track: %s", err)
         return tracks
+
+    @use_cache(3600 * 3)
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Get artists similar to the given one via Kion artists/similar endpoint.
+
+        :param prov_artist_id: Provider artist ID.
+        :param limit: Maximum number of artists to return.
+        :return: List of similar Artist objects.
+        """
+        raw_artists = await self.client.get_similar_artists(prov_artist_id, limit=limit)
+        artists: list[Artist] = []
+        for ya in raw_artists:
+            try:
+                artists.append(parse_artist(self, ya))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing similar artist: %s", err)
+        return artists
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations with multiple discovery folders.
@@ -2302,15 +2444,38 @@ class KionMusicProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item.
 
-        This method is called when StreamType.CUSTOM is used, enabling on-the-fly
-        decryption of encrypted FLAC streams without disk I/O.
+        Uses windowed Range-request streaming to prevent Kion CDN drops.
+        Handles both raw (direct) and encrypted (encraw) transports.
 
-        :param streamdetails: Stream details containing encrypted URL and decryption key.
-        :param seek_position: Seek position in seconds (not supported for encrypted streams).
-        :return: Async generator yielding decrypted audio chunks.
+        :param streamdetails: Stream details with URL and optional decryption key.
+        :param seek_position: Seek position in seconds (handled by provider for raw transport).
+        :return: Async generator yielding audio chunks.
         """
         async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
             yield chunk
+
+    async def get_rotor_station_tracks(
+        self, station_id: str, queue: str | int | None = None
+    ) -> tuple[list[Any], str | None]:
+        """Fetch tracks from a rotor station (My Mix, similar, etc.).
+
+        Wrapper around client.get_rotor_station_tracks for use by ynison plugin.
+        """
+        return await self.client.get_rotor_station_tracks(station_id, queue=queue)
+
+    def get_quality(self) -> str:
+        """Return the configured audio quality tier (e.g. 'balanced', 'superb').
+
+        Mirrors the legacy-value normalization used by the streaming layer:
+        older configs store the lossless tier as ``"lossless"``, while the
+        current canonical value is ``QUALITY_LOSSLESS`` (``"superb"``).
+        External callers (e.g. the ynison plugin wrapper) see the same
+        normalized value the streaming code would resolve to.
+        """
+        quality = str(self.config.get_value(CONF_QUALITY) or "").strip().lower()
+        if quality == "lossless":
+            quality = QUALITY_LOSSLESS
+        return quality
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve wave cover image with background color fill for transparent PNGs.

@@ -26,7 +26,36 @@ WEB_BASE_URL: Final[str] = "https://music.yandex.ru"
 QUALITY_EFFICIENT = "efficient"  # Low quality, efficient bandwidth (~64kbps AAC)
 QUALITY_BALANCED = "balanced"  # Medium quality, balanced performance (~192kbps AAC)
 QUALITY_HIGH = "high"  # High quality, lossy (~320kbps MP3)
-QUALITY_SUPERB = "superb"  # Highest quality, lossless (FLAC)
+QUALITY_LOSSLESS = "superb"  # Highest quality, lossless (FLAC)
+
+# Transport modes for get-file-info API
+CONF_TRANSPORT = "transport"
+TRANSPORT_RAW = "raw"  # Direct unencrypted stream (default)
+TRANSPORT_ENCRAW = "encraw"  # AES-CTR encrypted stream
+
+# Custom codecs override (empty = use quality-based default)
+CONF_CODECS = "codecs"
+
+# Quality → get-file-info parameter mapping
+# Codecs order determines API priority (first codec = preferred by server)
+QUALITY_FILE_INFO_PARAMS: Final[dict[str, dict[str, str]]] = {
+    QUALITY_LOSSLESS: {
+        "quality": "lossless",
+        "codecs": "flac-mp4,flac,aac-mp4,aac,he-aac,mp3,he-aac-mp4",
+    },
+    QUALITY_HIGH: {
+        "quality": "lossless",
+        "codecs": "mp3",
+    },
+    QUALITY_BALANCED: {
+        "quality": "nq",
+        "codecs": "aac-mp4,aac,mp3,he-aac,he-aac-mp4",
+    },
+    QUALITY_EFFICIENT: {
+        "quality": "lq",
+        "codecs": "he-aac-mp4,he-aac,aac,mp3",
+    },
+}
 
 # Configuration keys for My Mix behavior (kept)
 CONF_MY_WAVE_MAX_TRACKS: Final[str] = "my_wave_max_tracks"
@@ -139,6 +168,8 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     # Top-level browse groups
     "for_you": "Для вас",
     "collection": "Коллекция",
+    "pinned": "Закреплённое",
+    "history": "История прослушиваний",
     # Waves / Radio (rotor station categories)
     "waves": "Радио",
     "radio": "Радио",
@@ -211,6 +242,8 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     # Top-level browse groups
     "for_you": "For You",
     "collection": "Collection",
+    "pinned": "Pinned",
+    "history": "Listening History",
     # Waves / Radio (rotor station categories)
     "waves": "Radio",
     "radio": "Radio",
@@ -335,6 +368,8 @@ WAVES_LANDING_FOLDER_ID: Final[str] = "waves_landing"
 # Top-level browse group folders
 FOR_YOU_FOLDER_ID: Final[str] = "for_you"
 COLLECTION_FOLDER_ID: Final[str] = "collection"
+PINNED_ITEMS_FOLDER_ID: Final[str] = "pinned"
+LISTENING_HISTORY_FOLDER_ID: Final[str] = "history"
 
 # Preferred display order for wave categories (rotor station types)
 WAVE_CATEGORY_DISPLAY_ORDER: Final[list[str]] = [

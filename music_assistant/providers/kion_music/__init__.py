@@ -10,15 +10,19 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_BASE_URL,
+    CONF_CODECS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
+    CONF_TRANSPORT,
     DEFAULT_BASE_URL,
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
-    QUALITY_SUPERB,
+    QUALITY_LOSSLESS,
+    TRANSPORT_ENCRAW,
+    TRANSPORT_RAW,
 )
 from .provider import KionMusicProvider
 
@@ -42,6 +46,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.BROWSE,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.LYRICS,
 }
@@ -101,7 +106,7 @@ async def get_config_entries(
                 ConfigValueOption("Efficient (AAC ~64kbps)", QUALITY_EFFICIENT),
                 ConfigValueOption("Balanced (AAC ~192kbps)", QUALITY_BALANCED),
                 ConfigValueOption("High (MP3 ~320kbps)", QUALITY_HIGH),
-                ConfigValueOption("Superb (FLAC Lossless)", QUALITY_SUPERB),
+                ConfigValueOption("Superb (FLAC Lossless)", QUALITY_LOSSLESS),
             ],
             default_value=QUALITY_BALANCED,
         ),
@@ -127,6 +132,33 @@ async def get_config_entries(
             "Lower values load faster. Default: 500.",
             range=(50, 2000),
             default_value=500,
+            required=False,
+            advanced=True,
+        ),
+        # Transport mode (advanced)
+        ConfigEntry(
+            key=CONF_TRANSPORT,
+            type=ConfigEntryType.STRING,
+            label="Streaming transport",
+            description="Transport mode for audio streaming. "
+            "'raw' — direct unencrypted stream (default). "
+            "'encraw' — AES-CTR encrypted stream (fallback).",
+            options=[
+                ConfigValueOption("Raw (unencrypted)", TRANSPORT_RAW),
+                ConfigValueOption("Encrypted (AES-CTR)", TRANSPORT_ENCRAW),
+            ],
+            default_value=TRANSPORT_RAW,
+            required=False,
+            advanced=True,
+        ),
+        # Custom codecs override (advanced)
+        ConfigEntry(
+            key=CONF_CODECS,
+            type=ConfigEntryType.STRING,
+            label="Codecs override",
+            description="Comma-separated codec list to override quality-based defaults. "
+            "Leave empty to use defaults. Example: 'flac-mp4,flac,aac-mp4,aac,mp3'.",
+            default_value="",
             required=False,
             advanced=True,
         ),

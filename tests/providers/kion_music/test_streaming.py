@@ -12,7 +12,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_SUPERB
+from music_assistant.providers.kion_music.constants import QUALITY_HIGH, QUALITY_LOSSLESS
 from music_assistant.providers.kion_music.streaming import KionMusicStreamingManager
 
 if TYPE_CHECKING:
@@ -66,7 +66,7 @@ def test_select_best_quality_lossless_returns_flac(
     flac = _make_download_info("flac", 0, "https://example.com/track.flac")
     download_infos = [mp3, flac]
 
-    result = streaming_manager._select_best_quality(download_infos, QUALITY_SUPERB)
+    result = streaming_manager._select_best_quality(download_infos, QUALITY_LOSSLESS)
 
     assert result is not None
     assert result.codec == "flac"
@@ -92,7 +92,7 @@ def test_select_best_quality_empty_list_returns_none(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
     """Empty download_infos returns None."""
-    result = streaming_manager._select_best_quality([], QUALITY_SUPERB)
+    result = streaming_manager._select_best_quality([], QUALITY_LOSSLESS)
     assert result is None
 
 
@@ -111,27 +111,109 @@ def test_select_best_quality_none_preferred_returns_highest_bitrate(
     assert result.bitrate_in_kbps == 320
 
 
+def _flac_streaminfo_payload(sample_rate: int, bit_depth: int) -> bytes:
+    """Build a 34-byte FLAC STREAMINFO payload for the given sample_rate/bit_depth.
+
+    Layout of bytes 10..14 (4 bytes, big-endian, 32 bits total):
+        sample_rate (20) | channels (3) | bps_minus_1 (5) | total_samples_hi (4)
+    """
+    val = (sample_rate & 0xFFFFF) << 12 | (1 & 0x7) << 9 | ((bit_depth - 1) & 0x1F) << 4
+    return b"\x00" * 10 + val.to_bytes(4, "big") + b"\x00" * 20
+
+
+def _flac_header(sample_rate: int = 44100, bit_depth: int = 16) -> bytes:
+    """Build a valid FLAC file header: magic + block header + STREAMINFO payload."""
+    magic = b"fLaC"
+    block_header = b"\x00\x00\x00\x22"  # type=0 (STREAMINFO), length=34
+    return magic + block_header + _flac_streaminfo_payload(sample_rate, bit_depth)
+
+
+def _mp4_dfla_header(sample_rate: int = 44100, bit_depth: int = 16) -> bytes:
+    """Build an MP4 buffer containing a dfLa box with embedded STREAMINFO."""
+    prefix = b"\x00" * 8  # any 4+ byte prefix so dfl_pos >= 4
+    version_flags = b"\x00" * 4
+    block_header = b"\x00\x00\x00\x22"
+    payload = _flac_streaminfo_payload(sample_rate, bit_depth)
+    return prefix + b"dfLa" + version_flags + block_header + payload
+
+
+def _mp4_mp4a_header(sample_rate: int = 48000, sample_size: int = 16) -> bytes:
+    """Build an MP4 buffer containing an mp4a AudioSampleEntry."""
+    prefix = b"\x00" * 8
+    sr_fixed = (sample_rate << 16) & 0xFFFFFFFF
+    # 0..18: reserved(6) + data_ref(2) + version(2) + revision(2) + vendor(4) + channels(2)
+    # 18..20: sample_size; 20..24: compression_id + packet_size; 24..28: sample_rate (16.16)
+    entry = (
+        b"\x00" * 18 + sample_size.to_bytes(2, "big") + b"\x00" * 4 + sr_fixed.to_bytes(4, "big")
+    )
+    return prefix + b"mp4a" + entry
+
+
+def test_parse_flac_streaminfo_valid() -> None:
+    """Valid FLAC STREAMINFO returns parsed sample_rate and bit_depth."""
+    result = KionMusicStreamingManager._parse_flac_streaminfo(_flac_header(44100, 16))
+    assert result == (44100, 16)
+    result_hires = KionMusicStreamingManager._parse_flac_streaminfo(_flac_header(96000, 24))
+    assert result_hires == (96000, 24)
+
+
+def test_parse_flac_streaminfo_wrong_magic() -> None:
+    """Header without 'fLaC' magic returns (0, 0)."""
+    bad = b"OggS" + _flac_header()[4:]
+    assert KionMusicStreamingManager._parse_flac_streaminfo(bad) == (0, 0)
+
+
+def test_parse_flac_streaminfo_too_short() -> None:
+    """Header shorter than 42 bytes returns (0, 0)."""
+    assert KionMusicStreamingManager._parse_flac_streaminfo(b"fLaC\x00\x00") == (0, 0)
+
+
+def test_parse_mp4_audio_params_dfla() -> None:
+    """DfLa (FLAC-in-MP4) box is parsed via embedded STREAMINFO."""
+    result = KionMusicStreamingManager._parse_mp4_audio_params(_mp4_dfla_header(44100, 16))
+    assert result == (44100, 16)
+
+
+def test_parse_mp4_audio_params_mp4a_fallback() -> None:
+    """When dfLa is absent, mp4a AudioSampleEntry provides sample_rate/bit_depth."""
+    result = KionMusicStreamingManager._parse_mp4_audio_params(_mp4_mp4a_header(48000, 16))
+    assert result == (48000, 16)
+
+
+def test_parse_mp4_audio_params_no_box_returns_zero() -> None:
+    """Buffer containing neither dfLa nor mp4a returns (0, 0)."""
+    assert KionMusicStreamingManager._parse_mp4_audio_params(b"\x00" * 128) == (0, 0)
+
+
 def test_get_content_type_flac_mp4_returns_flac(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
-    """flac-mp4 codec from get-file-info is mapped to MP4 container and FLAC codec."""
+    """flac-mp4 codec maps content_type to FLAC (audio) with codec_type FLAC for MP4 container."""
     content_type = streaming_manager._get_content_type("flac-mp4")
-    assert content_type[0] == ContentType.MP4
+    assert content_type[0] == ContentType.FLAC
     assert content_type[1] == ContentType.FLAC
     content_type_upper = streaming_manager._get_content_type("FLAC-MP4")
-    assert content_type_upper[0] == ContentType.MP4
+    assert content_type_upper[0] == ContentType.FLAC
     assert content_type_upper[1] == ContentType.FLAC
 
 
 def _make_stream_details(
-    decryption_key: str, encrypted_url: str = "https://example.com/enc.flac"
+    decryption_key: str, url: str = "https://example.com/enc.flac"
 ) -> StreamDetails:
     """Build a minimal StreamDetails for get_audio_stream tests."""
     return StreamDetails(
         provider="kion_music_instance",
         item_id="test_track",
         audio_format=AudioFormat(content_type=ContentType.FLAC),
-        data={"encrypted_url": encrypted_url, "decryption_key": decryption_key},
+        data={
+            "url": url,
+            "codec": "flac",
+            "transport": "encraw",
+            "bit_rate": 0,
+            "fi_quality": "lossless",
+            "fi_codecs": "flac-mp4,flac",
+            "decryption_key": decryption_key,
+        },
     )
 
 

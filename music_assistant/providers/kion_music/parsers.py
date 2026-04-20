@@ -69,11 +69,17 @@ def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str |
     return f"https://{cover_uri.replace('%%', size)}"
 
 
-def parse_artist(provider: KionMusicProvider, artist_obj: KionArtist) -> Artist:
+def parse_artist(
+    provider: KionMusicProvider,
+    artist_obj: KionArtist,
+    *,
+    about: object | None = None,
+) -> Artist:
     """Parse Kion artist object to MA Artist model.
 
     :param provider: The KION Music provider instance.
     :param artist_obj: Kion artist object.
+    :param about: Optional ArtistAbout enrichment (description + listener stats).
     :return: Music Assistant Artist model.
     """
     if artist_obj.id is None:
@@ -120,6 +126,15 @@ def parse_artist(provider: KionMusicProvider, artist_obj: KionArtist) -> Artist:
                     )
                 ]
             )
+
+    if about is not None:
+        description = getattr(about, "description", None)
+        if description:
+            artist.metadata.description = description
+        stats = getattr(about, "stats", None)
+        monthly = getattr(stats, "last_month_listeners", None) if stats else None
+        if monthly:
+            artist.metadata.popularity = max(0, min(100, monthly // 10000))
 
     return artist
 

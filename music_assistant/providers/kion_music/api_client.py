@@ -260,26 +260,66 @@ class KionMusicClient:
         :param total_played_seconds: Seconds played (for trackFinished, skip).
         :return: True if the request succeeded.
         """
-        payload: dict[str, Any] = {
-            "type": feedback_type,
-            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        }
-        if feedback_type == "radioStarted":
-            payload["from"] = "KionMusicDesktopAppWindows"
-        if track_id is not None:
-            payload["trackId"] = track_id
-        if total_played_seconds is not None:
-            payload["totalPlayedSeconds"] = total_played_seconds
-        if batch_id is not None:
-            payload["batchId"] = batch_id
+        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
-        async def _post(c: ClientAsync) -> bool:
-            url = f"{c.base_url}/rotor/station/{station_id}/feedback"
-            await c._request.post(url, payload)
-            return True
+        async def _send(c: ClientAsync) -> bool:
+            if feedback_type == "radioStarted":
+                return bool(
+                    await c.rotor_station_feedback_radio_started(
+                        station_id,
+                        from_="KionMusicDesktopAppWindows",
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            if feedback_type == "trackStarted":
+                if track_id is None:
+                    return False
+                return bool(
+                    await c.rotor_station_feedback_track_started(
+                        station_id,
+                        track_id=track_id,
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            if feedback_type == "trackFinished":
+                if track_id is None:
+                    return False
+                return bool(
+                    await c.rotor_station_feedback_track_finished(
+                        station_id,
+                        track_id=track_id,
+                        total_played_seconds=float(total_played_seconds or 0),
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            if feedback_type == "skip":
+                if track_id is None:
+                    return False
+                return bool(
+                    await c.rotor_station_feedback_skip(
+                        station_id,
+                        track_id=track_id,
+                        total_played_seconds=float(total_played_seconds or 0),
+                        batch_id=batch_id,
+                        timestamp=timestamp,
+                    )
+                )
+            return bool(
+                await c.rotor_station_feedback(
+                    station_id,
+                    type_=feedback_type,
+                    timestamp=timestamp,
+                    track_id=track_id,
+                    total_played_seconds=total_played_seconds,
+                    batch_id=batch_id,
+                )
+            )
 
         try:
-            result = await self._call_no_retry(_post)
+            result = await self._call_no_retry(_send)
             LOGGER.debug(
                 "Rotor feedback %s track_id=%s total_played_seconds=%s",
                 feedback_type,
@@ -558,27 +598,20 @@ class KionMusicClient:
         """Get an album with its tracks.
 
         Uses the same semantics as the web client: albums/{id}/with-tracks
-        with resumeStream, richTracks, withListeningFinished when the library
-        passes them through.
+        with resumeStream, richTracks, withListeningFinished.
 
         :param album_id: Album ID.
         :return: Album object with tracks or None if not found.
         """
-
-        async def _fetch(c: ClientAsync) -> KionAlbum | None:
-            try:
-                return await c.albums_with_tracks(
+        try:
+            return await self._call_with_retry(
+                lambda c: c.albums_with_tracks(
                     album_id,
                     resumeStream=True,
                     richTracks=True,
                     withListeningFinished=True,
                 )
-            except TypeError:
-                # Older kion-music may not accept these kwargs
-                return await c.albums_with_tracks(album_id)
-
-        try:
-            return await self._call_with_retry(_fetch)
+            )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching album with tracks %s: %s", album_id, err)
             return None
@@ -614,6 +647,59 @@ class KionMusicClient:
             return result.albums or []
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error fetching artist albums %s: %s", artist_id, err)
+            return []
+
+    async def get_pins(self) -> Any | None:
+        """Get the user's pinned items (artists/albums/playlists/waves).
+
+        :return: PinsList object or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.pins())
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching pins: %s", err)
+            return None
+
+    async def get_music_history(self) -> Any | None:
+        """Get the user's listening history (grouped by day).
+
+        :return: MusicHistory object or None on error.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.music_history())
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching music history: %s", err)
+            return None
+
+    async def get_artist_about(self, artist_id: str) -> Any | None:
+        """Get artist enrichment info: description, monthly listeners, links.
+
+        :param artist_id: Artist ID.
+        :return: ArtistAbout object or None on error/missing.
+        """
+        try:
+            return await self._call_with_retry(lambda c: c.artists_about(artist_id))
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching artist about %s: %s", artist_id, err)
+            return None
+
+    async def get_similar_artists(
+        self, artist_id: str, limit: int = DEFAULT_LIMIT
+    ) -> list[KionArtist]:
+        """Get artists similar to the given one.
+
+        :param artist_id: Artist ID.
+        :param limit: Maximum number of artists.
+        :return: List of similar artist objects.
+        """
+        try:
+            result = await self._call_with_retry(lambda c: c.artists_similar(artist_id))
+            if result is None or not result.similar_artists:
+                return []
+            similar: list[KionArtist] = result.similar_artists
+            return similar[:limit]
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.error("Error fetching similar artists %s: %s", artist_id, err)
             return []
 
     async def get_artist_tracks(
@@ -678,18 +764,31 @@ class KionMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
-    async def get_track_file_info_lossless(self, track_id: str) -> dict[str, Any] | None:
-        """Request lossless stream via get-file-info (quality=lossless).
+    async def get_track_file_info(
+        self,
+        track_id: str,
+        quality: str = "lossless",
+        codecs: str = GET_FILE_INFO_CODECS,
+        transport: str = "raw",
+    ) -> dict[str, Any] | None:
+        """Request stream via get-file-info for any quality tier.
 
-        The /tracks/{id}/download-info endpoint often returns only MP3; get-file-info
-        with quality=lossless and codecs=flac,... returns FLAC when available.
+        The /get-file-info endpoint supports all quality tiers (lossless, nq, lq)
+        and returns the best available codec based on the codecs parameter order.
 
-        Uses manual sign calculation matching kion-music-downloader-realflac.
+        With transport="raw", returns a direct unencrypted URL.
+        With transport="encraw", returns an AES-CTR encrypted URL with decryption key.
+
         Uses _call_with_retry for automatic reconnection on transient failures.
 
         :param track_id: Track ID.
-        :return: Parsed downloadInfo dict (url, codec, urls, ...) or None on error.
+        :param quality: Quality tier ("lossless", "nq", "lq").
+        :param codecs: Comma-separated codec preference list.
+        :param transport: Transport mode ("raw" or "encraw").
+        :return: Parsed downloadInfo dict (url, codec, key?, ...) or None on error.
         """
+        # Normalize codecs: strip whitespace from each token to prevent HMAC mismatches
+        codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
 
         def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
             """Build URL and signed params using current client and timestamp.
@@ -701,16 +800,13 @@ class KionMusicClient:
             params = {
                 "ts": timestamp,
                 "trackId": track_id,
-                "quality": "lossless",
-                "codecs": GET_FILE_INFO_CODECS,
-                "transports": "encraw",
+                "quality": quality,
+                "codecs": codecs,
+                "transports": transport,
             }
-            # Build sign string explicitly matching Kion API specification:
-            # concatenate ts + trackId + quality + codecs (commas stripped) + transports.
-            # Comma stripping matches kion-music-downloader-realflac reference implementation
-            # (see get_file_info signing in that project).
-            codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
-            param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
+            # Build sign string: ts + trackId + quality + codecs (commas stripped) + transports.
+            codecs_for_sign = codecs.replace(",", "")
+            param_string = f"{timestamp}{track_id}{quality}{codecs_for_sign}{transport}"
             hmac_sign = hmac.new(
                 DEFAULT_SIGN_KEY.encode(),
                 param_string.encode(),
@@ -718,8 +814,7 @@ class KionMusicClient:
             )
             # SHA-256 (32 bytes) -> base64 = 44 chars with "=" padding.
             # Kion API expects exactly 43 chars (one "=" removed).
-            # Matches kion-music-downloader-realflac reference implementation.
-            params["sign"] = base64.b64encode(hmac_sign.digest()).decode().rstrip("=")
+            params["sign"] = base64.b64encode(hmac_sign.digest()).decode()[:-1]
             url = f"{client.base_url}/get-file-info"
             return url, params
 
@@ -754,30 +849,33 @@ class KionMusicClient:
             parsed = _parse_file_info_result(result)
             if parsed:
                 LOGGER.debug(
-                    "get-file-info lossless for track %s: Success, codec=%s",
+                    "get-file-info for track %s: Success, codec=%s, transport=%s",
                     track_id,
                     parsed.get("codec"),
+                    transport,
                 )
                 return parsed
         except (BadRequestError, NetworkError) as err:
             LOGGER.debug(
-                "get-file-info lossless for track %s: %s %s",
+                "get-file-info for track %s: %s %s",
                 track_id,
                 type(err).__name__,
                 getattr(err, "message", str(err)) or repr(err),
             )
         except UnauthorizedError as err:
             LOGGER.debug(
-                "get-file-info lossless for track %s: UnauthorizedError %s",
+                "get-file-info for track %s: UnauthorizedError %s",
                 track_id,
                 getattr(err, "message", str(err)) or repr(err),
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
             LOGGER.warning(
-                "get-file-info lossless for track %s: Unexpected error: %s",
+                "get-file-info for track %s: Unexpected %s: %s",
                 track_id,
+                type(err).__name__,
                 err,
-                exc_info=True,
             )
 
         return None
