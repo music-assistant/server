@@ -44,7 +44,8 @@ def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
 def split_items(
     org_str: str | list[str] | tuple[str, ...] | None, allow_unsafe_splitters: bool = False
 ) -> tuple[str, ...]:
-    """Split a tag string into multiple values.
+    """
+    Split a tag string into multiple values.
 
     Splits on semicolon (;) first as the standard multi-value delimiter.
 
@@ -83,35 +84,40 @@ def split_items(
 # ARTISTS tag parsing or ARTIST tag splitting entirely.
 #
 # Featuring splitters - always split on these to capture featuring artists in the database
+# Featuring splitters - case-insensitive patterns (searched with lower())
+# These always split to capture featuring artists in the database
 FEATURING_SPLITTERS = [
     " featuring ",
-    " Featuring ",
     " feat. ",
-    " Feat. ",
     " feat ",
-    " Feat ",
     " duet with ",
-    " Duet With ",
     " ft. ",
-    " Ft. ",
     " vs. ",
-    " Vs. ",
+    " vs ",
+    " (feat. ",
+    " (ft. ",
+    "(feat. ",
+    "(ft. ",
 ]
 
 # Extra splitters - only use these when we have MB ID evidence of multiple artists
-EXTRA_SPLITTERS = [" & ", ", ", " + ", " with ", " With "]
+EXTRA_SPLITTERS = [" & ", ", ", " + ", " with "]
 
 
 def _split_on_featuring(item: str) -> list[str]:
     """Split a string on featuring splitters, returns list of parts."""
+    item_lower = item.lower()
     for splitter in FEATURING_SPLITTERS:
-        if splitter in item:
+        if splitter in item_lower:
+            # Find the position in original string (case-insensitive)
+            pos = item_lower.find(splitter)
             parts = []
-            for subitem in item.split(splitter):
-                clean_item = subitem.strip()
-                if clean_item:
-                    # Recursively process each part for nested featuring splitters
-                    parts.extend(_split_on_featuring(clean_item))
+            before = item[:pos].strip()
+            after = item[pos + len(splitter) :].strip()
+            if before:
+                parts.extend(_split_on_featuring(before))
+            if after:
+                parts.extend(_split_on_featuring(after))
             return parts
     return [item]
 
@@ -121,7 +127,8 @@ def _split_to_target_count(
     expected_count: int,
     org_artists: str | tuple[str, ...],
 ) -> list[str]:
-    """Split artists on extra splitters to reach expected count.
+    """
+    Split artists on extra splitters to reach expected count.
 
     :param artists: List of artists after featuring splits.
     :param expected_count: Target number of artists.
@@ -197,7 +204,8 @@ def split_artists(
     org_artists: str | tuple[str, ...],
     expected_count: int | None = None,
 ) -> tuple[str, ...]:
-    """Parse artists from a string, guided by expected artist count.
+    """
+    Parse artists from a string, guided by expected artist count.
 
     :param org_artists: The artist string or tuple of strings to parse.
     :param expected_count: Expected number of artists (typically from MB artist IDs).
@@ -763,7 +771,8 @@ def get_file_duration(input_file: str) -> float:
 
 
 def _decode_mp4_freeform_single(values: list[Any]) -> str:
-    """Decode a single-value MP4 freeform tag (bytes to string).
+    """
+    Decode a single-value MP4 freeform tag (bytes to string).
 
     :param values: List of MP4FreeForm values (typically contains one item).
     """
@@ -776,7 +785,8 @@ def _decode_mp4_freeform_single(values: list[Any]) -> str:
 
 
 def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
-    """Decode a multi-value MP4 freeform tag (bytes to strings).
+    """
+    Decode a multi-value MP4 freeform tag (bytes to strings).
 
     :param values: List of MP4FreeForm values.
     """
@@ -790,7 +800,8 @@ def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
 
 
 def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
-    """Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
+    """
+    Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
 
     See: https://mutagen.readthedocs.io/en/latest/api/mp4.html
 
@@ -907,7 +918,8 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
 
 
 def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
-    """Parse ID3 tags (MP3 files) from mutagen tags dict.
+    """
+    Parse ID3 tags (MP3 files) from mutagen tags dict.
 
     See: https://mutagen-specs.readthedocs.io/en/latest/id3/id3v2.4.0-frames.html
     See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
@@ -982,7 +994,8 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
 
 
 def _vorbis_get_single(tags: VCommentDict, key: str) -> str | None:
-    """Get single value from Vorbis comments (first item if multiple exist).
+    """
+    Get single value from Vorbis comments (first item if multiple exist).
 
     :param tags: VCommentDict from mutagen.
     :param key: Tag name (case insensitive).
@@ -992,7 +1005,8 @@ def _vorbis_get_single(tags: VCommentDict, key: str) -> str | None:
 
 
 def _vorbis_get_multi(tags: VCommentDict, key: str) -> list[str] | None:
-    """Get all values from Vorbis comments as a list.
+    """
+    Get all values from Vorbis comments as a list.
 
     :param tags: VCommentDict from mutagen.
     :param key: Tag name (case insensitive).
@@ -1002,7 +1016,8 @@ def _vorbis_get_multi(tags: VCommentDict, key: str) -> list[str] | None:
 
 
 def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> None:
-    """Parse artist-related tags from Vorbis comments into result dict.
+    """
+    Parse artist-related tags from Vorbis comments into result dict.
 
     Handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec, as well as
     explicit ARTISTS tag which take precedence.
@@ -1041,7 +1056,8 @@ def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> Non
 
 
 def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
-    """Parse Vorbis comment tags (FLAC, OGG Vorbis, OGG Opus, etc.).
+    """
+    Parse Vorbis comment tags (FLAC, OGG Vorbis, OGG Opus, etc.).
 
     Vorbis comments support multiple values for the same field name per the spec.
     For example, multiple ARTIST fields can be used instead of a single ARTISTS field.
@@ -1126,7 +1142,8 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
 
 
 def _apev2_get_values(tags: APEv2, key: str) -> list[str]:
-    """Get values from an APEv2 tag, splitting on null bytes for multi-value fields.
+    """
+    Get values from an APEv2 tag, splitting on null bytes for multi-value fields.
 
     :param tags: APEv2 tags object.
     :param key: Tag key (case-insensitive in APEv2).
@@ -1141,7 +1158,8 @@ def _apev2_get_values(tags: APEv2, key: str) -> list[str]:
 
 
 def _apev2_get_single(tags: APEv2, key: str) -> str | None:
-    """Get a single value from an APEv2 tag.
+    """
+    Get a single value from an APEv2 tag.
 
     :param tags: APEv2 tags object.
     :param key: Tag key.
@@ -1151,7 +1169,8 @@ def _apev2_get_single(tags: APEv2, key: str) -> str | None:
 
 
 def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
-    """Get multiple values from an APEv2 tag.
+    """
+    Get multiple values from an APEv2 tag.
 
     :param tags: APEv2 tags object.
     :param key: Tag key.
@@ -1161,7 +1180,8 @@ def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
 
 
 def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
-    r"""Parse APEv2 tags into a normalized dictionary.
+    r"""
+    Parse APEv2 tags into a normalized dictionary.
 
     APEv2 tags are used by WavPack, Musepack, Monkey's Audio, OptimFROG, and TAK.
     Multi-value fields use null byte (\x00) as separator.
@@ -1263,7 +1283,8 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
 
 
 def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
-    """Parse tags from an audio file using Mutagen.
+    """
+    Parse tags from an audio file using Mutagen.
 
     Supports Vorbis comments (FLAC, OGG), ID3 tags (MP3), MP4 tags (AAC/M4A/ALAC),
     and APEv2 tags (WavPack, Musepack, Monkey's Audio).
@@ -1297,7 +1318,8 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
 
 def _format_uses_apev2(format_name: str) -> bool:
-    """Check if an audio format exclusively uses APEv2 tags.
+    """
+    Check if an audio format exclusively uses APEv2 tags.
 
     These formats ONLY use APEv2 tags and cannot have cover art detected by ffprobe's
     video stream detection (unlike ID3's APIC which shows as mjpeg/png stream).
@@ -1316,7 +1338,8 @@ def _format_uses_apev2(format_name: str) -> bool:
 
 
 def get_apev2_image(input_file: str) -> bytes | None:
-    """Extract cover art from APEv2 tags using mutagen.
+    """
+    Extract cover art from APEv2 tags using mutagen.
 
     APEv2 tags (used by WavPack, Musepack, etc.) store cover art differently
     than ID3 tags. FFmpeg does not expose these as video streams, so we use

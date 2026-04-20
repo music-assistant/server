@@ -72,7 +72,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
-from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
@@ -90,7 +90,12 @@ from music_assistant.helpers.dsp import filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
 from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
-from music_assistant.helpers.util import clean_stream_title, detect_charset, remove_file
+from music_assistant.helpers.util import (
+    clean_stream_title,
+    detect_charset,
+    parse_title_and_version,
+    remove_file,
+)
 from music_assistant.models.smart_fades import SmartFadesMode
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
@@ -142,6 +147,50 @@ class StreamsAudio:
         """Return the smart fades mixer."""
         assert self._smart_fades_mixer is not None, "StreamsAudio.setup() not called"
         return self._smart_fades_mixer
+
+    def _update_radio_stream_metadata(
+        self,
+        streamdetails: StreamDetails,
+        artist: str | None,
+        title: str,
+        image_url: str | None = None,
+        album: str | None = None,
+    ) -> None:
+        """
+        Update radio stream metadata and trigger artwork lookup.
+
+        :param streamdetails: The stream details to update.
+        :param artist: Artist name (will be normalized).
+        :param title: Track title (will be cleaned for display).
+        :param image_url: Optional image URL from stream metadata.
+        :param album: Optional album name.
+        """
+        station_image_url = image_url or self.mass.metadata.get_radio_stream_station_image(
+            streamdetails
+        )
+        artist_normalized = (
+            self.mass.metadata.normalize_radio_artist_name(artist) if artist else None
+        )
+        display_title, _ = parse_title_and_version(title, strip_for_display=True)
+
+        streamdetails.stream_metadata = StreamMetadata(
+            title=display_title,
+            artist=artist_normalized,
+            album=album,
+            image_url=station_image_url,
+        )
+        streamdetails.stream_metadata_last_updated = time.time()
+        if streamdetails.queue_id:
+            self.mass.player_queues.signal_update(streamdetails.queue_id)
+
+        # Fetch artwork in background (track, album then artist)
+        if artist and title and not image_url:
+            self.mass.call_later(
+                0.2,
+                self.mass.metadata.update_radio_stream_artwork,
+                streamdetails,
+                task_id=f"update_radio_artwork_{streamdetails.queue_id}",
+            )
 
     # --- Public methods ---
 
@@ -361,8 +410,11 @@ class StreamsAudio:
                     if cleaned_title and cleaned_title != streamdetails.stream_title:
                         self.logger.log(VERBOSE_LOG_LEVEL, "In-band metadata: %s", cleaned_title)
                         streamdetails.stream_title = cleaned_title
-                        streamdetails.stream_metadata = StreamMetadata(
-                            title=title or cleaned_title, artist=artist or None, album=album or None
+                        self._update_radio_stream_metadata(
+                            streamdetails,
+                            artist=artist or None,
+                            title=title or cleaned_title,
+                            album=album or None,
                         )
 
             audio_source = get_chained_ogg_stream(
@@ -594,7 +646,7 @@ class StreamsAudio:
                     # fallback to iso-8859-1
                     stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
                 cleaned_stream_title = clean_stream_title(stream_title)
-                if cleaned_stream_title != streamdetails.stream_title:
+                if cleaned_stream_title and cleaned_stream_title != streamdetails.stream_title:
                     self.logger.log(
                         VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title
                     )
@@ -602,6 +654,23 @@ class StreamsAudio:
                         VERBOSE_LOG_LEVEL, "ICY Radio streamtitle cleaned: %s", cleaned_stream_title
                     )
                     streamdetails.stream_title = cleaned_stream_title
+
+                    if " - " in cleaned_stream_title:
+                        parts = cleaned_stream_title.split(" - ", 1)
+                        artist_name_raw = parts[0].strip()
+                        track_name = parts[1].strip()
+
+                        if artist_name_raw and track_name:
+                            self.logger.debug(
+                                "ICY metadata: artist='%s', track='%s'",
+                                artist_name_raw,
+                                track_name,
+                            )
+                            self._update_radio_stream_metadata(
+                                streamdetails,
+                                artist=artist_name_raw,
+                                title=track_name,
+                            )
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes, None]:
         """
@@ -2129,6 +2198,9 @@ class StreamsAudio:
                     # Build stream title from title and artist
                     title = metadata.get("title", "")
                     artist = metadata.get("artist", "")
+                    image_url = (
+                        metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
+                    )
 
                     if title or artist:
                         # Format as "Artist - Title"
@@ -2148,6 +2220,12 @@ class StreamsAudio:
                                 VERBOSE_LOG_LEVEL, "HLS Radio metadata updated: %s", cleaned_title
                             )
                             streamdetails.stream_title = cleaned_title
+                            self._update_radio_stream_metadata(
+                                streamdetails,
+                                artist=artist or None,
+                                title=title or cleaned_title,
+                                image_url=image_url,
+                            )
 
                     # Only check the most recent EXTINF
                     break
