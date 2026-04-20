@@ -6,6 +6,6 @@
   "description": "Stream music from KION Music (MTS) service.",
   "codeowners": ["@TrudenBoy"],
   "documentation": "https://music-assistant.io/music-providers/kion-music/",
-  "requirements": ["yandex-music==2.2.0"],
+  "requirements": ["yandex-music==3.0.0"],
   "multi_instance": true
 }
