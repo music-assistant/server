@@ -10,7 +10,8 @@ import asyncio
 import os
 import random
 import uuid as _uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -74,6 +75,8 @@ class SmartPlaylistProvider(MusicProvider):
     _rules_dir: str
     _rules_store: dict[str, SmartPlaylistRules]
     _names_store: dict[str, str]
+    _unregister_handles: list[Callable[[], None]]
+    _flush_lock: asyncio.Lock
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -84,6 +87,8 @@ class SmartPlaylistProvider(MusicProvider):
         """Handle async initialization."""
         self._rules_store = {}
         self._names_store = {}
+        self._unregister_handles = []
+        self._flush_lock = asyncio.Lock()
         self._rules_dir = os.path.join(self.mass.storage_path, "smart_playlists")
         if not await asyncio.to_thread(os.path.exists, self._rules_dir):
             await asyncio.to_thread(os.makedirs, self._rules_dir, exist_ok=True)
@@ -91,21 +96,40 @@ class SmartPlaylistProvider(MusicProvider):
 
     async def loaded_in_mass(self) -> None:
         """Register API commands after the provider is loaded."""
-        self.mass.register_api_command("smart_playlists/create", self.create_smart_playlist)
-        self.mass.register_api_command("smart_playlists/generate", self.generate_playlist)
-        self.mass.register_api_command("smart_playlists/get_rules", self.get_smart_playlist_rules)
-        self.mass.register_api_command(
-            "smart_playlists/update_rules", self.update_smart_playlist_rules
+        self._unregister_handles.append(
+            self.mass.register_api_command("smart_playlists/create", self.create_smart_playlist)
         )
-        self.mass.register_api_command("smart_playlists/list", self.list_smart_playlists)
-        self.mass.register_api_command("smart_playlists/preview_tracks", self.preview_tracks)
-        self.mass.register_api_command("smart_playlists/count_tracks", self.count_tracks)
+        self._unregister_handles.append(
+            self.mass.register_api_command("smart_playlists/generate", self.generate_playlist)
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "smart_playlists/get_rules", self.get_smart_playlist_rules
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "smart_playlists/update_rules", self.update_smart_playlist_rules
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command("smart_playlists/list", self.list_smart_playlists)
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command("smart_playlists/preview_tracks", self.preview_tracks)
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command("smart_playlists/count_tracks", self.count_tracks)
+        )
         self.logger.info(
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
         )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        for unregister in self._unregister_handles:
+            unregister()
+        self._unregister_handles.clear()
         if is_removed:
             # Smart playlists only exist as long as this provider is installed.
             # When the provider is removed, the playlists must be explicitly removed
@@ -221,7 +245,10 @@ class SmartPlaylistProvider(MusicProvider):
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
 
-        if count is not None and count > 0:
+        if count is not None:
+            if not 1 <= count <= 2000:
+                msg = "Playlist count must be between 1 and 2000"
+                raise InvalidDataError(msg)
             parsed_rules.limit = count
 
         tracks = await self._evaluate_rules(parsed_rules)
@@ -232,7 +259,7 @@ class SmartPlaylistProvider(MusicProvider):
         if tracks:
             uris = [t.uri for t in tracks if t.uri]
             if uris:
-                await self.mass.music.playlists.add_playlist_tracks(db_playlist_id, uris)
+                await self.mass.music.playlists._handle_add_playlist_tracks(db_playlist_id, uris)
 
         final_playlist = await self.mass.music.playlists.get_library_item(db_playlist_id)
         # Schedule an immediate metadata refresh to build the collage image and detect genres
@@ -419,8 +446,15 @@ class SmartPlaylistProvider(MusicProvider):
                 tracks = [t for t in tracks if t.favorite]
             if has_genre_filter and rules.logic == LOGIC_AND:
                 # Best-effort: filter seed tracks by genre name.
+                # Resolve names from library for any IDs not already in genre_names.
                 # Tracks without genre metadata are kept (don't exclude for missing data).
-                allowed_genre_names = {g.lower() for g in rules.genre_names.values()}
+                genre_id_to_name = dict(rules.genre_names)
+                for genre_id in rules.genre_ids:
+                    if genre_id not in genre_id_to_name:
+                        with suppress(Exception):
+                            genre = await self.mass.music.genres.get_library_item(genre_id)
+                            genre_id_to_name[genre_id] = genre.name
+                allowed_genre_names = {v.lower() for v in genre_id_to_name.values()}
                 if allowed_genre_names:
                     tracks = [
                         t
@@ -518,26 +552,27 @@ class SmartPlaylistProvider(MusicProvider):
                 if track.uri:
                     track_sets[track.uri] = track
 
-        for genre_id in rules.genre_ids:
-            for track in await self._get_library_tracks(genre_ids=[genre_id], limit=fetch_limit):
+        if rules.genre_ids:
+            for track in await self._get_library_tracks(
+                genre_ids=rules.genre_ids, limit=fetch_limit
+            ):
                 if track.uri:
                     track_sets[track.uri] = track
 
-        if rules.artist_ids:
+        if rules.artist_ids or rules.album_ids:
             all_tracks = await self._get_library_tracks(limit=fetch_limit * 2)
-            artist_id_set = set(rules.artist_ids)
-            for track in all_tracks:
-                if {
-                    int(a.item_id) for a in track.artists if a.item_id
-                } & artist_id_set and track.uri:
-                    track_sets[track.uri] = track
-
-        if rules.album_ids:
-            all_tracks = await self._get_library_tracks(limit=fetch_limit * 2)
-            album_id_set = set(rules.album_ids)
-            for track in all_tracks:
-                if track.album and int(track.album.item_id) in album_id_set and track.uri:
-                    track_sets[track.uri] = track
+            if rules.artist_ids:
+                artist_id_set = set(rules.artist_ids)
+                for track in all_tracks:
+                    if {
+                        int(a.item_id) for a in track.artists if a.item_id
+                    } & artist_id_set and track.uri:
+                        track_sets[track.uri] = track
+            if rules.album_ids:
+                album_id_set = set(rules.album_ids)
+                for track in all_tracks:
+                    if track.album and int(track.album.item_id) in album_id_set and track.uri:
+                        track_sets[track.uri] = track
 
         no_filters = (
             not rules.favorites_only
@@ -624,9 +659,10 @@ class SmartPlaylistProvider(MusicProvider):
 
     async def _flush_rules_to_disk(self) -> None:
         """Write all rules + names to disk as a single JSON file."""
-        rules_file = os.path.join(self._rules_dir, RULES_FILENAME)
-        data = {
-            pid: {"name": self._names_store.get(pid, pid), "rules": r.to_dict()}
-            for pid, r in self._rules_store.items()
-        }
-        await write_json(rules_file, data)
+        async with self._flush_lock:
+            rules_file = os.path.join(self._rules_dir, RULES_FILENAME)
+            data = {
+                pid: {"name": self._names_store.get(pid, pid), "rules": r.to_dict()}
+                for pid, r in self._rules_store.items()
+            }
+            await write_json(rules_file, data)

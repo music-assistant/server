@@ -64,9 +64,9 @@ class SmartPlaylistRules:
         raw_artist_names: dict[str, str] = data.get("artist_names", {})
         raw_album_names: dict[str, str] = data.get("album_names", {})
         return cls(
-            genre_ids=data.get("genre_ids", []),
-            artist_ids=data.get("artist_ids", []),
-            album_ids=data.get("album_ids", []),
+            genre_ids=[int(x) for x in data.get("genre_ids", [])],
+            artist_ids=[int(x) for x in data.get("artist_ids", [])],
+            album_ids=[int(x) for x in data.get("album_ids", [])],
             favorites_only=data.get("favorites_only", False),
             seed_track_uri=data.get("seed_track_uri"),
             seed_track_name=data.get("seed_track_name"),
