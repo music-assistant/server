@@ -19,7 +19,7 @@ aiovban==0.6.3
 alexapy==1.29.17
 async-upnp-client==0.46.2
 audible==0.10.0
-auntie-sounds==1.1.7
+auntie-sounds==1.1.8
 av==16.1.0
 awesomeversion>=24.6.0
 bandcamp-async-api==0.1.1
