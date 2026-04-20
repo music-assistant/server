@@ -898,11 +898,11 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     if tags.get("cpil"):  # type: ignore[no-untyped-call]
         result["compilation"] = "1" if tags["cpil"] else "0"
 
-    # Album type (MusicBrainz)
+    # album type may be multi-value; join them
     if "----:com.apple.iTunes:MusicBrainz Album Type" in tags:
-        result["musicbrainzalbumtype"] = _decode_mp4_freeform_single(
-            tags["----:com.apple.iTunes:MusicBrainz Album Type"]
-        )
+        albumtypes = _decode_mp4_freeform_list(tags["----:com.apple.iTunes:MusicBrainz Album Type"])
+        if albumtypes:
+            result["musicbrainzalbumtype"] = ";".join(albumtypes)
 
     # ReplayGain tags
     if "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN" in tags:
@@ -929,66 +929,67 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
 
     # Basic tags (single value)
-    if "TIT2" in tags:
-        result["title"] = tags["TIT2"].text[0]
-    if "TALB" in tags:
-        result["album"] = tags["TALB"].text[0]
+    if (frame := tags.get("TIT2")) and frame.text:
+        result["title"] = frame.text[0]
+    if (frame := tags.get("TALB")) and frame.text:
+        result["album"] = frame.text[0]
 
     # Artist tags - support ID3v2.4 null-separated multi-value
-    if "TPE1" in tags:
-        artist_values = tags["TPE1"].text
+    if (frame := tags.get("TPE1")) and (artist_values := frame.text):
         if len(artist_values) > 1:
             result["artists"] = list(artist_values)
         else:
             result["artist"] = artist_values[0]
-    if "TPE2" in tags:
-        albumartist_values = tags["TPE2"].text
+    if (frame := tags.get("TPE2")) and (albumartist_values := frame.text):
         if len(albumartist_values) > 1:
             result["albumartists"] = list(albumartist_values)
         else:
             result["albumartist"] = albumartist_values[0]
 
     # Genre (multi-value)
-    if "TCON" in tags:
-        result["genre"] = tags["TCON"].text
+    if (frame := tags.get("TCON")) and frame.text:
+        result["genre"] = frame.text
 
     # Explicit multi-value artist tag (takes precedence)
-    if "TXXX:ARTISTS" in tags:
-        result["artists"] = tags["TXXX:ARTISTS"].text
+    if (frame := tags.get("TXXX:ARTISTS")) and frame.text:
+        result["artists"] = frame.text
 
     # MusicBrainz tags (single value)
-    if "TXXX:MusicBrainz Album Id" in tags:
-        result["musicbrainzalbumid"] = tags["TXXX:MusicBrainz Album Id"].text[0]
-    if "TXXX:MusicBrainz Release Group Id" in tags:
-        result["musicbrainzreleasegroupid"] = tags["TXXX:MusicBrainz Release Group Id"].text[0]
-    if "UFID:http://musicbrainz.org" in tags:
-        result["musicbrainzrecordingid"] = tags["UFID:http://musicbrainz.org"].data.decode()
-    if "TXXX:MusicBrainz Track Id" in tags:
-        result["musicbrainztrackid"] = tags["TXXX:MusicBrainz Track Id"].text[0]
+    if (frame := tags.get("TXXX:MusicBrainz Album Id")) and frame.text:
+        result["musicbrainzalbumid"] = frame.text[0]
+    if (frame := tags.get("TXXX:MusicBrainz Release Group Id")) and frame.text:
+        result["musicbrainzreleasegroupid"] = frame.text[0]
+    if frame := tags.get("UFID:http://musicbrainz.org"):
+        result["musicbrainzrecordingid"] = frame.data.decode()
+    if (frame := tags.get("TXXX:MusicBrainz Track Id")) and frame.text:
+        result["musicbrainztrackid"] = frame.text[0]
 
     # MusicBrainz tags (multi-value)
-    if "TXXX:MusicBrainz Album Artist Id" in tags:
-        result["musicbrainzalbumartistid"] = tags["TXXX:MusicBrainz Album Artist Id"].text
-    if "TXXX:MusicBrainz Artist Id" in tags:
-        result["musicbrainzartistid"] = tags["TXXX:MusicBrainz Artist Id"].text
+    if (frame := tags.get("TXXX:MusicBrainz Album Artist Id")) and frame.text:
+        result["musicbrainzalbumartistid"] = frame.text
+    if (frame := tags.get("TXXX:MusicBrainz Artist Id")) and frame.text:
+        result["musicbrainzartistid"] = frame.text
+    # album type may be multi-value; join them
+    if (frame := tags.get("TXXX:MusicBrainz Album Type")) and frame.text:
+        result["musicbrainzalbumtype"] = ";".join(frame.text)
 
     # Additional tags
-    if "TXXX:BARCODE" in tags:
-        result["barcode"] = tags["TXXX:BARCODE"].text
-    if "TXXX:TSRC" in tags:
-        result["tsrc"] = tags["TXXX:TSRC"].text
+    if (frame := tags.get("TXXX:BARCODE")) and frame.text:
+        result["barcode"] = frame.text
+    if (frame := tags.get("TXXX:TSRC")) and frame.text:
+        result["tsrc"] = frame.text
 
     # Sort tags (multi-value to support multiple artists)
-    if "TSOP" in tags:
-        result["artistsort"] = tags["TSOP"].text
-    if "TSO2" in tags:
-        result["albumartistsort"] = tags["TSO2"].text
+    if (frame := tags.get("TSOP")) and frame.text:
+        result["artistsort"] = frame.text
+    if (frame := tags.get("TSO2")) and frame.text:
+        result["albumartistsort"] = frame.text
 
     # Sort tags (single value)
-    if tags.get("TSOT"):
-        result["titlesort"] = tags["TSOT"].text[0]
-    if tags.get("TSOA"):
-        result["albumsort"] = tags["TSOA"].text[0]
+    if (frame := tags.get("TSOT")) and frame.text:
+        result["titlesort"] = frame.text[0]
+    if (frame := tags.get("TSOA")) and frame.text:
+        result["albumsort"] = frame.text[0]
 
     return result
 
@@ -1114,13 +1115,9 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     if compilation := _vorbis_get_single(tags, "COMPILATION"):
         result["compilation"] = compilation
 
-    # Album type (MusicBrainz)
-    if albumtype := _vorbis_get_single(tags, "MUSICBRAINZ_ALBUMTYPE"):
-        result["musicbrainzalbumtype"] = albumtype
-    # Also check RELEASETYPE which is an alternative tag name
-    if not result.get("musicbrainzalbumtype"):
-        if releasetype := _vorbis_get_single(tags, "RELEASETYPE"):
-            result["musicbrainzalbumtype"] = releasetype
+    # album type may be multi-value (repeated fields); join them
+    if releasetypes := _vorbis_get_multi(tags, "RELEASETYPE"):
+        result["musicbrainzalbumtype"] = ";".join(releasetypes)
 
     # ReplayGain tags
     if rg_track := _vorbis_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):
@@ -1259,9 +1256,9 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
     if compilation := _apev2_get_single(tags, "Compilation"):
         result["compilation"] = compilation
 
-    # Album type
-    if albumtype := _apev2_get_single(tags, "MUSICBRAINZ_ALBUMTYPE"):
-        result["musicbrainzalbumtype"] = albumtype
+    # album type may be multi-value; join them
+    if albumtypes := _apev2_get_multi(tags, "MUSICBRAINZ_ALBUMTYPE"):
+        result["musicbrainzalbumtype"] = ";".join(albumtypes)
 
     # ReplayGain tags
     if rg_track := _apev2_get_single(tags, "REPLAYGAIN_TRACK_GAIN"):
