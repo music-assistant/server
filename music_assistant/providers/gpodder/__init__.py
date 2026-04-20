@@ -660,5 +660,5 @@ class GPodder(MusicProvider):
             key=CACHE_KEY_FEEDS,
             provider=self.instance_id,
             category=CACHE_CATEGORY_OTHER,
-            data=self.feeds,
+            data=list(self.feeds),
         )

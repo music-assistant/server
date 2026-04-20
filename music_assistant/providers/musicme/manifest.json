@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "musicme",
+  "stage": "beta",
+  "name": "MusicMe",
+  "description": "Stream music from MusicMe's catalogue — a French streaming service with 13M+ tracks.",
+  "codeowners": ["@JulienDeveaux"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/musicme",
+  "multi_instance": true
+}

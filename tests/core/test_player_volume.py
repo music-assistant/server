@@ -49,6 +49,8 @@ class TestFinalVolumeLevel:
         control.volume_level = 80
         mock_mass.players.get_player = MagicMock(return_value=control)
         mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
 
         player.update_state(signal_event=False)
         assert player.state.volume_level == 80
@@ -66,6 +68,8 @@ class TestFinalVolumeLevel:
 
         mock_mass.players.get_player = MagicMock(return_value=None)
         mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
 
         player.update_state(signal_event=False)
         assert player.state.volume_level == 55
@@ -85,6 +89,8 @@ class TestFinalVolumeLevel:
         control.volume_level = None
         mock_mass.players.get_player = MagicMock(return_value=control)
         mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
 
         player.update_state(signal_event=False)
         assert player.state.volume_level == 42
@@ -96,8 +102,14 @@ class TestFinalVolumeMutedState:
     def test_uses_control_player_when_available(self, mock_mass: MagicMock) -> None:
         """Final mute state uses the control player's mute state when present."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=lambda _pid, key, *_a: (
-                "control_player" if key == CONF_MUTE_CONTROL else None
+            side_effect=lambda _pid, key, default=None: (
+                "control_player"
+                if key == CONF_MUTE_CONTROL
+                else 0
+                if key == "min_volume"
+                else 100
+                if key == "max_volume"
+                else default
             ),
         )
         provider = MockProvider("test", mass=mock_mass)
@@ -116,8 +128,14 @@ class TestFinalVolumeMutedState:
     def test_falls_back_to_native_when_control_player_missing(self, mock_mass: MagicMock) -> None:
         """Final mute state falls back to native when the control player doesn't exist."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=lambda _pid, key, *_a: (
-                "missing_player" if key == CONF_MUTE_CONTROL else None
+            side_effect=lambda _pid, key, default=None: (
+                "missing_player"
+                if key == CONF_MUTE_CONTROL
+                else 0
+                if key == "min_volume"
+                else 100
+                if key == "max_volume"
+                else default
             ),
         )
         provider = MockProvider("test", mass=mock_mass)
@@ -134,8 +152,14 @@ class TestFinalVolumeMutedState:
     def test_falls_back_to_native_when_control_returns_none(self, mock_mass: MagicMock) -> None:
         """Final mute state falls back to native when the control's mute is None."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=lambda _pid, key, *_a: (
-                "control_player" if key == CONF_MUTE_CONTROL else None
+            side_effect=lambda _pid, key, default=None: (
+                "control_player"
+                if key == CONF_MUTE_CONTROL
+                else 0
+                if key == "min_volume"
+                else 100
+                if key == "max_volume"
+                else default
             ),
         )
         provider = MockProvider("test", mass=mock_mass)

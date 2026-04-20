@@ -20,6 +20,7 @@ from music_assistant.helpers.playlists import (
     media_item_to_playlist_item,
     parse_extinf_title,
     parse_m3u,
+    parse_m3u_playlist_image,
     parse_m3u_playlist_name,
 )
 
@@ -224,6 +225,24 @@ def test_parse_m3u_playlist_name_missing() -> None:
     assert parse_m3u_playlist_name(m3u_data) is None
 
 
+def test_parse_m3u_playlist_image() -> None:
+    """Test extracting a playlist-level cover image from #EXTIMG."""
+    m3u_data = (
+        "#EXTM3U\n"
+        "#EXTIMG:https://img.example.com/cover.jpg\n"
+        "#PLAYLIST:My Playlist\n"
+        "#EXTINF:120,Test\n"
+        "test.mp3\n"
+    )
+    assert parse_m3u_playlist_image(m3u_data) == "https://img.example.com/cover.jpg"
+
+
+def test_parse_m3u_playlist_image_missing() -> None:
+    """Test that None is returned when no playlist-level image exists."""
+    m3u_data = "#EXTM3U\n#PLAYLIST:My Playlist\n#EXTINF:120,Test\ntest.mp3\n"
+    assert parse_m3u_playlist_image(m3u_data) is None
+
+
 # --------------------------------------------------------------------------- #
 #  generate_m3u                                                                #
 # --------------------------------------------------------------------------- #
@@ -298,6 +317,13 @@ def test_generate_m3u_with_images() -> None:
     ]
     result = generate_m3u("Test", items)
     assert "#EXTIMG:thumb||https://img.jpg||spotify||true\n" in result
+
+
+def test_generate_m3u_with_playlist_image() -> None:
+    """Test M3U generation with a playlist-level cover image."""
+    items = [PlaylistItem(path="spotify://track/abc123", title="Test", length="120")]
+    result = generate_m3u("Test", items, "https://img.example.com/cover.jpg")
+    assert result.startswith("#EXTM3U\n#EXTIMG:https://img.example.com/cover.jpg\n#PLAYLIST:Test\n")
 
 
 def test_generate_m3u_empty() -> None:

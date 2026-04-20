@@ -26,7 +26,7 @@ def valid_id(provider: str, item_id: str) -> bool:
     return True
 
 
-async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]:
+async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]:  # noqa: PLR0915
     """Try to parse URI to Mass identifiers.
 
     Returns Tuple: MediaType, provider_instance_id_or_domain, item_id
@@ -46,6 +46,41 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type_str = uri.split("/")[4]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[5].split("?", maxsplit=1)[0]
+        elif uri.startswith("https://music.apple.com/"):
+            # Apple Music share URL
+            # https://music.apple.com/{storefront}/{type}/{slug}/{id}
+            _apple_type_map = {
+                "station": MediaType.PLAYLIST,
+                "playlist": MediaType.PLAYLIST,
+                "album": MediaType.ALBUM,
+                "artist": MediaType.ARTIST,
+                "song": MediaType.TRACK,
+            }
+            parts = uri.rstrip("/").split("?")[0].split("/")
+            # parts: ['https:', '', 'music.apple.com', '{sf}', '{type}', '{slug}', '{id}']
+            # or:    ['https:', '', 'music.apple.com', '{sf}', '{type}', '{id}']  (no slug)
+            # Track share links are album URLs with a ?i=<track_id> query param
+            query = uri.split("?", 1)[1] if "?" in uri else ""
+            track_id_from_query = next(
+                (p.split("=", 1)[1] for p in query.split("&") if p.startswith("i=")),
+                None,
+            )
+            if len(parts) >= 6:
+                apple_type = parts[4]
+                if apple_type == "album" and track_id_from_query:
+                    provider_instance_id_or_domain = "apple_music"
+                    media_type = MediaType.TRACK
+                    item_id = track_id_from_query
+                elif apple_type in _apple_type_map:
+                    item_id = parts[-1]
+                    if not item_id:
+                        raise KeyError
+                    provider_instance_id_or_domain = "apple_music"
+                    media_type = _apple_type_map[apple_type]
+                else:
+                    raise KeyError
+            else:
+                raise KeyError
         elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             # Translate a plain URL to the builtin provider
             provider_instance_id_or_domain = "builtin"

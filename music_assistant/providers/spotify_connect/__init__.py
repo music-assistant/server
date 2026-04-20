@@ -739,8 +739,11 @@ class SpotifyConnectProvider(PluginProvider):
             if self._spotify_provider is not None:
                 self._spotify_provider = None
                 self._update_source_capabilities()
-            # Clear active player and potentially stop daemon on session disconnect
+            # Clear active player and stop the player on session disconnect
+            prev_player_id = self._active_player_id
             self._clear_active_player()
+            if prev_player_id:
+                self.mass.create_task(self.mass.players.deselect_source(prev_player_id))
 
         # handle paused event - clear in_use_by so UI shows correct active source
         # this happens when MA starts playing while Spotify Connect was active

@@ -20,3 +20,9 @@ venv/
 .coverage
 uv.lock
 /.claude/worktrees
+docs/superpowers
+
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml

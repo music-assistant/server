@@ -1,7 +1,11 @@
 """Tests for parsing audio file tags (ID3, MP4/AAC, Vorbis, APEv2, etc.)."""
 
 import pathlib
+import shutil
 from unittest.mock import MagicMock
+
+import mutagen
+import pytest
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -10,6 +14,7 @@ from music_assistant.helpers.tags import (
     _parse_vorbis_tags,
     parse_tags_mutagen,
     split_artists,
+    write_replaygain_track_gain,
 )
 
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
@@ -694,3 +699,53 @@ def test_id3_albumartist_tag_semicolon_single_mbid() -> None:
     # Single MB Album Artist ID = single artist, no splitting
     assert audio_tags.album_artists == ("ave;new",)
     assert audio_tags.musicbrainz_albumartistids == ("2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",)
+
+
+def _read_replaygain_track_gain(path: str) -> str | None:
+    """Read REPLAYGAIN_TRACK_GAIN from a file using mutagen (format-agnostic)."""
+    audio = mutagen.File(path)  # type: ignore[attr-defined]
+    if audio is None or audio.tags is None:
+        return None
+    tag_key_mp4 = "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"
+    if tag_key_mp4 in audio.tags:
+        val = audio.tags[tag_key_mp4][0]
+        return val.decode("utf-8") if isinstance(val, bytes) else str(val)
+    if "TXXX:REPLAYGAIN_TRACK_GAIN" in audio.tags:
+        return str(audio.tags["TXXX:REPLAYGAIN_TRACK_GAIN"].text[0])
+    if "REPLAYGAIN_TRACK_GAIN" in audio.tags:
+        return str(audio.tags["REPLAYGAIN_TRACK_GAIN"][0])
+    return None
+
+
+@pytest.mark.parametrize(
+    "source",
+    [FILE_MP3, FILE_M4A, FILE_FLAC, FILE_WV],
+)
+async def test_write_replaygain_track_gain_roundtrip(tmp_path: pathlib.Path, source: str) -> None:
+    """Write a REPLAYGAIN_TRACK_GAIN tag and verify the value is read back."""
+    dest = tmp_path / pathlib.Path(source).name
+    shutil.copy(source, dest)
+
+    assert await write_replaygain_track_gain(str(dest), -5.3) is True
+    assert _read_replaygain_track_gain(str(dest)) == "-5.30 dB"
+
+    # verify overwrite replaces the previous value
+    assert await write_replaygain_track_gain(str(dest), -2.1) is True
+    assert _read_replaygain_track_gain(str(dest)) == "-2.10 dB"
+
+
+async def test_write_replaygain_track_gain_missing_file(tmp_path: pathlib.Path) -> None:
+    """Return False if the file does not exist or cannot be opened."""
+    assert await write_replaygain_track_gain(str(tmp_path / "nope.mp3"), -5.0) is False
+
+
+async def test_write_replaygain_track_gain_read_only(tmp_path: pathlib.Path) -> None:
+    """Return False if the file cannot be written to."""
+    dest = tmp_path / "readonly.mp3"
+    shutil.copy(FILE_MP3, dest)
+    dest.chmod(0o444)
+    try:
+        assert await write_replaygain_track_gain(str(dest), -5.0) is False
+    finally:
+        # restore permissions so tmp_path cleanup can remove the file
+        dest.chmod(0o644)
