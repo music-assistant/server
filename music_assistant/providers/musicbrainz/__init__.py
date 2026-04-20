@@ -486,9 +486,13 @@ class MusicbrainzProvider(MetadataProvider):
             for rg, release_date in self._get_release_groups_with_dates(recording, track_name):
                 rg_id = rg.id
                 if rg_id in all_release_groups:
-                    _, existing_date = all_release_groups[rg_id]
+                    existing_rg, existing_date = all_release_groups[rg_id]
                     if release_date and (not existing_date or release_date < existing_date):
+                        if not rg.barcode:
+                            rg.barcode = existing_rg.barcode
                         all_release_groups[rg_id] = (rg, release_date)
+                    elif rg.barcode and not existing_rg.barcode:
+                        existing_rg.barcode = rg.barcode
                 else:
                     all_release_groups[rg_id] = (rg, release_date)
 
