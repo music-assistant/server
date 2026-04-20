@@ -207,7 +207,7 @@ async def perform_device_auth(mass: MusicAssistant, session_id: str) -> tuple[st
                 session.verification_url,
                 session.expires_in,
             )
-            _LOGGER.debug("Device flow user_code issued: %s", session.user_code)
+            _LOGGER.debug("Device flow user_code issued")
 
             page_path = f"{_DEVICE_CODE_PAGE_PATH}/{session_id}"
             status_path = f"{page_path}/status"
