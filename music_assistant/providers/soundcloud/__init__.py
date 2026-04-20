@@ -49,10 +49,10 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
 }
 
-# When searching, the duration is compared with the full duration to check if it's a preview track etc. 
+# When searching, the duration is compared with the full duration to check if it's a preview track etc.
 # Sometimes, for non preview tracks, the duration is off by a bit compared to the full duration so any differences below
 # this tolerance are acceptable
-SEARCH_DURATION_COMPARISON_TOLERANCE=1000
+SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 
 
 if TYPE_CHECKING:
