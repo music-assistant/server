@@ -232,11 +232,27 @@ def _clear_auth(values: dict[str, ConfigValueType]) -> None:
 def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> None:
     if not credential.musicid or not credential.musickey:
         raise LoginFailed("QR login succeeded but credential is incomplete")
+    credential_json: str
+    if callable(getattr(credential, "as_json", None)):
+        credential_json = credential.as_json()
+    else:
+        fallback_credential = Credential.from_cookies_dict(
+            {
+                "musicid": str(credential.musicid),
+                "musickey": str(credential.musickey),
+                "loginType": int(getattr(credential, "login_type", 2) or 2),
+                "refresh_key": str(getattr(credential, "refresh_key", "") or ""),
+                "refresh_token": str(getattr(credential, "refresh_token", "") or ""),
+                "encryptUin": str(getattr(credential, "encrypt_uin", "") or ""),
+                "str_musicid": str(getattr(credential, "str_musicid", "") or ""),
+            }
+        )
+        credential_json = fallback_credential.as_json()
     values[CONF_UIN] = str(credential.musicid)
     values[CONF_MUSICID] = str(credential.musicid)
     values[CONF_MUSICKEY] = str(credential.musickey)
     values[CONF_LOGIN_TYPE] = str(credential.login_type or 2)
-    values[CONF_CREDENTIAL_JSON] = credential.as_json()
+    values[CONF_CREDENTIAL_JSON] = credential_json
     values[CONF_QR_IDENTIFIER] = None
     values[CONF_QR_TYPE] = None
     values[CONF_QR_PAGE_URL] = None
