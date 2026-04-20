@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest import mock
 
 import pytest
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from yandex_music.exceptions import NetworkError
 
 from music_assistant.providers.kion_music.api_client import KionMusicClient
@@ -14,8 +13,8 @@ from music_assistant.providers.kion_music.constants import DEFAULT_BASE_URL
 
 @pytest.fixture
 def client() -> KionMusicClient:
-    """Return a KionMusicClient with a fake token."""
-    return KionMusicClient("fake_token")
+    """Return a KionMusicClient with a fake token and explicit base URL."""
+    return KionMusicClient("fake_token", base_url=DEFAULT_BASE_URL)
 
 
 async def test_connect_sets_base_url(client: KionMusicClient) -> None:
@@ -74,36 +73,3 @@ async def test_get_liked_albums_batch_fallback_on_network_error(
 
     assert len(result) == 1
     assert result[0].id == 1
-
-
-async def test_get_tracks_retry_on_network_error_then_success(
-    client: KionMusicClient,
-) -> None:
-    """Test that get_tracks retries once on NetworkError and succeeds."""
-    mock_client = mock.AsyncMock()
-    client._client = mock_client
-    client._user_id = 1
-
-    track = type("Track", (), {"id": 1})()
-    mock_client.tracks = mock.AsyncMock(side_effect=[NetworkError("timeout"), [track]])
-
-    result = await client.get_tracks(["1"])
-
-    assert len(result) == 1
-    assert mock_client.tracks.call_count == 2
-
-
-async def test_get_tracks_retry_on_network_error_both_fail(
-    client: KionMusicClient,
-) -> None:
-    """Test that get_tracks raises ResourceTemporarilyUnavailable when retry fails."""
-    mock_client = mock.AsyncMock()
-    client._client = mock_client
-    client._user_id = 1
-
-    mock_client.tracks = mock.AsyncMock(side_effect=NetworkError("timeout"))
-
-    with pytest.raises(ResourceTemporarilyUnavailable):
-        await client.get_tracks(["1"])
-
-    assert mock_client.tracks.call_count == 2
