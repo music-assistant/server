@@ -228,7 +228,8 @@ class SpotifyProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -244,7 +245,7 @@ class SpotifyProvider(MusicProvider):
 
         search_query = search_query.replace("'", "")
         offset = 0
-        page_limit = min(limit, 50)
+        page_limit = min(limit, 10)
 
         while True:
             api_result = await self._get_data(
@@ -278,7 +279,8 @@ class SpotifyProvider(MusicProvider):
     def _process_search_results(
         self, api_result: dict[str, Any], searchresult: SearchResults
     ) -> int:
-        """Process API search results and update searchresult object.
+        """
+        Process API search results and update searchresult object.
 
         Returns the total number of items received.
         """
@@ -424,10 +426,6 @@ class SpotifyProvider(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all podcast episodes."""
-        # Get podcast object for context if available
-        podcast = await self.mass.music.podcasts.get_library_item_by_prov_id(
-            prov_podcast_id, self.instance_id
-        )
         podcast = await self.get_podcast(prov_podcast_id)
 
         # Get (cached) episode data
@@ -579,7 +577,7 @@ class SpotifyProvider(MusicProvider):
             # The resume position will be automatically updated by MA's internal tracking
             # and will be retrieved via get_audiobook() which combines MA + Spotify positions
 
-    @use_cache()
+    @use_cache(86400 * 365)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         return [
@@ -588,7 +586,7 @@ class SpotifyProvider(MusicProvider):
             if item["id"]
         ]
 
-    @use_cache(2600 * 3)  # 3 hours
+    @use_cache(3600 * 3)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
@@ -615,14 +613,18 @@ class SpotifyProvider(MusicProvider):
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
         total = spotify_result.get("total", 0)
-        for index, item in enumerate(spotify_result["items"], 1):
+        items = spotify_result.get("items", [])
+        # playlists/{id}/items is transitioning from item["track"] to item["item"]
+        # during Spotify's Feb 2026 rollout, so accept either shape.
+        for index, item in enumerate(items, 1):
             # Spotify wraps/recycles items for offsets beyond the playlist size,
             # so we need to break when we've reached the total.
             if (offset + index) > total:
                 break
-            if not (item and item["track"] and item["track"]["id"]):
+            track_data = item and (item.get("item") or item.get("track"))
+            if not (track_data and track_data.get("id")):
                 continue
-            track = parse_track(item["track"], self)
+            track = parse_track(track_data, self)
             track.position = offset + index
             result.append(track)
         return result
@@ -652,34 +654,40 @@ class SpotifyProvider(MusicProvider):
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
-        if item.media_type == MediaType.ARTIST:
-            await self._put_data("me/following", {"ids": [item.item_id]}, type="artist")
-        elif item.media_type == MediaType.ALBUM:
-            await self._put_data("me/albums", {"ids": [item.item_id]})
-        elif item.media_type == MediaType.TRACK:
-            await self._put_data("me/tracks", {"ids": [item.item_id]})
-        elif item.media_type == MediaType.PLAYLIST:
-            await self._put_data(f"playlists/{item.item_id}/followers", data={"public": False})
-        elif item.media_type == MediaType.PODCAST:
-            await self._put_data("me/shows", ids=item.item_id)
-        elif item.media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
-            await self._put_data("me/audiobooks", ids=item.item_id)
+        uri_type_map = {
+            MediaType.ARTIST: "artist",
+            MediaType.ALBUM: "album",
+            MediaType.TRACK: "track",
+            MediaType.PLAYLIST: "playlist",
+            MediaType.PODCAST: "show",
+            MediaType.AUDIOBOOK: "audiobook",
+        }
+        if item.media_type == MediaType.AUDIOBOOK and not self.audiobooks_supported:
+            return False
+        uri_type = uri_type_map.get(item.media_type)
+        if not uri_type:
+            return False
+        uri = f"spotify:{uri_type}:{item.item_id}"
+        await self._put_data("me/library", uris=uri)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
-        if media_type == MediaType.ARTIST:
-            await self._delete_data("me/following", {"ids": [prov_item_id]}, type="artist")
-        elif media_type == MediaType.ALBUM:
-            await self._delete_data("me/albums", {"ids": [prov_item_id]})
-        elif media_type == MediaType.TRACK:
-            await self._delete_data("me/tracks", {"ids": [prov_item_id]})
-        elif media_type == MediaType.PLAYLIST:
-            await self._delete_data(f"playlists/{prov_item_id}/followers")
-        elif media_type == MediaType.PODCAST:
-            await self._delete_data("me/shows", ids=prov_item_id)
-        elif media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
-            await self._delete_data("me/audiobooks", ids=prov_item_id)
+        uri_type_map = {
+            MediaType.ARTIST: "artist",
+            MediaType.ALBUM: "album",
+            MediaType.TRACK: "track",
+            MediaType.PLAYLIST: "playlist",
+            MediaType.PODCAST: "show",
+            MediaType.AUDIOBOOK: "audiobook",
+        }
+        if media_type == MediaType.AUDIOBOOK and not self.audiobooks_supported:
+            return False
+        uri_type = uri_type_map.get(media_type)
+        if not uri_type:
+            return False
+        uri = f"spotify:{uri_type}:{prov_item_id}"
+        await self._delete_data("me/library", uris=uri)
         return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -697,18 +705,17 @@ class SpotifyProvider(MusicProvider):
             uri = f"playlists/{prov_playlist_id}/items"
             spotify_result = await self._get_data(uri, limit=1, offset=pos - 1)
             for item in spotify_result["items"]:
-                if not (item and item["track"] and item["track"]["id"]):
+                track_data = item and (item.get("item") or item.get("track"))
+                if not (track_data and track_data.get("id")):
                     continue
-                track_uris.append({"uri": f"spotify:track:{item['track']['id']}"})
-        data = {"tracks": track_uris}
+                track_uris.append({"uri": f"spotify:track:{track_data['id']}"})
+        data = {"items": track_uris}
         await self._delete_data(f"playlists/{prov_playlist_id}/items", data=data)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
-        if self._sp_user is None:
-            raise LoginFailed("User info not available - not logged in")
         data = {"name": name, "public": False}
-        new_playlist = await self._post_data(f"users/{self._sp_user['id']}/playlists", data=data)
+        new_playlist = await self._post_data("me/playlists", data=data)
         self._fix_create_playlist_api_bug(new_playlist)
         return parse_playlist(new_playlist, self)
 
@@ -821,7 +828,8 @@ class SpotifyProvider(MusicProvider):
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:
-        """Log-in Spotify global session and return Auth/token info.
+        """
+        Log-in Spotify global session and return Auth/token info.
 
         This uses MA's global client ID which has full API access but heavy rate limits.
         """
@@ -872,13 +880,15 @@ class SpotifyProvider(MusicProvider):
             self._sp_user = userinfo = await self._get_data(
                 "me", auth_info=auth_info, use_global_session=True
             )
-            self.mass.metadata.set_default_preferred_language(userinfo["country"])
+            if country := userinfo.get("country"):
+                self.mass.metadata.set_default_preferred_language(country)
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
         return auth_info
 
     @lock
     async def login_dev(self, force_refresh: bool = False) -> dict[str, Any]:
-        """Log-in Spotify developer session and return Auth/token info.
+        """
+        Log-in Spotify developer session and return Auth/token info.
 
         This uses the user's custom client ID which has less rate limits but limited API access.
         """
@@ -926,7 +936,8 @@ class SpotifyProvider(MusicProvider):
         return auth_info
 
     async def _setup_librespot_auth(self, access_token: str) -> None:
-        """Set up librespot authentication with the given access token.
+        """
+        Set up librespot authentication with the given access token.
 
         :param access_token: Spotify access token to use for librespot authentication.
         """
@@ -955,7 +966,8 @@ class SpotifyProvider(MusicProvider):
                 raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
-        """Get auth info for API requests, preferring dev session if available.
+        """
+        Get auth info for API requests, preferring dev session if available.
 
         :param use_global_session: Force use of global session (for features not available on dev).
         """
@@ -1010,7 +1022,8 @@ class SpotifyProvider(MusicProvider):
         return liked_songs
 
     async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:
-        """Check if a playlist requires global token (cached).
+        """
+        Check if a playlist requires global token (cached).
 
         :param prov_playlist_id: The Spotify playlist ID.
         :returns: True if the playlist requires global token.
@@ -1019,7 +1032,8 @@ class SpotifyProvider(MusicProvider):
         return bool(await self.mass.cache.get(cache_key, provider=self.instance_id))
 
     async def _set_playlist_requires_global_token(self, prov_playlist_id: str) -> None:
-        """Mark a playlist as requiring global token in cache.
+        """
+        Mark a playlist as requiring global token in cache.
 
         :param prov_playlist_id: The Spotify playlist ID.
         """
@@ -1056,13 +1070,10 @@ class SpotifyProvider(MusicProvider):
 
     @use_cache(43200)  # 12 hours - balances freshness with performance
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
-        """Get raw episode data from Spotify API (cached).
+        """
+        Get raw episode data from Spotify API (cached).
 
-        Args:
-            prov_podcast_id: Spotify podcast ID
-
-        Returns:
-            List of episode data dictionaries
+        :param prov_podcast_id: Spotify podcast ID.
         """
         episodes_data: list[dict[str, Any]] = []
 
@@ -1085,13 +1096,10 @@ class SpotifyProvider(MusicProvider):
 
     @use_cache(7200)  # 2 hours - shorter cache for resume point data
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
-        """Get raw chapter data from Spotify API (cached).
+        """
+        Get raw chapter data from Spotify API (cached).
 
-        Args:
-            prov_audiobook_id: Spotify audiobook ID
-
-        Returns:
-            List of chapter data dictionaries
+        :param prov_audiobook_id: Spotify audiobook ID.
         """
         chapters_data: list[dict[str, Any]] = []
 
@@ -1158,7 +1166,8 @@ class SpotifyProvider(MusicProvider):
 
     @throttle_with_retries
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
-        """Get data from api.
+        """
+        Get data from api.
 
         :param endpoint: API endpoint to call.
         :param use_global_session: Force use of global session (for features not available on dev).

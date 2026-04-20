@@ -26,7 +26,18 @@ def mock_mass() -> MagicMock:
     mass.closing = False
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+
+    def _get_raw_player_config_value(
+        _player_id: str, key: str, default: str | int | None = None
+    ) -> str | int | None:
+        """Return appropriate defaults for player config values."""
+        if key == "min_volume":
+            return 0
+        if key == "max_volume":
+            return 100
+        return default if default is not None else "auto"
+
+    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()

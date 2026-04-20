@@ -43,6 +43,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     AlreadyRegisteredError,
     InsufficientPermissions,
+    InvalidDataError,
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
@@ -77,8 +78,12 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_MAX_VOLUME,
+    CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_GROUP_MEMBERS,
+    CONF_MAX_VOLUME,
+    CONF_MIN_VOLUME,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -1606,6 +1611,61 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for key in (conf_key, dsp_conf_key):
             self.mass.config.remove(key)
 
+    def _get_volume_limits(self, player_id: str) -> tuple[int, int]:
+        """Get the configured min/max volume limits for a player."""
+        min_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MIN_VOLUME, CONF_ENTRY_MIN_VOLUME.default_value
+                ),
+            )
+        )
+        max_volume = int(
+            cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    player_id, CONF_MAX_VOLUME, CONF_ENTRY_MAX_VOLUME.default_value
+                ),
+            )
+        )
+        return min_volume, max_volume
+
+    def scale_volume_to_device(self, player_id: str, logical_volume: int) -> int:
+        """Scale logical volume (0-100) to device volume (min_volume-max_volume)."""
+        min_volume, max_volume = self._get_volume_limits(player_id)
+        if min_volume == 0 and max_volume == 100:
+            return logical_volume
+        # Scale: logical 0 -> min_volume, logical 100 -> max_volume
+        return min_volume + (logical_volume * (max_volume - min_volume)) // 100
+
+    def scale_volume_from_device(self, player_id: str, device_volume: int) -> int:
+        """Scale device volume (min_volume-max_volume) to logical volume (0-100)."""
+        min_volume, max_volume = self._get_volume_limits(player_id)
+        if min_volume == 0 and max_volume == 100:
+            return device_volume
+        volume_range = max_volume - min_volume
+        if volume_range == 0:
+            return 0
+        # Scale to 0-100 without clamping so that out-of-range device volumes
+        # produce distinct logical values, ensuring state change detection triggers
+        # volume limit enforcement
+        return ((device_volume - min_volume) * 100) // volume_range
+
+    def _enforce_volume_limits(self, player: Player) -> None:
+        """Clamp device volume to min/max range when changed externally."""
+        if player.volume_level is None:
+            return
+        player_id = player.player_id
+        min_volume, max_volume = self._get_volume_limits(player_id)
+        if min_volume == 0 and max_volume == 100:
+            return
+        device_volume = player.volume_level
+        clamped = max(min_volume, min(max_volume, device_volume))
+        if clamped != device_volume:
+            # Device volume is outside allowed range, correct it
+            self.mass.create_task(player.volume_set(clamped))
+
     def signal_player_state_update(
         self,
         player: Player,
@@ -1699,6 +1759,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if became_inactive and (player.state.active_group or player.state.synced_to):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
+        # enforce volume limits when volume changes externally
+        if "volume_level" in changed_values:
+            self._enforce_volume_limits(player)
         # dispatch to internal state update subscribers (with changed_values)
         self._dispatch_state_update_subscribers(player, changed_values)
 
@@ -2135,6 +2198,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        min_vol_changed = f"values/{CONF_MIN_VOLUME}" in changed_keys
+        max_vol_changed = f"values/{CONF_MAX_VOLUME}" in changed_keys
+        if min_vol_changed or max_vol_changed:
+            raw_min = config.get_value(CONF_MIN_VOLUME)
+            raw_max = config.get_value(CONF_MAX_VOLUME)
+            min_vol = int(cast("int", raw_min)) if raw_min is not None else 0
+            max_vol = int(cast("int", raw_max)) if raw_max is not None else 100
+            if min_vol > max_vol:
+                msg = "Minimum volume cannot exceed maximum volume"
+                raise InvalidDataError(msg)
         player = self.get_player(config.player_id)
         player_provider = self.mass.get_provider(config.provider)
         player_disabled = ATTR_ENABLED in changed_keys and not config.enabled
@@ -3157,9 +3230,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         Handle Player volume set command.
 
         Skips permission checks and locking (internal use only).
+
+        :param player_id: player_id of the player to handle the command.
+        :param volume_level: logical volume level (0..100) to set on the player.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
+
+        # Clamp logical volume to 0-100
+        volume_level = max(0, min(100, volume_level))
+
         if player.type == PlayerType.GROUP:
             # redirect to special group volume control
             await self.cmd_group_volume(player_id, volume_level)
@@ -3190,6 +3270,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # always reset fake mute when controlling volume
         player.extra_data.pop(ATTR_FAKE_MUTE, None)
 
+        # Scale logical volume (0-100) to device volume (min_volume-max_volume)
+        device_volume = self.scale_volume_to_device(player_id, volume_level)
+
         # Check if a plugin source is active with a volume callback.
         # Only fire if this player is the direct owner of the plugin source,
         # not when it merely inherits active_source from a parent group —
@@ -3197,17 +3280,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if plugin_source := self._get_active_plugin_source(player):
             if plugin_source.on_volume and plugin_source.in_use_by == player.player_id:
                 await plugin_source.on_volume(volume_level)
+
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:
             # player supports volume command natively: forward to player
-            await player.volume_set(volume_level)
+            await player.volume_set(device_volume)
             return
         # Handle fake volume control support
         if player.volume_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake volume control - so we (optimistically) update the state
-            # and store the state in the cache
+            # and store the state in the cache. Fake volume uses the logical volume (no scaling).
             player.extra_data[ATTR_FAKE_VOLUME] = volume_level
-            # trigger update
             player.update_state()
             return
         # player has no volume support at all
