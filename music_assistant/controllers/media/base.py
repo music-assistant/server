@@ -25,9 +25,9 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-    DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
@@ -244,10 +244,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
-            # cleanup loudness measurements for this provider mapping
+            # cleanup audio analysis rows for this provider mapping
             for prov_key in (prov_mapping.provider_domain, prov_mapping.provider_instance):
                 await self.mass.music.database.delete(
-                    DB_TABLE_LOUDNESS_MEASUREMENTS,
+                    DB_TABLE_AUDIO_ANALYSIS,
                     {
                         "media_type": self.media_type.value,
                         "item_id": prov_mapping.item_id,
