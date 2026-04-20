@@ -664,6 +664,8 @@ class MetaDataController(CoreController):
             provider_mappings=set(),
         )
         temp_album.add_external_id(ExternalID.MB_RELEASEGROUP, mb_release_group.id)
+        if mb_release_group.barcode:
+            temp_album.add_external_id(ExternalID.BARCODE, mb_release_group.barcode)
         for provider in self.providers:
             if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                 continue
