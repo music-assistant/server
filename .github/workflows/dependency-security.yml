@@ -48,7 +48,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6.2.0
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
+          check-latest: true
 
       - name: Install security tools
         run: |
@@ -371,7 +372,7 @@ jobs:
 
       # Step 6: Post comment to PR
       - name: Post security report to PR
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -412,7 +413,7 @@ jobs:
         if: |
           (steps.deps_check.outputs.has_changes == 'true' ||
            steps.manifest_check.outputs.has_changes == 'true')
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const labels = context.payload.pull_request.labels.map(l => l.name);

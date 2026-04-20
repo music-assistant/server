@@ -522,6 +522,11 @@ class MusicbrainzProvider(MetadataProvider):
         seen: dict[str, tuple[MusicBrainzReleaseGroup, str]] = {}
 
         for release in releases:
+            # Skip bootleg and pseudo-releases
+            release_status = release.get("status", "")
+            if release_status in ("Bootleg", "Pseudo-Release"):
+                continue
+
             rg = release.get("release-group", {})
             rg_id = rg.get("id")
             if not rg_id:

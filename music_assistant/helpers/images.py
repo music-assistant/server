@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 # Thumbnail cache: on-disk (persistent) + small in-memory FIFO (hot path)
 _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
+_ALLOWED_THUMB_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG"})
 
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 
@@ -189,6 +190,9 @@ async def get_image_thumb(
     image_format = image_format.upper()
     if image_format == "JPG":
         image_format = "JPEG"
+    if image_format not in _ALLOWED_THUMB_FORMATS:
+        msg = f"Unsupported thumbnail format: {image_format}"
+        raise ValueError(msg)
 
     thumb_hash = _create_thumb_hash(provider, path_or_url)
     cache_filename = _thumb_cache_filename(thumb_hash, size, image_format)
@@ -200,6 +204,10 @@ async def get_image_thumb(
     # 2. Check on-disk cache
     thumb_dir = os.path.join(mass.cache_path, _THUMB_CACHE_DIR)
     cache_filepath = os.path.join(thumb_dir, cache_filename)
+    resolved = os.path.realpath(cache_filepath)
+    if not resolved.startswith(os.path.realpath(thumb_dir) + os.sep):
+        msg = f"Cache path escapes thumbnail directory: {cache_filepath}"
+        raise OSError(msg)
     if await asyncio.to_thread(os.path.isfile, cache_filepath):
         async with aiofiles.open(cache_filepath, "rb") as f:
             thumb_data = cast("bytes", await f.read())
@@ -267,6 +275,10 @@ async def _generate_and_cache_thumb(
 
     # Persist to disk cache (best-effort, don't fail on I/O errors)
     try:
+        resolved = os.path.realpath(cache_filepath)
+        thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
+        if not resolved.startswith(thumb_dir + os.sep):
+            raise OSError("Cache path escapes thumbnail directory")
         await asyncio.to_thread(os.makedirs, os.path.dirname(cache_filepath), exist_ok=True)
         async with aiofiles.open(cache_filepath, "wb") as f:
             await f.write(thumb_data)

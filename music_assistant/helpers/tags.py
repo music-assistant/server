@@ -18,7 +18,8 @@ from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from mutagen._vorbis import VCommentDict
 from mutagen.apev2 import APEv2
-from mutagen.mp4 import MP4Tags
+from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]
+from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
@@ -43,7 +44,8 @@ def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
 def split_items(
     org_str: str | list[str] | tuple[str, ...] | None, allow_unsafe_splitters: bool = False
 ) -> tuple[str, ...]:
-    """Split a tag string into multiple values.
+    """
+    Split a tag string into multiple values.
 
     Splits on semicolon (;) first as the standard multi-value delimiter.
 
@@ -82,35 +84,40 @@ def split_items(
 # ARTISTS tag parsing or ARTIST tag splitting entirely.
 #
 # Featuring splitters - always split on these to capture featuring artists in the database
+# Featuring splitters - case-insensitive patterns (searched with lower())
+# These always split to capture featuring artists in the database
 FEATURING_SPLITTERS = [
     " featuring ",
-    " Featuring ",
     " feat. ",
-    " Feat. ",
     " feat ",
-    " Feat ",
     " duet with ",
-    " Duet With ",
     " ft. ",
-    " Ft. ",
     " vs. ",
-    " Vs. ",
+    " vs ",
+    " (feat. ",
+    " (ft. ",
+    "(feat. ",
+    "(ft. ",
 ]
 
 # Extra splitters - only use these when we have MB ID evidence of multiple artists
-EXTRA_SPLITTERS = [" & ", ", ", " + ", " with ", " With "]
+EXTRA_SPLITTERS = [" & ", ", ", " + ", " with "]
 
 
 def _split_on_featuring(item: str) -> list[str]:
     """Split a string on featuring splitters, returns list of parts."""
+    item_lower = item.lower()
     for splitter in FEATURING_SPLITTERS:
-        if splitter in item:
+        if splitter in item_lower:
+            # Find the position in original string (case-insensitive)
+            pos = item_lower.find(splitter)
             parts = []
-            for subitem in item.split(splitter):
-                clean_item = subitem.strip()
-                if clean_item:
-                    # Recursively process each part for nested featuring splitters
-                    parts.extend(_split_on_featuring(clean_item))
+            before = item[:pos].strip()
+            after = item[pos + len(splitter) :].strip()
+            if before:
+                parts.extend(_split_on_featuring(before))
+            if after:
+                parts.extend(_split_on_featuring(after))
             return parts
     return [item]
 
@@ -120,7 +127,8 @@ def _split_to_target_count(
     expected_count: int,
     org_artists: str | tuple[str, ...],
 ) -> list[str]:
-    """Split artists on extra splitters to reach expected count.
+    """
+    Split artists on extra splitters to reach expected count.
 
     :param artists: List of artists after featuring splits.
     :param expected_count: Target number of artists.
@@ -196,7 +204,8 @@ def split_artists(
     org_artists: str | tuple[str, ...],
     expected_count: int | None = None,
 ) -> tuple[str, ...]:
-    """Parse artists from a string, guided by expected artist count.
+    """
+    Parse artists from a string, guided by expected artist count.
 
     :param org_artists: The artist string or tuple of strings to parse.
     :param expected_count: Expected number of artists (typically from MB artist IDs).
@@ -602,6 +611,13 @@ class AudioTags:
     @classmethod
     def parse(cls, raw: dict[str, Any]) -> AudioTags:
         """Parse instance from raw ffmpeg info output."""
+        filename = raw["format"]["filename"]
+        try:
+            filename.encode("utf-8")
+        except UnicodeEncodeError:
+            raise InvalidDataError(
+                f"File skipped, filename contains non-UTF-8 characters: {filename!r}"
+            )
         audio_stream = next((x for x in raw["streams"] if x["codec_type"] == "audio"), None)
         if audio_stream is None:
             msg = "No audio stream found"
@@ -623,7 +639,6 @@ class AudioTags:
                 if alt_key in tags:
                     continue
                 tags[alt_key] = value
-
         return AudioTags(
             raw=raw,
             sample_rate=int(audio_stream.get("sample_rate", 44100)),
@@ -636,7 +651,7 @@ class AudioTags:
             duration=float(raw["format"].get("duration", 0)) or None,
             tags=tags,
             has_cover_image=has_cover_image,
-            filename=raw["format"]["filename"],
+            filename=filename,
         )
 
     def get(self, key: str, default: Any | None = None) -> Any:
@@ -716,7 +731,11 @@ def parse_tags(
                 error_msg = f"{error_msg} ({err_details['error']['string']})"
         raise InvalidDataError(error_msg) from err
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-        msg = f"Unable to retrieve info for {input_file}: {err!s}"
+        try:
+            msg = f"Unable to retrieve info for {input_file}: {err!s}"
+            msg.encode("utf-8")
+        except UnicodeEncodeError:
+            msg = f"Unable to retrieve info for a file with a non-UTF-8 filename: {input_file!r}"
         raise InvalidDataError(msg) from err
 
 
@@ -752,7 +771,8 @@ def get_file_duration(input_file: str) -> float:
 
 
 def _decode_mp4_freeform_single(values: list[Any]) -> str:
-    """Decode a single-value MP4 freeform tag (bytes to string).
+    """
+    Decode a single-value MP4 freeform tag (bytes to string).
 
     :param values: List of MP4FreeForm values (typically contains one item).
     """
@@ -765,7 +785,8 @@ def _decode_mp4_freeform_single(values: list[Any]) -> str:
 
 
 def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
-    """Decode a multi-value MP4 freeform tag (bytes to strings).
+    """
+    Decode a multi-value MP4 freeform tag (bytes to strings).
 
     :param values: List of MP4FreeForm values.
     """
@@ -779,7 +800,8 @@ def _decode_mp4_freeform_list(values: list[Any]) -> list[str]:
 
 
 def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
-    """Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
+    """
+    Parse MP4/M4A/AAC tags from mutagen MP4Tags object.
 
     See: https://mutagen.readthedocs.io/en/latest/api/mp4.html
 
@@ -896,7 +918,8 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
 
 
 def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
-    """Parse ID3 tags (MP3 files) from mutagen tags dict.
+    """
+    Parse ID3 tags (MP3 files) from mutagen tags dict.
 
     See: https://mutagen-specs.readthedocs.io/en/latest/id3/id3v2.4.0-frames.html
     See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
@@ -971,7 +994,8 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
 
 
 def _vorbis_get_single(tags: VCommentDict, key: str) -> str | None:
-    """Get single value from Vorbis comments (first item if multiple exist).
+    """
+    Get single value from Vorbis comments (first item if multiple exist).
 
     :param tags: VCommentDict from mutagen.
     :param key: Tag name (case insensitive).
@@ -981,7 +1005,8 @@ def _vorbis_get_single(tags: VCommentDict, key: str) -> str | None:
 
 
 def _vorbis_get_multi(tags: VCommentDict, key: str) -> list[str] | None:
-    """Get all values from Vorbis comments as a list.
+    """
+    Get all values from Vorbis comments as a list.
 
     :param tags: VCommentDict from mutagen.
     :param key: Tag name (case insensitive).
@@ -991,7 +1016,8 @@ def _vorbis_get_multi(tags: VCommentDict, key: str) -> list[str] | None:
 
 
 def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> None:
-    """Parse artist-related tags from Vorbis comments into result dict.
+    """
+    Parse artist-related tags from Vorbis comments into result dict.
 
     Handles multiple ARTIST/ALBUMARTIST fields per Vorbis spec, as well as
     explicit ARTISTS tag which take precedence.
@@ -1030,7 +1056,8 @@ def _parse_vorbis_artist_tags(tags: VCommentDict, result: dict[str, Any]) -> Non
 
 
 def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
-    """Parse Vorbis comment tags (FLAC, OGG Vorbis, OGG Opus, etc.).
+    """
+    Parse Vorbis comment tags (FLAC, OGG Vorbis, OGG Opus, etc.).
 
     Vorbis comments support multiple values for the same field name per the spec.
     For example, multiple ARTIST fields can be used instead of a single ARTISTS field.
@@ -1115,7 +1142,8 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
 
 
 def _apev2_get_values(tags: APEv2, key: str) -> list[str]:
-    """Get values from an APEv2 tag, splitting on null bytes for multi-value fields.
+    """
+    Get values from an APEv2 tag, splitting on null bytes for multi-value fields.
 
     :param tags: APEv2 tags object.
     :param key: Tag key (case-insensitive in APEv2).
@@ -1130,7 +1158,8 @@ def _apev2_get_values(tags: APEv2, key: str) -> list[str]:
 
 
 def _apev2_get_single(tags: APEv2, key: str) -> str | None:
-    """Get a single value from an APEv2 tag.
+    """
+    Get a single value from an APEv2 tag.
 
     :param tags: APEv2 tags object.
     :param key: Tag key.
@@ -1140,7 +1169,8 @@ def _apev2_get_single(tags: APEv2, key: str) -> str | None:
 
 
 def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
-    """Get multiple values from an APEv2 tag.
+    """
+    Get multiple values from an APEv2 tag.
 
     :param tags: APEv2 tags object.
     :param key: Tag key.
@@ -1150,7 +1180,8 @@ def _apev2_get_multi(tags: APEv2, key: str) -> list[str] | None:
 
 
 def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
-    r"""Parse APEv2 tags into a normalized dictionary.
+    r"""
+    Parse APEv2 tags into a normalized dictionary.
 
     APEv2 tags are used by WavPack, Musepack, Monkey's Audio, OptimFROG, and TAK.
     Multi-value fields use null byte (\x00) as separator.
@@ -1252,7 +1283,8 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
 
 
 def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
-    """Parse tags from an audio file using Mutagen.
+    """
+    Parse tags from an audio file using Mutagen.
 
     Supports Vorbis comments (FLAC, OGG), ID3 tags (MP3), MP4 tags (AAC/M4A/ALAC),
     and APEv2 tags (WavPack, Musepack, Monkey's Audio).
@@ -1286,7 +1318,8 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
 
 def _format_uses_apev2(format_name: str) -> bool:
-    """Check if an audio format exclusively uses APEv2 tags.
+    """
+    Check if an audio format exclusively uses APEv2 tags.
 
     These formats ONLY use APEv2 tags and cannot have cover art detected by ffprobe's
     video stream detection (unlike ID3's APIC which shows as mjpeg/png stream).
@@ -1305,7 +1338,8 @@ def _format_uses_apev2(format_name: str) -> bool:
 
 
 def get_apev2_image(input_file: str) -> bytes | None:
-    """Extract cover art from APEv2 tags using mutagen.
+    """
+    Extract cover art from APEv2 tags using mutagen.
 
     APEv2 tags (used by WavPack, Musepack, etc.) store cover art differently
     than ID3 tags. FFmpeg does not expose these as video streams, so we use
@@ -1375,3 +1409,64 @@ async def get_embedded_image(input_file: str) -> bytes | None:
         args, stdin=False, stdout=True, stderr=None, name="ffmpeg_image"
     ) as ffmpeg:
         return await ffmpeg.read(-1)
+
+
+async def write_replaygain_track_gain(path: str, track_gain_db: float) -> bool:
+    """
+    Write the REPLAYGAIN_TRACK_GAIN tag to an audio file.
+
+    Returns True when the tag was successfully written and saved, False
+    when the file format is unsupported or the file cannot be written to.
+
+    :param path: Absolute path to the audio file.
+    :param track_gain_db: ReplayGain value in dB (gain correction, not loudness).
+    """
+    return await asyncio.to_thread(_write_replaygain_track_gain_sync, path, track_gain_db)
+
+
+def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
+    try:
+        audio = mutagen.File(path)  # type: ignore[attr-defined]
+    except Exception as err:
+        LOGGER.debug("mutagen could not open %s: %s", path, err)
+        return False
+    if audio is None:
+        return False
+
+    if audio.tags is None:
+        try:
+            audio.add_tags()
+        except Exception as err:
+            LOGGER.debug("could not initialise tags on %s: %s", path, err)
+            return False
+
+    # ReplayGain 2.0 format: "-5.30 dB" (two decimals, space, dB suffix)
+    gain_str = f"{track_gain_db:.2f} dB"
+    tags = audio.tags
+
+    try:
+        if isinstance(tags, ID3):
+            tags.delall("TXXX:REPLAYGAIN_TRACK_GAIN")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                TXXX(  # type: ignore[no-untyped-call]
+                    encoding=3, desc="REPLAYGAIN_TRACK_GAIN", text=gain_str
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    gain_str.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            tags["REPLAYGAIN_TRACK_GAIN"] = gain_str
+        else:
+            return False
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not write replaygain tag to %s: %s", path, err)
+        return False
+    except Exception as err:
+        LOGGER.warning("unexpected failure writing replaygain tag to %s: %s", path, err)
+        return False

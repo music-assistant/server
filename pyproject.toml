@@ -6,31 +6,31 @@ authors = [
 ]
 classifiers = [
   "Environment :: Console",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
   "aiodns>=3.2.0", # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.3",
+  "aiohttp==3.13.5",
   "aiohttp-fast-zlib==0.3.0",
+  "aiohttp-socks==0.11.0",
   "aiofiles==24.1.0",
   "aiosqlite==0.22.1",
   "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
-  "cryptography==46.0.6",
+  "cryptography==46.0.7",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
-  "mashumaro==3.18",
-  "music-assistant-frontend==2.17.138",
-  "music-assistant-models==1.1.110",
+  "mashumaro==3.20",
+  "music-assistant-frontend==2.17.149",
+  "music-assistant-models==1.1.115",
   "mutagen==1.47.0",
   "orjson==3.11.6",
-  "pillow==12.1.1",
+  "pillow==12.2.0",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
@@ -41,6 +41,8 @@ dependencies = [
   "uv>=0.8.0",
   "librosa==0.11.0",
   "numpy==2.3.5",  # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
+  "torch==2.11.0",
+  "torchaudio==2.11.0",
   "gql[all]==4.0.0",
   "aiortc>=1.6.0",
   "pyjwt[crypto]>=2.10.1",
@@ -48,7 +50,7 @@ dependencies = [
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 version = "0.0.0"
 
 [project.optional-dependencies]
@@ -75,6 +77,7 @@ ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
+NOTICE,\
 """
 
 [tool.setuptools]
@@ -91,7 +94,13 @@ fix = true
 show-fixes = true
 
 line-length = 100
-target-version = "py312"
+# IMPORTANT: target-version is intentionally pinned ONE MINOR BEHIND the runtime
+# (.python-version = 3.14, target-version = py313) so that lint/format don't
+# introduce 3.14-only syntax (e.g. PEP 758 except-without-parens) while we still
+# need clean cherry-pick backports to `stable` (which runs Python 3.13).
+# BUMP TO "py314" BEFORE THE 2.9 RELEASE — once `stable` follows dev to 3.14,
+# this restriction can be lifted.
+target-version = "py313"
 
 [tool.ruff.lint.pydocstyle]
 # Use Sphinx-style docstrings with :param: syntax
@@ -107,7 +116,9 @@ max-statements = 50
 
 [tool.mypy]
 platform = "linux"
-python_version = "3.12"
+# Kept at 3.13 to match [tool.ruff] target-version — see the note there.
+# BUMP TO "3.14" BEFORE THE 2.9 RELEASE.
+python_version = "3.13"
 
 # set this to normal when we have fixed all exclusions
 follow_imports = "silent"
@@ -138,7 +149,6 @@ exclude = [
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
-  '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
 extra_checks = false
@@ -168,7 +178,7 @@ line-ending = "lf"
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
 filterwarnings = [
-  # Suppress Python 3.13 AsyncMock internal warnings about unawaited coroutines
+  # Suppress Python 3.14 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",
 ]
 
@@ -204,6 +214,7 @@ ignore = [
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
+  "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later before 2.9 release
   "BLE001",
   "FBT001",
   "FBT002",
@@ -243,8 +254,6 @@ ignore = [
   "ERA001",
   "PTH206",
   "C901",
-  "PTH119",
-  "PTH116",
   "RUF012",
   "S304",
   "RUF006",
@@ -266,6 +275,15 @@ known-first-party = ["music_assistant"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
 
 [build-system]
 requires = ["setuptools>=61"]

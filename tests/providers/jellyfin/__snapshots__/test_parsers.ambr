@@ -95,6 +95,102 @@
     'year': 2000,
   })
 # ---
+# name: test_parse_albums[nu_clear_sounds]
+  dict({
+    'album_type': 'unknown',
+    'artists': list([
+      dict({
+        'available': True,
+        'external_ids': list([
+        ]),
+        'image': None,
+        'is_playable': True,
+        'item_id': 'dd954bbf54398e247d803186d3585b79',
+        'media_type': 'artist',
+        'name': 'Ash',
+        'provider': 'xx-instance-id-xx',
+        'sort_name': 'ash',
+        'translation_key': None,
+        'uri': 'xx-instance-id-xx://artist/dd954bbf54398e247d803186d3585b79',
+        'version': '',
+        'year': None,
+      }),
+    ]),
+    'date_added': None,
+    'external_ids': list([
+      list([
+        'musicbrainz_albumid',
+        '4e8b3c7a-1234-5678-abcd-ef0123456789',
+      ]),
+      list([
+        'musicbrainz_releasegroupid',
+        '5f9c4d8b-2345-6789-bcde-f01234567890',
+      ]),
+    ]),
+    'favorite': False,
+    'is_playable': True,
+    'item_id': 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
+    'media_type': 'album',
+    'metadata': dict({
+      'chapters': None,
+      'copyright': None,
+      'description': None,
+      'explicit': None,
+      'genres': None,
+      'grouping': None,
+      'images': list([
+        dict({
+          'path': 'http://localhost:1234/Items/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/Images/Primary?api_key=ACCESS_TOKEN',
+          'provider': 'xx-instance-id-xx',
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
+      'label': None,
+      'languages': None,
+      'last_refresh': None,
+      'links': None,
+      'lrc_lyrics': None,
+      'lyrics': None,
+      'mood': None,
+      'performers': None,
+      'popularity': None,
+      'preview': None,
+      'release_date': None,
+      'review': None,
+      'style': None,
+    }),
+    'name': 'Nu-Clear Sounds',
+    'position': None,
+    'provider': 'jellyfin',
+    'provider_mappings': list([
+      dict({
+        'audio_format': dict({
+          'bit_depth': 16,
+          'bit_rate': 0,
+          'channels': 2,
+          'codec_type': '?',
+          'content_type': '?',
+          'output_format_str': '?',
+          'sample_rate': 44100,
+        }),
+        'available': True,
+        'details': None,
+        'in_library': None,
+        'is_unique': None,
+        'item_id': 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
+        'provider_domain': 'jellyfin',
+        'provider_instance': 'xx-instance-id-xx',
+        'url': None,
+      }),
+    ]),
+    'sort_name': 'nu-clear sounds',
+    'translation_key': None,
+    'uri': 'jellyfin://album/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
+    'version': '',
+    'year': 1998,
+  })
+# ---
 # name: test_parse_albums[this_is_christmas]
   dict({
     'album_type': 'unknown',

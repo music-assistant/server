@@ -12,8 +12,10 @@ import re
 import shutil
 import socket
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
+import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from functools import lru_cache
@@ -149,11 +151,21 @@ VERSION_PARTS = (
     "instrumental",
     "karaoke",
     "remaster",
+    "remastered",
     "versie",
     "unplugged",
     "disco",
     "akoestisch",
     "deluxe",
+    "video",
+    "radio",
+    "extended",
+    "single",
+    "edition",
+    "anniversary",
+    "stereo",
+    "album",
+    "bonus",
 )
 IGNORE_TITLE_PARTS = (
     # strings that may be stripped off a title part
@@ -172,6 +184,37 @@ WITH_TITLE_WORDS = (
     "u",
     "you",
     "no",
+)
+
+# Keywords for aggressive search cleaning (includes featuring).
+_VERSION_PATTERN = "|".join(re.escape(v) for v in VERSION_PARTS)
+_FEAT_PATTERN = r"feat(?:uring)?|ft"
+_SEARCH_PATTERN = rf"{_VERSION_PATTERN}|{_FEAT_PATTERN}"
+
+_SEARCH_PAREN_PATTERN = re.compile(
+    rf"[\(\[][^\)\]]*\b({_SEARCH_PATTERN})\b[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+_SEARCH_HYPHEN_PATTERN = re.compile(
+    rf"(\s*-\s*(\d{{4}}|{_SEARCH_PATTERN}).*)$",
+    re.IGNORECASE,
+)
+
+# Superfluous suffixes to strip for display (video/audio markers, etc.)
+_DISPLAY_STRIP_PATTERN = re.compile(
+    r"\s*[\(\[]"
+    r"(official\s+)?(lyric\s+|music\s+)?(video|audio|visualizer|clip)"
+    r"[\)\]]$",
+    re.IGNORECASE,
+)
+
+# Featuring patterns for stripping from titles (not in parentheses).
+_FEATURING_PATTERNS = (
+    " featuring ",
+    " feat. ",
+    " feat ",
+    " ft. ",
+    " ft ",
 )
 
 
@@ -219,9 +262,58 @@ def try_parse_duration(duration_str: str) -> float:
     return seconds + milliseconds
 
 
-def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
-    """Try to parse version from the title."""
+def normalize_unicode(value: str | None) -> str | None:
+    """Normalize Unicode strings to NFC form for consistent handling.
+
+    This ensures that Unicode characters like "é" are stored as single
+    codepoints rather than "e" + combining accent mark, which prevents
+    issues with string comparisons and memory bloat.
+
+    :param value: String to normalize, or None.
+    """
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", value)
+
+
+def parse_title_and_version(
+    title: str,
+    track_version: str | None = None,
+    strip_for_search: bool = False,
+    strip_for_display: bool = False,
+) -> tuple[str, str]:
+    """
+    Parse version from the title and optionally clean for search or display.
+
+    :param title: The title to parse.
+    :param track_version: Optional existing version string.
+    :param strip_for_search: Aggressively strip for search matching.
+    :param strip_for_display: Strip superfluous suffixes for display.
+    """
     version = track_version or ""
+
+    # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
+    if strip_for_search:
+        title = _SEARCH_PAREN_PATTERN.sub("", title)
+        title = _SEARCH_HYPHEN_PATTERN.sub("", title)
+        # Strip bare featuring credits (not in parentheses)
+        title_lower = title.lower()
+        for pattern in _FEATURING_PATTERNS:
+            if pattern in title_lower:
+                idx = title_lower.find(pattern)
+                title = title[:idx]
+                break
+        # Clean up dangling hyphens and extra spaces
+        title = re.sub(r"\s*-\s*$", "", title)
+        title = re.sub(r"\s+", " ", title).strip()
+        return title, version
+
+    # Strip video/audio suffixes like "(Official Video)"
+    if strip_for_display:
+        title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
+        return title, version
+
+    # Standard version parsing
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
             # Extract the content without brackets/dashes for checking
@@ -1174,14 +1266,33 @@ _P = ParamSpec("_P")
 def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
-    """Call async function using a Lock."""
+    """Call async function using a per-instance Lock.
+
+    Each instance gets its own lock so that e.g. SyncGroupPlayer A
+    does not block SyncGroupPlayer B when both call set_members().
+    """
+    # Per-instance lock storage (weak refs so locks are GC'd with their instance)
+    instance_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+    # Fallback lock for non-method (no self) usage
+    fallback_lock: asyncio.Lock | None = None
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using a Lock."""
-        if not (func_lock := getattr(func, "lock", None)):
-            func_lock = asyncio.Lock()
-            func.lock = func_lock  # type: ignore[attr-defined]
+        """Call async function using a per-instance Lock."""
+        nonlocal fallback_lock
+        instance = args[0] if args else None
+        if instance is not None:
+            try:
+                func_lock = instance_locks.setdefault(instance, asyncio.Lock())
+            except TypeError:
+                # instance is not weakly referenceable, use fallback
+                if fallback_lock is None:
+                    fallback_lock = asyncio.Lock()
+                func_lock = fallback_lock
+        else:
+            if fallback_lock is None:
+                fallback_lock = asyncio.Lock()
+            func_lock = fallback_lock
         async with func_lock:
             return await func(*args, **kwargs)
 

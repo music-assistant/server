@@ -41,7 +41,7 @@ def normalize_username(username: str) -> str:
 
 
 async def get_ha_user_details(
-    mass: MusicAssistant, ha_user_id: str, wait_timeout: float = 30.0
+    mass: MusicAssistant, ha_user_id: str, wait_timeout: float = 10.0
 ) -> tuple[str | None, str | None, str | None]:
     """
     Get user username, display name and avatar URL from Home Assistant.
@@ -51,23 +51,21 @@ async def get_ha_user_details(
 
     :param mass: MusicAssistant instance.
     :param ha_user_id: Home Assistant user ID.
-    :param wait_timeout: Maximum time to wait for HA provider to become available (default 30s).
+    :param wait_timeout: Maximum time to wait for HA provider to become available (default 10s).
     :return: Tuple of (username, display_name, avatar_url) or all None if not found.
     """
-    # Wait for the HA provider to become available (handles race condition at startup)
-    hass_prov = None
-    wait_interval = 0.5
-    elapsed = 0.0
-    while elapsed < wait_timeout:
-        hass_prov = mass.get_provider("hass")
-        if hass_prov is not None and hass_prov.available:
-            break
-        await asyncio.sleep(wait_interval)
-        elapsed += wait_interval
-        hass_prov = None  # Reset to None for the final check
+    # Wait for the HA provider to become available using event-based signaling
+    try:
+        await asyncio.wait_for(mass.get_provider_ready_event("hass").wait(), timeout=wait_timeout)
+    except TimeoutError:
+        LOGGER.debug(
+            "HA provider not available after %.1fs, cannot fetch user details", wait_timeout
+        )
+        return None, None, None
 
+    hass_prov = mass.get_provider("hass")
     if hass_prov is None or not hass_prov.available:
-        LOGGER.debug("HA provider not available after %.1fs, cannot fetch user details", elapsed)
+        LOGGER.debug("HA provider not available, cannot fetch user details")
         return None, None, None
 
     hass_prov = cast("HomeAssistantProvider", hass_prov)
@@ -75,28 +73,25 @@ async def get_ha_user_details(
 
 
 async def get_ha_user_role(
-    mass: MusicAssistant, ha_user_id: str, wait_timeout: float = 30.0
+    mass: MusicAssistant, ha_user_id: str, wait_timeout: float = 10.0
 ) -> UserRole:
     """
     Get user role based on Home Assistant admin status.
 
     :param mass: MusicAssistant instance.
     :param ha_user_id: The Home Assistant user ID to check.
-    :param wait_timeout: Maximum time to wait for HA provider to become available (default 30s).
+    :param wait_timeout: Maximum time to wait for HA provider to become available (default 10s).
     """
     try:
-        # Wait for the HA provider to become available (handles race condition at startup)
-        hass_prov = None
-        wait_interval = 0.5
-        elapsed = 0.0
-        while elapsed < wait_timeout:
-            hass_prov = mass.get_provider("hass")
-            if hass_prov is not None and hass_prov.available:
-                break
-            await asyncio.sleep(wait_interval)
-            elapsed += wait_interval
-            hass_prov = None  # Reset to None for the final check
+        # Wait for the HA provider to become available using event-based signaling
+        try:
+            await asyncio.wait_for(
+                mass.get_provider_ready_event("hass").wait(), timeout=wait_timeout
+            )
+        except TimeoutError:
+            raise RuntimeError(f"Home Assistant provider not available after {wait_timeout}s")
 
+        hass_prov = mass.get_provider("hass")
         if hass_prov is None or not hass_prov.available:
             raise RuntimeError("Home Assistant provider not available")
 

@@ -2,28 +2,32 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+import aiohttp
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
+    MediaItemMetadata,
     MediaItemType,
     Playlist,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
-from zvuk_music.enums import Quality
-from zvuk_music.exceptions import QualityNotAvailableError, SubscriptionRequiredError
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
@@ -33,8 +37,10 @@ from .constants import (
     CONF_QUALITY,
     CONF_TOKEN,
     DEFAULT_LIMIT,
+    PLAYLIST_TRACK_FETCH_LIMIT,
     PLAYLIST_TRACKS_PAGE_SIZE,
     QUALITY_LOSSLESS,
+    SYNTHESIS_PLAYLIST_IDS,
 )
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 
@@ -298,64 +304,306 @@ class ZvukMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing artist track: %s", err)
         return result
 
+    @use_cache(3600 * 24 * 7)
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get similar tracks based on related releases of the track's album.
+
+        Uses the Zvuk ``release.related`` field to find similar releases and samples tracks from
+        them. Only called if provider supports ProviderFeature.SIMILAR_TRACKS.
+
+        :param prov_track_id: The provider track ID.
+        :param limit: Maximum number of similar tracks to return.
+        :return: List of Track objects.
+        """
+        track = await self.client.get_track(prov_track_id)
+        if not track or not track.release:
+            return []
+
+        release = await self.client.get_release(str(track.release.id))
+        if not release or not getattr(release, "related", None):
+            return []
+
+        result: list[Track] = []
+        for related_release in release.related:
+            if len(result) >= limit:
+                break
+            if not getattr(related_release, "id", None):
+                continue
+            related_full = await self.client.get_release(str(related_release.id))
+            if not related_full or not related_full.tracks:
+                continue
+            for t in related_full.tracks[:2]:
+                try:
+                    result.append(parse_track(self, t))
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing similar track: %s", err)
+                if len(result) >= limit:
+                    break
+
+        return result[:limit]
+
     # Library methods
+
+    async def _iter_batched(
+        self,
+        ids: list[str],
+        fetcher: Any,
+        parser: Any,
+        item_type: str,
+    ) -> AsyncGenerator[Any, None]:
+        """Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
+
+        :param ids: List of item IDs to fetch.
+        :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
+        :param parser: Callable(provider, raw_item) → MA media item.
+        :param item_type: Human-readable type name for debug log messages.
+        """
+        for i in range(0, len(ids), DEFAULT_LIMIT):
+            batch = ids[i : i + DEFAULT_LIMIT]
+            items = await fetcher(batch)
+            for item in items:
+                try:
+                    yield parser(self, item)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing library %s: %s", item_type, err)
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from Zvuk Music."""
         collection = await self.client.get_collection()
         if not collection or not collection.artists:
             return
-
-        artist_ids = [str(item.id) for item in collection.artists if item.id]
-        for i in range(0, len(artist_ids), DEFAULT_LIMIT):
-            batch_ids = artist_ids[i : i + DEFAULT_LIMIT]
-            artists = await self.client.get_artists(batch_ids)
-            for artist in artists:
-                try:
-                    yield parse_artist(self, artist)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing library artist: %s", err)
+        ids = [str(item.id) for item in collection.artists if item.id]
+        async for artist in self._iter_batched(
+            ids, self.client.get_artists, parse_artist, "artist"
+        ):
+            yield artist
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from Zvuk Music."""
         collection = await self.client.get_collection()
         if not collection or not collection.releases:
             return
-
-        release_ids = [str(item.id) for item in collection.releases if item.id]
-        for i in range(0, len(release_ids), DEFAULT_LIMIT):
-            batch_ids = release_ids[i : i + DEFAULT_LIMIT]
-            releases = await self.client.get_releases(batch_ids)
-            for release in releases:
-                try:
-                    yield parse_album(self, release)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing library album: %s", err)
+        ids = [str(item.id) for item in collection.releases if item.id]
+        async for album in self._iter_batched(ids, self.client.get_releases, parse_album, "album"):
+            yield album
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Zvuk Music."""
-        tracks = await self.client.get_liked_tracks()
-        for track in tracks:
-            try:
-                yield parse_track(self, track)
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing library track: %s", err)
+        collection = await self.client.get_collection()
+        if not collection or not collection.tracks:
+            return
+        ids = [str(item.id) for item in collection.tracks if item.id]
+        async for track in self._iter_batched(ids, self.client.get_tracks, parse_track, "track"):
+            yield track
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Retrieve library playlists from Zvuk Music."""
-        collection_items = await self.client.get_user_playlists()
-        if not collection_items:
-            return
+        """Retrieve library playlists from Zvuk Music.
 
-        playlist_ids = [str(item.id) for item in collection_items if item.id]
-        for i in range(0, len(playlist_ids), DEFAULT_LIMIT):
-            batch_ids = playlist_ids[i : i + DEFAULT_LIMIT]
-            playlists = await self.client.get_playlists(batch_ids)
-            for playlist in playlists:
-                try:
-                    yield parse_playlist(self, playlist)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing library playlist: %s", err)
+        Yields user's own playlists followed by Zvuk's personalized synthesis
+        playlists («Плейлисты для вас»: IDs 3, 4, 6, 11, 12, 13, 14, 15).
+        """
+        collection_items = await self.client.get_user_playlists()
+        if collection_items:
+            ids = [str(item.id) for item in collection_items if item.id]
+            async for playlist in self._iter_batched(
+                ids, self.client.get_playlists, parse_playlist, "playlist"
+            ):
+                yield playlist
+
+        # Synthesis playlists — personalized AI playlists («Плейлисты для вас»)
+        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
+        for simple_pl in synthesis_playlists:
+            try:
+                yield parse_playlist(self, simple_pl)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing synthesis playlist: %s", err)
+
+    async def _get_for_you_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
+        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
+        result: list[Playlist] = []
+        for simple_pl in synthesis_playlists:
+            try:
+                result.append(parse_playlist(self, simple_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing synthesis playlist: %s", err)
+        return result
+
+    async def _get_editorial_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
+        editorial_ids = await self.client.get_editorial_playlist_ids()
+        if not editorial_ids:
+            return []
+        full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])
+        result: list[Playlist] = []
+        for full_pl in full_playlists:
+            try:
+                result.append(parse_playlist(self, full_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing editorial playlist: %s", err)
+        return result
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Return personalized and editorial playlist recommendations.
+
+        Returns two folders:
+        - «Плейлисты для вас»: Zvuk's AI-generated personalized playlists.
+        - «Подборки»: Editorial genre-themed curated playlists.
+        """
+        folders: list[RecommendationFolder] = []
+
+        # Folder 1: Personalized synthesis playlists («Плейлисты для вас»)
+        for_you_items = await self._get_for_you_playlists()
+        if for_you_items:
+            folders.append(
+                RecommendationFolder(
+                    item_id="for_you",
+                    provider=self.instance_id,
+                    name="Плейлисты для вас",
+                    subtitle="Персональные плейлисты от Звук",
+                    icon="mdi-playlist-music",
+                    items=for_you_items,  # type: ignore[arg-type]
+                )
+            )
+
+        # Folder 2: Editorial curated playlists («Подборки»)
+        editorial_items = await self._get_editorial_playlists()
+        if editorial_items:
+            folders.append(
+                RecommendationFolder(
+                    item_id="editorial",
+                    provider=self.instance_id,
+                    name="Подборки",
+                    subtitle="Плейлисты от редакции Звук по жанрам",
+                    icon="mdi-music-box-multiple",
+                    items=editorial_items,  # type: ignore[arg-type]
+                )
+            )
+
+        return folders
+
+    async def browse(self, path: str) -> list[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse provider content as a hierarchical folder tree.
+
+        Root level exposes two folders:
+        - «Плейлисты для вас»: Zvuk AI-generated personalized playlists.
+        - «Подборки»: Editorial genre-themed curated playlists.
+
+        :param path: Browse path (e.g. ``provider_id://`` or ``provider_id://for_you``).
+        :return: List of playlists or BrowseFolders.
+        """
+        if ProviderFeature.BROWSE not in self.supported_features:
+            raise NotImplementedError
+
+        subpath: str | None = None
+        if "://" in path:
+            after_scheme = path.split("://", 1)[1].strip("/")
+            if after_scheme:
+                subpath = after_scheme.split("/", 1)[0]
+
+        if subpath == "for_you":
+            return list(await self._get_for_you_playlists())
+
+        if subpath == "editorial":
+            return list(await self._get_editorial_playlists())
+
+        if subpath is not None:
+            raise KeyError(f"Unsupported browse path: {path}")
+
+        # Root level — return top-level folders
+        base = f"{self.instance_id}://"
+        return [
+            BrowseFolder(
+                item_id="for_you",
+                provider=self.instance_id,
+                path=f"{base}for_you",
+                name="Плейлисты для вас",
+            ),
+            BrowseFolder(
+                item_id="editorial",
+                provider=self.instance_id,
+                path=f"{base}editorial",
+                name="Подборки",
+            ),
+        ]
+
+    async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
+        """Fetch lyrics for a track from Zvuk's lyrics API.
+
+        Called by MA when ``ProviderFeature.TRACK_METADATA`` is declared.
+        Returns LRC-synced lyrics (``lrc_lyrics``) when the API returns type
+        ``'subtitle'``, otherwise plain text (``lyrics``). Returns ``None`` if
+        the track has no lyrics. Any API errors are caught and return ``None``
+        so that optional metadata enrichment never fails the broader media load.
+
+        :param track: The MA Track object. ``item_id`` is used to call the API.
+        :return: MediaItemMetadata with lyrics, or None.
+        """
+        track_id = track.item_id
+        try:
+            result = await self.client.get_lyrics(track_id)
+        except (ResourceTemporarilyUnavailable, ProviderUnavailableError, LoginFailed) as err:
+            self.logger.debug("Failed to fetch lyrics for track %s: %s", track_id, err)
+            return None
+        except Exception as err:
+            self.logger.debug(
+                "Unexpected error while fetching lyrics for track %s: %s", track_id, err
+            )
+            return None
+        if not result or not result.lyrics:
+            return None
+
+        metadata = MediaItemMetadata()
+        if result.is_synced:
+            metadata.lrc_lyrics = result.lyrics
+        else:
+            metadata.lyrics = result.lyrics
+        return metadata
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Fetch a Zvuk image with optional authentication.
+
+        Called by MA when a ``MediaItemImage`` has ``remotely_accessible=False``.
+        Static playlist avatar images (``/static/avatar/playlist/...``) require
+        Zvuk auth cookies and cannot be fetched anonymously.
+
+        Auth token is only sent to trusted Zvuk domains (``zvuk.com``,
+        ``cdn.zvuk.com``, ``cdn-image.zvuk.com``) to prevent token leakage.
+        Images from Sbercloud CDN (``*.sbercloud.ru``) are fetched without auth
+        as they are publicly accessible.
+
+        :param path: Full image URL.
+        :return: Raw image bytes on success, original URL string as fallback.
+        """
+        _zvuk_auth_hosts = frozenset({"zvuk.com", "cdn.zvuk.com", "cdn-image.zvuk.com"})
+        parsed = urlparse(path)
+        hostname = parsed.hostname or ""
+        is_zvuk = hostname in _zvuk_auth_hosts
+        is_sbercloud = hostname.endswith(".sbercloud.ru")
+        if not is_zvuk and not is_sbercloud:
+            self.logger.warning("Refusing to fetch image from untrusted host: %s", hostname)
+            return str(path)
+        headers: dict[str, str] = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        }
+        if is_zvuk:
+            token = self.config.get_value(CONF_TOKEN)
+            if not token:
+                return str(path)
+            headers["X-Auth-Token"] = str(token)
+            headers["Referer"] = "https://zvuk.com/"
+            headers["Origin"] = "https://zvuk.com"
+        try:
+            async with self.mass.http_session.get(path, headers=headers) as resp:
+                if resp.status == 200:
+                    return bytes(await resp.read())
+        except (aiohttp.ClientError, TimeoutError) as err:
+            self.logger.debug("Failed to resolve image %s: %s", path, err)
+        return str(path)
 
     # Library edit methods
 
@@ -409,6 +657,7 @@ class ZvukMusicProvider(MusicProvider):
         """Create a new playlist.
 
         :param name: Playlist name.
+        :param media_types: Ignored — Zvuk playlists are always track-based.
         :return: The created Playlist object.
         """
         playlist_id = await self.client.create_playlist(name)
@@ -434,7 +683,9 @@ class ZvukMusicProvider(MusicProvider):
         :param positions_to_remove: Tuple of track positions (0-based) to remove.
         """
         # Fetch current tracks and filter out the ones at given positions
-        simple_tracks = await self.client.get_playlist_tracks(prov_playlist_id, limit=10000)
+        simple_tracks = await self.client.get_playlist_tracks(
+            prov_playlist_id, limit=PLAYLIST_TRACK_FETCH_LIMIT
+        )
         remove_positions = set(positions_to_remove)
         remaining_ids = [
             str(t.id) for i, t in enumerate(simple_tracks) if t.id and i not in remove_positions
@@ -443,83 +694,82 @@ class ZvukMusicProvider(MusicProvider):
 
     # Streaming
 
-    async def get_stream_details(  # noqa: PLR0915
+    async def get_stream_details(
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
         """Get stream details for a track.
+
+        Uses /api/tiny/track/stream to get a direct (non-DRM) URL. When lossless is
+        requested, always tries "flac" quality first, then falls back through "high"
+        (320kbps MP3) → "mid" (128kbps MP3). The ``has_flac`` field from the API is
+        not reliable enough to skip the FLAC attempt.
 
         :param item_id: The track ID.
         :param media_type: The media type (should be TRACK).
         :return: StreamDetails for the track.
         :raises MediaNotFoundError: If stream URL cannot be obtained.
         """
-        streams = await self.client.get_stream_urls(item_id)
-        if not streams:
-            raise MediaNotFoundError(f"No stream info available for track {item_id}")
-
-        stream = streams[0]
         quality_pref = self.config.get_value(CONF_QUALITY)
         quality_str = str(quality_pref) if quality_pref is not None else QUALITY_LOSSLESS
 
-        # Select quality with fallback chain
+        # Fetch track metadata for duration.
+        # has_flac is read for diagnostics only — it is not reliable enough to
+        # skip the FLAC attempt, so it does not affect the quality fallback chain.
+        track = await self.client.get_track(item_id)
+        duration: int | None = None
+        has_flac: bool | None = None
+        if track is not None:
+            if getattr(track, "duration", None) is not None:
+                duration = int(track.duration)
+            if getattr(track, "has_flac", None) is not None:
+                has_flac = bool(track.has_flac)
+
+        # Build quality fallback chain using /api/tiny/track/stream (plain, non-DRM URLs).
+        # This endpoint returns {"result": {"stream": "https://..."}} for FLAC/MP3 qualities.
+        # zvuk-dl-rs uses the same endpoint to download lossless FLAC.
+        self.logger.debug(
+            "Stream request for track %s: quality_pref=%s has_flac=%s (diagnostic only)",
+            item_id,
+            quality_str,
+            has_flac,
+        )
+        if quality_str == QUALITY_LOSSLESS:
+            quality_chain = [
+                ("flac", ContentType.FLAC, 0),
+                ("high", ContentType.MP3, 320),
+                ("mid", ContentType.MP3, 128),
+            ]
+        else:
+            quality_chain = [("high", ContentType.MP3, 320), ("mid", ContentType.MP3, 128)]
+
         url: str | None = None
         content_type = ContentType.UNKNOWN
         bitrate = 0
 
-        if quality_str == QUALITY_LOSSLESS:
-            # Try FLAC -> HIGH -> MID
-            for quality in (Quality.FLAC, Quality.HIGH, Quality.MID):
-                try:
-                    url = stream.get_url(quality)
-                    if quality == Quality.FLAC:
-                        content_type = ContentType.FLAC
-                        bitrate = 0
-                    elif quality == Quality.HIGH:
-                        content_type = ContentType.MP3
-                        bitrate = 320
-                    else:
-                        content_type = ContentType.MP3
-                        bitrate = 128
-                    break
-                except (SubscriptionRequiredError, QualityNotAvailableError):
-                    continue
-        else:
-            # High quality: try HIGH -> MID
-            for quality in (Quality.HIGH, Quality.MID):
-                try:
-                    url = stream.get_url(quality)
-                    if quality == Quality.HIGH:
-                        content_type = ContentType.MP3
-                        bitrate = 320
-                    else:
-                        content_type = ContentType.MP3
-                        bitrate = 128
-                    break
-                except (SubscriptionRequiredError, QualityNotAvailableError):
-                    continue
-
-        # Ultimate fallback
-        if not url:
-            best_quality, url = stream.get_best_available()
-            if best_quality == Quality.FLAC:
-                content_type = ContentType.FLAC
-                bitrate = 0
-            elif best_quality == Quality.HIGH:
-                content_type = ContentType.MP3
-                bitrate = 320
-            else:
-                content_type = ContentType.MP3
-                bitrate = 128
+        for q_str, q_content_type, q_bitrate in quality_chain:
+            try:
+                url = await self.client.get_direct_stream_url(item_id, q_str)
+            except (ResourceTemporarilyUnavailable, ProviderUnavailableError) as err:
+                self.logger.warning(
+                    "Error getting stream URL for track %s quality=%s: %s",
+                    item_id,
+                    q_str,
+                    err,
+                )
+                continue
+            self.logger.debug(
+                "Stream URL for track %s quality=%s: %s",
+                item_id,
+                q_str,
+                "OK" if url else "None",
+            )
+            if url:
+                content_type = q_content_type
+                bitrate = q_bitrate
+                break
 
         if not url:
             raise MediaNotFoundError(f"No stream URL available for track {item_id}")
-
-        # zvuk-music Stream model (get_stream_urls) has no duration; only expire and URLs.
-        # Fetch track for duration so StreamDetails can expose it (e.g. for progress/seeking).
-        track = await self.client.get_track(item_id)
-        duration: int | None = None
-        if track is not None and getattr(track, "duration", None) is not None:
-            duration = int(track.duration)
 
         return StreamDetails(
             item_id=item_id,
