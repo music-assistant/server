@@ -486,6 +486,7 @@ class SendspinBridgeManager:
         self._bridges: dict[str, SendspinChromecastBridge] = {}
         self._lock = asyncio.Lock()
         self._rebridge_unsubs: dict[str, Callable[[], None]] = {}
+        self._claimed_clients: dict[str, str] = {}
         self._unsub_config_updated = self.mass.subscribe(
             self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED
         )
@@ -516,6 +517,13 @@ class SendspinBridgeManager:
 
             if player_id in self._bridges:
                 self.logger.debug("Bridge already exists for %s", cast_player.display_name)
+                return
+
+            if player_id in self._claimed_clients:
+                self.logger.debug(
+                    "Bridge already claimed for %s (waiting for JS client disconnect)",
+                    cast_player.display_name,
+                )
                 return
 
             # Skip audio groups (non-stereo-pair) — they have their own playback mechanism
@@ -576,6 +584,7 @@ class SendspinBridgeManager:
                         bridge_hello,
                     )
                     _write_default_static_delay(self.mass, existing_client_id, manufacturer, model)
+                    self._claimed_clients[player_id] = existing_client_id
                     self._subscribe_rebridge_on_disconnect(cast_player, existing_client_id)
                 return
 
@@ -614,6 +623,7 @@ class SendspinBridgeManager:
         async with self._lock:
             if bridge := self._bridges.pop(cast_player_id, None):
                 await bridge.stop()
+            self._claimed_clients.pop(cast_player_id, None)
 
             self.logger.debug("Sendspin bridge removed for Chromecast player %s", cast_player_id)
 
@@ -634,6 +644,7 @@ class SendspinBridgeManager:
             with suppress(Exception):
                 unsub()
         self._rebridge_unsubs.clear()
+        self._claimed_clients.clear()
         await self.stop_all()
 
     def _find_existing_sendspin_client(
@@ -691,6 +702,7 @@ class SendspinBridgeManager:
             if unsub is not None:
                 with suppress(Exception):
                     unsub()
+            self._claimed_clients.pop(cast_player.player_id, None)
             if self.mass.players.get_player(cast_player.player_id) is not cast_player:
                 return
             if cast_player.player_id in self._bridges:
