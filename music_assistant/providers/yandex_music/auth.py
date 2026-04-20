@@ -25,11 +25,13 @@ import logging
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import Credentials, PassportClient, SecretStr
 from ya_passport_auth.exceptions import (
     DeviceCodeTimeoutError,
+    NetworkError,
     QRTimeoutError,
+    RateLimitedError,
     YaPassportError,
 )
 
@@ -311,10 +313,19 @@ async def perform_qr_auth(mass: MusicAssistant, session_id: str) -> tuple[str, s
 
 
 async def refresh_music_token(x_token: SecretStr) -> SecretStr:
-    """Exchange an x_token for a fresh music-scoped OAuth token."""
+    """Exchange an x_token for a fresh music-scoped OAuth token.
+
+    Distinguishes transient Passport failures (network/rate limiting) from
+    credential-invalid errors: only the latter raise ``LoginFailed``, so
+    callers don't clear stored tokens on a Passport blip.
+    """
     try:
         async with PassportClient.create() as client:
             return await client.refresh_music_token(x_token)
+    except (NetworkError, RateLimitedError) as err:
+        raise ResourceTemporarilyUnavailable(
+            f"Yandex Passport temporarily unavailable: {err}"
+        ) from err
     except YaPassportError as err:
         raise LoginFailed(f"Failed to refresh music token: {err}") from err
 
@@ -334,6 +345,10 @@ async def refresh_credentials_via_passport(
             return await client.refresh_credentials(
                 Credentials(x_token=x_token, refresh_token=refresh_token)
             )
+    except (NetworkError, RateLimitedError) as err:
+        raise ResourceTemporarilyUnavailable(
+            f"Yandex Passport temporarily unavailable: {err}"
+        ) from err
     except YaPassportError as err:
         raise LoginFailed(f"Failed to refresh credentials: {err}") from err
 
