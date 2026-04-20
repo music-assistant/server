@@ -124,6 +124,16 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
     if rules.min_popularity is not None and not (0 <= rules.min_popularity <= 100):
         msg = f"min_popularity must be between 0 and 100, got {rules.min_popularity}"
         raise InvalidDataError(msg)
+    if (
+        rules.year_from is not None
+        and rules.year_to is not None
+        and rules.year_from > rules.year_to
+    ):
+        msg = (
+            f"year_from must be less than or equal to year_to, got "
+            f"{rules.year_from}>{rules.year_to}"
+        )
+        raise InvalidDataError(msg)
 
 
 async def read_json(path: str) -> dict[str, Any]:

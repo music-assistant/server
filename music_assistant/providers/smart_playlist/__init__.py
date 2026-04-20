@@ -113,7 +113,14 @@ class SmartPlaylistProvider(MusicProvider):
             # has no other mechanism to clean up provider-owned playlists on removal.
             for playlist_id in list(self._rules_store):
                 try:
-                    await self.mass.music.remove_item_from_library(MediaType.PLAYLIST, playlist_id)
+                    library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+                        playlist_id, self.instance_id
+                    )
+                    if library_item is None:
+                        continue
+                    await self.mass.music.remove_item_from_library(
+                        MediaType.PLAYLIST, library_item.item_id
+                    )
                 except Exception as exc:
                     self.logger.debug(
                         "Could not remove playlist %s from library: %s", playlist_id, exc
@@ -313,7 +320,7 @@ class SmartPlaylistProvider(MusicProvider):
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
         original_limit = parsed_rules.limit
-        parsed_rules.limit = limit
+        parsed_rules.limit = max(1, min(limit, 2000))
         tracks = await self._evaluate_rules(parsed_rules)
         parsed_rules.limit = original_limit
         return [
@@ -394,7 +401,47 @@ class SmartPlaylistProvider(MusicProvider):
     async def _evaluate_rules(self, rules: SmartPlaylistRules) -> list[Track]:
         """Evaluate the rules and return a list of matching Track objects."""
         has_genre_filter = bool(rules.genre_ids)
-        has_seed_filter = bool(rules.seed_track_uri)
+
+        if rules.seed_track_uri:
+            # Seed mode: the similar-tracks pool is the exclusive source.
+            # artist_ids and album_ids are ignored per design; genre, favorites,
+            # popularity and year are applied as post-filters on the pool.
+            tracks = await self._get_similar_tracks(rules.seed_track_uri, MAX_SIMILAR_TRACKS)
+            if rules.min_popularity is not None:
+                tracks = [
+                    t
+                    for t in tracks
+                    if t.metadata
+                    and t.metadata.popularity is not None
+                    and t.metadata.popularity >= rules.min_popularity
+                ]
+            if rules.favorites_only:
+                tracks = [t for t in tracks if t.favorite]
+            if has_genre_filter and rules.logic == LOGIC_AND:
+                # Best-effort: filter seed tracks by genre name.
+                # Tracks without genre metadata are kept (don't exclude for missing data).
+                allowed_genre_names = {g.lower() for g in rules.genre_names.values()}
+                if allowed_genre_names:
+                    tracks = [
+                        t
+                        for t in tracks
+                        if not t.metadata
+                        or not t.metadata.genres
+                        or any(g.lower() in allowed_genre_names for g in t.metadata.genres)
+                    ]
+            if rules.year_from is not None or rules.year_to is not None:
+                tracks = [
+                    t
+                    for t in tracks
+                    if t.album is None
+                    or t.album.year is None
+                    or (
+                        (rules.year_from is None or t.album.year >= rules.year_from)
+                        and (rules.year_to is None or t.album.year <= rules.year_to)
+                    )
+                ]
+            random.shuffle(tracks)
+            return tracks[: rules.limit]
 
         if rules.logic == LOGIC_AND:
             tracks = await self._evaluate_and(rules)
@@ -409,40 +456,6 @@ class SmartPlaylistProvider(MusicProvider):
                 and t.metadata.popularity is not None
                 and t.metadata.popularity >= rules.min_popularity
             ]
-
-        if has_seed_filter and rules.seed_track_uri:
-            # Seed mode: artist_ids and album_ids are ignored per design.
-            # Genre, favorites, popularity and year are applied as post-filters.
-            seed_tracks = await self._get_similar_tracks(rules.seed_track_uri, MAX_SIMILAR_TRACKS)
-            if rules.min_popularity is not None:
-                seed_tracks = [
-                    t
-                    for t in seed_tracks
-                    if t.metadata
-                    and t.metadata.popularity is not None
-                    and t.metadata.popularity >= rules.min_popularity
-                ]
-            if rules.favorites_only:
-                seed_tracks = [t for t in seed_tracks if t.favorite]
-            if has_genre_filter and rules.logic == LOGIC_AND:
-                # Best-effort: filter seed tracks by genre name.
-                # Only applied when genre_names is populated; skipped otherwise to avoid
-                # discarding all tracks due to unresolved names.
-                # Tracks without genre metadata are kept (don't exclude for missing data).
-                allowed_genre_names = {g.lower() for g in rules.genre_names.values()}
-                if allowed_genre_names:
-                    seed_tracks = [
-                        t
-                        for t in seed_tracks
-                        if not t.metadata
-                        or not t.metadata.genres
-                        or any(g.lower() in allowed_genre_names for g in t.metadata.genres)
-                    ]
-            existing_uris = {t.uri for t in tracks}
-            for st in seed_tracks:
-                if st.uri not in existing_uris:
-                    tracks.append(st)
-                    existing_uris.add(st.uri)
 
         if rules.year_from is not None or rules.year_to is not None:
             tracks = [
@@ -464,24 +477,18 @@ class SmartPlaylistProvider(MusicProvider):
         has_genre = bool(rules.genre_ids)
         has_artist = bool(rules.artist_ids)
         has_album = bool(rules.album_ids)
-        has_seed = bool(rules.seed_track_uri)
 
         no_structural_filter = not has_genre and not has_artist and not has_album
 
-        # When seed is active, the similar-tracks pool is the exclusive source.
-        # Genre/artist/album filters are applied as post-filters on that pool in _evaluate_rules.
-        if has_seed:
-            return []
-
-        if no_structural_filter and not rules.favorites_only and not has_seed:
+        if no_structural_filter and not rules.favorites_only:
             return await self._get_library_tracks(
-                favorite=None, genre_ids=None, limit=rules.limit * 3
+                favorite=None, genre_ids=None, limit=min(rules.limit * 3, 2000)
             )
 
         favorite = True if rules.favorites_only else None
         genre_ids = rules.genre_ids if has_genre else None
         base_tracks = await self._get_library_tracks(
-            favorite=favorite, genre_ids=genre_ids, limit=rules.limit * 5
+            favorite=favorite, genre_ids=genre_ids, limit=min(rules.limit * 5, 2000)
         )
 
         if not has_artist and not has_album:
