@@ -1,262 +1,286 @@
-"""Minimal ctypes wrapper around libpulse-simple for direct PA sink PCM streaming."""
+"""Local Audio Player implementation."""
 from __future__ import annotations
 
-import contextlib
-import ctypes
-import os
-from pathlib import Path
-import threading
-from typing import Any, ClassVar, Final
+import asyncio
+import sys
+import uuid
+from typing import TYPE_CHECKING
 
-PA_STREAM_PLAYBACK: Final = 1
+from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.player import DeviceInfo
 
-PA_SAMPLE_S16LE:    Final = 3
-PA_SAMPLE_S32LE:    Final = 7   # verified via pa_sample_format_to_string
-PA_SAMPLE_S24LE:    Final = 9   # packed 3-byte LE — native format of s24le PA sinks
+from music_assistant.models.player import Player
 
-# Map PA sample format constant -> bit depth
-_PA_FORMAT_TO_BIT_DEPTH: Final[dict[int, int]] = {
-    PA_SAMPLE_S16LE: 16,
-    PA_SAMPLE_S24LE: 24,
-    PA_SAMPLE_S32LE: 32,
-}
+from .constants import (
+    CACHE_CATEGORY_PREV_STATE,
+    CONF_HARDWARE_VOLUME_CEILING,
+    CONF_VOLUME_CONTROL,
+    DEFAULT_HARDWARE_VOLUME_CEILING,
+    DEFAULT_PLAYER_VOLUME,
+    DEVICE_UUID_NAMESPACE,
+    VOLUME_CONTROL_HARDWARE,
+    VOLUME_CONTROL_SOFTWARE,
+)
 
+if sys.platform == "darwin":
+    from .coreaudio_volume import set_device_mute, set_device_volume
+elif sys.platform == "linux":
+    try:
+        import pulsectl
+        _PULSECTL_AVAILABLE = True
+    except ImportError:
+        _PULSECTL_AVAILABLE = False
 
-def _pa_sample_format(bit_depth: int) -> int:
-    """Return PA sample format constant for given bit depth."""
-    if bit_depth == 32:
-        return PA_SAMPLE_S32LE
-    if bit_depth == 24:
-        # MA delivers in 32-bit containers; _apply_software_volume repacks to
-        # packed 3-byte before writing, so PA sees s24le here.
-        return PA_SAMPLE_S24LE
-    return PA_SAMPLE_S16LE
-
-class _PASampleSpec(ctypes.Structure):
-    _fields_: ClassVar = [
-        ("format", ctypes.c_int),
-        ("rate", ctypes.c_uint32),
-        ("channels", ctypes.c_uint8),
-    ]
+if TYPE_CHECKING:
+    from .provider import LocalAudioProvider
 
 
-def _find_pulse_server() -> str:
-    """Detect the PulseAudio server socket path."""
-    if server := os.environ.get("PULSE_SERVER"):
-        return server
-    for path in (
-        "/run/audio/pulse.sock",
-        "/run/pulse/native",
-        "/var/run/pulse/native",
-    ):
-        if os.path.exists(path):
-            return f"unix:{path}"
-    return ""
+def get_device_uuid(device_name: str, hostapi_index: int) -> str:
+    """Generate a stable UUID for a local audio device.
 
-
-def _get_pulse_server() -> str:
-    """Return the PulseAudio server path, checked fresh on each call.
-
-    Intentionally not cached — the socket may not exist at import time
-    but appear later once the audio addon has fully started.
+    :param device_name: The device name reported by PortAudio.
+    :param hostapi_index: The host API index (e.g. CoreAudio=0, ALSA=0).
     """
-    return _find_pulse_server()
+    return str(uuid.uuid5(DEVICE_UUID_NAMESPACE, f"{device_name}:{hostapi_index}"))
 
 
-def _load_lib() -> ctypes.CDLL:
-    lib = ctypes.CDLL("libpulse-simple.so.0")
-    lib.pa_simple_new.restype = ctypes.c_void_p
-    lib.pa_simple_new.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    lib.pa_simple_write.restype = ctypes.c_int
-    lib.pa_simple_write.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-    ]
-    lib.pa_simple_drain.restype = ctypes.c_int
-    lib.pa_simple_drain.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    lib.pa_simple_free.restype = None
-    lib.pa_simple_free.argtypes = [ctypes.c_void_p]
-    return lib
+class LocalAudioPlayer(Player):
+    """Player for a locally attached soundcard."""
 
-
-_lib: ctypes.CDLL | None = None
-
-
-def _get_lib() -> ctypes.CDLL:
-    global _lib  # noqa: PLW0603
-    if _lib is None:
-        _lib = _load_lib()
-    return _lib
-
-
-class PASimpleStream:
-    """Synchronous PCM playback stream to a named PulseAudio sink.
-
-    All libpulse calls are serialized behind a threading.Lock so that
-    concurrent executor threads cannot simultaneously write/free the
-    same pa_simple connection, which causes assertion failures in libpulse.
-    """
-
-    def __init__(self, sink_name: str, app_name: str, rate: int, channels: int, bit_depth: int = 16) -> None:
-        """Open a synchronous PCM playback stream to the named PulseAudio sink."""
-        lib = _get_lib()
-        spec = _PASampleSpec(
-            format=_pa_sample_format(bit_depth),
-            rate=rate,
-            channels=channels,
-        )
-        error = ctypes.c_int(0)
-        self._lib = lib
-        self._lock = threading.Lock()
-        pulse_server = _get_pulse_server()
-        self._conn: int | None = lib.pa_simple_new(
-            pulse_server.encode() if pulse_server else None,
-            app_name.encode(),
-            PA_STREAM_PLAYBACK,
-            sink_name.encode(),
-            b"playback",
-            ctypes.byref(spec),
-            None,
-            None,
-            ctypes.byref(error),
-        )
-        if not self._conn:
-            raise OSError(
-                f"pa_simple_new failed for sink '{sink_name}' "
-                f"(pa_error={error.value}, server={pulse_server!r})"
-            )
-
-    def write(self, data: bytes) -> None:
-        """Write a PCM chunk. Blocks until PA has buffered it."""
-        with self._lock:
-            if not self._conn:
-                return
-            error = ctypes.c_int(0)
-            ret = self._lib.pa_simple_write(self._conn, data, len(data), ctypes.byref(error))
-            if ret < 0:
-                raise OSError(f"pa_simple_write failed (pa_error={error.value})")
-
-    def drain(self) -> None:
-        """Block until all buffered audio has played out."""
-        with self._lock:
-            if not self._conn:
-                return
-            error = ctypes.c_int(0)
-            self._lib.pa_simple_drain(self._conn, ctypes.byref(error))
-
-    def close(self) -> None:
-        """Free the PA stream.
-
-        Acquires the lock before zeroing _conn and calling pa_simple_free,
-        ensuring no concurrent write() or drain() can touch the pointer
-        between the None assignment and the free call.
+    def __init__(
+        self,
+        provider: LocalAudioProvider,
+        player_id: str,
+        device_name: str,
+        hostapi_index: int,
+        device_index: int,
+        pa_sink_name: str | None = None,
+        is_remap: bool = False,
+    ) -> None:
         """
-        with self._lock:
-            conn, self._conn = self._conn, None
-            if conn:
-                self._lib.pa_simple_free(conn)
+        Initialize the Local Audio player.
 
-    def __enter__(self) -> PASimpleStream:
-        """Enter context manager."""
-        return self
+        :param provider: The Local Audio provider instance.
+        :param player_id: Stable player ID derived from device UUID.
+        :param device_name: The device name reported by PortAudio.
+        :param hostapi_index: The host API index.
+        :param device_index: The PortAudio device index (maps to ALSA card on Linux).
+        :param pa_sink_name: The PulseAudio sink name for this device (Linux only).
+        :param is_remap: True if this is a remap/filter sink (not a physical ALSA sink).
+        """
+        super().__init__(provider, player_id)
+        self._attr_type = PlayerType.PLAYER
+        self._attr_name = device_name
+        self._attr_available = True
+        self._attr_supported_features = {
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        self._attr_device_info = DeviceInfo(
+            model=device_name,
+            manufacturer="Local Audio",
+        )
+        device_uuid = get_device_uuid(device_name, hostapi_index)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, device_uuid)
+        self._attr_can_group_with = set()
+        self._attr_volume_level = DEFAULT_PLAYER_VOLUME
+        self._device_index = device_index
+        self._pa_sink_name = pa_sink_name
+        self._is_remap = is_remap
+        # Set when hardware volume fails, causes automatic fallback to software
+        self._hardware_volume_fallback = False
 
-    def __exit__(self, *_: object) -> None:
-        """Exit context manager and close the stream."""
-        self.close()
+    @property
+    def volume_control_mode(self) -> str:
+        """Return the effective volume control mode for this player."""
+        if self._hardware_volume_fallback:
+            return VOLUME_CONTROL_SOFTWARE
+        # On Linux with a PA sink, use software volume — hardware ceiling
+        # is set once at startup via apply_hardware_ceiling()
+        if sys.platform == "linux" and self._pa_sink_name:
+            return VOLUME_CONTROL_SOFTWARE
+        # On other platforms, volume control mode is configured at provider level
+        return str(self._provider.config.get_value(CONF_VOLUME_CONTROL) or VOLUME_CONTROL_HARDWARE)
 
+    async def restore_state(self) -> None:
+        """Restore cached volume/mute state from a previous session."""
+        if last_state := await self.mass.cache.get(
+            key=self.player_id,
+            provider=self._provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
+        ):
+            self._attr_volume_muted = last_state[0]
+            self._attr_volume_level = last_state[1]
+        else:
+            self._attr_volume_muted = False
+            self._attr_volume_level = DEFAULT_PLAYER_VOLUME
 
-def enumerate_pa_sinks() -> list[dict[str, Any]]:
-    """Enumerate stereo-capable PulseAudio sinks via pactl JSON output.
-
-    Uses pactl --format=json list sinks which always returns the sink's
-    native sample rate and format regardless of active stream state —
-    unlike pulsectl/libpulse which reports the currently negotiated format
-    when streams are active (which can differ from native hardware format).
-
-    Returns list of dicts with keys:
-      - name: display name (PA sink description)
-      - pa_sink_name: internal PA sink name
-      - max_output_channels: number of channels
-      - sample_rate: sink native sample rate in Hz
-      - bit_depth: sink native bit depth (16, 24, or 32)
-    """
-    import json  # noqa: PLC0415
-    import shutil  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-
-    # Locate pactl — prefer bundled binary, fall back to system
-    bundled = os.path.join(os.path.dirname(__file__), "bin", "pactl")
-    if os.path.isfile(bundled):
-        if not os.access(bundled, os.X_OK):
-            with contextlib.suppress(OSError):
-                Path(bundled).chmod(0o755)  # noqa: S103
-    if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
-        pactl_bin = bundled
-    elif path := shutil.which("pactl"):
-        pactl_bin = path
-    else:
-        raise FileNotFoundError(
-            "pactl not found — bundled binary missing and pulseaudio-utils not installed"
+    async def _save_state(self) -> None:
+        """Persist current volume/mute state to cache."""
+        await self.mass.cache.set(
+            key=self.player_id,
+            data=[self._attr_volume_muted, self._attr_volume_level],
+            provider=self._provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
         )
 
-    # Build environment with bundled lib dir and PULSE_SERVER
-    lib_dir = os.path.join(os.path.dirname(__file__), "bin", "lib")
-    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
-    ld_path = f"{lib_dir}:{existing_ld}" if existing_ld else lib_dir
-    env = {**os.environ, "LD_LIBRARY_PATH": ld_path}
-    pulse_server = _get_pulse_server()
-    if pulse_server:
-        env["PULSE_SERVER"] = pulse_server
+    async def volume_set(self, volume_level: int) -> None:
+        """Handle VOLUME_SET command."""
+        self._attr_volume_level = volume_level
+        if self.volume_control_mode == VOLUME_CONTROL_HARDWARE:
+            await self._set_hardware_volume(volume_level)
+        await self._save_state()
+        self.update_state()
 
-    result = subprocess.run(  # noqa: S603
-        [pactl_bin, "--format=json", "list", "sinks"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        env=env,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"pactl exited {result.returncode}: {result.stderr.strip()}"
-        )
+    async def volume_mute(self, muted: bool) -> None:
+        """Handle VOLUME_MUTE command."""
+        self._attr_volume_muted = muted
+        mode = self.volume_control_mode
+        if mode == VOLUME_CONTROL_HARDWARE:
+            await self._set_hardware_mute(muted)
+        await self._save_state()
+        self.update_state()
 
-    sinks = []
-    for sink in json.loads(result.stdout):
-        name: str = sink.get("name", "")
-        desc: str = sink.get("description", name)
-        spec_str: str = sink.get("sample_specification", "")
-        driver: str = sink.get("driver", "")
+    async def _set_hardware_volume(self, volume: int) -> None:
+        """Set the OS-level volume for this device.
+
+        :param volume: Volume level 0-100.
+        """
         try:
-            parts = spec_str.split()
-            fmt = parts[0]          # e.g. 's32le'
-            channels = int(parts[1].replace("ch", ""))
-            sample_rate = int(parts[2].replace("Hz", ""))
-            bit_depth = int(
-                "".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0]))
+            if sys.platform == "darwin":
+                loop = asyncio.get_running_loop()
+                ok = await loop.run_in_executor(None, set_device_volume, self.name, volume)
+                if not ok:
+                    self.logger.warning("CoreAudio volume control failed for %s", self.name)
+                    self._hardware_volume_fallback = True
+            elif sys.platform == "linux":
+                if _PULSECTL_AVAILABLE and self._pa_sink_name:
+                    loop = asyncio.get_running_loop()
+                    ok = await loop.run_in_executor(
+                        None, self._set_pulse_volume, self._pa_sink_name, volume
+                    )
+                    if not ok:
+                        self.logger.warning(
+                            "PulseAudio volume control failed for %s, falling back to software",
+                            self._pa_sink_name,
+                        )
+                        self._hardware_volume_fallback = True
+                else:
+                    self.logger.warning(
+                        "No PulseAudio sink available for %s, falling back to software",
+                        self.name,
+                    )
+                    self._hardware_volume_fallback = True
+            else:
+                self.logger.warning(
+                    "Hardware volume not supported on %s, falling back to software",
+                    sys.platform,
+                )
+                self._hardware_volume_fallback = True
+        except FileNotFoundError:
+            self.logger.warning("Volume control command not found, falling back to software")
+            self._hardware_volume_fallback = True
+
+    async def _set_hardware_mute(self, muted: bool) -> None:
+        """Set the OS-level mute state for this device.
+
+        :param muted: Whether to mute or unmute.
+        """
+        try:
+            if sys.platform == "darwin":
+                loop = asyncio.get_running_loop()
+                ok = await loop.run_in_executor(None, set_device_mute, self.name, muted)
+                if not ok:
+                    self.logger.warning("CoreAudio mute control failed for %s", self.name)
+                    self._hardware_volume_fallback = True
+            elif sys.platform == "linux":
+                if _PULSECTL_AVAILABLE and self._pa_sink_name:
+                    loop = asyncio.get_running_loop()
+                    ok = await loop.run_in_executor(
+                        None, self._set_pulse_mute, self._pa_sink_name, muted
+                    )
+                    if not ok:
+                        self.logger.warning(
+                            "PulseAudio mute control failed for %s, falling back to software",
+                            self._pa_sink_name,
+                        )
+                        self._hardware_volume_fallback = True
+                else:
+                    self._hardware_volume_fallback = True
+            else:
+                self._hardware_volume_fallback = True
+        except FileNotFoundError:
+            self.logger.warning("Mute control command not found, falling back to software")
+            self._hardware_volume_fallback = True
+
+    async def apply_hardware_ceiling(self) -> None:
+        """Set PA sink hardware volume via pulsectl (Linux only).
+
+        For physical ALSA sinks: sets volume to the configured ceiling
+        percentage to cap the maximum hardware output level.
+        For remap/filter sinks: sets volume to 100% since the parent
+        ALSA sink already holds the ceiling — applying a ceiling here
+        would double-attenuate the output.
+        No-op on non-Linux or if no PA sink.
+        """
+        if not self._pa_sink_name:
+            return
+        if self._is_remap:
+            target = 100
+        else:
+            raw = self._provider.config.get_value(
+                CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
             )
-        except (IndexError, ValueError):
-            continue
-        if channels < 2:
-            continue
-        sinks.append({
-            "name": desc,
-            "pa_sink_name": name,
-            "max_output_channels": channels,
-            "sample_rate": sample_rate,
-            "bit_depth": bit_depth,
-            "is_remap": driver == "module-remap-sink.c",
-        })
-    return sinks
+            target = int(raw) if isinstance(raw, (int, float, str)) else DEFAULT_HARDWARE_VOLUME_CEILING
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(
+            None, self._set_pulse_volume, self._pa_sink_name, target
+        )
+        if ok:
+            self.logger.debug(
+                "Volume set to %d%% for sink %s", target, self._pa_sink_name
+            )
+        else:
+            self.logger.warning(
+                "Failed to set volume for sink %s", self._pa_sink_name
+            )
+
+    def _set_pulse_volume(self, pa_sink_name: str, volume: int) -> bool:
+        """Set PulseAudio sink volume. Returns True on success.
+
+        Intended to be called via run_in_executor.
+
+        :param pa_sink_name: The PulseAudio sink name.
+        :param volume: Volume level 0-100.
+        """
+        try:
+            with pulsectl.Pulse("ma-local-audio") as pulse:
+                for sink in pulse.sink_list():
+                    if sink.name == pa_sink_name:
+                        pulse.volume_set_all_chans(sink, volume / 100.0)
+                        return True
+            self.logger.warning("PA sink %s not found for volume control", pa_sink_name)
+            return False
+        except Exception as err:
+            self.logger.warning("pulsectl volume error for %s: %s", pa_sink_name, err)
+            return False
+
+    def _set_pulse_mute(self, pa_sink_name: str, muted: bool) -> bool:
+        """Set PulseAudio sink mute state. Returns True on success.
+
+        Intended to be called via run_in_executor.
+
+        :param pa_sink_name: The PulseAudio sink name.
+        :param muted: Whether to mute or unmute.
+        """
+        try:
+            with pulsectl.Pulse("ma-local-audio") as pulse:
+                for sink in pulse.sink_list():
+                    if sink.name == pa_sink_name:
+                        pulse.mute(sink, muted)
+                        return True
+            self.logger.warning("PA sink %s not found for mute control", pa_sink_name)
+            return False
+        except Exception as err:
+            self.logger.warning("pulsectl mute error for %s: %s", pa_sink_name, err)
+            return False
