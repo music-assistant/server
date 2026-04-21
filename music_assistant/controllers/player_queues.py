@@ -1075,6 +1075,17 @@ class PlayerQueuesController(CoreController):
                         cast("MediaItemType", media_from_dict(cast("dict[str, Any]", item)))
                         for item in queue.enqueued_media_items
                     ]
+                if queue.radio_source:
+                    # radio_source suffers from the same deserialisation issue as
+                    # enqueued_media_items: after restoring from cache the items are
+                    # plain dicts, not MediaItemType objects. Without this step the
+                    # isinstance(item, Playlist) check in _fill_radio_tracks() always
+                    # returns False, causing dynamic playlists to fall back to regular
+                    # radio mode and raise UnsupportedFeaturedException.
+                    queue.radio_source = [
+                        cast("MediaItemType", media_from_dict(cast("dict[str, Any]", item)))
+                        for item in queue.radio_source
+                    ]
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
