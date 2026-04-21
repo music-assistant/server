@@ -6,7 +6,7 @@ Brotli>=1.0.9
 aioaudiobookshelf==0.1.20
 aiodns>=3.2.0
 aiofiles==24.1.0
-aiohttp==3.13.4
+aiohttp==3.13.5
 aiohttp_asyncmdnsresolver==0.1.1
 aiohttp-fast-zlib==0.3.0
 aiohttp-socks==0.11.0
@@ -21,7 +21,7 @@ aiovban==0.6.3
 alexapy==1.29.17
 async-upnp-client==0.46.2
 audible==0.10.0
-auntie-sounds==1.1.7
+auntie-sounds==1.1.8
 av==16.1.0
 awesomeversion>=24.6.0
 bandcamp-async-api==0.1.1
@@ -38,7 +38,7 @@ duration-parser==1.0.1
 getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.2.3
-ibroadcastaio==0.5.0
+ibroadcastaio==0.6.0
 ifaddr==0.2.0
 liblistenbrainz==0.7.0
 librosa==0.11.0
@@ -87,6 +87,7 @@ unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0
 xmltodict==1.0.4
+ya-passport-auth==1.2.3
 yandex-music==2.2.0
 ytmusicapi==1.11.5
 zeroconf==0.148.0

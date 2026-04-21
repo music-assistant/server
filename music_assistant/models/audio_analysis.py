@@ -24,6 +24,8 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # EBU R128 integrated loudness in LUFS (typical range: -70.0 to 0.0).
     loudness_integrated: float | None = None
+    # EBU R128 integrated album loudness in LUFS, from provider metadata/tags.
+    loudness_album: float | None = None
     # EBU R128 loudness range in LU (typical range: 1.0 to 30.0).
     loudness_range: float | None = None
     # ITU-R BS.1770-4 true peak in dBTP (typical range: -20.0 to +3.0).

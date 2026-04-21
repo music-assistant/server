@@ -87,6 +87,7 @@ from .constants import (
     CONF_ACTION_CHECK_QR_AUTH,
     CONF_ACTION_CLEAR_AUTH,
     CONF_ACTION_START_QR_AUTH,
+    CONF_CREDENTIAL_JSON,
     CONF_LOGIN_TYPE,
     CONF_MUSICID,
     CONF_MUSICKEY,
@@ -221,6 +222,7 @@ def _clear_auth(values: dict[str, ConfigValueType]) -> None:
     values[CONF_MUSICID] = None
     values[CONF_MUSICKEY] = None
     values[CONF_LOGIN_TYPE] = None
+    values[CONF_CREDENTIAL_JSON] = None
     values[CONF_QR_IDENTIFIER] = None
     values[CONF_QR_TYPE] = None
     values[CONF_QR_PAGE_URL] = None
@@ -230,10 +232,27 @@ def _clear_auth(values: dict[str, ConfigValueType]) -> None:
 def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> None:
     if not credential.musicid or not credential.musickey:
         raise LoginFailed("QR login succeeded but credential is incomplete")
+    credential_json: str
+    if callable(getattr(credential, "as_json", None)):
+        credential_json = credential.as_json()
+    else:
+        fallback_credential = Credential.from_cookies_dict(
+            {
+                "musicid": str(credential.musicid),
+                "musickey": str(credential.musickey),
+                "loginType": int(getattr(credential, "login_type", 2) or 2),
+                "refresh_key": str(getattr(credential, "refresh_key", "") or ""),
+                "refresh_token": str(getattr(credential, "refresh_token", "") or ""),
+                "encryptUin": str(getattr(credential, "encrypt_uin", "") or ""),
+                "str_musicid": str(getattr(credential, "str_musicid", "") or ""),
+            }
+        )
+        credential_json = fallback_credential.as_json()
     values[CONF_UIN] = str(credential.musicid)
     values[CONF_MUSICID] = str(credential.musicid)
     values[CONF_MUSICKEY] = str(credential.musickey)
     values[CONF_LOGIN_TYPE] = str(credential.login_type or 2)
+    values[CONF_CREDENTIAL_JSON] = credential_json
     values[CONF_QR_IDENTIFIER] = None
     values[CONF_QR_TYPE] = None
     values[CONF_QR_PAGE_URL] = None
@@ -422,6 +441,14 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
             value=str(values.get(CONF_LOGIN_TYPE) or ""),
         ),
         ConfigEntry(
+            key=CONF_CREDENTIAL_JSON,
+            type=ConfigEntryType.SECURE_STRING,
+            label=CONF_CREDENTIAL_JSON,
+            hidden=True,
+            required=False,
+            value=str(values.get(CONF_CREDENTIAL_JSON) or ""),
+        ),
+        ConfigEntry(
             key=CONF_QR_IDENTIFIER,
             type=ConfigEntryType.STRING,
             label=CONF_QR_IDENTIFIER,
@@ -472,22 +499,39 @@ class QQMusicProvider(MusicProvider):
     _qq_lyric: Any = None
     _qq_recommend: Any = None
     _api_semaphore: Semaphore
+    _credential_refresh_lock: asyncio.Lock
+    _last_credential_check_monotonic: float
     _musicid: int = 0
     _euin: str = ""
     _recommend_payload_cache: dict[str, tuple[float, Any]]
 
     async def handle_async_init(self) -> None:
         """Validate auth and initialize qqmusic api adapters."""
-        config_musicid = self.config.get_value(CONF_MUSICID) or self.config.get_value(CONF_UIN)
-        config_musickey = self.config.get_value(CONF_MUSICKEY)
-        config_login_type = self.config.get_value(CONF_LOGIN_TYPE)
+        credential: Credential | None = None
+        if credential_json := str(self.config.get_value(CONF_CREDENTIAL_JSON) or "").strip():
+            try:
+                credential = Credential.from_cookies_str(credential_json)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to parse persisted QQ credential_json, fallback to legacy fields: %s",
+                    err,
+                )
 
-        if not (config_musicid and config_musickey):
-            raise LoginFailed("No QQ Music authentication configured, please login by QR code")
-        uin = int(str(config_musicid))
-        musickey = str(config_musickey)
-        login_type_raw = str(config_login_type or "2")
-        login_type = int(login_type_raw) if login_type_raw.isdigit() else 2
+        if not credential or not credential.musicid or not credential.musickey:
+            config_musicid = self.config.get_value(CONF_MUSICID) or self.config.get_value(CONF_UIN)
+            config_musickey = self.config.get_value(CONF_MUSICKEY)
+            config_login_type = self.config.get_value(CONF_LOGIN_TYPE)
+            if not (config_musicid and config_musickey):
+                raise LoginFailed("No QQ Music authentication configured, please login by QR code")
+            login_type_raw = str(config_login_type or "2")
+            login_type = int(login_type_raw) if login_type_raw.isdigit() else 2
+            credential = Credential.from_cookies_dict(
+                {
+                    "musicid": str(config_musicid),
+                    "musickey": str(config_musickey),
+                    "loginType": login_type,
+                }
+            )
 
         self._qq_search = qq_search_mod
         self._qq_song = qq_song_mod
@@ -499,24 +543,63 @@ class QQMusicProvider(MusicProvider):
         self._qq_recommend = qq_recommend_mod
         # Keep qqmusic_api internal logs in sync with MA log level.
         logging.getLogger("qqmusicapi").setLevel(self.logger.level + 10)
-        self._credential = Credential.from_cookies_dict(
-            {
-                "musicid": str(uin),
-                "musickey": musickey,
-                "loginType": login_type,
-            }
-        )
+        self._credential = credential
         self._qq_session = QQSession(credential=self._credential, enable_sign=True)
         self._api_semaphore = Semaphore(4)
-        self._musicid = int(uin)
+        self._credential_refresh_lock = asyncio.Lock()
+        self._last_credential_check_monotonic = 0.0
+        self._musicid = int(self._credential.musicid)
         self._recommend_payload_cache = {}
-        self.logger.info("QQ Music authenticated for uin %s", uin)
+        self.logger.info("QQ Music authenticated for uin %s", self._musicid)
+        # Persist complete credential once on init so legacy configs gain refresh fields.
+        self._persist_credential()
+
+    def _persist_credential(self) -> None:
+        """Persist current credential into provider config values."""
+        if not self._credential:
+            return
+        self._set_config_value_safe(CONF_UIN, str(self._credential.musicid))
+        self._set_config_value_safe(CONF_MUSICID, str(self._credential.musicid))
+        self._set_config_value_safe(CONF_MUSICKEY, str(self._credential.musickey), encrypted=True)
+        self._set_config_value_safe(CONF_LOGIN_TYPE, str(self._credential.login_type or 2))
+        self._set_config_value_safe(
+            CONF_CREDENTIAL_JSON, self._credential.as_json(), encrypted=True
+        )
+
+    def _set_config_value_safe(self, key: str, value: Any, encrypted: bool = False) -> None:
+        """Safely update provider config at runtime, tolerant of missing cached keys."""
+        self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
+        if key in self.config.values:
+            self.config.values[key].value = value
+
+    async def _ensure_valid_credential(self) -> None:
+        """Refresh credential when expired and persistence data allows refresh."""
+        if not self._credential:
+            raise LoginFailed("QQ Music credential is not initialized")
+        now = time.monotonic()
+        # Avoid checking expiry on every single API call.
+        if (now - self._last_credential_check_monotonic) < 300:
+            return
+        async with self._credential_refresh_lock:
+            now = time.monotonic()
+            if (now - self._last_credential_check_monotonic) < 300:
+                return
+            self._last_credential_check_monotonic = now
+            if not await self._credential.is_expired():
+                return
+            if not await self._credential.can_refresh():
+                raise LoginFailed("QQ Music credential expired and cannot be refreshed")
+            if not await self._credential.refresh():
+                raise LoginFailed("QQ Music credential refresh failed, please re-authenticate")
+            self._persist_credential()
+            self.logger.info("QQ Music credential refreshed and persisted")
 
     async def _run_with_session(self, coro: Awaitable[Any]) -> Any:
         """Run qqmusic_api call with the provider-bound Session."""
         try:
             if self._qq_session:
                 qq_set_session(self._qq_session)
+            await self._ensure_valid_credential()
             async with self._api_semaphore:
                 return await coro
         except Exception as err:

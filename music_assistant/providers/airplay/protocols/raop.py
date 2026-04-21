@@ -115,7 +115,6 @@ class RaopStream(AirPlayProtocol):
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
-            self.last_stderr_activity = time.time()
             if "connected to " in line:
                 self._connected.set()
                 # successfully connected - playback will/can start

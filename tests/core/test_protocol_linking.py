@@ -139,7 +139,18 @@ def mock_mass() -> MagicMock:
     mass.closing = False
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+
+    def _get_raw_player_config_value(
+        _player_id: str, key: str, default: str | int | None = None
+    ) -> str | int | None:
+        """Return appropriate defaults for player config values."""
+        if key == "min_volume":
+            return 0
+        if key == "max_volume":
+            return 100
+        return default if default is not None else "auto"
+
+    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
@@ -996,8 +1007,18 @@ class TestSelectBestOutputProtocol:
 
     def test_select_native_when_preferred_is_native(self, mock_mass: MagicMock) -> None:
         """Test that native protocol is selected when user prefers native."""
-        # Mock config to return "native" as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="native")
+
+        # Mock config to return "native" as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "native"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
         provider = MockProvider("sonos", mass=mock_mass)
@@ -1027,8 +1048,18 @@ class TestSelectBestOutputProtocol:
 
     def test_select_dlna_when_preferred_is_dlna(self, mock_mass: MagicMock) -> None:
         """Test that DLNA protocol is selected when user prefers DLNA."""
-        # Mock config to return the full player ID as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="dlna_AABBCCDDEEFF")
+
+        # Mock config to return the full player ID as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "dlna_AABBCCDDEEFF"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
 
@@ -1084,10 +1115,18 @@ class TestSelectBestOutputProtocol:
 
     def test_select_airplay_when_preferred_is_airplay(self, mock_mass: MagicMock) -> None:
         """Test that AirPlay protocol is selected when user prefers AirPlay."""
-        # Mock config to return the full player ID as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(
-            return_value="airplay_AABBCCDDEEFF"
-        )
+
+        # Mock config to return the full player ID as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "airplay_AABBCCDDEEFF"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
 
@@ -1161,8 +1200,18 @@ class TestSelectBestOutputProtocol:
 
     def test_fallback_to_native_when_auto(self, mock_mass: MagicMock) -> None:
         """Test that native playback is used when preference is auto."""
-        # Mock config to return "auto" as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+
+        # Mock config to return "auto" as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
         provider = MockProvider("sonos", mass=mock_mass)
