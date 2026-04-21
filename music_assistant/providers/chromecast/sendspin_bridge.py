@@ -578,11 +578,17 @@ class SendspinBridgeManager:
                 sendspin_provider = self.sendspin_provider
                 if sendspin_provider is not None:
                     bridge_hello = _build_bridge_hello(cast_player, existing_client_id)
-                    await sendspin_provider.apply_bridge_claim(
-                        existing_client_id,
-                        {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)},
-                        bridge_hello,
-                    )
+                    identifiers = {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)}
+                    if not await sendspin_provider.apply_bridge_claim(
+                        existing_client_id, identifiers, bridge_hello
+                    ):
+                        # SendspinPlayer registration still in flight
+                        # (`_handle_client_added` waits up to 5 s for hello).
+                        # Pre-register identifiers so `_create_player` attaches
+                        # CAST_UUID when it runs.
+                        sendspin_provider.register_bridge_identifiers(
+                            existing_client_id, identifiers
+                        )
                     _write_default_static_delay(self.mass, existing_client_id, manufacturer, model)
                     self._claimed_clients[player_id] = existing_client_id
                     self._subscribe_rebridge_on_disconnect(cast_player, existing_client_id)
