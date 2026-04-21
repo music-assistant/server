@@ -225,51 +225,28 @@ class QobuzProvider(MusicProvider):
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="artists", type="artists"):
             if item and item["id"]:
-                artist = self._parse_artist(item)
-                if favorited_at := item.get("favorited_at"):
-                    artist.date_added = datetime.datetime.fromtimestamp(
-                        favorited_at, tz=datetime.UTC
-                    )
-                yield artist
+                yield self._parse_artist(item)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="albums", type="albums"):
             if item and item["id"]:
-                album = await self._parse_album(item)
-                if favorited_at := item.get("favorited_at"):
-                    album.date_added = datetime.datetime.fromtimestamp(
-                        favorited_at, tz=datetime.UTC
-                    )
-                yield album
+                yield await self._parse_album(item)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="tracks", type="tracks"):
             if item and item["id"]:
-                track = await self._parse_track(item)
-                if favorited_at := item.get("favorited_at"):
-                    track.date_added = datetime.datetime.fromtimestamp(
-                        favorited_at, tz=datetime.UTC
-                    )
-                yield track
+                yield await self._parse_track(item)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
         for item in await self._get_all_items(endpoint, key="playlists"):
             if item and item["id"]:
-                playlist = self._parse_playlist(item)
-                # subscribed_at for playlists the user subscribed to, created_at
-                # for playlists the user owns
-                timestamp = item.get("subscribed_at") or item.get("created_at")
-                if timestamp:
-                    playlist.date_added = datetime.datetime.fromtimestamp(
-                        timestamp, tz=datetime.UTC
-                    )
-                yield playlist
+                yield self._parse_playlist(item)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -619,6 +596,8 @@ class QobuzProvider(MusicProvider):
             )
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
+        if favorited_at := artist_obj.get("favorited_at"):
+            artist.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return artist
 
     async def _parse_album(
@@ -695,6 +674,8 @@ class QobuzProvider(MusicProvider):
             album.metadata.description = album_obj["description"]
         if album_obj.get("parental_warning"):
             album.metadata.explicit = True
+        if favorited_at := album_obj.get("favorited_at"):
+            album.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return album
 
     async def _parse_track(self, track_obj: dict[str, Any]) -> Track:
@@ -783,6 +764,8 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
+        if favorited_at := track_obj.get("favorited_at"):
+            track.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return track
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
@@ -820,6 +803,9 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
+        # subscribed_at for playlists the user subscribed to, created_at for user-owned ones
+        if timestamp := playlist_obj.get("subscribed_at") or playlist_obj.get("created_at"):
+            playlist.date_added = datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
         return playlist
 
     @lock
