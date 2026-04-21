@@ -1,8 +1,10 @@
 """Minimal ctypes wrapper around libpulse-simple for direct PA sink PCM streaming."""
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import os
+from pathlib import Path
 import threading
 from typing import Any, ClassVar, Final
 
@@ -198,10 +200,8 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
     bundled = os.path.join(os.path.dirname(__file__), "bin", "pactl")
     if os.path.isfile(bundled):
         if not os.access(bundled, os.X_OK):
-            try:
-                os.chmod(bundled, 0o755)
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                Path(bundled).chmod(0o755)  # noqa: S103
     if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
         pactl_bin = bundled
     elif path := shutil.which("pactl"):
