@@ -171,6 +171,14 @@ class SendspinProvider(PlayerProvider):
             player._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
         else:
             player._attr_supported_features.discard(PlayerFeature.VOLUME_MUTE)
+        # Expose the claimed player as a protocol bridge, not a standalone web
+        # player. A JS Cast receiver advertises product_name="Web Browser" and
+        # would otherwise be classified as is_web_player → PlayerType.PLAYER
+        # (hidden). Restore protocol semantics so UI links it under its native peer.
+        player.is_web_player = False
+        player._attr_hidden_by_default = False
+        player._attr_expose_to_ha_by_default = True
+        player._attr_type = PlayerType.PROTOCOL
         self.logger.info(
             "Bridge claim applied to existing SendspinPlayer %s (client_id=%s)",
             player.display_name,
