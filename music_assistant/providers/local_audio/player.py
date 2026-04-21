@@ -1,4 +1,5 @@
 """Local Audio Player implementation."""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +28,7 @@ if sys.platform == "darwin":
 elif sys.platform == "linux":
     try:
         import pulsectl
+
         _PULSECTL_AVAILABLE = True
     except ImportError:
         _PULSECTL_AVAILABLE = False
@@ -100,7 +102,10 @@ class LocalAudioPlayer(Player):
         if sys.platform == "linux" and self._pa_sink_name:
             return VOLUME_CONTROL_SOFTWARE
         # On other platforms, volume control mode is configured at provider level
-        return str(self._provider.config.get_value(CONF_VOLUME_CONTROL) or VOLUME_CONTROL_HARDWARE)
+        return str(
+            self._provider.config.get_value(CONF_VOLUME_CONTROL)
+            or VOLUME_CONTROL_HARDWARE
+        )
 
     async def restore_state(self) -> None:
         """Restore cached volume/mute state from a previous session."""
@@ -149,9 +154,13 @@ class LocalAudioPlayer(Player):
         try:
             if sys.platform == "darwin":
                 loop = asyncio.get_running_loop()
-                ok = await loop.run_in_executor(None, set_device_volume, self.name, volume)
+                ok = await loop.run_in_executor(
+                    None, set_device_volume, self.name, volume
+                )
                 if not ok:
-                    self.logger.warning("CoreAudio volume control failed for %s", self.name)
+                    self.logger.warning(
+                        "CoreAudio volume control failed for %s", self.name
+                    )
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
                 if _PULSECTL_AVAILABLE and self._pa_sink_name:
@@ -178,7 +187,9 @@ class LocalAudioPlayer(Player):
                 )
                 self._hardware_volume_fallback = True
         except FileNotFoundError:
-            self.logger.warning("Volume control command not found, falling back to software")
+            self.logger.warning(
+                "Volume control command not found, falling back to software"
+            )
             self._hardware_volume_fallback = True
 
     async def _set_hardware_mute(self, muted: bool) -> None:
@@ -191,7 +202,9 @@ class LocalAudioPlayer(Player):
                 loop = asyncio.get_running_loop()
                 ok = await loop.run_in_executor(None, set_device_mute, self.name, muted)
                 if not ok:
-                    self.logger.warning("CoreAudio mute control failed for %s", self.name)
+                    self.logger.warning(
+                        "CoreAudio mute control failed for %s", self.name
+                    )
                     self._hardware_volume_fallback = True
             elif sys.platform == "linux":
                 if _PULSECTL_AVAILABLE and self._pa_sink_name:
@@ -210,7 +223,9 @@ class LocalAudioPlayer(Player):
             else:
                 self._hardware_volume_fallback = True
         except FileNotFoundError:
-            self.logger.warning("Mute control command not found, falling back to software")
+            self.logger.warning(
+                "Mute control command not found, falling back to software"
+            )
             self._hardware_volume_fallback = True
 
     async def apply_hardware_ceiling(self) -> None:
@@ -231,7 +246,11 @@ class LocalAudioPlayer(Player):
             raw = self._provider.config.get_value(
                 CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
             )
-            target = int(raw) if isinstance(raw, (int, float, str)) else DEFAULT_HARDWARE_VOLUME_CEILING
+            target = (
+                int(raw)
+                if isinstance(raw, (int, float, str))
+                else DEFAULT_HARDWARE_VOLUME_CEILING
+            )
         loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(
             None, self._set_pulse_volume, self._pa_sink_name, target
@@ -241,9 +260,7 @@ class LocalAudioPlayer(Player):
                 "Volume set to %d%% for sink %s", target, self._pa_sink_name
             )
         else:
-            self.logger.warning(
-                "Failed to set volume for sink %s", self._pa_sink_name
-            )
+            self.logger.warning("Failed to set volume for sink %s", self._pa_sink_name)
 
     def _set_pulse_volume(self, pa_sink_name: str, volume: int) -> bool:
         """Set PulseAudio sink volume. Returns True on success.
