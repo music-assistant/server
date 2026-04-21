@@ -65,6 +65,7 @@ from .constants import (
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
     QUALITY_BALANCED,
+    QUALITY_SUPERB,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
@@ -2539,7 +2540,10 @@ class YandexMusicProvider(MusicProvider):
 
     def get_quality(self) -> str:
         """Return the configured audio quality tier (e.g. 'balanced', 'superb')."""
-        return str(self.config.get_value(CONF_QUALITY) or QUALITY_BALANCED).strip().lower()
+        quality = str(self.config.get_value(CONF_QUALITY) or QUALITY_BALANCED).strip().lower()
+        if quality == "lossless":
+            quality = QUALITY_SUPERB
+        return quality
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve wave cover image with background color fill for transparent PNGs.
