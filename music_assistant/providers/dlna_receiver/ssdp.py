@@ -88,8 +88,11 @@ class SSDPAdvertiser:
         """Stop SSDP advertisement and send byebye."""
         self._running = False
         if self._advertise_task:
-            self._advertise_task.cancel()
+            advertise_task = self._advertise_task
             self._advertise_task = None
+            advertise_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await advertise_task
         if self._pending_responses:
             # Snapshot: done-callbacks mutate self._pending_responses.
             pending = list(self._pending_responses)

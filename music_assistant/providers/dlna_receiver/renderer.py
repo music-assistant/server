@@ -74,6 +74,12 @@ class UPnPRenderer:
         # HTTP server
         self._app = web.Application()
         self._runner: web.AppRunner | None = None
+        # Pre-load SCPD XML bytes once: each request should not do sync
+        # file I/O on the event loop.
+        self._scpd_cache: dict[str, bytes] = {
+            name: (SCPD_DIR / name).read_bytes()
+            for name in ("AVTransport.xml", "RenderingControl.xml", "ConnectionManager.xml")
+        }
         self._setup_routes()
 
         # GENA eventing managers (one per service)
@@ -257,11 +263,9 @@ class UPnPRenderer:
         """Return ConnectionManager service description."""
         return self._serve_scpd("ConnectionManager.xml")
 
-    @staticmethod
-    def _serve_scpd(filename: str) -> web.Response:
-        """Read and serve a SCPD XML file."""
-        xml_bytes = (SCPD_DIR / filename).read_bytes()
-        return web.Response(body=xml_bytes, content_type="text/xml")
+    def _serve_scpd(self, filename: str) -> web.Response:
+        """Serve a SCPD XML file from the startup-populated cache."""
+        return web.Response(body=self._scpd_cache[filename], content_type="text/xml")
 
     # ------------------------------------------------------------------
     # SOAP Action Handlers

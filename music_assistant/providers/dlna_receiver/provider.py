@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import socket
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -24,10 +23,10 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.streamdetails import StreamMetadata
 
-from music_assistant.models.player import PlayerMedia
+from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
 from .constants import (
@@ -118,10 +117,10 @@ class DLNAReceiverProvider(PluginProvider):
         if configured_ip:
             self._bind_ip = configured_ip
         else:
-            # UDP connect() can briefly block on odd network stacks; keep the
-            # event loop responsive by running the probe in the default executor.
-            loop = asyncio.get_running_loop()
-            self._bind_ip = await loop.run_in_executor(None, self._detect_ip)
+            # Reuse MA's shared primary-IP helper (threaded probe + ranked
+            # interface scan) instead of rolling our own.
+            ip_addresses = await get_ip_addresses()
+            self._bind_ip = ip_addresses[0] if ip_addresses else "0.0.0.0"
         self._base_port = int(
             self.config.get_value(CONF_HTTP_PORT) or DEFAULT_HTTP_PORT  # type: ignore[arg-type]
         )
@@ -609,17 +608,11 @@ class DLNAReceiverProvider(PluginProvider):
         self._elapsed_offset = 0
         self._ensure_metadata_task()
 
-        media = PlayerMedia(
-            uri=inst.current_stream_url,
-            media_type=MediaType.FLOW_STREAM,
-            title=meta.get("title"),
-            artist=meta.get("artist"),
-            album=meta.get("album"),
-            image_url=meta.get("image_url"),
-            duration=duration,
-            source_id=self.instance_id,
-        )
-        await self.mass.players.play_media(target, media)
+        # Route through the registered PluginSource so MA pulls bytes via
+        # our get_audio_stream() proxy instead of handing the raw upstream
+        # URI to the player (which would bypass the SSRF/redirect guards
+        # and fail on players that require MA to serve the stream).
+        await self.mass.players.select_source(target, self.instance_id)
 
     async def _on_pause(self, inst: RendererInstance) -> None:
         """Handle Pause for this instance's player."""
@@ -748,15 +741,3 @@ class DLNAReceiverProvider(PluginProvider):
         """
         namespace = uuid.uuid5(uuid.NAMESPACE_URL, UDN_NAMESPACE)
         return f"uuid:{uuid.uuid5(namespace, player_id or '__default__')}"
-
-    @staticmethod
-    def _detect_ip() -> str:
-        """Detect the primary LAN IP address."""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.connect(("8.8.8.8", 80))
-            ip: str = sock.getsockname()[0]
-            sock.close()
-            return ip
-        except Exception:
-            return "0.0.0.0"

@@ -203,6 +203,9 @@ class EventingManager:
         }
         sub.seq += 1
 
+        # UDA §4.1.2: CALLBACK lists URLs in preference order. Use the first
+        # one that actually accepts the NOTIFY (2xx); on HTTP errors or network
+        # failures, fall through to the next URL.
         for url in sub.callback_urls:
             try:
                 async with session.request(
@@ -217,9 +220,9 @@ class EventingManager:
                             url,
                             resp.status,
                         )
-                    else:
-                        LOGGER.debug("NOTIFY sent to %s (SEQ=%d)", url, sub.seq - 1)
-                    return  # success on first working callback
+                        continue
+                    LOGGER.debug("NOTIFY sent to %s (SEQ=%d)", url, sub.seq - 1)
+                    return
             except Exception:
                 LOGGER.debug("NOTIFY to %s failed, trying next callback", url)
 
