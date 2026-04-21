@@ -231,7 +231,7 @@ class LocalAudioPlayer(Player):
             raw = self._provider.config.get_value(
                 CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
             )
-            target = int(raw) if raw is not None else DEFAULT_HARDWARE_VOLUME_CEILING
+            target = int(raw) if isinstance(raw, (int, float, str)) else DEFAULT_HARDWARE_VOLUME_CEILING
         loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(
             None, self._set_pulse_volume, self._pa_sink_name, target
