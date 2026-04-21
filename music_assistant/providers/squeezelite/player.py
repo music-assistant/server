@@ -197,6 +197,12 @@ class SqueezelitePlayer(Player):
             category=CACHE_CATEGORY_PREV_STATE,
         )
 
+    async def power(self, powered: bool) -> None:
+        """Handle POWER command on the player."""
+        async with TaskManager(self.mass) as tg:
+            for client in self._get_sync_clients():
+                tg.create_task(client.power(powered))
+
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         self._plugin_source_active = False
