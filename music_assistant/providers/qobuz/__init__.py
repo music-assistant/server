@@ -804,6 +804,8 @@ class QobuzProvider(MusicProvider):
         """Login to qobuz and store the token."""
         if self._user_auth_info:
             return str(self._user_auth_info["user_auth_token"])
+        # TODO: move credentials from query string to POST body to remove the
+        # residual exposure via HTTP session tracing / upstream proxy logs.
         params: dict[str, Any] = {
             "username": self.config.get_value(CONF_USERNAME),
             "password": self.config.get_value(CONF_PASSWORD),
@@ -896,6 +898,13 @@ class QobuzProvider(MusicProvider):
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
+            # raise_for_status on 401 embeds the request URL in the exception message;
+            # on /user/login that URL carries the username/password query params.
+            if response.status == 401:
+                if endpoint == "user/login":
+                    raise LoginFailed("Invalid Qobuz credentials")
+                self._user_auth_info = None
+                raise LoginFailed("Qobuz session expired")
             response.raise_for_status()
             try:
                 return cast("dict[str, Any]", await response.json(loads=json_loads))
@@ -941,6 +950,11 @@ class QobuzProvider(MusicProvider):
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
+            # raise_for_status on 401 embeds the request URL in the exception message,
+            # which carries the user_auth_token as a query param.
+            if response.status == 401:
+                self._user_auth_info = None
+                raise LoginFailed("Qobuz session expired")
             response.raise_for_status()
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 
