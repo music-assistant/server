@@ -44,7 +44,7 @@ liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.11.0
 mashumaro==3.20
-music-assistant-frontend==2.17.150
+music-assistant-frontend==2.17.151
 music-assistant-models==1.1.115
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post1
