@@ -16,5 +16,8 @@
       "name": "music_assistant_models",
       "depth": 2
     }
-  ]
+  ],
+  "files.associations": {
+    "*.yaml": "home-assistant"
+  }
 }
