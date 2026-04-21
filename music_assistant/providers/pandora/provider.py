@@ -81,7 +81,6 @@ class PandoraStationSession:
         """
         self.station_id = station_id
         self.last_track_started: bool = False
-        self.playback_started: bool = False
         self.fragments: list[list[dict[str, Any]]] = []
         self.last_accessed = time.time()
 
@@ -214,8 +213,8 @@ class PandoraProvider(MusicProvider):
                         # Auth token expired, re-authenticate and retry once
                         username = str(self.config.get_value(CONF_USERNAME))
                         password = str(self.config.get_value(CONF_PASSWORD))
-                        await self._authenticate(username, password)
                         self._auth_token = None
+                        await self._authenticate(username, password)
                         return await self._api_request(
                             method,
                             url,
@@ -313,9 +312,9 @@ class PandoraProvider(MusicProvider):
             yield self._parse_station(station)
 
     def _find_track(self, prov_track_id: str) -> dict[str, Any]:
-        """Get track in the station fragments from provider track_id."""
+        """Find track in all station fragments from provider track_id."""
         station_id, track_id = prov_track_id.split("_")
-        session = self._sessions[station_id]
+        session = self._get_or_create_session(station_id)
         for tracks in session.fragments[::-1]:
             for track in tracks:
                 if track.get("musicId") == track_id:
@@ -351,7 +350,7 @@ class PandoraProvider(MusicProvider):
         async for station in self._get_stations():
             self.logger.warning(f"{station.item_id}")
             if station.item_id == prov_playlist_id:
-                self.logger.warning(f"returning {station.name} {station.is_dynamic}")
+                self.logger.warning(f"returning playlist station {station.name}")
                 return station
         return self._parse_station({"stationId": prov_playlist_id})
 
@@ -364,11 +363,7 @@ class PandoraProvider(MusicProvider):
         self.logger.warning(
             f"getting tracks for {station_id} -- {len(session.fragments)} {session.last_track_started}"
         )
-        if (
-            len(session.fragments) == 0
-            or session.playback_started is False
-            or session.last_track_started
-        ):
+        if len(session.fragments) == 0 or session.last_track_started:
             await self._get_fragment_data(session, len(session.fragments))
             if tracks := session.fragments[-1]:
                 return [self._parse_track(track) for track in tracks]
@@ -485,20 +480,37 @@ class PandoraProvider(MusicProvider):
             )
         return None
 
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        for player in self.mass.players.all_players(return_disabled=True):
+            items = self.mass.player_queues.items(player.player_id)
+            self.logger.warning(f"player {player.provider_id}, {player.player_id} {len(items)}")
+            if items:
+                item = items[-1]
+                if item.media_item:
+                    self.logger.warning(f"item {item.media_item.provider}, {item.media_item.name}")
+                    if self._find_track(item.media_item.item_id) == {}:
+                        self.logger.warning(f"please clear this queue {item.queue_id}")
+                        self.mass.player_queues.clear(item.queue_id)
+
     async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         station_id, track_id = prov_item_id.split("_")
-        session = self._sessions[station_id]
+        session = self._get_or_create_session(station_id)
         url = None
-        if tracks := session.fragments[-1]:
-            for i, track in enumerate(tracks):
-                if track.get("musicId") == track_id:
-                    url = track.get("audioURL")
-                    break
-        session.playback_started = True
-        session.last_track_started = i >= 3
+        if session.fragments:
+            if tracks := session.fragments[-1]:
+                for i, track in enumerate(tracks):
+                    if track.get("musicId") == track_id:
+                        url = track.get("audioURL")
+                        break
+            # we have started streaming the last song in the fragment.
+            session.last_track_started = i >= 3
+            self.logger.warning(f"Playing {track.get('songTitle')} {session.last_track_started}")
+        if url is None:
+            raise MediaNotFoundError("No stream URL found for song.")
 
-        self.logger.warning(f"Playing {track.get('songTitle')} {session.last_track_started}")
         return StreamDetails(
             provider=self.instance_id,
             item_id=prov_item_id,
