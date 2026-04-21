@@ -2625,7 +2625,7 @@ class PlayerQueuesController(CoreController):
         ):
             preferred_provider_instances = playback_user.provider_filter
 
-        available_base_tracks: list[Track] = queue_track_items
+        available_base_tracks: list[Track] = []
         base_track_sample_size = 5
         # Some providers have very deterministic similar track algorithms when providing
         # a single track item. When we have a radio mode based on 1 track and we have to

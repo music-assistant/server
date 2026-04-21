@@ -323,22 +323,18 @@ class PandoraProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        self.logger.warning(f"get track {prov_track_id}")
         if track := self._find_track(prov_track_id):
-            self.logger.warning(f"returning {track.get('songTitle')}")
             return self._parse_track(track)
         raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
     async def get_artist(self, artist_name: str) -> Artist:
         """Get artist details from just artist_name."""
-        self.logger.warning(f"find artist for {artist_name}")
         if artist := self._parse_artist(artist_name):
             return artist
         raise MediaNotFoundError(f"Artist {artist_name} not found")
 
     async def get_album(self, prov_track_id: str) -> Album:
         """Get Album from provider track_id."""
-        self.logger.warning(f"find album for {prov_track_id}")
         if track := self._find_track(prov_track_id):
             if album := self._parse_album(track, prov_track_id):
                 return album
@@ -348,7 +344,6 @@ class PandoraProvider(MusicProvider):
         """Get full playlist details by id."""
         self.logger.warning(f"get playlist {prov_playlist_id}")
         async for station in self._get_stations():
-            self.logger.warning(f"{station.item_id}")
             if station.item_id == prov_playlist_id:
                 self.logger.warning(f"returning playlist station {station.name}")
                 return station
