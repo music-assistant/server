@@ -297,10 +297,13 @@ class SendspinLocalAudioBridge:
                 self.bit_depth,
             )
             assert self.pa_sink_name is not None  # guarded by Linux-only call path
+            pa_sink_name = (
+                self.pa_sink_name
+            )  # capture for lambda — assert doesn't narrow closures
             stream = await self.mass.loop.run_in_executor(
                 None,
-                lambda: PASimpleStream(  # type: ignore[name-defined]
-                    sink_name=self.pa_sink_name,
+                lambda: PASimpleStream(
+                    sink_name=pa_sink_name,
                     app_name="music-assistant",
                     rate=self.sample_rate,
                     channels=BRIDGE_CHANNELS,
@@ -538,7 +541,7 @@ class LocalAudioBridgeManager:
                 dev_with_index["index"] = idx
                 devices.append(dev_with_index)
             return devices
-        return enumerate_pa_sinks()  # type: ignore[name-defined]
+        return enumerate_pa_sinks()
 
     async def stop_all(self) -> None:
         """Stop all Sendspin bridges."""
