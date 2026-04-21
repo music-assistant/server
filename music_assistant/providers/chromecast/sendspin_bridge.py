@@ -623,7 +623,10 @@ class SendspinBridgeManager:
         async with self._lock:
             if bridge := self._bridges.pop(cast_player_id, None):
                 await bridge.stop()
-            self._claimed_clients.pop(cast_player_id, None)
+            claimed_client_id = self._claimed_clients.pop(cast_player_id, None)
+            if claimed_client_id and (unsub := self._rebridge_unsubs.pop(claimed_client_id, None)):
+                with suppress(Exception):
+                    unsub()
 
             self.logger.debug("Sendspin bridge removed for Chromecast player %s", cast_player_id)
 
