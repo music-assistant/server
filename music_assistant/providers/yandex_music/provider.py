@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
+from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -36,6 +36,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.streamdetails import StreamDetails
 from PIL import Image as PilImage
 from ya_passport_auth import SecretStr
 
@@ -103,7 +104,6 @@ from .parsers import (
 from .streaming import YandexMusicStreamingManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.streamdetails import StreamDetails
     from yandex_music import Album as YandexAlbum
 
 
@@ -2663,36 +2663,140 @@ class YandexMusicProvider(MusicProvider):
     async def get_stream_details(
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
-        """Get stream details for a track or podcast episode.
+        """Get stream details for a track, podcast episode, or audiobook.
 
         A podcast episode is a track underneath the Yandex API, so it flows
-        through the same streaming path. Audiobook streaming as a single
-        entity is not implemented (Phase 2).
+        through the same per-track streaming path. An audiobook is an album
+        with multiple tracks (chapters) — returned as a CUSTOM stream whose
+        generator concatenates each chapter's bytes in order.
 
-        :param item_id: The track / episode ID (or track_id@station_id for My Wave).
+        :param item_id: The track / episode ID (or track_id@station_id for My Wave),
+            or the audiobook (album) ID when ``media_type`` is AUDIOBOOK.
         :param media_type: The media type.
-        :return: StreamDetails for the track.
+        :return: StreamDetails for the item.
         """
         if media_type == MediaType.AUDIOBOOK:
-            raise NotImplementedError(
-                "Audiobook streaming is not yet supported by the Yandex Music provider"
-            )
+            return await self._get_audiobook_stream_details(item_id)
         return await self.streaming.get_stream_details(item_id)
+
+    async def _get_audiobook_stream_details(self, audiobook_id: str) -> StreamDetails:
+        """Build StreamDetails for an audiobook as a chapter-concatenated CUSTOM stream.
+
+        Loads the album's tracks, uses the first chapter to establish the audio
+        format, and stores the per-chapter track-IDs + durations in ``data`` so
+        ``get_audio_stream`` can iterate them. Seek across chapter boundaries is
+        handled via ``seek_position`` in ``get_audio_stream``; in-chapter seek is
+        disabled (Yandex per-chapter seekability varies by codec).
+        """
+        album = await self.client.get_album_with_tracks(audiobook_id)
+        if not album or not (album.volumes or []):
+            raise MediaNotFoundError(f"Audiobook {audiobook_id} has no chapters")
+
+        chapter_ids: list[str] = []
+        chapter_durations_ms: list[int] = []
+        for disc in album.volumes or []:
+            for track_obj in disc:
+                chapter_ids.append(str(track_obj.id))
+                chapter_durations_ms.append(int(track_obj.duration_ms or 0))
+        if not chapter_ids:
+            raise MediaNotFoundError(f"Audiobook {audiobook_id} has no chapters")
+
+        # Resolve first-chapter format so MA/ffmpeg know what it's decoding
+        first = await self.streaming.get_stream_details(chapter_ids[0])
+        total_duration = sum(chapter_durations_ms) // 1000
+
+        return StreamDetails(
+            item_id=audiobook_id,
+            provider=self.instance_id,
+            media_type=MediaType.AUDIOBOOK,
+            audio_format=first.audio_format,
+            stream_type=StreamType.CUSTOM,
+            duration=total_duration,
+            data={
+                "chapter_ids": chapter_ids,
+                "chapter_durations_ms": chapter_durations_ms,
+            },
+            can_seek=False,
+            allow_seek=True,
+        )
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item.
 
-        Uses windowed Range-request streaming to prevent Yandex CDN drops.
-        Handles both raw (direct) and encrypted (encraw) transports.
+        For tracks and podcast episodes, streams via windowed Range requests
+        (raw or AES-CTR encrypted). For audiobooks, iterates chapters: each
+        chapter's bytes are streamed through the per-track path and concatenated.
 
         :param streamdetails: Stream details with URL and optional decryption key.
         :param seek_position: Seek position in seconds (handled by provider for raw transport).
         :return: Async generator yielding audio chunks.
         """
+        data = streamdetails.data if isinstance(streamdetails.data, dict) else None
+        if streamdetails.media_type == MediaType.AUDIOBOOK and data and "chapter_ids" in data:
+            async for chunk in self._stream_audiobook_chapters(data, seek_position):
+                yield chunk
+            return
         async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
             yield chunk
+
+    async def _stream_audiobook_chapters(
+        self, data: dict[str, Any], seek_position: int
+    ) -> AsyncGenerator[bytes, None]:
+        """Concatenate per-chapter streams of an audiobook.
+
+        Translates ``seek_position`` into (start_chapter, in_chapter_offset) and
+        delegates each chapter to the per-track streaming path. Subsequent
+        chapters start at offset 0.
+        """
+        chapter_ids: list[str] = list(data.get("chapter_ids") or [])
+        chapter_durations_ms: list[int] = list(data.get("chapter_durations_ms") or [])
+        if not chapter_ids:
+            return
+
+        start_idx = 0
+        chapter_seek = 0
+        if seek_position > 0 and chapter_durations_ms:
+            accumulated_ms = 0
+            seek_ms = seek_position * 1000
+            for idx, dur_ms in enumerate(chapter_durations_ms):
+                if accumulated_ms + dur_ms > seek_ms:
+                    start_idx = idx
+                    chapter_seek = (seek_ms - accumulated_ms) // 1000
+                    break
+                accumulated_ms += dur_ms
+            else:
+                # seek past end of audiobook — start at last chapter
+                start_idx = len(chapter_ids) - 1
+                chapter_seek = 0
+
+        for idx in range(start_idx, len(chapter_ids)):
+            chapter_id = chapter_ids[idx]
+            offset = chapter_seek if idx == start_idx else 0
+            try:
+                chapter_details = await self.streaming.get_stream_details(chapter_id)
+            except Exception as err:
+                self.logger.warning(
+                    "Audiobook chapter %d (%s) stream-details failed: %s",
+                    idx + 1,
+                    chapter_id,
+                    err,
+                )
+                continue
+            try:
+                async for chunk in self.streaming.get_audio_stream(chapter_details, offset):
+                    yield chunk
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                self.logger.warning(
+                    "Audiobook chapter %d (%s) stream failed mid-play: %s",
+                    idx + 1,
+                    chapter_id,
+                    err,
+                )
+                continue
 
     async def get_rotor_station_tracks(
         self, station_id: str, queue: str | int | None = None
