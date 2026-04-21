@@ -225,28 +225,51 @@ class QobuzProvider(MusicProvider):
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="artists", type="artists"):
             if item and item["id"]:
-                yield self._parse_artist(item)
+                artist = self._parse_artist(item)
+                if favorited_at := item.get("favorited_at"):
+                    artist.date_added = datetime.datetime.fromtimestamp(
+                        favorited_at, tz=datetime.UTC
+                    )
+                yield artist
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="albums", type="albums"):
             if item and item["id"]:
-                yield await self._parse_album(item)
+                album = await self._parse_album(item)
+                if favorited_at := item.get("favorited_at"):
+                    album.date_added = datetime.datetime.fromtimestamp(
+                        favorited_at, tz=datetime.UTC
+                    )
+                yield album
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="tracks", type="tracks"):
             if item and item["id"]:
-                yield await self._parse_track(item)
+                track = await self._parse_track(item)
+                if favorited_at := item.get("favorited_at"):
+                    track.date_added = datetime.datetime.fromtimestamp(
+                        favorited_at, tz=datetime.UTC
+                    )
+                yield track
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
         for item in await self._get_all_items(endpoint, key="playlists"):
             if item and item["id"]:
-                yield self._parse_playlist(item)
+                playlist = self._parse_playlist(item)
+                # subscribed_at for playlists the user subscribed to, created_at
+                # for playlists the user owns
+                timestamp = item.get("subscribed_at") or item.get("created_at")
+                if timestamp:
+                    playlist.date_added = datetime.datetime.fromtimestamp(
+                        timestamp, tz=datetime.UTC
+                    )
+                yield playlist
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
