@@ -32,8 +32,6 @@ if sys.platform == "linux":
 if TYPE_CHECKING:
     import sounddevice as sd  # noqa: F401
 
-    if sys.platform == "linux":
-        from .pa_simple import PASimpleStream, enumerate_pa_sinks
     from aiosendspin.server import (
         ExternalStreamStartRequest,
         SendspinClient,
@@ -301,7 +299,7 @@ class SendspinLocalAudioBridge:
             assert self.pa_sink_name is not None  # guarded by Linux-only call path
             stream = await self.mass.loop.run_in_executor(
                 None,
-                lambda: PASimpleStream(
+                lambda: PASimpleStream(  # type: ignore[name-defined]
                     sink_name=self.pa_sink_name,
                     app_name="music-assistant",
                     rate=self.sample_rate,
@@ -540,7 +538,7 @@ class LocalAudioBridgeManager:
                 dev_with_index["index"] = idx
                 devices.append(dev_with_index)
             return devices
-        return enumerate_pa_sinks()
+        return enumerate_pa_sinks()  # type: ignore[name-defined]
 
     async def stop_all(self) -> None:
         """Stop all Sendspin bridges."""
