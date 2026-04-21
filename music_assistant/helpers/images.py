@@ -100,6 +100,20 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
     return None
 
 
+def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
+    """Rewrite a public-webserver imageproxy URL to the internal streams server.
+
+    :param mass: The MusicAssistant instance.
+    :param url: Image URL as produced for frontend/API consumers.
+    """
+    if not url:
+        return url
+    webserver_base = mass.webserver.base_url
+    if webserver_base and url.startswith(f"{webserver_base}/imageproxy?"):
+        return mass.streams.base_url + url[len(webserver_base) :]
+    return url
+
+
 async def get_image_data(
     mass: MusicAssistant, path_or_url: str, provider: str, *, _depth: int = 0
 ) -> bytes:
