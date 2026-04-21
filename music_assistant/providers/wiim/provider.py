@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import ClientSession, TCPConnector
 from music_assistant_models.enums import IdentifierType
 from wiim import WiimController
 from wiim.discovery import async_create_wiim_device, verify_wiim_device
@@ -37,13 +36,10 @@ class WiimProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("wiim").setLevel(logging.DEBUG)
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
         else:
             logging.getLogger("wiim").setLevel(self.logger.level + 10)
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
 
-        self.wiim_session = ClientSession(connector=TCPConnector(ssl=False))
-        self.wiim_controller = WiimController(self.wiim_session)
+        self.wiim_controller = WiimController(self.mass.http_session_no_ssl)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -63,7 +59,7 @@ class WiimProvider(PlayerProvider):
             matched_location = None
             upnp_device = None
             for location in potential_locations:
-                upnp_device = await verify_wiim_device(location, self.wiim_session)
+                upnp_device = await verify_wiim_device(location, self.mass.http_session_no_ssl)
                 if upnp_device:
                     matched_location = location
                     break
@@ -73,10 +69,6 @@ class WiimProvider(PlayerProvider):
 
             player_id = f"{PLAYER_ID_PREFIX}{upnp_device.udn}"
             await self.try_add_player(player_id, stripped_ip_address, "Unknown", matched_location)
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        await self.wiim_session.close()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -122,7 +114,7 @@ class WiimProvider(PlayerProvider):
         matched_location = None
         upnp_device = None
         for location in potential_locations:
-            upnp_device = await verify_wiim_device(location, self.wiim_session)
+            upnp_device = await verify_wiim_device(location, self.mass.http_session_no_ssl)
             if upnp_device:
                 matched_location = location
                 break
@@ -163,7 +155,7 @@ class WiimProvider(PlayerProvider):
         try:
             wiim_dev = await async_create_wiim_device(
                 upnp_location,
-                self.wiim_session,
+                self.mass.http_session_no_ssl,
                 host=ip_address,
                 local_host=str(self.mass.streams.publish_ip),
                 polling_interval=60,
