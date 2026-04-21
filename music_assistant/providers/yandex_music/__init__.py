@@ -87,6 +87,9 @@ async def get_config_entries(
             values[CONF_X_TOKEN] = x_token
         else:
             values[CONF_X_TOKEN] = None
+        # QR flow never yields a refresh_token — clear any stale one from a
+        # prior device-flow login so we don't leave dead credentials behind
+        values[CONF_REFRESH_TOKEN] = None
 
     # Handle Device Flow auth action (yields x_token + refresh_token,
     # so we get silent auto-refresh on music-token AND x_token expiry)
