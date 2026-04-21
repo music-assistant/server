@@ -21,11 +21,15 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemChapter,
     MediaItemImage,
     MediaItemType,
     Playlist,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     RecommendationFolder,
     SearchResults,
@@ -86,16 +90,21 @@ from .parsers import (
     _get_image_url as get_image_url,
 )
 from .parsers import (
+    classify_album,
     get_canonical_provider_name,
     parse_album,
     parse_artist,
+    parse_audiobook,
     parse_playlist,
+    parse_podcast,
+    parse_podcast_episode,
     parse_track,
 )
 from .streaming import YandexMusicStreamingManager
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
+    from yandex_music import Album as YandexAlbum
 
 
 def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
@@ -137,6 +146,10 @@ class YandexMusicProvider(MusicProvider):
     _my_wave_lock: asyncio.Lock  # Protects My Wave mutable state
     _wave_states: dict[str, _WaveState]  # Per-station state for tagged wave stations
     _wave_bg_colors: dict[str, str]  # image_url -> hex bg color for transparent covers
+    # Short-lived cache to dedupe the three library syncs (albums/podcasts/audiobooks)
+    # that all derive from the same liked-albums endpoint.
+    _liked_albums_cache: tuple[float, list[YandexAlbum]] | None = None
+    _liked_albums_lock: asyncio.Lock
 
     @property
     def client(self) -> YandexMusicClient:
@@ -272,6 +285,8 @@ class YandexMusicProvider(MusicProvider):
         # Initialize per-station wave state dict
         self._wave_states = {}
         self._wave_bg_colors = {}
+        self._liked_albums_lock = asyncio.Lock()
+        self._liked_albums_cache = None
         self.logger.info("Successfully connected to Yandex Music")
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -1512,6 +1527,7 @@ class YandexMusicProvider(MusicProvider):
             MediaType.ALBUM: "album",
             MediaType.ARTIST: "artist",
             MediaType.PLAYLIST: "playlist",
+            MediaType.PODCAST: "podcast",
         }
         requested_types = [type_mapping[mt] for mt in media_types if mt in type_mapping]
 
@@ -1554,6 +1570,15 @@ class YandexMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing playlist: %s", err)
 
+        # Parse podcasts (Yandex returns them as albums under .podcasts)
+        podcasts_node = getattr(search_result, "podcasts", None)
+        if MediaType.PODCAST in media_types and podcasts_node:
+            for album in podcasts_node.results[:limit]:
+                try:
+                    result.podcasts = [*result.podcasts, parse_podcast(self, album)]
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing podcast: %s", err)
+
         return result
 
     # Get single items
@@ -1586,6 +1611,87 @@ class YandexMusicProvider(MusicProvider):
         if not album:
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return parse_album(self, album)
+
+    @use_cache(3600 * 24)
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get podcast details by ID (backed by a Yandex album).
+
+        :param prov_podcast_id: The provider podcast (album) ID.
+        :return: Podcast object.
+        :raises MediaNotFoundError: If not found.
+        """
+        album = await self.client.get_album(prov_podcast_id)
+        if not album:
+            raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
+        return parse_podcast(self, album)
+
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
+        """Iterate podcast episodes for a given podcast (album) ID."""
+        album = await self.client.get_album_with_tracks(prov_podcast_id)
+        if not album:
+            raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
+        podcast = parse_podcast(self, album)
+        position = 1
+        for disc in album.volumes or []:
+            for track_obj in disc:
+                try:
+                    yield parse_podcast_episode(self, track_obj, podcast, position=position)
+                except InvalidDataError as err:
+                    self.logger.debug("Error parsing podcast episode: %s", err)
+                position += 1
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get a single podcast episode by ID.
+
+        The parent Podcast is reconstructed from the track's parent album. If
+        the album isn't present on the track, the episode cannot be converted
+        into a valid MA model and InvalidDataError is raised.
+        """
+        tracks = await self.client.get_tracks([prov_episode_id])
+        if not tracks:
+            raise MediaNotFoundError(f"Podcast episode {prov_episode_id} not found")
+        track_obj = tracks[0]
+        if not track_obj.albums:
+            raise InvalidDataError(
+                f"Podcast episode {prov_episode_id} is missing parent podcast album data"
+            )
+        podcast = parse_podcast(self, track_obj.albums[0])
+        return parse_podcast_episode(self, track_obj, podcast, position=0)
+
+    @use_cache(3600 * 24)
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get audiobook details by ID, including chapters built from tracks.
+
+        :param prov_audiobook_id: The provider audiobook (album) ID.
+        :return: Audiobook object.
+        :raises MediaNotFoundError: If not found.
+        """
+        album = await self.client.get_album_with_tracks(prov_audiobook_id)
+        if not album:
+            raise MediaNotFoundError(f"Audiobook {prov_audiobook_id} not found")
+        audiobook = parse_audiobook(self, album)
+
+        chapters: list[MediaItemChapter] = []
+        start = 0.0
+        pos = 1
+        for disc in album.volumes or []:
+            for track_obj in disc:
+                dur_s = (track_obj.duration_ms or 0) / 1000.0
+                chapters.append(
+                    MediaItemChapter(
+                        position=pos,
+                        name=track_obj.title or f"Chapter {pos}",
+                        start=start,
+                        end=start + dur_s,
+                    )
+                )
+                start += dur_s
+                pos += 1
+        audiobook.metadata.chapters = chapters
+        audiobook.duration = int(start)
+        return audiobook
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details by ID.
@@ -2401,15 +2507,58 @@ class YandexMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library artist: %s", err)
 
+    async def _get_liked_albums_cached(self, ttl: float = 30.0) -> list[YandexAlbum]:
+        """Return liked albums with a short in-process TTL cache + lock.
+
+        Albums, podcasts and audiobooks are all derived from the same
+        ``users/{uid}/likes/albums`` endpoint, so a full library sync would
+        otherwise trigger three sequential (or concurrent) identical calls.
+        The lock serializes refreshes so only one request hits the API when
+        multiple library syncs start together.
+        """
+        async with self._liked_albums_lock:
+            now = asyncio.get_running_loop().time()
+            if self._liked_albums_cache is not None:
+                cached_at, cached = self._liked_albums_cache
+                if now - cached_at < ttl:
+                    return cached
+            albums = await self.client.get_liked_albums(batch_size=TRACK_BATCH_SIZE)
+            self._liked_albums_cache = (now, albums)
+            return albums
+
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve library albums from Yandex Music."""
-        batch_size = TRACK_BATCH_SIZE
-        albums = await self.client.get_liked_albums(batch_size=batch_size)
-        for album in albums:
+        """Retrieve library albums from Yandex Music.
+
+        Excludes entries classified as podcasts or audiobooks so they don't
+        duplicate into the Albums library view.
+        """
+        for album in await self._get_liked_albums_cached():
+            if classify_album(album) != "music":
+                continue
             try:
                 yield parse_album(self, album)
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library album: %s", err)
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+        """Retrieve library podcasts from Yandex Music (filtered liked albums)."""
+        for album in await self._get_liked_albums_cached():
+            if classify_album(album) != "podcast":
+                continue
+            try:
+                yield parse_podcast(self, album)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library podcast: %s", err)
+
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+        """Retrieve library audiobooks from Yandex Music (filtered liked albums)."""
+        for album in await self._get_liked_albums_cached():
+            if classify_album(album) != "audiobook":
+                continue
+            try:
+                yield parse_audiobook(self, album)
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing library audiobook: %s", err)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Yandex Music."""
@@ -2472,7 +2621,7 @@ class YandexMusicProvider(MusicProvider):
 
         if item.media_type == MediaType.TRACK:
             return await self.client.like_track(track_id)
-        if item.media_type == MediaType.ALBUM:
+        if item.media_type in (MediaType.ALBUM, MediaType.PODCAST, MediaType.AUDIOBOOK):
             return await self.client.like_album(prov_item_id)
         if item.media_type == MediaType.ARTIST:
             return await self.client.like_artist(prov_item_id)
@@ -2488,7 +2637,7 @@ class YandexMusicProvider(MusicProvider):
         track_id, _ = _parse_radio_item_id(prov_item_id)
         if media_type == MediaType.TRACK:
             return await self.client.unlike_track(track_id)
-        if media_type == MediaType.ALBUM:
+        if media_type in (MediaType.ALBUM, MediaType.PODCAST, MediaType.AUDIOBOOK):
             return await self.client.unlike_album(prov_item_id)
         if media_type == MediaType.ARTIST:
             return await self.client.unlike_artist(prov_item_id)
@@ -2506,12 +2655,20 @@ class YandexMusicProvider(MusicProvider):
     async def get_stream_details(
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
-        """Get stream details for a track.
+        """Get stream details for a track or podcast episode.
 
-        :param item_id: The track ID (or track_id@station_id for My Wave).
-        :param media_type: The media type (should be TRACK).
+        A podcast episode is a track underneath the Yandex API, so it flows
+        through the same streaming path. Audiobook streaming as a single
+        entity is not implemented (Phase 2).
+
+        :param item_id: The track / episode ID (or track_id@station_id for My Wave).
+        :param media_type: The media type.
         :return: StreamDetails for the track.
         """
+        if media_type == MediaType.AUDIOBOOK:
+            raise NotImplementedError(
+                "Audiobook streaming is not yet supported by the Yandex Music provider"
+            )
         return await self.streaming.get_stream_details(item_id)
 
     async def get_audio_stream(

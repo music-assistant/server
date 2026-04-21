@@ -610,9 +610,11 @@ class YandexMusicClient:
             return await self._call_with_retry(
                 lambda c: c.albums_with_tracks(
                     album_id,
-                    resumeStream=True,
-                    richTracks=True,
-                    withListeningFinished=True,
+                    params={
+                        "resumeStream": "true",
+                        "richTracks": "true",
+                        "withListeningFinished": "true",
+                    },
                 )
             )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
