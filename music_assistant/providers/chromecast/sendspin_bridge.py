@@ -578,7 +578,7 @@ class SendspinBridgeManager:
                 sendspin_provider = self.sendspin_provider
                 if sendspin_provider is not None:
                     bridge_hello = _build_bridge_hello(cast_player, existing_client_id)
-                    sendspin_provider.apply_bridge_claim(
+                    await sendspin_provider.apply_bridge_claim(
                         existing_client_id,
                         {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)},
                         bridge_hello,

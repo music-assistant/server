@@ -131,7 +131,7 @@ class SendspinProvider(PlayerProvider):
         """
         self._bridge_player_types[client_id] = player_type
 
-    def apply_bridge_claim(
+    async def apply_bridge_claim(
         self,
         client_id: str,
         identifiers: dict[IdentifierType, str],
@@ -184,7 +184,7 @@ class SendspinProvider(PlayerProvider):
             player.display_name,
             client_id,
         )
-        self.mass.players.trigger_player_update(client_id, force_update=True)
+        await self.mass.players.register_or_update(player)
         return True
 
     async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
