@@ -1569,7 +1569,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for _ in range(100):
             payload = await self._client.get(
                 "/artist/sublist",
-                params={"limit": limit, "offset": offset},
+                params={"limit": limit, "offset": offset, "cookie": self._cookie},
                 cookie=self._cookie,
             )
             data = _extract_data(payload)
@@ -1593,7 +1593,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         for _ in range(100):
             payload = await self._client.get(
                 "/album/sublist",
-                params={"limit": limit, "offset": offset},
+                params={"limit": limit, "offset": offset, "cookie": self._cookie},
                 cookie=self._cookie,
             )
             data = _extract_data(payload)
@@ -1614,7 +1614,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """Retrieve liked tracks from NCM."""
         payload = await self._client.get(
             "/likelist",
-            params={"uid": self._uid},
+            params={"uid": self._uid, "cookie": self._cookie},
             cookie=self._cookie,
         )
         data = _extract_data(payload)
@@ -1634,7 +1634,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         """Retrieve user playlists from NCM."""
         payload = await self._client.get(
             "/user/playlist",
-            params={"uid": self._uid, "limit": 1000, "offset": 0},
+            params={"uid": self._uid, "limit": 1000, "offset": 0, "cookie": self._cookie},
             cookie=self._cookie,
         )
         data = _extract_data(payload)
