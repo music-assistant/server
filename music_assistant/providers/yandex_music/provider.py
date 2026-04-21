@@ -190,6 +190,14 @@ class YandexMusicProvider(MusicProvider):
             new_creds = await refresh_credentials_via_passport(
                 SecretStr(x_token), SecretStr(refresh_token)
             )
+        except ResourceTemporarilyUnavailable as err2:
+            # Transient Passport failure — keep creds, let MA retry later
+            self.logger.warning(
+                "Credential refresh temporarily unavailable: %s", type(err2).__name__
+            )
+            raise ProviderUnavailableError(
+                "Unable to refresh credentials right now. Please try again later."
+            ) from err2
         except LoginFailed as err2:
             self.logger.warning("Session and refresh tokens are both expired")
             self._update_config_value(CONF_TOKEN, None, encrypted=True)
