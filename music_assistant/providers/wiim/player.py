@@ -357,7 +357,7 @@ class WiimPlayer(Player):
             elif device_uri.startswith("spotify:"):
                 self._attr_active_source = SOURCE_SPOTIFY
             else:
-                self._attr_active_source = None
+                self._attr_active_source = self.player_id
         else:
             self._attr_active_source = None
 
