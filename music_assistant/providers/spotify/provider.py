@@ -18,7 +18,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     AudioError,
-    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -634,25 +633,18 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400 * 14)  # 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
-        return [
-            parse_album(item, self)
-            async for item in self._get_all_items(
-                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation", limit=10
-            )
-            if (item and item["id"])
-        ]
-
-    @use_cache(86400 * 14)  # 14 days
-    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of 10 most popular tracks for the given artist."""
-        artist = await self.get_artist(prov_artist_id)
-        endpoint = f"artists/{prov_artist_id}/top-tracks"
-        items = await self._get_data(endpoint)
-        return [
-            parse_track(item, self, artist=artist)
-            for item in items["tracks"]
-            if (item and item["id"])
-        ]
+        try:
+            return [
+                parse_album(item, self)
+                async for item in self._get_all_items(
+                    f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation",
+                    limit=10,
+                )
+                if (item and item["id"])
+            ]
+        except MediaNotFoundError:
+            self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
+            return []
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -1226,9 +1218,7 @@ class SpotifyProvider(MusicProvider):
                     message,
                 )
 
-                if response.status == 404:
-                    raise MediaNotFoundError(f"{endpoint} not found")
-                raise InvalidDataError(f"An error occurred for endpoint: {endpoint}")
+                raise MediaNotFoundError(f"{endpoint} not found")
 
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)
