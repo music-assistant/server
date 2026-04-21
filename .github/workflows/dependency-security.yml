@@ -51,9 +51,14 @@ jobs:
           python-version-file: ".python-version"
           check-latest: true
 
-      - name: Install security tools
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install requirements for audit
+        # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
         run: |
-          pip install pip-audit
+          uv venv
+          uv pip install --index-strategy unsafe-best-match -r requirements_all.txt pip-audit
 
       # Step 1: Verify requirements_all.txt is in sync
       - name: Check requirements_all.txt sync
@@ -82,14 +87,14 @@ jobs:
           fi
 
       # Step 2: Run pip-audit for known vulnerabilities
-      - name: Run pip-audit on all requirements
+      - name: Run pip-audit on installed environment
         id: pip_audit
         continue-on-error: true
         run: |
           echo "## 🔍 Vulnerability Scan Results" > audit_report.md
           echo "" >> audit_report.md
 
-          if pip-audit -r requirements_all.txt --desc --format=markdown >> audit_report.md 2>&1; then
+          if .venv/bin/pip-audit --desc --format=markdown >> audit_report.md 2>&1; then
             echo "status=pass" >> $GITHUB_OUTPUT
             echo "✅ No known vulnerabilities found" >> audit_report.md
           else
