@@ -1281,7 +1281,7 @@ class PlayerQueuesController(CoreController):
 
         # clear queue if needed
         if option == QueueOption.REPLACE:
-            self.clear(queue_id)
+            self.clear(queue_id, skip_stop=True)
         # Clear the 'enqueued media item' list when a new queue is requested
         if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue.enqueued_media_items.clear()
