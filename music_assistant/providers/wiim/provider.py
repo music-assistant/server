@@ -76,15 +76,6 @@ class WiimProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        for player in self.players:
-            wiim_player = cast("WiimPlayer", player)
-            try:
-                self.logger.debug("Unloading player %s", wiim_player.name)
-                await self.wiim_controller.remove_device(wiim_player.device.udn)
-                await wiim_player.device.disconnect()
-                await self.mass.players.unregister(wiim_player.player_id)
-            except Exception:
-                self.logger.exception("Error unloading player %s", wiim_player.name)
         await self.wiim_session.close()
 
     async def on_mdns_service_state_change(
@@ -109,6 +100,9 @@ class WiimProvider(PlayerProvider):
 
         # Check for existing player before hitting the network
         if wiim_player_id and (mass_player := self.mass.players.get_player(wiim_player_id)):
+            assert isinstance(mass_player, WiimPlayer), (
+                "Player ID already exists but is not a WiimPlayer"
+            )
             if cur_address and cur_address != mass_player.device_info.ip_address:
                 self.logger.debug(
                     "Address updated to %s for player %s", cur_address, mass_player.display_name

@@ -110,7 +110,12 @@ class WiimPlayer(Player):
         self.device.av_transport_event_callback = None
         self.device.rendering_control_event_callback = None
         self.device.play_queue_event_callback = None
-        self.logger.debug("Player %s unloaded, callbacks cleared", self.name)
+        try:
+            await self._wiim_controller.remove_device(self.device.udn)
+            await self.device.disconnect()
+        except Exception:
+            self.logger.exception("Error tearing down WiiM device %s", self.name)
+        self.logger.debug("Player %s unloaded, SDK resources released", self.name)
 
     async def get_config_entries(
         self,
