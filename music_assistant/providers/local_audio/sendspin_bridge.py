@@ -153,7 +153,6 @@ class SendspinLocalAudioBridge:
 
         # Restore last volume from cache, fall back to default
         init_volume = self.player._attr_volume_level
-        init_muted = self.player._attr_volume_muted
 
         self._bridge_role.set_callbacks(
             on_audio_chunk=self._on_audio_chunk,
@@ -161,7 +160,7 @@ class SendspinLocalAudioBridge:
             on_mute_change=self._on_mute_change,
             on_stream_start=self._on_bridge_stream_start,
             on_stream_end=self._on_bridge_stream_end,
-            initial_volume=init_volume,
+            initial_volume=int(init_volume) if init_volume is not None else 25,
         )
         self._bridge_role.setup_audio_requirements(
             sample_rate=self.sample_rate,
@@ -297,6 +296,7 @@ class SendspinLocalAudioBridge:
                 ),
             )
             self.logger.debug("PA stream opened for %s", self.pa_sink_name)
+            assert stream is not None  # assigned above; satisfies mypy
 
             while True:
                 data = await self._write_queue.get()
@@ -495,29 +495,28 @@ class LocalAudioBridgeManager:
         On Darwin: uses sounddevice, testing each device can be opened, with
             fixed bridge sample rate/bit depth defaults.
         """
-        if sys.platform == "linux":
-            return enumerate_pa_sinks()
-
-        # Darwin / other: sounddevice path
-        import sounddevice as _sd  # noqa: PLC0415
-        devices: list[dict[str, Any]] = []
-        for idx, dev in enumerate(_sd.query_devices()):
-            if dev.get("max_output_channels", 0) < 2:
-                continue
-            try:
-                test_stream = _sd.RawOutputStream(
-                    device=idx,
-                    samplerate=BRIDGE_SAMPLE_RATE,
-                    channels=BRIDGE_CHANNELS,
-                    dtype="int16",
-                )
-                test_stream.close()
-            except _sd.PortAudioError:
-                continue
-            dev_with_index = dict(dev)
-            dev_with_index["index"] = idx
-            devices.append(dev_with_index)
-        return devices
+        if sys.platform != "linux":
+            # Darwin / other: sounddevice path
+            import sounddevice as _sd  # noqa: PLC0415
+            devices: list[dict[str, Any]] = []
+            for idx, dev in enumerate(_sd.query_devices()):
+                if dev.get("max_output_channels", 0) < 2:
+                    continue
+                try:
+                    test_stream = _sd.RawOutputStream(
+                        device=idx,
+                        samplerate=BRIDGE_SAMPLE_RATE,
+                        channels=BRIDGE_CHANNELS,
+                        dtype="int16",
+                    )
+                    test_stream.close()
+                except _sd.PortAudioError:
+                    continue
+                dev_with_index = dict(dev)
+                dev_with_index["index"] = idx
+                devices.append(dev_with_index)
+            return devices
+        return enumerate_pa_sinks()
 
     async def stop_all(self) -> None:
         """Stop all Sendspin bridges."""
