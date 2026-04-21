@@ -153,9 +153,7 @@ class PASimpleStream:
             if not self._conn:
                 return
             error = ctypes.c_int(0)
-            ret = self._lib.pa_simple_write(
-                self._conn, data, len(data), ctypes.byref(error)
-            )
+            ret = self._lib.pa_simple_write(self._conn, data, len(data), ctypes.byref(error))
             if ret < 0:
                 raise OSError(f"pa_simple_write failed (pa_error={error.value})")
 
@@ -253,9 +251,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             fmt = parts[0]  # e.g. 's32le'
             channels = int(parts[1].replace("ch", ""))
             sample_rate = int(parts[2].replace("Hz", ""))
-            bit_depth = int(
-                "".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0]))
-            )
+            bit_depth = int("".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0])))
         except (IndexError, ValueError):
             continue
         if channels < 2:

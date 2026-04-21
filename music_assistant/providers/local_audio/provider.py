@@ -1,4 +1,5 @@
 """Local Audio Out player provider for Music Assistant."""
+
 from __future__ import annotations
 
 import ctypes
