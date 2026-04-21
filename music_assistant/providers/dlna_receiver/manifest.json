@@ -9,7 +9,7 @@
   ],
   "requirements": [],
   "documentation": "https://trudenboy.github.io/ma-provider-dlna-receiver/",
-  "stage": "experimental",
+  "stage": "alpha",
   "multi_instance": false,
   "builtin": false
 }

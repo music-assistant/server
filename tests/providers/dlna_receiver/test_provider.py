@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import uuid
 
-from provider.constants import UDN_NAMESPACE
+from music_assistant.providers.dlna_receiver.constants import UDN_NAMESPACE
+from music_assistant.providers.dlna_receiver.renderer import UPnPRenderer
 
 
 def _deterministic_udn(player_id: str) -> str:
@@ -51,8 +52,6 @@ def test_deterministic_udn_is_valid_uuid() -> None:
 
 def test_multiple_renderers_different_ports() -> None:
     """Verify multiple renderers can bind to different ports."""
-    from provider.renderer import UPnPRenderer
-
     r1 = UPnPRenderer("Player 1", "127.0.0.1", 9001)
     r2 = UPnPRenderer("Player 2", "127.0.0.1", 9002)
     assert r1.http_port != r2.http_port
@@ -61,8 +60,6 @@ def test_multiple_renderers_different_ports() -> None:
 
 def test_renderer_with_explicit_udn() -> None:
     """Renderer uses provided UDN instead of generating one."""
-    from provider.renderer import UPnPRenderer
-
     udn = _deterministic_udn("test_player")
     r = UPnPRenderer("Test", "127.0.0.1", 9999, udn=udn)
     assert r.udn == udn

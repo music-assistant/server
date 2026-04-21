@@ -108,6 +108,7 @@ async def setup(
     config: ProviderConfig,
 ) -> ProviderInstanceType:
     """Set up the DLNA Receiver provider."""
-    from .provider import DLNAReceiverProvider
+    # Deferred to avoid loading music_assistant internals at module import time.
+    from .provider import DLNAReceiverProvider  # noqa: PLC0415, RUF100
 
     return DLNAReceiverProvider(mass, manifest, config)

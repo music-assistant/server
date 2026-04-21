@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from provider.eventing import EventingManager
+from music_assistant.providers.dlna_receiver.eventing import EventingManager
 
 
 @pytest.fixture
@@ -14,13 +14,15 @@ def manager() -> EventingManager:
 
 
 def test_subscribe_returns_sid_and_timeout(manager: EventingManager) -> None:
+    """subscribe() returns a uuid SID and the default timeout."""
     sid, timeout = manager.subscribe("<http://192.168.1.5:8080/callback>")
     assert sid.startswith("uuid:")
     assert timeout == 1800
 
 
 def test_subscribe_custom_timeout(manager: EventingManager) -> None:
-    sid, timeout = manager.subscribe(
+    """subscribe() honors a custom Second-N timeout header."""
+    _sid, timeout = manager.subscribe(
         "<http://192.168.1.5:8080/callback>",
         "Second-300",
     )
@@ -28,6 +30,7 @@ def test_subscribe_custom_timeout(manager: EventingManager) -> None:
 
 
 def test_subscribe_multiple_callbacks(manager: EventingManager) -> None:
+    """subscribe() stores all callback URLs from a multi-URL CALLBACK header."""
     sid, _ = manager.subscribe(
         "<http://host1:8080/cb><http://host2:8080/cb>",
     )
@@ -36,11 +39,13 @@ def test_subscribe_multiple_callbacks(manager: EventingManager) -> None:
 
 
 def test_subscribe_no_callback_raises(manager: EventingManager) -> None:
-    with pytest.raises(ValueError):
+    """subscribe() rejects an empty CALLBACK header."""
+    with pytest.raises(ValueError, match="No valid callback URLs"):
         manager.subscribe("")
 
 
 def test_unsubscribe(manager: EventingManager) -> None:
+    """unsubscribe() removes the subscription by SID."""
     sid, _ = manager.subscribe("<http://host:8080/cb>")
     assert sid in manager._subscriptions
     manager.unsubscribe(sid)
@@ -48,21 +53,43 @@ def test_unsubscribe(manager: EventingManager) -> None:
 
 
 def test_unsubscribe_unknown_is_noop(manager: EventingManager) -> None:
+    """unsubscribe() on an unknown SID is a no-op rather than an error."""
     manager.unsubscribe("uuid:nonexistent")  # should not raise
 
 
 def test_renew(manager: EventingManager) -> None:
+    """renew() updates the timeout for an active subscription."""
     sid, _ = manager.subscribe("<http://host:8080/cb>", "Second-100")
     new_timeout = manager.renew(sid, "Second-600")
     assert new_timeout == 600
 
 
 def test_renew_unknown_raises(manager: EventingManager) -> None:
+    """renew() on an unknown SID raises KeyError (412 Precondition Failed)."""
     with pytest.raises(KeyError):
         manager.renew("uuid:nonexistent")
 
 
+def test_renew_expired_raises_and_removes(manager: EventingManager) -> None:
+    """renew() on an expired SID raises KeyError AND evicts the stale entry.
+
+    Per UPnP spec, renewing an expired subscription must fail with 412
+    Precondition Failed — the renderer surfaces the KeyError as 412, and
+    the manager must not keep the dead subscription around.
+    """
+    sid, _ = manager.subscribe("<http://host:8080/cb>", "Second-100")
+    # Force expiry by backdating the subscription's creation timestamp.
+    manager._subscriptions[sid].created_at -= 1000
+    assert manager._subscriptions[sid].is_expired
+
+    with pytest.raises(KeyError):
+        manager.renew(sid, "Second-1800")
+
+    assert sid not in manager._subscriptions
+
+
 def test_parse_callback_header() -> None:
+    """_parse_callback_header splits angle-bracketed URLs into a list."""
     urls = EventingManager._parse_callback_header(
         "<http://192.168.1.5:8080/event><http://10.0.0.1:9000/ev>",
     )
@@ -70,25 +97,30 @@ def test_parse_callback_header() -> None:
 
 
 def test_parse_callback_header_single() -> None:
+    """_parse_callback_header handles a single URL."""
     urls = EventingManager._parse_callback_header("<http://host:1234/cb>")
     assert urls == ["http://host:1234/cb"]
 
 
 def test_parse_timeout_default() -> None:
+    """_parse_timeout falls back to the default when header is missing or empty."""
     assert EventingManager._parse_timeout(None) == 1800
     assert EventingManager._parse_timeout("") == 1800
 
 
 def test_parse_timeout_infinite() -> None:
+    """_parse_timeout maps 'infinite' to the default timeout."""
     assert EventingManager._parse_timeout("infinite") == 1800
 
 
 def test_parse_timeout_seconds() -> None:
+    """_parse_timeout extracts the integer from a 'Second-N' header."""
     assert EventingManager._parse_timeout("Second-300") == 300
     assert EventingManager._parse_timeout("Second-7200") == 7200
 
 
 def test_build_propertyset() -> None:
+    """_build_propertyset wraps variables in GENA XML structure."""
     xml = EventingManager._build_propertyset({"Volume": "75", "Mute": "0"})
     assert "e:propertyset" in xml
     assert "<Volume>75</Volume>" in xml
@@ -96,6 +128,7 @@ def test_build_propertyset() -> None:
 
 
 def test_build_propertyset_escapes_values() -> None:
+    """_build_propertyset escapes XML-special characters in values."""
     xml = EventingManager._build_propertyset({"Title": "Tom & Jerry"})
     assert "Tom &amp; Jerry" in xml
 

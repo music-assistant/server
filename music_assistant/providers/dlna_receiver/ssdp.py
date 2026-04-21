@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import secrets
 import socket
 
 from .constants import (
@@ -18,6 +20,10 @@ from .constants import (
 
 LOGGER = logging.getLogger(__name__)
 
+# UPnP spec allows MX up to 120, but honoring that would stall discovery;
+# cap at 5 s so control points still see our response within their window.
+_MX_MAX_SECONDS = 5
+
 
 class SSDPAdvertiser:
     """Advertise a UPnP MediaRenderer via SSDP on the local network."""
@@ -28,12 +34,14 @@ class SSDPAdvertiser:
         description_url: str,
         bind_ip: str,
     ) -> None:
+        """Store config; sockets and tasks are created in start()."""
         self.udn = udn
         self.description_url = description_url
         self.bind_ip = bind_ip
         self._transport: asyncio.DatagramTransport | None = None
         self._recv_transport: asyncio.DatagramTransport | None = None
         self._advertise_task: asyncio.Task[None] | None = None
+        self._pending_responses: set[asyncio.Task[None]] = set()
         self._running = False
 
     async def start(self) -> None:
@@ -51,17 +59,15 @@ class SSDPAdvertiser:
         )
         send_sock.setblocking(False)
         self._transport, _ = await loop.create_datagram_endpoint(
-            lambda: _SSDPSendProtocol(),
+            _SSDPSendProtocol,
             sock=send_sock,
         )
 
         # Receiving socket — join multicast group on port 1900 for M-SEARCH
         recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
+        with contextlib.suppress(AttributeError, OSError):
             recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except (AttributeError, OSError):
-            pass
         recv_sock.bind(("", SSDP_PORT))
         mreq = socket.inet_aton(SSDP_MULTICAST_ADDR) + socket.inet_aton(self.bind_ip)
         recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
@@ -84,6 +90,13 @@ class SSDPAdvertiser:
         if self._advertise_task:
             self._advertise_task.cancel()
             self._advertise_task = None
+        if self._pending_responses:
+            # Snapshot: done-callbacks mutate self._pending_responses.
+            pending = list(self._pending_responses)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            self._pending_responses.clear()
         await self._send_byebye()
         if self._recv_transport:
             self._recv_transport.close()
@@ -155,16 +168,25 @@ class SSDPAdvertiser:
             )
 
     def handle_search(self, data: bytes, addr: tuple[str, int]) -> None:
-        """Respond to M-SEARCH requests matching our device/service types."""
+        """Respond to M-SEARCH requests matching our device/service types.
+
+        Per UPnP Device Architecture 1.1 §1.3.3, the responder must wait a
+        random interval in [0, MX] seconds before replying so a roomful of
+        devices doesn't flood the requester simultaneously. We cap MX at
+        ``_MX_MAX_SECONDS`` to keep discovery snappy.
+        """
         text = data.decode("utf-8", errors="ignore")
         if "M-SEARCH" not in text:
             return
 
         st = ""
+        mx_raw = ""
         for line in text.splitlines():
-            if line.upper().startswith("ST:"):
+            upper = line.upper()
+            if upper.startswith("ST:"):
                 st = line.split(":", 1)[1].strip()
-                break
+            elif upper.startswith("MX:"):
+                mx_raw = line.split(":", 1)[1].strip()
 
         # Check if the search target matches any of our types
         match_targets = {
@@ -188,10 +210,65 @@ class SSDPAdvertiser:
             f"USN: {usn}\r\n"
             f"SERVER: Music Assistant DLNA Receiver/1.0 UPnP/1.0\r\n"
             "\r\n"
-        )
+        ).encode()
+
+        delay = _parse_mx_delay(mx_raw)
+        if delay <= 0:
+            self._send_response(response, addr, st)
+            return
+        try:
+            task: asyncio.Task[None] = asyncio.create_task(
+                self._delayed_response(response, addr, st, delay),
+            )
+        except RuntimeError:
+            # No running loop (e.g. invoked from a test) — send immediately.
+            self._send_response(response, addr, st)
+            return
+        self._pending_responses.add(task)
+        task.add_done_callback(self._pending_responses.discard)
+
+    async def _delayed_response(
+        self,
+        response: bytes,
+        addr: tuple[str, int],
+        st: str,
+        delay: float,
+    ) -> None:
+        """Sleep for the MX-derived jitter then send the prepared response."""
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        self._send_response(response, addr, st)
+
+    def _send_response(self, response: bytes, addr: tuple[str, int], st: str) -> None:
+        """Send a prebuilt M-SEARCH response datagram to the requester."""
         if self._recv_transport and not self._recv_transport.is_closing():
-            self._recv_transport.sendto(response.encode("utf-8"), addr)
+            self._recv_transport.sendto(response, addr)
             LOGGER.debug("Responded to M-SEARCH from %s for %s", addr, st)
+
+
+def _parse_mx_delay(header: str) -> float:
+    """Parse an SSDP ``MX:`` header into a jitter delay in seconds.
+
+    Returns 0.0 if the header is missing, malformed, or non-positive — in
+    which case we respond immediately. A valid MX is clamped to
+    ``_MX_MAX_SECONDS`` and then multiplied by a uniform random in [0, 1)
+    using ``secrets`` (we don't need cryptographic strength, but ``secrets``
+    avoids pulling the ``random`` module just for this one spot and the
+    quality is more than adequate for jitter).
+    """
+    if not header:
+        return 0.0
+    try:
+        mx = int(header)
+    except ValueError:
+        return 0.0
+    if mx <= 0:
+        return 0.0
+    capped = min(mx, _MX_MAX_SECONDS)
+    # randbelow(1000)/1000 gives a float in [0, 1) without importing `random`.
+    return capped * (secrets.randbelow(1000) / 1000)
 
 
 class _SSDPSendProtocol(asyncio.DatagramProtocol):
@@ -206,6 +283,7 @@ class _SSDPRecvProtocol(asyncio.DatagramProtocol):
     """Asyncio UDP protocol for receiving SSDP M-SEARCH requests."""
 
     def __init__(self, advertiser: SSDPAdvertiser) -> None:
+        """Hold a reference to the advertiser that receives M-SEARCH datagrams."""
         self._advertiser = advertiser
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:

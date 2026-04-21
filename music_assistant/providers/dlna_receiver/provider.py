@@ -11,6 +11,7 @@ each with a unique UDN, HTTP port, and SSDP advertisement.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import socket
 import time
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from html import unescape
 from typing import TYPE_CHECKING
 
+import aiohttp
 from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.streamdetails import StreamMetadata
@@ -40,6 +42,8 @@ from .constants import (
 )
 from .renderer import UPnPRenderer
 from .ssdp import SSDPAdvertiser
+from .urls import redact_url as _redact_url
+from .urls import validate_stream_url as _validate_stream_url
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -48,6 +52,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
+
+# DIDL-Lite metadata is normally < 4 KiB; bound input (measured in characters)
+# to guard CPU/memory on parse.
+_MAX_DIDL_CHARS = 64 * 1024
 
 
 @dataclass
@@ -79,6 +87,7 @@ class DLNAReceiverProvider(PluginProvider):
         manifest: ProviderManifest,
         config: ProviderConfig,
     ) -> None:
+        """Initialize provider state; renderer instances are created in loaded_in_mass."""
         super().__init__(mass, manifest, config, self.SUPPORTED_FEATURES)
         self._instances: dict[str, RendererInstance] = {}
         self._plugin_source: PluginSource | None = None
@@ -87,6 +96,9 @@ class DLNAReceiverProvider(PluginProvider):
         self._play_start_time: float | None = None
         self._elapsed_offset: int = 0
         self._metadata_task: asyncio.Task[None] | None = None
+        self._discovery_task: asyncio.Task[None] | None = None
+        # Monotonically bumped per renderer; assigned lazily in loaded_in_mass.
+        self._next_port: int = 0
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -102,72 +114,124 @@ class DLNAReceiverProvider(PluginProvider):
         self._friendly_prefix = str(
             self.config.get_value(CONF_FRIENDLY_NAME) or DEFAULT_FRIENDLY_NAME,
         )
-        self._bind_ip = str(self.config.get_value(CONF_BIND_IP) or "") or self._detect_ip()
+        configured_ip = str(self.config.get_value(CONF_BIND_IP) or "")
+        if configured_ip:
+            self._bind_ip = configured_ip
+        else:
+            # UDP connect() can briefly block on odd network stacks; keep the
+            # event loop responsive by running the probe in the default executor.
+            loop = asyncio.get_running_loop()
+            self._bind_ip = await loop.run_in_executor(None, self._detect_ip)
         self._base_port = int(
             self.config.get_value(CONF_HTTP_PORT) or DEFAULT_HTTP_PORT  # type: ignore[arg-type]
         )
+        self._next_port = self._base_port
 
         raw_target = str(self.config.get_value(CONF_TARGET_PLAYERS) or "").strip()
-
         player_specs = self._resolve_player_specs()
 
-        # When target_players=* but no players registered yet, retry after delay
-        if raw_target == "*" and not player_specs:
-            LOGGER.info("target_players=* but no players yet, waiting for registration...")
-            for attempt in range(12):
-                await asyncio.sleep(5)
-                player_specs = self._resolve_player_specs()
-                if player_specs:
-                    LOGGER.info("Found %d players on attempt %d", len(player_specs), attempt + 1)
-                    break
-
-        # When target_players=*, wait a bit more for late-registering players
-        if raw_target == "*" and player_specs:
-            prev_count = len(player_specs)
-            for _ in range(4):
-                await asyncio.sleep(3)
-                player_specs = self._resolve_player_specs()
-                if len(player_specs) == prev_count:
-                    break
-                LOGGER.info(
-                    "Player count changed %d → %d, waiting for more...",
-                    prev_count,
-                    len(player_specs),
-                )
-                prev_count = len(player_specs)
-
-        if not player_specs:
-            # Fallback: single renderer with no fixed target
-            await self._create_instance(
-                player_id="",
-                player_name="",
-                friendly_prefix=self._friendly_prefix,
-                bind_ip=self._bind_ip,
-                http_port=self._base_port,
-            )
-        else:
-            for idx, (pid, pname) in enumerate(player_specs):
+        if player_specs:
+            for pid, pname in player_specs:
                 await self._create_instance(
                     player_id=pid,
                     player_name=pname,
                     friendly_prefix=self._friendly_prefix,
                     bind_ip=self._bind_ip,
-                    http_port=self._base_port + idx,
+                    http_port=self._next_port,
                 )
+                self._next_port += 1
+        else:
+            # Fallback: single unbound renderer so DLNA discovery works
+            # immediately. In target_players=* mode this is retired as soon
+            # as the first real player renderer registers, so we don't keep
+            # advertising an unroutable renderer once real ones exist.
+            await self._create_instance(
+                player_id="",
+                player_name="",
+                friendly_prefix=self._friendly_prefix,
+                bind_ip=self._bind_ip,
+                http_port=self._next_port,
+            )
+            self._next_port += 1
 
-        count = len(self._instances)
+        # For target_players=*, keep looking for late-registering players in the
+        # background instead of blocking startup for up to 72 seconds.
+        if raw_target == "*":
+            self._discovery_task = asyncio.create_task(self._adopt_late_players())
+
         LOGGER.info(
             "DLNA Receiver started: %d renderer(s) on %s (base port %s)",
-            count,
+            len(self._instances),
             self._bind_ip,
             self._base_port,
         )
 
+    async def _adopt_late_players(self) -> None:
+        """Poll for newly-registered MA players and spin up renderers for them.
+
+        Runs only when ``target_players=*``. Caps the total wait at ~5 minutes
+        so stale provider instances don't poll forever. The first time a real
+        player renderer is created we retire the unbound ``__default__``
+        fallback so we aren't advertising a renderer that can't route audio.
+        """
+        known_ids = {inst.player_id for inst in self._instances.values() if inst.player_id}
+        default_retired = False
+        try:
+            for _ in range(60):  # ~5 minutes at 5s intervals
+                await asyncio.sleep(5)
+                specs = self._resolve_player_specs()
+                new = [(pid, name) for pid, name in specs if pid and pid not in known_ids]
+                for pid, name in new:
+                    await self._create_instance(
+                        player_id=pid,
+                        player_name=name,
+                        friendly_prefix=self._friendly_prefix,
+                        bind_ip=self._bind_ip,
+                        http_port=self._next_port,
+                    )
+                    self._next_port += 1
+                    known_ids.add(pid)
+                    if not default_retired:
+                        await self._retire_default_instance()
+                        default_retired = True
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            LOGGER.debug("Late-player discovery loop error", exc_info=True)
+
+    async def _retire_default_instance(self) -> None:
+        """Stop and drop the unbound ``__default__`` renderer, if any.
+
+        Called once from ``_adopt_late_players`` after the first real player
+        renderer is created so control points no longer see a fallback
+        renderer that would silently swallow Play commands.
+        """
+        default = self._instances.pop("__default__", None)
+        if default is None:
+            return
+        await default.ssdp.stop()
+        await default.renderer.stop()
+        LOGGER.info("Retired unbound fallback renderer — real players registered")
+
     async def unload(self, is_removed: bool = False) -> None:
-        """Unload the provider — stop all renderer instances."""
-        if self._metadata_task and not self._metadata_task.done():
-            self._metadata_task.cancel()
-        for inst in self._instances.values():
+        """Unload the provider — stop all renderer instances.
+
+        Cancels and *awaits* background tasks before touching ``_instances``:
+        otherwise ``_adopt_late_players`` could still be mid-``_create_instance``
+        and append a new entry to the dict while we're iterating it, which
+        raises ``RuntimeError`` and leaks sockets.
+        """
+        for task in (self._metadata_task, self._discovery_task):
+            if task is None or task.done():
+                continue
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._metadata_task = None
+        self._discovery_task = None
+        # Snapshot before iterating: no more background mutation possible now,
+        # but cheap defense against future concurrent shutdown paths.
+        for inst in list(self._instances.values()):
             await inst.ssdp.stop()
             await inst.renderer.stop()
         self._instances.clear()
@@ -186,10 +250,7 @@ class DLNAReceiverProvider(PluginProvider):
         http_port: int,
     ) -> RendererInstance:
         """Create and start a single renderer instance for a player."""
-        if player_name:
-            friendly_name = f"{friendly_prefix} — {player_name}"
-        else:
-            friendly_name = friendly_prefix
+        friendly_name = f"{friendly_prefix} — {player_name}" if player_name else friendly_prefix
 
         udn = self._deterministic_udn(player_id)
 
@@ -258,13 +319,17 @@ class DLNAReceiverProvider(PluginProvider):
         if raw == "*":
             return self._get_all_players()
 
-        # Comma-separated list
+        # Comma-separated list (order-preserving dedupe: repeated ids would
+        # collide on the same instance key and leak sockets on each rebind).
         specs: list[tuple[str, str]] = []
-        for pid in raw.split(","):
-            pid = pid.strip()
-            if pid:
-                name = self._get_player_name(pid)
-                specs.append((pid, name))
+        seen: set[str] = set()
+        for raw_pid in raw.split(","):
+            pid = raw_pid.strip()
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            name = self._get_player_name(pid)
+            specs.append((pid, name))
         return specs
 
     def _get_all_players(self) -> list[tuple[str, str]]:
@@ -348,8 +413,6 @@ class DLNAReceiverProvider(PluginProvider):
         MA calls this when the plugin source is activated on a player.
         We proxy the external URL through aiohttp and yield raw bytes.
         """
-        import aiohttp
-
         inst = self._instances.get(player_id) or self._instances.get("__default__")
         stream_url = inst.current_stream_url if inst else None
 
@@ -360,10 +423,41 @@ class DLNAReceiverProvider(PluginProvider):
             )
             return
 
-        LOGGER.debug("Proxying DLNA stream for %s: %s", player_id, stream_url)
-        async with aiohttp.ClientSession() as session, session.get(stream_url) as resp:
-            async for chunk in resp.content.iter_any():
-                yield chunk
+        LOGGER.debug("Proxying DLNA stream for %s: %s", player_id, _redact_url(stream_url))
+        # total=None: streams may be long-running; bound connect + per-chunk read only.
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.get(stream_url) as resp,
+            ):
+                # Re-validate after any redirects: the final URL still has to
+                # be an http(s) endpoint, otherwise refuse to stream. (aiohttp
+                # won't follow non-http schemes, but belt-and-suspenders.)
+                final_url = str(resp.url)
+                if _validate_stream_url(final_url) is None:
+                    LOGGER.warning(
+                        "Upstream DLNA source redirected to disallowed URL: %s",
+                        _redact_url(final_url),
+                    )
+                    return
+                # Accept any 2xx (e.g. 206 Partial Content is common for audio).
+                if not 200 <= resp.status < 300:
+                    LOGGER.warning(
+                        "Upstream DLNA source returned HTTP %s for %s",
+                        resp.status,
+                        _redact_url(stream_url),
+                    )
+                    return
+                async for chunk in resp.content.iter_any():
+                    yield chunk
+        except (aiohttp.ClientError, TimeoutError):
+            LOGGER.warning(
+                "Error proxying DLNA stream %s",
+                _redact_url(stream_url),
+                exc_info=True,
+            )
+            return
         LOGGER.debug("DLNA stream ended for %s", player_id)
 
     # ------------------------------------------------------------------
@@ -383,8 +477,25 @@ class DLNAReceiverProvider(PluginProvider):
         if not metadata:
             return result
 
+        # Bound untrusted input before parsing (normal DIDL is well under this).
+        if len(metadata) > _MAX_DIDL_CHARS:
+            LOGGER.info(
+                "DIDL metadata truncated from %d to %d chars",
+                len(metadata),
+                _MAX_DIDL_CHARS,
+            )
+            metadata = metadata[:_MAX_DIDL_CHARS]
+
         # SOAP bodies may contain XML-escaped DIDL-Lite content
         metadata = unescape(metadata)
+
+        # Defence-in-depth: reject DOCTYPE/ENTITY declarations before parsing
+        # with the stdlib XML parser (defusedxml is not yet a dependency) to
+        # avoid billion-laughs / external-entity DoS on untrusted LAN input.
+        lowered = metadata.lower()
+        if "<!doctype" in lowered or "<!entity" in lowered:
+            LOGGER.info("DIDL metadata rejected: DOCTYPE/ENTITY declaration present")
+            return result
 
         try:
             root = ET.fromstring(metadata)  # noqa: S314
@@ -439,13 +550,27 @@ class DLNAReceiverProvider(PluginProvider):
         uri: str,
         metadata: str | None,
     ) -> None:
-        """Handle SetAVTransportURI for a specific renderer instance."""
+        """Handle SetAVTransportURI for a specific renderer instance.
+
+        Raises:
+            ValueError: if the URI is not a safe http(s) stream URL. The
+                renderer turns this into SOAP fault 716 so the control
+                point sees the rejection instead of a silent 200 OK.
+        """
+        safe_url = _validate_stream_url(uri)
+        if safe_url is None:
+            LOGGER.warning(
+                "Rejecting transport URI for '%s' (unsupported scheme/host): %s",
+                inst.player_name or "(default)",
+                _redact_url(uri),
+            )
+            raise ValueError("unsupported URI scheme or missing host")
         LOGGER.info(
             "Received transport URI for '%s': %s",
             inst.player_name or "(default)",
-            uri,
+            _redact_url(safe_url),
         )
-        inst.current_stream_url = uri
+        inst.current_stream_url = safe_url
         inst.current_metadata = self._parse_didl_metadata(metadata)
 
     async def _on_play(self, inst: RendererInstance) -> None:
