@@ -57,7 +57,13 @@ from .streaming import (
     make_pcm_format,
     pacing_args,
 )
-from .ynison_client import YnisonClient, YnisonDeviceInfo, YnisonState, generate_device_id
+from .ynison_client import (
+    YnisonClient,
+    YnisonDeviceInfo,
+    YnisonState,
+    generate_device_id,
+    make_version_block,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -154,10 +160,9 @@ class YandexYnisonProvider(PluginProvider):
         self._api_throttler = ThrottlerManager(rate_limit=2, period=1.0)
 
         # Progress tracking — byte counter is the single source of truth
-        # during active streaming; Ynison echoes are detected and ignored.
+        # during active streaming; Ynison echoes are detected via
+        # YnisonState.last_update_is_echo and ignored.
         self._streaming_progress_ms: int = 0
-        self._last_sent_to_ynison_ms: int = -1
-        self._last_sent_to_ynison_time: float = 0.0
 
         # PluginSource
         self._source_details = PluginSource(
@@ -199,7 +204,6 @@ class YandexYnisonProvider(PluginProvider):
             token=token,
             device_info=device_info,
             on_state_update=self._handle_ynison_state,
-            on_disconnect=self._handle_ynison_disconnect,
             logger=self.logger,
             on_auth_failure=self._refresh_ynison_token,
         )
@@ -662,15 +666,15 @@ class YandexYnisonProvider(PluginProvider):
                 significant_change = True
             else:
                 # Detect seek: compare Ynison progress against our stream position.
-                # Ignore Ynison echoes (values we recently sent) to prevent
-                # feedback loops where our own progress updates trigger false seeks.
+                # Ignore Ynison echoes (updates authored by our own device_id) to
+                # prevent feedback loops where our own progress triggers false seeks.
                 now = time.monotonic()
                 if now < self._seek_grace_until:
                     pass  # Skip during grace period after track change or seek
-                elif self._is_ynison_echo(state.progress_ms):
+                elif state.last_update_is_echo:
                     pass  # Echo of our own update — ignore
                 else:
-                    our_ms = max(self._streaming_progress_ms, self._last_sent_to_ynison_ms)
+                    our_ms = self._streaming_progress_ms
                     if our_ms >= 0:
                         drift_ms = abs(state.progress_ms - our_ms)
                         if drift_ms > 3000:
@@ -766,39 +770,17 @@ class YandexYnisonProvider(PluginProvider):
                 self._source_details.in_use_by, force_update=True
             )
 
-    # ------------------------------------------------------------------
-    # Ynison echo detection
-    # ------------------------------------------------------------------
-
-    _ECHO_TOLERANCE_MS = 2000
-    _ECHO_WINDOW_S = 5.0
-
-    def _is_ynison_echo(self, progress_ms: int) -> bool:
-        """Check if an incoming Ynison progress value is our own echo.
-
-        After we send update_playing_status, Ynison reflects the value
-        back within a few seconds. Detecting these echoes prevents the
-        feedback loop: send progress → echo → false seek → restart.
-        """
-        if self._last_sent_to_ynison_ms < 0:
-            return False
-        elapsed = time.monotonic() - self._last_sent_to_ynison_time
-        if elapsed > self._ECHO_WINDOW_S:
-            return False
-        return abs(progress_ms - self._last_sent_to_ynison_ms) < self._ECHO_TOLERANCE_MS
-
     async def _send_progress_to_ynison(
         self, progress_ms: int, duration_ms: int, paused: bool
     ) -> None:
-        """Send progress to Ynison and record it for echo detection.
+        """Send progress to Ynison.
 
         Progress is clamped to duration because Ynison rejects updates where
         progress > duration (error 400030001) and disconnects the WebSocket.
         The byte counter can slightly overshoot duration at end-of-stream.
 
-        Echo-tracking fields are only updated after a message is actually sent
-        so that silent no-ops during disconnect don't suppress later real
-        Ynison updates (which would look like "echoes").
+        Echo detection is done upstream via YnisonState.last_update_is_echo,
+        which is set when Ynison rebroadcasts an update we authored.
         """
         if duration_ms <= 0:
             # Ynison rejects progress > duration; skip until duration is known.
@@ -811,8 +793,6 @@ class YandexYnisonProvider(PluginProvider):
             duration_ms=duration_ms,
             paused=paused,
         )
-        self._last_sent_to_ynison_ms = progress_ms
-        self._last_sent_to_ynison_time = time.monotonic()
 
     def _bytes_to_ms(self, byte_count: int, fmt: AudioFormat | None = None) -> int:
         """Convert PCM byte count to milliseconds using the given format."""
@@ -849,11 +829,8 @@ class YandexYnisonProvider(PluginProvider):
         """Handle pause — stop streaming but keep player association for resume."""
         paused_progress_ms = self._streaming_progress_ms
         self._stream_stop_event.set()
-        # Preserve the last known position for same-track resume and reset the
-        # Ynison echo baseline so resume logic does not suppress the required seek.
+        # Preserve the last known position for same-track resume.
         self._streaming_progress_ms = paused_progress_ms
-        self._last_sent_to_ynison_ms = -1
-        self._last_sent_to_ynison_time = 0.0
         player_id = self._source_details.in_use_by
         if player_id:
             try:
@@ -863,11 +840,6 @@ class YandexYnisonProvider(PluginProvider):
             if self._source_details.in_use_by == player_id:
                 self._source_details.in_use_by = None
                 self.mass.players.trigger_player_update(player_id)
-
-    async def _handle_ynison_disconnect(self) -> None:
-        """Handle permanent disconnect from Ynison."""
-        self.logger.error("Ynison connection permanently lost")
-        self._clear_active_player()
 
     # ------------------------------------------------------------------
     # Player selection
@@ -960,7 +932,6 @@ class YandexYnisonProvider(PluginProvider):
         self._source_details.in_use_by = None
         self._stream_stop_event.set()
         self._streaming_progress_ms = 0
-        self._last_sent_to_ynison_ms = -1
         self._prefetched_list = None
         if self._prefetch_task and not self._prefetch_task.done():
             self._prefetch_task.cancel()
@@ -1367,15 +1338,18 @@ class YandexYnisonProvider(PluginProvider):
                 return
         state = self._ynison.state
         queue = state.player_state.get("player_queue", {})
+        device_id = self._ynison.device_id
         new_state = dict(state.player_state)
         new_state["player_queue"] = dict(queue)
         new_state["player_queue"]["current_playable_index"] = next_index
+        new_state["player_queue"]["version"] = make_version_block(device_id)
         if expanded_list is not None:
             new_state["player_queue"]["playable_list"] = expanded_list
         new_state["status"] = dict(new_state.get("status", {}))
-        new_state["status"]["progress_ms"] = 0
-        new_state["status"]["duration_ms"] = 0
+        new_state["status"]["progress_ms"] = "0"
+        new_state["status"]["duration_ms"] = "0"
         new_state["status"]["paused"] = False
+        new_state["status"]["version"] = make_version_block(device_id)
         await self._ynison.update_player_state(player_state=new_state)
 
     async def _update_queue_list(self, expanded_list: list[dict[str, Any]]) -> None:
@@ -1388,9 +1362,11 @@ class YandexYnisonProvider(PluginProvider):
             return
         state = self._ynison.state
         queue = state.player_state.get("player_queue", {})
+        device_id = self._ynison.device_id
         new_state = dict(state.player_state)
         new_state["player_queue"] = dict(queue)
         new_state["player_queue"]["playable_list"] = expanded_list
+        new_state["player_queue"]["version"] = make_version_block(device_id)
         await self._ynison.update_player_state(player_state=new_state)
 
     async def _on_next(self) -> None:

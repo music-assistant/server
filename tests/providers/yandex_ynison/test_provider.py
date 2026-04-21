@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -459,9 +458,8 @@ class TestYnisonStateHandling:
         await provider._handle_ynison_state(state)
         call_count_1 = provider.mass.players.trigger_player_update.call_count  # type: ignore[attr-defined]
 
-        # Simulate same track still playing (no seek, no track change)
-        provider._last_sent_to_ynison_ms = 5000
-
+        # Simulate same track still playing (no seek, no track change).
+        # Mark as echo so the seek-detection branch stays quiet.
         state2 = YnisonState(
             active_device_id=provider._device_id,
             player_state={
@@ -475,6 +473,7 @@ class TestYnisonStateHandling:
                     "playable_list": [{"playable_id": "track1"}],
                 },
             },
+            last_update_is_echo=True,
         )
 
         # Second call shortly after — throttled, no trigger
@@ -553,7 +552,7 @@ class TestYnisonStateHandling:
         call_args = mock_ynison.update_player_state.call_args
         sent_state = call_args.kwargs["player_state"]
         assert sent_state["player_queue"]["current_playable_index"] == 1
-        assert sent_state["status"]["progress_ms"] == 0
+        assert sent_state["status"]["progress_ms"] == "0"
         assert sent_state["status"]["paused"] is False
         # Resets actual duration for next track
         assert provider._actual_duration_ms == 0
@@ -1403,11 +1402,13 @@ def _make_ynison_state(
 def _mock_ynison(
     state: YnisonState | None = None,
     connected: bool = True,
+    device_id: str = "test-device-uuid",
 ) -> MagicMock:
     """Create a mock YnisonClient with sensible defaults."""
     mock = MagicMock()
     mock.connected = connected
     mock.state = state or _make_ynison_state()
+    mock.device_id = device_id
     mock.update_playing_status = AsyncMock()
     mock.update_player_state = AsyncMock()
     return mock
@@ -1586,25 +1587,13 @@ class TestSendProgressToYnison:
 
         provider._ynison.update_playing_status.assert_not_called()
 
-    async def test_records_echo_baseline(self) -> None:
-        """Records sent value and timestamp for echo detection."""
-        provider = _make_provider()
-        provider._ynison = _mock_ynison()
-
-        await provider._send_progress_to_ynison(5000, 10000, False)
-
-        assert provider._last_sent_to_ynison_ms == 5000
-        assert provider._last_sent_to_ynison_time > 0
-
     async def test_no_ynison_no_send(self) -> None:
         """Does not crash when _ynison is None."""
         provider = _make_provider()
         provider._ynison = None
 
         await provider._send_progress_to_ynison(5000, 10000, False)
-
-        # Should not have changed echo baseline
-        assert provider._last_sent_to_ynison_ms == -1
+        # No assertion — just verify no crash.
 
 
 # ------------------------------------------------------------------
@@ -1616,7 +1605,7 @@ class TestPausePlayback:
     """Tests for _pause_playback."""
 
     async def test_stops_stream_and_player(self) -> None:
-        """Pause stops stream, calls cmd_stop, resets echo baseline."""
+        """Pause stops stream, calls cmd_stop, preserves progress."""
         provider = _make_provider()
         provider._streaming_progress_ms = 50000
         provider._source_details.in_use_by = "player1"
@@ -1628,8 +1617,6 @@ class TestPausePlayback:
         assert provider._source_details.in_use_by is None
         # Progress is preserved for resume
         assert provider._streaming_progress_ms == 50000  # type: ignore[unreachable]
-        # Echo baseline is reset
-        assert provider._last_sent_to_ynison_ms == -1
 
     async def test_no_active_player(self) -> None:
         """Pause with no active player just sets stop event."""
@@ -1643,43 +1630,67 @@ class TestPausePlayback:
 
 
 # ------------------------------------------------------------------
-# _is_ynison_echo
+# Echo suppression via YnisonState.last_update_is_echo
 # ------------------------------------------------------------------
 
 
-class TestIsYnisonEcho:
-    """Tests for _is_ynison_echo."""
+class TestEchoSuppression:
+    """Seek detection in _handle_ynison_state honours the state echo flag."""
 
-    def test_echo_within_window(self) -> None:
-        """Value within tolerance and time window is detected as echo."""
+    def _player(self, provider: YandexYnisonProvider) -> MagicMock:
+        player = MagicMock()
+        player.player_id = "player1"
+        player.display_name = "Player 1"
+        player.state.playback_state = PlaybackState.PLAYING
+        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
+        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        return player
+
+    async def _prime_same_track(self, provider: YandexYnisonProvider) -> None:
+        """Set provider state so seek detection is the only active branch."""
+        self._player(provider)
+        provider._current_streaming_track_id = "track1"
+        provider._active_player_id = "player1"
+        provider._source_details.in_use_by = "player1"
+        provider._streaming_progress_ms = 1000
+        provider._seek_grace_until = 0.0  # grace expired
+
+    async def test_echo_suppresses_seek_detection(self) -> None:
+        """last_update_is_echo=True makes large drift ignored."""
         provider = _make_provider()
-        provider._last_sent_to_ynison_ms = 5000
-        provider._last_sent_to_ynison_time = time.monotonic()
+        await self._prime_same_track(provider)
 
-        assert provider._is_ynison_echo(5200) is True
+        state = _make_ynison_state(progress_ms=10000)  # drift 9000ms vs 1000
+        state.last_update_is_echo = True
 
-    def test_echo_outside_window(self) -> None:
-        """Value outside time window is not an echo."""
+        await provider._handle_ynison_state(state)
+
+        assert not provider._track_changed_event.is_set()
+
+    async def test_non_echo_triggers_seek(self) -> None:
+        """last_update_is_echo=False with large drift triggers seek."""
         provider = _make_provider()
-        provider._last_sent_to_ynison_ms = 5000
-        provider._last_sent_to_ynison_time = time.monotonic() - 10
+        await self._prime_same_track(provider)
 
-        assert provider._is_ynison_echo(5200) is False
+        state = _make_ynison_state(progress_ms=10000)
+        state.last_update_is_echo = False
 
-    def test_echo_never_sent(self) -> None:
-        """When no value was ever sent, nothing is an echo."""
+        await provider._handle_ynison_state(state)
+
+        assert provider._track_changed_event.is_set()
+        assert provider._seek_position_ms == 10000
+
+    async def test_default_echo_flag_false(self) -> None:
+        """YnisonState default last_update_is_echo is False — seek still fires."""
         provider = _make_provider()
-        provider._last_sent_to_ynison_ms = -1
+        await self._prime_same_track(provider)
 
-        assert provider._is_ynison_echo(5000) is False
+        state = _make_ynison_state(progress_ms=10000)
+        # No explicit override — the dataclass default is False.
 
-    def test_echo_large_diff(self) -> None:
-        """Large progress difference is not an echo."""
-        provider = _make_provider()
-        provider._last_sent_to_ynison_ms = 5000
-        provider._last_sent_to_ynison_time = time.monotonic()
+        await provider._handle_ynison_state(state)
 
-        assert provider._is_ynison_echo(10000) is False
+        assert provider._track_changed_event.is_set()
 
 
 # ------------------------------------------------------------------
@@ -1867,7 +1878,7 @@ class TestAdvanceQueueIndex:
             current_playable_index=0,
             playable_list=[{"playable_id": "t1"}, {"playable_id": "t2"}],
         )
-        mock_yn = _mock_ynison(state)
+        mock_yn = _mock_ynison(state, device_id="own-device-id")
         provider._ynison = mock_yn
 
         await provider._advance_queue_index(3)
@@ -1875,9 +1886,18 @@ class TestAdvanceQueueIndex:
         mock_yn.update_player_state.assert_awaited_once()
         sent = mock_yn.update_player_state.call_args.kwargs["player_state"]
         assert sent["player_queue"]["current_playable_index"] == 3
-        assert sent["status"]["progress_ms"] == 0
-        assert sent["status"]["duration_ms"] == 0
+        assert sent["status"]["progress_ms"] == "0"
+        assert sent["status"]["duration_ms"] == "0"
         assert sent["status"]["paused"] is False
+        # Outgoing state authored by our device_id, timestamps as strings.
+        queue_version = sent["player_queue"]["version"]
+        status_version = sent["status"]["version"]
+        assert queue_version["device_id"] == "own-device-id"
+        assert status_version["device_id"] == "own-device-id"
+        assert isinstance(queue_version["version"], str)
+        assert queue_version["timestamp_ms"] == "0"
+        assert isinstance(status_version["version"], str)
+        assert status_version["timestamp_ms"] == "0"
 
     async def test_with_expanded_list(self) -> None:
         """Expanded list replaces playable_list in sent state."""
@@ -1885,7 +1905,7 @@ class TestAdvanceQueueIndex:
         state = _make_ynison_state(
             playable_list=[{"playable_id": "t1"}],
         )
-        mock_yn = _mock_ynison(state)
+        mock_yn = _mock_ynison(state, device_id="own-device-id")
         provider._ynison = mock_yn
 
         expanded = [{"playable_id": "t1"}, {"playable_id": "t2"}]
@@ -1893,6 +1913,7 @@ class TestAdvanceQueueIndex:
 
         sent = mock_yn.update_player_state.call_args.kwargs["player_state"]
         assert sent["player_queue"]["playable_list"] == expanded
+        assert sent["player_queue"]["version"]["device_id"] == "own-device-id"
 
     async def test_not_connected_waits_then_sends(self) -> None:
         """Waits for reconnection before sending state."""

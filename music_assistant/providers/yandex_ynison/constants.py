@@ -50,9 +50,9 @@ DEFAULT_APP_VERSION: Final[str] = "1.0.0"
 # Device types (from Ynison protobuf DeviceType enum)
 DEVICE_TYPE_WEB: Final[str] = "WEB"
 
-# Reconnect settings
+# Reconnect settings — indexed by attempt number; attempts past the tuple
+# saturate at the last entry (so reconnect continues forever at 60 s intervals).
 RECONNECT_DELAYS: Final[tuple[float, ...]] = (2.0, 4.0, 8.0, 16.0, 30.0, 60.0)
-MAX_RECONNECT_ATTEMPTS: Final[int] = 5
 
 # WebSocket timeouts
 WS_CONNECT_TIMEOUT: Final[float] = 15.0
