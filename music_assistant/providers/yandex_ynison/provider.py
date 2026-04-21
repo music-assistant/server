@@ -84,6 +84,12 @@ _API_MAX_BACKOFF = 30.0
 # Cache TTL for stream details (seconds)
 _STREAM_DETAILS_CACHE_TTL = 300  # 5 minutes
 
+# Accepted non-auto values for output format overrides; mirrors the options
+# offered in CONF_OUTPUT_SAMPLE_RATE / CONF_OUTPUT_BIT_DEPTH config entries.
+# Used defensively to reject stale/tampered values without raising.
+_VALID_SAMPLE_RATES: frozenset[str] = frozenset({"44100", "48000", "96000"})
+_VALID_BIT_DEPTHS: frozenset[str] = frozenset({"16", "24"})
+
 
 class YandexYnisonProvider(PluginProvider):
     """Implementation of the Yandex Music Connect (Ynison) Plugin."""
@@ -1003,13 +1009,32 @@ class YandexYnisonProvider(PluginProvider):
         is_lossless = quality in YANDEX_MUSIC_LOSSLESS_QUALITIES
         base = PCM_LOSSLESS_PARAMS if is_lossless else PCM_LOSSY_PARAMS
 
-        # Apply config overrides
+        # Apply config overrides. MA's ConfigEntry options constrain the UI to
+        # known-good strings, but a stale persisted value or hand-edited config
+        # could still surface something unparsable or off-list — fall back to
+        # the auto-detected base with a warning instead of crashing the load.
         sample_rate = base["sample_rate"]
         bit_depth = base["bit_depth"]
         if self._cfg_sample_rate != OUTPUT_AUTO:
-            sample_rate = int(self._cfg_sample_rate)
+            if self._cfg_sample_rate in _VALID_SAMPLE_RATES:
+                sample_rate = int(self._cfg_sample_rate)
+            else:
+                self.logger.warning(
+                    "Invalid %s=%r; falling back to auto-detected %d Hz",
+                    CONF_OUTPUT_SAMPLE_RATE,
+                    self._cfg_sample_rate,
+                    sample_rate,
+                )
         if self._cfg_bit_depth != OUTPUT_AUTO:
-            bit_depth = int(self._cfg_bit_depth)
+            if self._cfg_bit_depth in _VALID_BIT_DEPTHS:
+                bit_depth = int(self._cfg_bit_depth)
+            else:
+                self.logger.warning(
+                    "Invalid %s=%r; falling back to auto-detected %d-bit",
+                    CONF_OUTPUT_BIT_DEPTH,
+                    self._cfg_bit_depth,
+                    bit_depth,
+                )
 
         content_type = ContentType.PCM_S24LE if bit_depth == 24 else ContentType.PCM_S16LE
         new_params: dict[str, Any] = {

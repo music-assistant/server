@@ -26,6 +26,7 @@ from music_assistant.providers.yandex_ynison.constants import (
     CONF_TOKEN,
     CONF_YM_INSTANCE,
     DEFAULT_DISPLAY_NAME,
+    OUTPUT_AUTO,
     PLAYER_ID_AUTO,
     YM_INSTANCE_OWN,
 )
@@ -1021,6 +1022,40 @@ class TestPCMNormalization:
         assert provider._normalized_format.content_type == ContentType.PCM_S16LE
         assert provider._normalized_format.sample_rate == 44100
         assert provider._normalized_format.bit_depth == 16
+
+    async def test_invalid_sample_rate_override_falls_back_to_auto(self) -> None:
+        """Stale/tampered output_sample_rate values fall back to auto-detected, not crash."""
+        provider = _make_provider()
+        provider._cfg_sample_rate = "bogus"
+        provider._cfg_bit_depth = OUTPUT_AUTO
+
+        mock_yandex = MagicMock()
+        mock_yandex.domain = "yandex_music"
+        mock_yandex.type = ProviderType.MUSIC
+        mock_yandex.config.get_value = MagicMock(return_value="superb")
+        provider._yandex_provider = mock_yandex
+        provider._update_normalized_format()
+
+        assert provider._normalized_format.sample_rate == 48000
+        assert provider._normalized_format.bit_depth == 24
+        assert provider._normalized_format.content_type == ContentType.PCM_S24LE
+
+    async def test_invalid_bit_depth_override_falls_back_to_auto(self) -> None:
+        """Off-list output_bit_depth falls back to auto base, keeping content_type consistent."""
+        provider = _make_provider()
+        provider._cfg_sample_rate = OUTPUT_AUTO
+        # 32-bit is not offered; previously this would silently become S16LE
+        provider._cfg_bit_depth = "32"
+
+        mock_yandex = MagicMock()
+        mock_yandex.domain = "yandex_music"
+        mock_yandex.type = ProviderType.MUSIC
+        mock_yandex.config.get_value = MagicMock(return_value="superb")
+        provider._yandex_provider = mock_yandex
+        provider._update_normalized_format()
+
+        assert provider._normalized_format.bit_depth == 24
+        assert provider._normalized_format.content_type == ContentType.PCM_S24LE
 
     async def test_audio_format_not_modified_by_stream(self) -> None:
         """PluginSource audio_format stays fixed (not updated from stream)."""
