@@ -18,6 +18,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     AudioError,
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -41,6 +42,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
+from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
@@ -1209,9 +1211,25 @@ class SpotifyProvider(MusicProvider):
                     self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
-            # handle 404 not found, convert to MediaNotFoundError
             if response.status in (400, 404):
-                raise MediaNotFoundError(f"{endpoint} not found")
+                try:
+                    error = await response.json(loads=json_loads)
+                    message = error.get("error", {}).get("message") or response.reason
+                except (aiohttp.ContentTypeError, JSONDecodeError):
+                    message = (await response.text()) or response.reason
+
+                self.logger.debug(
+                    "Spotify API error: endpoint=%s, status=%s, reason=%s, message=%s",
+                    endpoint,
+                    response.status,
+                    response.reason,
+                    message,
+                )
+
+                if response.status == 404:
+                    raise MediaNotFoundError(f"{endpoint} not found")
+                raise InvalidDataError(f"An error occurred for endpoint: {endpoint}")
+
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)
             if etag := response.headers.get("ETag"):
