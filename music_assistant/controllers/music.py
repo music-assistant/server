@@ -113,7 +113,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 37
+DB_SCHEMA_VERSION: Final[int] = 38
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -2767,6 +2767,18 @@ class MusicController(CoreController):
                 f"SET loudness_album = NULL "
                 f"WHERE loudness_album <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
             )
+
+        if prev_version <= 37:
+            # add is_manual column to genre_media_item_mapping
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                    "ADD COLUMN [is_manual] BOOLEAN NOT NULL DEFAULT 0;"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
         # save changes
         await self._database.commit()
 
@@ -2972,6 +2984,7 @@ class MusicController(CoreController):
             [media_type] TEXT NOT NULL,
             [alias] TEXT,
             [is_derived] BOOLEAN NOT NULL DEFAULT 0,
+            [is_manual] BOOLEAN NOT NULL DEFAULT 0,
             FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
             UNIQUE(genre_id, media_id, media_type)
             );"""
