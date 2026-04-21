@@ -40,6 +40,7 @@ from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
 from .constants import StreamingProtocol
 from .helpers import player_id_to_mac_address, unix_time_to_ntp
+from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
 if TYPE_CHECKING:
@@ -288,16 +289,10 @@ class SendspinAirPlayBridge:
             future_s = self._drop_until_us / 1_000_000 - time.monotonic()
             start_ntp = unix_time_to_ntp(time.time() + future_s)
 
-            # Always use RAOP for the bridge — AP2 (cliap2) doesn't respect
-            # NTP start times correctly, breaking multi-device sync.
-            # See https://github.com/music-assistant/cliairplay/issues/102
-            if not self.airplay_player.raop_discovery_info:
-                self.logger.warning(
-                    "Cannot start bridge for %s: RAOP not available on this device",
-                    self.airplay_player.display_name,
-                )
-                return
-            self._airplay_stream = RaopStream(self.airplay_player)
+            if self.airplay_player.protocol == StreamingProtocol.AIRPLAY2:
+                self._airplay_stream = AirPlay2Stream(self.airplay_player)
+            else:
+                self._airplay_stream = RaopStream(self.airplay_player)
             self.airplay_player.stream = self._airplay_stream
 
             await self._airplay_stream.start(start_ntp)
@@ -618,24 +613,6 @@ class SendspinBridgeManager:
 
             if player_id in self._bridges:
                 self.logger.debug("Bridge already exists for %s", airplay_player.display_name)
-                return
-
-            # Bridge always uses RAOP for sync — skip if AP2 is selected or
-            # RAOP discovery info is not available.
-            # AP2 (cliap2) doesn't respect NTP start times correctly,
-            # so it cannot be used for synchronized multi-device playback.
-            # See https://github.com/music-assistant/cliairplay/issues/102
-            if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-                self.logger.debug(
-                    "Skipping Sendspin bridge for %s: AP2 sync not supported",
-                    airplay_player.display_name,
-                )
-                return
-            if not airplay_player.raop_discovery_info:
-                self.logger.debug(
-                    "Skipping Sendspin bridge for %s: RAOP not available",
-                    airplay_player.display_name,
-                )
                 return
 
             bridge = SendspinAirPlayBridge(self.provider, airplay_player, sendspin_server)

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
+from aiosendspin.models.types import PlayerCommand
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -14,7 +15,12 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
-from music_assistant_models.enums import IdentifierType, PlayerType, ProviderFeature
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import AlreadyRegisteredError
 
 from music_assistant.constants import CONF_ENABLED
@@ -124,6 +130,62 @@ class SendspinProvider(PlayerProvider):
         player (e.g. PlayerType.LIGHT for Hue Entertainment bridges).
         """
         self._bridge_player_types[client_id] = player_type
+
+    async def apply_bridge_claim(
+        self,
+        client_id: str,
+        identifiers: dict[IdentifierType, str],
+        bridge_hello: ClientHelloPayload,
+    ) -> bool:
+        """
+        Post-claim an already-registered SendspinPlayer as a bridge client.
+
+        Used when a bridge manager reaches setup_bridge AFTER the external client
+        has already connected on its own (e.g. a JS Cast receiver reconnecting to
+        the server before the Chromecast bridge could register). Attaches the
+        bridge's protocol-specific identifiers so cross-protocol matching can
+        link the SendspinPlayer to its native peer, and replays the bridge
+        hello's supported_commands restriction on the player features.
+
+        :param client_id: The Sendspin client_id whose player should be claimed.
+        :param identifiers: Protocol-specific identifiers (e.g. CAST_UUID) to
+            attach to the player for cross-protocol matching.
+        :param bridge_hello: The bridge's intended ClientHelloPayload. Its
+            player_support.supported_commands gates which volume/mute features
+            the player is allowed to expose.
+        :return: True if a matching SendspinPlayer was found and updated.
+        """
+        player = self.mass.players.get_player(client_id)
+        if not isinstance(player, SendspinPlayer):
+            return False
+        for id_type, id_value in identifiers.items():
+            player.device_info.add_identifier(id_type, id_value)
+        bridge_supported_commands: list[PlayerCommand] = []
+        if bridge_hello.player_support:
+            bridge_supported_commands = list(bridge_hello.player_support.supported_commands)
+        if PlayerCommand.VOLUME in bridge_supported_commands:
+            player._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        else:
+            player._attr_supported_features.discard(PlayerFeature.VOLUME_SET)
+        if PlayerCommand.MUTE in bridge_supported_commands:
+            player._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
+        else:
+            player._attr_supported_features.discard(PlayerFeature.VOLUME_MUTE)
+        # Expose the claimed player as a protocol bridge, not a standalone web
+        # player. A JS Cast receiver advertises product_name="Web Browser" and
+        # would otherwise be classified as is_web_player → PlayerType.PLAYER
+        # (hidden). Restore protocol semantics so UI links it under its native peer.
+        player.is_web_player = False
+        player._attr_hidden_by_default = False
+        player._attr_expose_to_ha_by_default = True
+        player._attr_type = PlayerType.PROTOCOL
+        self.logger.info(
+            "Bridge claim applied to existing SendspinPlayer %s (client_id=%s)",
+            player.display_name,
+            client_id,
+        )
+        await self.mass.players.register_or_update(player)
+        return True
 
     async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
         """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
