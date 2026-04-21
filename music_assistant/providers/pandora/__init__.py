@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 # Supported Features - Pandora is primarily a radio service
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
-    #    ProviderFeature.LIBRARY_RADIOS,
 }
 
 
