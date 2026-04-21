@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 
 
 CACHE_CATEGORY_STREAMS = 1
+CACHE_CATEGORY_BROWSE_MAP = 2
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
@@ -132,6 +133,12 @@ class TuneInProvider(MusicProvider):
                     key = self._browse_path_key(item["text"])
                     folder_path = f"{instance_base}{key}"
                     self._browse_url_map[folder_path] = item["URL"]
+                    await self.mass.cache.set(
+                        key=folder_path,
+                        data=item["URL"],
+                        provider=self.instance_id,
+                        category=CACHE_CATEGORY_BROWSE_MAP,
+                    )
                     result.append(
                         BrowseFolder(
                             item_id=item["key"],
@@ -144,6 +151,13 @@ class TuneInProvider(MusicProvider):
 
         # sub-level: resolve TuneIn URL from map (populated during navigation)
         tunein_url = self._browse_url_map.get(path)
+        if not tunein_url:
+            # try persistent cache so deep links work after a restart
+            tunein_url = await self.mass.cache.get(
+                path, provider=self.instance_id, category=CACHE_CATEGORY_BROWSE_MAP
+            )
+            if tunein_url:
+                self._browse_url_map[path] = tunein_url
         if not tunein_url:
             # backward-compat: old paths had the URL-encoded TuneIn URL as sub_path
             if "%3A" in sub_path or sub_path.startswith("http"):
@@ -164,6 +178,12 @@ class TuneInProvider(MusicProvider):
                 key = item.get("key") or self._browse_path_key(item["text"])
                 folder_path = f"{path}/{key}"
                 self._browse_url_map[folder_path] = item["URL"]
+                await self.mass.cache.set(
+                    key=folder_path,
+                    data=item["URL"],
+                    provider=self.instance_id,
+                    category=CACHE_CATEGORY_BROWSE_MAP,
+                )
                 result.append(
                     BrowseFolder(
                         item_id=key,
@@ -313,7 +333,7 @@ class TuneInProvider(MusicProvider):
                 name = name.split(" | ")[1]
             name = name.split(" (")[0]
 
-        if stream_info:
+        if stream_info is not None:
             # stream info is provided: parse first stream into provider mapping
             # assuming here that the streams are sorted by quality (bitrate)
             # and the first one is the best quality
