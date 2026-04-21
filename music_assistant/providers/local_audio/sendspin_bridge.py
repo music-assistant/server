@@ -31,7 +31,14 @@ if sys.platform == "linux":
 
 if TYPE_CHECKING:
     import sounddevice as sd  # noqa: F401
-    from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
+
+    if sys.platform == "linux":
+        from .pa_simple import PASimpleStream, enumerate_pa_sinks
+    from aiosendspin.server import (
+        ExternalStreamStartRequest,
+        SendspinClient,
+        SendspinServer,
+    )
     from aiosendspin.server.roles import AudioChunk
 
     from music_assistant.providers.sendspin.provider import SendspinProvider
@@ -227,7 +234,9 @@ class SendspinLocalAudioBridge:
         if not self._logged_chunk_fmt:
             self.logger.debug(
                 "First chunk: len=%d  sample_rate=%d bit_depth=%d",
-                len(chunk.data), self.sample_rate, self.bit_depth,
+                len(chunk.data),
+                self.sample_rate,
+                self.bit_depth,
             )
             self._logged_chunk_fmt = True
         self._write_queue.put_nowait(chunk.data)
@@ -248,7 +257,9 @@ class SendspinLocalAudioBridge:
             if scale is None:
                 return pcm_data
             samples = np.frombuffer(pcm_data, dtype=np.int32).copy()
-            scaled = np.clip(samples.astype(np.float64) * scale, -2147483648, 2147483647)
+            scaled = np.clip(
+                samples.astype(np.float64) * scale, -2147483648, 2147483647
+            )
             return scaled.astype(np.int32).tobytes()
 
         if self.bit_depth == 24:
@@ -282,13 +293,16 @@ class SendspinLocalAudioBridge:
         try:
             self.logger.debug(
                 "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
-                self.pa_sink_name, self.sample_rate, BRIDGE_CHANNELS, self.bit_depth,
+                self.pa_sink_name,
+                self.sample_rate,
+                BRIDGE_CHANNELS,
+                self.bit_depth,
             )
             assert self.pa_sink_name is not None  # guarded by Linux-only call path
             stream = await self.mass.loop.run_in_executor(
                 None,
                 lambda: PASimpleStream(
-                    sink_name=self.pa_sink_name,  # type: ignore[arg-type]
+                    sink_name=self.pa_sink_name,
                     app_name="music-assistant",
                     rate=self.sample_rate,
                     channels=BRIDGE_CHANNELS,
@@ -325,6 +339,7 @@ class SendspinLocalAudioBridge:
     async def _audio_writer_sounddevice(self) -> None:
         """Write queued audio to a sounddevice output stream (Darwin)."""
         import sounddevice as _sd  # noqa: PLC0415
+
         try:
             self._output_stream = _sd.RawOutputStream(
                 device=self.device_index,
@@ -342,9 +357,13 @@ class SendspinLocalAudioBridge:
                     break
                 data = self._apply_software_volume(data)
                 try:
-                    await self.mass.loop.run_in_executor(None, self._output_stream.write, data)
+                    await self.mass.loop.run_in_executor(
+                        None, self._output_stream.write, data
+                    )
                 except _sd.PortAudioError as err:
-                    self.logger.error("PortAudio error for %s: %s", self.device_name, err)
+                    self.logger.error(
+                        "PortAudio error for %s: %s", self.device_name, err
+                    )
                     break
         except _sd.PortAudioError as err:
             self.logger.error(
@@ -412,7 +431,9 @@ class LocalAudioBridgeManager:
     @property
     def sendspin_server(self) -> SendspinServer | None:
         """Get the Sendspin server if available."""
-        if provider := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
+        if provider := cast(
+            "SendspinProvider | None", self.mass.get_provider("sendspin")
+        ):
             return provider.server_api
         return None
 
@@ -420,7 +441,9 @@ class LocalAudioBridgeManager:
         """Enumerate output devices, register players and Sendspin bridges."""
         sendspin_server = self.sendspin_server
         if not sendspin_server:
-            self.logger.debug("Sendspin provider not available, skipping device enumeration")
+            self.logger.debug(
+                "Sendspin provider not available, skipping device enumeration"
+            )
             return
 
         try:
@@ -498,6 +521,7 @@ class LocalAudioBridgeManager:
         if sys.platform != "linux":
             # Darwin / other: sounddevice path
             import sounddevice as _sd  # noqa: PLC0415
+
             devices: list[dict[str, Any]] = []
             for idx, dev in enumerate(_sd.query_devices()):
                 if dev.get("max_output_channels", 0) < 2:
