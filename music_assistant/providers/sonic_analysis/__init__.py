@@ -33,6 +33,11 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant.models.audio_analysis import AudioAnalysisData
+
+ANALYZE_FILE_SAMPLE_RATE: int = 22050
+# Minimum audio length (1 second) required for meaningful feature extraction.
+ANALYZE_FILE_MIN_SAMPLES: int = 22050
 
 
 BLOCK_SECONDS: int = 10
@@ -267,3 +272,49 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             sd.item_id,
             elapsed,
         )
+
+    async def analyze_file(
+        self, streamdetails: StreamDetails
+    ) -> AudioAnalysisData | None:
+        """Run librosa analysis directly on a local audio file for background scan.
+
+        :param streamdetails: StreamDetails pointing at a local file path.
+        """
+        if not isinstance(streamdetails.path, str) or not streamdetails.path:
+            return None
+        try:
+            import librosa  # noqa: PLC0415
+        except ImportError:
+            return None
+        try:
+            audio, _sr = await asyncio.to_thread(
+                librosa.load,
+                streamdetails.path,
+                sr=ANALYZE_FILE_SAMPLE_RATE,
+                mono=True,
+            )
+        except Exception as err:
+            self.logger.debug(
+                "analyze_file: load failed for %s/%s: %s",
+                streamdetails.provider,
+                streamdetails.item_id,
+                err,
+            )
+            return None
+        if len(audio) < ANALYZE_FILE_MIN_SAMPLES:
+            return None
+
+        bf = await asyncio.to_thread(
+            extract_block_features, audio, ANALYZE_FILE_SAMPLE_RATE
+        )
+        if bf is None:
+            return None
+        analysis = await asyncio.to_thread(
+            collapse_to_analysis, bf, ANALYZE_FILE_SAMPLE_RATE
+        )
+        analysis.duration = len(audio) / ANALYZE_FILE_SAMPLE_RATE
+        peak = float(np.max(np.abs(audio)))
+        analysis.true_peak = (
+            float(20.0 * np.log10(peak)) if peak > 0 else -96.0
+        )
+        return analysis
