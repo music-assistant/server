@@ -646,6 +646,22 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
             return []
 
+    @use_cache(86400 * 14)  # 14 days
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get a list of 10 most popular tracks for the given artist."""
+        try:
+            artist = await self.get_artist(prov_artist_id)
+            endpoint = f"artists/{prov_artist_id}/top-tracks"
+            items = await self._get_data(endpoint)
+            return [
+                parse_track(item, self, artist=artist)
+                for item in items["tracks"]
+                if (item and item["id"])
+            ]
+        except MediaNotFoundError:
+            self.logger.warning("Unable to fetch top tracks for artist %s", prov_artist_id)
+            return []
+
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         uri_type_map = {
@@ -1203,7 +1219,7 @@ class SpotifyProvider(MusicProvider):
                     self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
-            if response.status in (400, 404):
+            if response.status in (400, 403, 404):
                 try:
                     error = await response.json(loads=json_loads)
                     message = error.get("error", {}).get("message") or response.reason
