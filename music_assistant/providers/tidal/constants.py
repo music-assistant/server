@@ -8,6 +8,8 @@ BASE_URL_V2 = "https://api.tidal.com/v2"
 OPEN_API_URL = "https://openapi.tidal.com/v2"
 BROWSE_URL = "https://tidal.com/browse"
 RESOURCES_URL = "https://resources.tidal.com/images"
+# Base host for the /pages/* feed.
+WEB_BASE_URL = "https://tidal.com/v1"
 
 # Authentication
 TOKEN_TYPE = "Bearer"
