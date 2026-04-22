@@ -17,7 +17,6 @@ from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 from music_assistant_models import config_entries
 from music_assistant_models.config_entries import (
-    MULTI_VALUE_SPLITTER,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -80,7 +79,6 @@ from music_assistant.constants import (
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
@@ -1340,14 +1338,8 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:  # noqa: PLR0915
+    async def _migrate(self) -> None:
         changed = False
-
-        # some type hints to help with the code below
-        instance_id: str
-        player_id: str
-        provider_config: dict[str, Any]
-        player_config: dict[str, Any]
 
         # The background tasks controller originally persisted runtime state directly under
         # core/tasks, which could create a CoreConfig object without the required domain field.
