@@ -832,7 +832,7 @@ class TestYnisonStateHandling:
             player_state={
                 "status": {"progress_ms": 248000, "duration_ms": 248000},
                 "player_queue": {
-                    "current_playable_index": 5,
+                    "current_playable_index": 0,
                     "playable_list": [{"playable_id": "old_track"}],
                     "entity_id": "user:onyourwave",
                     "entity_type": "RADIO",
@@ -852,7 +852,7 @@ class TestYnisonStateHandling:
                 player_state={
                     "status": {"progress_ms": 0, "duration_ms": 0},
                     "player_queue": {
-                        "current_playable_index": 6,
+                        "current_playable_index": 0,
                         "playable_list": [{"playable_id": "new_track"}],
                         "entity_id": "user:onyourwave",
                         "entity_type": "RADIO",
@@ -863,6 +863,41 @@ class TestYnisonStateHandling:
 
         asyncio.create_task(simulate_echo_then_change())
         result = await provider._wait_for_track_change("old_track", timeout=5.0)
+        assert result is True
+
+    async def test_wait_for_track_change_returns_immediately_if_already_advanced(
+        self,
+    ) -> None:
+        """If Ynison already advanced before the call, return True without waiting.
+
+        Regression: _wait_for_track_change used to clear _track_changed_event
+        before checking state, so a state update that arrived between
+        _signal_track_completion() and this method losing the signal and
+        stalled for the full 30s timeout.
+        """
+        provider = _make_provider()
+        mock_ynison = MagicMock()
+        # State already shows the NEW track at the time of entry
+        mock_ynison.state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"progress_ms": 0, "duration_ms": 0},
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "new_track"}],
+                    "entity_id": "user:onyourwave",
+                    "entity_type": "RADIO",
+                },
+            },
+        )
+        provider._ynison = mock_ynison
+        # Event is already set (from the _activate_playback that ran before us)
+        # but pre-check in _wait_for_track_change should catch this regardless.
+        provider._track_changed_event.set()
+
+        # Tight timeout would fail if pre-check were absent — state check must
+        # happen before clear()+wait().
+        result = await provider._wait_for_track_change("old_track", timeout=0.1)
         assert result is True
 
     async def test_wait_for_track_change_timeout(self) -> None:

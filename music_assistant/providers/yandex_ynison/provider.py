@@ -381,6 +381,16 @@ class YandexYnisonProvider(PluginProvider):
         """
         deadline = time.monotonic() + timeout
         while not self._stream_stop_event.is_set():
+            # Check state BEFORE clearing the event.  Ynison may have already
+            # advanced between _signal_track_completion() returning and this
+            # method running; clearing first would drop the set() that went
+            # with the state update, leaving us to wait until timeout.
+            # Check is race-free: no await between the read and clear() below.
+            # None means empty/unreadable queue — treat as "not advanced."
+            if self._ynison:
+                current = self._ynison.state.current_track_id
+                if current is not None and current != old_track_id:
+                    return True
             self._track_changed_event.clear()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -389,8 +399,6 @@ class YandexYnisonProvider(PluginProvider):
                 await asyncio.wait_for(self._track_changed_event.wait(), timeout=remaining)
             except TimeoutError:
                 break
-            if self._ynison and self._ynison.state.current_track_id != old_track_id:
-                return True
         self.logger.info("No new track from Ynison after completion, stopping stream")
         return False
 

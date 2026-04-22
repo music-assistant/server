@@ -229,7 +229,7 @@ class YnisonClient:
             if not self._stop_event.is_set() and (
                 self._reconnect_task is None or self._reconnect_task.done()
             ):
-                self._reconnect_task = asyncio.ensure_future(self._reconnect())
+                self._reconnect_task = asyncio.create_task(self._reconnect())
 
     async def disconnect(self) -> None:
         """Gracefully disconnect from Ynison."""
@@ -502,7 +502,7 @@ class YnisonClient:
         self._has_connected_once = True
 
         # Start message loop
-        self._message_task = asyncio.ensure_future(self._message_loop())
+        self._message_task = asyncio.create_task(self._message_loop())
 
     async def _message_loop(self) -> None:  # noqa: PLR0915
         """Read messages from state service and dispatch callbacks."""
@@ -591,7 +591,7 @@ class YnisonClient:
             self._reconnect_task is None or self._reconnect_task.done()
         ):
             self._logger.warning("Ynison connection lost, scheduling reconnect")
-            self._reconnect_task = asyncio.ensure_future(self._reconnect())
+            self._reconnect_task = asyncio.create_task(self._reconnect())
 
     def _parse_state(self, data: dict[str, Any]) -> None:
         """Parse PutYnisonStateResponse into YnisonState."""
@@ -726,7 +726,7 @@ class YnisonClient:
                 if not self._stop_event.is_set() and (
                     self._reconnect_task is None or self._reconnect_task.done()
                 ):
-                    self._reconnect_task = asyncio.ensure_future(self._reconnect())
+                    self._reconnect_task = asyncio.create_task(self._reconnect())
 
 
 def generate_device_id() -> str:
