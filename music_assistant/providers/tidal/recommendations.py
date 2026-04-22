@@ -17,7 +17,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from .constants import CACHE_CATEGORY_RECOMMENDATIONS
+from .constants import CACHE_CATEGORY_RECOMMENDATIONS, WEB_BASE_URL
 from .tidal_page_parser import TidalPageParser
 
 if TYPE_CHECKING:
@@ -128,7 +128,7 @@ class TidalRecommendationManager:
             locale = self.mass.metadata.locale.replace("_", "-")
             api_result = await self.api.get(
                 page_path,
-                base_url="https://tidal.com/v1",
+                base_url=WEB_BASE_URL,
                 params={
                     "locale": locale,
                     "deviceType": "BROWSER",
