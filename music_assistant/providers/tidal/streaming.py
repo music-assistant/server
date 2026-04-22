@@ -172,7 +172,7 @@ class TidalStreamingManager:
 
         # Lookup by ISRC
         api_result = await self.api.get(
-            "/tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL
+            "tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL
         )
         data = api_result[0] if isinstance(api_result, tuple) else api_result
 
