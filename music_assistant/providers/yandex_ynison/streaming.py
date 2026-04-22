@@ -10,8 +10,6 @@ from typing import Any
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from .constants import PACING_REALTIME  # noqa: F401  — re-exported for tests
-
 # PCM normalization profiles by YM quality tier.
 # Ensures MA's single ffmpeg receives a consistent format between tracks.
 # NOTE: AudioFormat is a *mutable* dataclass — MA's FFMpeg._log_reader_task

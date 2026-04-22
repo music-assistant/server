@@ -22,10 +22,6 @@ CONF_ALLOW_PLAYER_SWITCH: Final[str] = "allow_player_switch"
 CONF_DEVICE_ID: Final[str] = "device_id"
 CONF_OUTPUT_SAMPLE_RATE: Final[str] = "output_sample_rate"
 CONF_OUTPUT_BIT_DEPTH: Final[str] = "output_bit_depth"
-CONF_FFMPEG_PACING: Final[str] = "ffmpeg_pacing"
-
-# ffmpeg pacing mode values
-PACING_REALTIME: Final[str] = "realtime"
 
 # Special value for "auto" config options
 OUTPUT_AUTO: Final[str] = "auto"
@@ -52,7 +48,7 @@ DEVICE_TYPE_WEB: Final[str] = "WEB"
 
 # Reconnect settings — indexed by attempt number; attempts past the tuple
 # saturate at the last entry (so reconnect continues forever at 60 s intervals).
-RECONNECT_DELAYS: Final[tuple[float, ...]] = (2.0, 4.0, 8.0, 16.0, 30.0, 60.0)
+RECONNECT_DELAYS: Final[tuple[float, ...]] = (5.0, 10.0, 30.0, 60.0)
 
 # WebSocket timeouts
 WS_CONNECT_TIMEOUT: Final[float] = 15.0
