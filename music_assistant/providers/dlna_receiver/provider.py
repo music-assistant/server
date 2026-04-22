@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import time
 import uuid
@@ -24,6 +25,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
 from music_assistant_models.enums import ContentType, ProviderFeature
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
@@ -56,6 +58,23 @@ LOGGER = logging.getLogger(__name__)
 # DIDL-Lite metadata is normally < 4 KiB; bound input (measured in characters)
 # to guard CPU/memory on parse.
 _MAX_DIDL_CHARS = 64 * 1024
+
+
+def _is_concrete_ipv4(value: str) -> bool:
+    """Return True iff ``value`` is a non-wildcard, non-loopback IPv4 literal.
+
+    SSDP uses ``socket.inet_aton`` + ``IP_ADD_MEMBERSHIP`` which require a
+    concrete IPv4 interface; ``0.0.0.0`` joins the multicast group on the
+    wrong interface (silently dropping alive packets on multi-homed hosts),
+    and IPv6 / hostnames fail outright.
+    """
+    if not value:
+        return False
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return isinstance(addr, ipaddress.IPv4Address) and not addr.is_unspecified
 
 
 @dataclass
@@ -119,9 +138,24 @@ class DLNAReceiverProvider(PluginProvider):
             self._bind_ip = configured_ip
         else:
             # Reuse MA's shared primary-IP helper (threaded probe + ranked
-            # interface scan) instead of rolling our own.
+            # interface scan) instead of rolling our own. Prefer the first
+            # IPv4 entry: SSDP needs a routable IPv4 for the multicast
+            # interface and the LOCATION header.
             ip_addresses = await get_ip_addresses()
-            self._bind_ip = ip_addresses[0] if ip_addresses else "0.0.0.0"
+            self._bind_ip = next(
+                (ip for ip in ip_addresses if _is_concrete_ipv4(ip)),
+                "",
+            )
+        # Fail fast with a clear message instead of letting SSDP
+        # inet_aton / IP_ADD_MEMBERSHIP explode on 0.0.0.0, an IPv6
+        # literal, or a typo from the user.
+        if not _is_concrete_ipv4(self._bind_ip):
+            msg = (
+                "DLNA Receiver requires a concrete IPv4 bind address; got "
+                f"{self._bind_ip!r}. Configure a valid IPv4 for this host, "
+                "or run MA on a network that exposes an IPv4 interface."
+            )
+            raise SetupFailedError(msg)
         self._base_port = int(
             self.config.get_value(CONF_HTTP_PORT) or DEFAULT_HTTP_PORT  # type: ignore[arg-type]
         )
@@ -283,8 +317,18 @@ class DLNAReceiverProvider(PluginProvider):
         renderer.on_set_volume = lambda vol: self._on_set_volume(inst, vol)
         renderer.on_set_mute = lambda m: self._on_set_mute(inst, m)
 
+        # Roll back a partially-started instance so a failed SSDP start
+        # (port collision, multicast permission denied, etc.) doesn't
+        # leave the HTTP runner holding the port across reloads.
         await renderer.start()
-        await inst.ssdp.start()
+        try:
+            await inst.ssdp.start()
+        except Exception:
+            with contextlib.suppress(Exception):
+                await inst.ssdp.stop()
+            with contextlib.suppress(Exception):
+                await renderer.stop()
+            raise
 
         key = player_id or "__default__"
         self._instances[key] = inst
@@ -443,11 +487,10 @@ class DLNAReceiverProvider(PluginProvider):
         LOGGER.debug("Proxying DLNA stream for %s: %s", player_id, _redact_url(stream_url))
         # total=None: streams may be long-running; bound connect + per-chunk read only.
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
+        # Reuse MA's shared HTTP session (matches streams/audio.py) so we
+        # don't open a fresh TCP connector + DNS cache per activation.
         try:
-            async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
-                session.get(stream_url) as resp,
-            ):
+            async with self.mass.http_session.get(stream_url, timeout=timeout) as resp:
                 # Re-validate after any redirects: the final URL still has to
                 # be an http(s) endpoint, otherwise refuse to stream. (aiohttp
                 # won't follow non-http schemes, but belt-and-suspenders.)

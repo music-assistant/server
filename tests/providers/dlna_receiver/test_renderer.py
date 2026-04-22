@@ -277,6 +277,34 @@ async def test_set_av_transport_uri_rejected(
     assert renderer.current_uri == "http://prior.example/stream.flac"
 
 
+def test_description_url_brackets_ipv6() -> None:
+    """IPv6 bind_ip must be wrapped in brackets per RFC 3986 §3.2.2."""
+    r = UPnPRenderer("ipv6 renderer", bind_ip="::1", http_port=9999)
+    assert r.description_url == "http://[::1]:9999/description.xml"
+
+
+def test_description_url_ipv4_no_brackets() -> None:
+    """Plain IPv4 addresses are not bracketed."""
+    r = UPnPRenderer("ipv4 renderer", bind_ip="192.168.1.5", http_port=8080)
+    assert r.description_url == "http://192.168.1.5:8080/description.xml"
+
+
+async def test_start_learns_ephemeral_port() -> None:
+    """Binding on http_port=0 must update self.http_port from the bound socket.
+
+    Without this, description_url and the SSDP LOCATION header advertise
+    ``:0`` and nothing can reach the renderer.
+    """
+    r = UPnPRenderer("ephemeral", bind_ip="127.0.0.1", http_port=0)
+    try:
+        await r.start()
+        assert r.http_port != 0
+        assert 1 <= r.http_port <= 65535
+        assert f":{r.http_port}" in r.description_url
+    finally:
+        await r.stop()
+
+
 async def test_set_mute(client: TestClient[Request, Application], renderer: UPnPRenderer) -> None:
     """SetMute updates renderer state and GetMute reflects the change."""
     resp = await client.post(

@@ -164,6 +164,14 @@ class UPnPRenderer:
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.bind_ip, self.http_port)
         await site.start()
+        # If the caller requested an ephemeral port (http_port == 0), learn
+        # the actual bound port from the runner so description_url and the
+        # SSDP LOCATION header advertise a routable port instead of ":0".
+        if self.http_port == 0:
+            for address in self._runner.addresses:
+                if isinstance(address, tuple) and len(address) >= 2:
+                    self.http_port = int(address[1])
+                    break
         await self._evt_av_transport.start()
         await self._evt_rendering_control.start()
         await self._evt_connection_manager.start()
@@ -185,8 +193,14 @@ class UPnPRenderer:
 
     @property
     def description_url(self) -> str:
-        """Return the device description URL."""
-        return f"http://{self.bind_ip}:{self.http_port}/description.xml"
+        """Return the device description URL.
+
+        IPv6 literals need square brackets in URL host components
+        (RFC 3986 §3.2.2); without them the resulting URL would be
+        unparsable by strict control points consuming SSDP LOCATION.
+        """
+        host = f"[{self.bind_ip}]" if ":" in self.bind_ip else self.bind_ip
+        return f"http://{host}:{self.http_port}/description.xml"
 
     # ------------------------------------------------------------------
     # UPnP Device Description
