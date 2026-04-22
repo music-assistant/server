@@ -102,6 +102,15 @@ def test_parse_callback_header_single() -> None:
     assert urls == ["http://host:1234/cb"]
 
 
+def test_parse_callback_header_rejects_non_http_schemes() -> None:
+    """Only http:// and https:// schemes are valid GENA CALLBACK URLs."""
+    urls = EventingManager._parse_callback_header(
+        "<httpx://evil/cb><httpfake://x><ftp://h/cb><file:///etc/passwd>"
+        "<http://ok/cb><https://secure/cb>",
+    )
+    assert urls == ["http://ok/cb", "https://secure/cb"]
+
+
 def test_parse_timeout_default() -> None:
     """_parse_timeout falls back to the default when header is missing or empty."""
     assert EventingManager._parse_timeout(None) == 1800

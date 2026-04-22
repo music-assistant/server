@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import ContentType, ProviderFeature
+from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.helpers.util import get_ip_addresses
@@ -126,7 +127,7 @@ class DLNAReceiverProvider(PluginProvider):
         )
         self._next_port = self._base_port
 
-        raw_target = str(self.config.get_value(CONF_TARGET_PLAYERS) or "").strip()
+        raw_target = self._raw_target()
         player_specs = self._resolve_player_specs()
 
         if player_specs:
@@ -297,6 +298,19 @@ class DLNAReceiverProvider(PluginProvider):
         )
         return inst
 
+    def _raw_target(self) -> str:
+        """Return the configured target spec, honoring the legacy config key.
+
+        Centralizes the CONF_TARGET_PLAYERS → CONF_TARGET_PLAYER fallback so
+        every call site (late-player adoption check, spec resolution) sees
+        the same value; otherwise a legacy ``"*"`` config would skip the
+        _adopt_late_players background task.
+        """
+        raw = str(self.config.get_value(CONF_TARGET_PLAYERS) or "").strip()
+        if not raw:
+            raw = str(self.config.get_value(CONF_TARGET_PLAYER) or "").strip()
+        return raw
+
     def _resolve_player_specs(self) -> list[tuple[str, str]]:
         """Resolve configured player targets to (player_id, display_name) pairs.
 
@@ -306,11 +320,7 @@ class DLNAReceiverProvider(PluginProvider):
         - Comma-separated player_ids
         - Legacy CONF_TARGET_PLAYER (single player_id, backward compat)
         """
-        raw = str(self.config.get_value(CONF_TARGET_PLAYERS) or "").strip()
-
-        # Backward compat: check old single-player key
-        if not raw:
-            raw = str(self.config.get_value(CONF_TARGET_PLAYER) or "").strip()
+        raw = self._raw_target()
 
         if not raw:
             return []
@@ -395,11 +405,19 @@ class DLNAReceiverProvider(PluginProvider):
         to the MA controller between calls.
         """
         if self._plugin_source is None:
+            # Upstream DLNA senders push arbitrary compressed formats
+            # (FLAC/MP3/AAC/WAV/etc). Declare content_type/codec as UNKNOWN
+            # so MA's ffmpeg input pipeline probes the actual codec from
+            # stdin instead of misinterpreting compressed bytes as PCM.
             self._plugin_source = PluginSource(
                 id=self.instance_id,
                 name=self.name or "DLNA Receiver",
                 passive=True,
                 can_play_pause=True,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                    codec_type=ContentType.UNKNOWN,
+                ),
             )
         return self._plugin_source
 

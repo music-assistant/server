@@ -243,13 +243,18 @@ class EventingManager:
 
     @staticmethod
     def _parse_callback_header(header: str) -> list[str]:
-        """Parse CALLBACK header: '<url1><url2>' -> ['url1', 'url2']."""
+        """Parse CALLBACK header: '<url1><url2>' -> ['url1', 'url2'].
+
+        Per UDA §4.1.2 a GENA CALLBACK URL must use the http/https scheme;
+        a bare ``startswith("http")`` check would also let ``httpx://`` or
+        ``httpfake://`` through and then fail at NOTIFY time.
+        """
         urls: list[str] = []
         for raw in header.split(">"):
             part = raw.strip()
             if part.startswith("<"):
                 url = part[1:]
-                if url.startswith("http"):
+                if url.startswith(("http://", "https://")):
                     urls.append(url)
         return urls
 
