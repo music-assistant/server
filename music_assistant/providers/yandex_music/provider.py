@@ -2684,9 +2684,11 @@ class YandexMusicProvider(MusicProvider):
 
         Loads the album's tracks, uses the first chapter to establish the audio
         format, and stores the per-chapter track-IDs + durations in ``data`` so
-        ``get_audio_stream`` can iterate them. Seek across chapter boundaries is
-        handled via ``seek_position`` in ``get_audio_stream``; in-chapter seek is
-        disabled (Yandex per-chapter seekability varies by codec).
+        ``get_audio_stream`` can iterate them. ``can_seek=True`` so MA routes
+        ``seek_position`` into ``get_audio_stream``, where the provider translates
+        it into ``(start_chapter, in_chapter_offset)``. In-chapter precision
+        requires a byte-seekable chapter codec (raw MP3); otherwise the chapter
+        is restarted from its beginning.
         """
         album = await self.client.get_album_with_tracks(audiobook_id)
         if not album or not (album.volumes or []):
@@ -2716,7 +2718,7 @@ class YandexMusicProvider(MusicProvider):
                 "chapter_ids": chapter_ids,
                 "chapter_durations_ms": chapter_durations_ms,
             },
-            can_seek=False,
+            can_seek=True,
             allow_seek=True,
         )
 
@@ -2741,62 +2743,107 @@ class YandexMusicProvider(MusicProvider):
         async for chunk in self.streaming.get_audio_stream(streamdetails, seek_position):
             yield chunk
 
+    def _resolve_audiobook_seek(
+        self, chapter_durations_ms: list[int], seek_position: int, n_chapters: int
+    ) -> tuple[int, int]:
+        """Map an audiobook ``seek_position`` (seconds) to (start_idx, chapter_seek)."""
+        if seek_position <= 0 or not chapter_durations_ms:
+            return 0, 0
+        accumulated_ms = 0
+        seek_ms = seek_position * 1000
+        for idx, dur_ms in enumerate(chapter_durations_ms):
+            if accumulated_ms + dur_ms > seek_ms:
+                return idx, (seek_ms - accumulated_ms) // 1000
+            accumulated_ms += dur_ms
+        # Seek past end — start at last chapter from 0
+        return max(n_chapters - 1, 0), 0
+
     async def _stream_audiobook_chapters(
         self, data: dict[str, Any], seek_position: int
     ) -> AsyncGenerator[bytes, None]:
         """Concatenate per-chapter streams of an audiobook.
 
         Translates ``seek_position`` into (start_chapter, in_chapter_offset) and
-        delegates each chapter to the per-track streaming path. Subsequent
-        chapters start at offset 0.
+        delegates each chapter to the per-track streaming path. In-chapter offset
+        is only applied when the chapter codec is byte-seekable (``can_seek``);
+        otherwise the chapter is restarted from its beginning. Tracks consecutive
+        chapter failures and raises ``MediaNotFoundError`` once the threshold is
+        exceeded, so playback never silently truncates.
         """
         chapter_ids: list[str] = list(data.get("chapter_ids") or [])
         chapter_durations_ms: list[int] = list(data.get("chapter_durations_ms") or [])
         if not chapter_ids:
             return
 
-        start_idx = 0
-        chapter_seek = 0
-        if seek_position > 0 and chapter_durations_ms:
-            accumulated_ms = 0
-            seek_ms = seek_position * 1000
-            for idx, dur_ms in enumerate(chapter_durations_ms):
-                if accumulated_ms + dur_ms > seek_ms:
-                    start_idx = idx
-                    chapter_seek = (seek_ms - accumulated_ms) // 1000
-                    break
-                accumulated_ms += dur_ms
-            else:
-                # seek past end of audiobook — start at last chapter
-                start_idx = len(chapter_ids) - 1
-                chapter_seek = 0
+        start_idx, chapter_seek = self._resolve_audiobook_seek(
+            chapter_durations_ms, seek_position, len(chapter_ids)
+        )
+
+        max_consecutive_failures = 3
+        consecutive_failures = 0
+        has_yielded_audio = False
+        last_error: Exception | None = None
 
         for idx in range(start_idx, len(chapter_ids)):
             chapter_id = chapter_ids[idx]
-            offset = chapter_seek if idx == start_idx else 0
+            requested_offset = chapter_seek if idx == start_idx else 0
+            chapter_details: StreamDetails | None = None
             try:
                 chapter_details = await self.streaming.get_stream_details(chapter_id)
+            except asyncio.CancelledError:
+                raise
             except Exception as err:
+                last_error = err
                 self.logger.warning(
                     "Audiobook chapter %d (%s) stream-details failed: %s",
                     idx + 1,
                     chapter_id,
                     err,
                 )
+
+            if chapter_details is None:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    raise MediaNotFoundError(
+                        "Unable to stream audiobook: too many consecutive chapter failures"
+                    ) from last_error
                 continue
+
+            # Apply the in-chapter offset only when the chapter codec supports
+            # byte-offset seeking; otherwise restart the chapter from 0 to avoid
+            # decoding garbled bytes from mid-file of a container format.
+            offset = requested_offset if chapter_details.can_seek else 0
+            chapter_had_audio = False
             try:
                 async for chunk in self.streaming.get_audio_stream(chapter_details, offset):
+                    chapter_had_audio = True
+                    has_yielded_audio = True
                     yield chunk
             except asyncio.CancelledError:
                 raise
             except Exception as err:
+                last_error = err
                 self.logger.warning(
                     "Audiobook chapter %d (%s) stream failed mid-play: %s",
                     idx + 1,
                     chapter_id,
                     err,
                 )
-                continue
+
+            if chapter_had_audio:
+                consecutive_failures = 0
+                last_error = None
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    raise MediaNotFoundError(
+                        "Unable to stream audiobook: too many consecutive chapter failures"
+                    ) from last_error
+
+        if not has_yielded_audio:
+            raise MediaNotFoundError(
+                "Unable to stream audiobook: no playable chapters found"
+            ) from last_error
 
     async def get_rotor_station_tracks(
         self, station_id: str, queue: str | int | None = None
