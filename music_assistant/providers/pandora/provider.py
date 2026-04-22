@@ -130,7 +130,7 @@ class PandoraProvider(MusicProvider):
         try:
             self._csrf_token = await get_csrf_token(self.http_session)
             if self._auth_token:
-                self.logger.warning(f"Using existing auth token: {self._auth_token}")
+                self.logger.warning("Login using existing auth token")
                 return
 
             login_data = {
@@ -313,12 +313,13 @@ class PandoraProvider(MusicProvider):
 
     def _find_track(self, prov_track_id: str) -> dict[str, Any]:
         """Find track in all station fragments from provider track_id."""
-        station_id, track_id = prov_track_id.split("_")
-        session = self._get_or_create_session(station_id)
-        for tracks in session.fragments[::-1]:
-            for track in tracks:
-                if track.get("musicId") == track_id:
-                    return track
+        if "_" in prov_track_id:
+            station_id, track_id = prov_track_id.split("_")
+            session = self._get_or_create_session(station_id)
+            for tracks in session.fragments[::-1]:
+                for track in tracks:
+                    if track.get("musicId") == track_id:
+                        return track
         return {}
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -347,7 +348,7 @@ class PandoraProvider(MusicProvider):
             if station.item_id == prov_playlist_id:
                 self.logger.warning(f"returning playlist station {station.name}")
                 return station
-        return self._parse_station({"stationId": prov_playlist_id})
+        raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
 
     async def get_playlist_tracks(self, station_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given station id."""
@@ -482,12 +483,11 @@ class PandoraProvider(MusicProvider):
             items = self.mass.player_queues.items(player.player_id)
             self.logger.warning(f"player {player.provider_id}, {player.player_id} {len(items)}")
             if items:
-                item = items[-1]
-                if item.media_item:
-                    self.logger.warning(f"item {item.media_item.provider}, {item.media_item.name}")
-                    if self._find_track(item.media_item.item_id) == {}:
-                        self.logger.warning(f"please clear this queue {item.queue_id}")
-                        self.mass.player_queues.clear(item.queue_id)
+                if track := items[-1].media_item:
+                    self.logger.warning(f"item {track.provider}, {track.name}")
+                    if track.provider == self.domain and self._find_track(track.item_id) == {}:
+                        self.logger.warning(f"please clear this queue {items[-1].queue_id}")
+                        self.mass.player_queues.clear(items[-1].queue_id)
 
     async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
