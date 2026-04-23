@@ -57,19 +57,26 @@ class AirPlay2Stream(AirPlayProtocol):
 
     @staticmethod
     def _log_cli_output(logger: logging.Logger, line: str) -> None:
-        """Route a cliap2 stderr line to the appropriate log level."""
+        """
+        Route a cliap2 stderr line to the appropriate log level.
+
+        Strips the leading timestamp and log level info to eliminate duplication
+        of MA logging output and improve readability.
+        """
         if "[FATAL]" in line:
-            logger.critical(line)
+            logger.critical(line[31:])
         elif "[  LOG]" in line:
-            logger.error(line)
+            logger.error(line[31:])
         elif "[ INFO]" in line:
-            logger.info(line)
+            logger.info(line[31:])
         elif "[ WARN]" in line:
-            logger.warning(line)
+            logger.warning(line[31:])
+        elif "[DEBUG]" in line and "player: Player status: playing" in line:
+            logger.log(VERBOSE_LOG_LEVEL, line[31:])
         elif "[DEBUG]" in line:
-            logger.debug(line)
+            logger.debug(line[31:])
         elif "[ SPAM]" in line:
-            logger.log(VERBOSE_LOG_LEVEL, line)
+            logger.log(VERBOSE_LOG_LEVEL, line[31:])
         else:
             logger.error(line)
 
