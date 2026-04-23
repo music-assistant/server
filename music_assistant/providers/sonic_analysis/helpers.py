@@ -2,7 +2,21 @@
 
 Extracts per-block spectral/timbral features from raw PCM audio using librosa,
 then collapses accumulated blocks into a populated AudioAnalysisData with
-human-readable semantic descriptors (BPM, key, mode, energy, danceability, etc.).
+semantic descriptors.
+
+Fields NOT computed here are left as None and expected to be supplied by
+overlay providers (see `sonic_similarity.OVERLAY_SOURCES`):
+
+- `bpm`                       ← smart_fades (beat_this CNN)
+- `key`, `mode`               ← smart_fades (S-KEY neural classifier)
+- `danceability`              ← clap_analysis (zero-shot, Platt-calibrated)
+- `valence`, `arousal`,
+  `instrumentalness`,
+  `acousticness`              ← clap_analysis (zero-shot, Platt-calibrated)
+- `loudness_integrated`,
+  `loudness_range`,
+  `true_peak`                 ← loudness_analysis (ebur128) when enabled;
+                                 fallback approximations populated here
 """
 
 from __future__ import annotations
@@ -15,21 +29,6 @@ import numpy as np
 import numpy.typing as npt
 
 from music_assistant.models.audio_analysis import AudioAnalysisData
-
-# Krumhansl-Kessler key-finding profiles (major and minor)
-_KK_MAJOR = np.array(
-    [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
-    dtype=np.float64,
-)
-_KK_MINOR = np.array(
-    [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
-    dtype=np.float64,
-)
-_PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
-# Tempo range used to score danceability: tempos in 90-130 BPM are most danceable
-_DANCE_TEMPO_MIN = 90.0
-_DANCE_TEMPO_MAX = 130.0
 
 # Fixed resolution for time-series fields (rms_energy, spectral_centroid) on
 # AudioAnalysisData — matches the upstream contract shared with other analysis
@@ -45,20 +44,19 @@ _SILENCE_THRESHOLD = 0.01
 class BlockFeatures:
     """Per-block feature arrays accumulated across 10-second blocks.
 
-    Each list holds per-frame (or per-second) values from one block.
-    After all blocks are processed, collapse_to_analysis() aggregates
-    these into a populated AudioAnalysisData.
+    After all blocks are processed, collapse_to_analysis() aggregates these
+    into a populated AudioAnalysisData.
+
+    Only features actually consumed by the current collapse pipeline are
+    extracted. (MFCC, tonnetz, rolloff, and ZCR were previously extracted
+    but never read; removed to save ~100ms per 10s block.)
     """
 
-    mfcc_frames: list[np.ndarray] = field(default_factory=list)
     chroma_frames: list[np.ndarray] = field(default_factory=list)
-    tonnetz_frames: list[np.ndarray] = field(default_factory=list)
     contrast_frames: list[np.ndarray] = field(default_factory=list)
     centroid_frames: list[np.ndarray] = field(default_factory=list)
-    rolloff_frames: list[np.ndarray] = field(default_factory=list)
     flatness_frames: list[np.ndarray] = field(default_factory=list)
     rms_frames: list[np.ndarray] = field(default_factory=list)
-    zcr_frames: list[np.ndarray] = field(default_factory=list)
     onset_env_frames: list[np.ndarray] = field(default_factory=list)
 
 
@@ -78,21 +76,17 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
     bf = BlockFeatures()
 
     # Suppress librosa's n_fft warnings from internal sub-calls (harmonic/percussive
-    # separation in chroma/tonnetz can produce sub-signals shorter than n_fft)
+    # separation in chroma can produce sub-signals shorter than n_fft)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="n_fft=", category=UserWarning)
         warnings.filterwarnings("ignore", message="Trying to estimate tuning", category=UserWarning)
-        bf.mfcc_frames.append(librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=13))
         bf.chroma_frames.append(librosa.feature.chroma_stft(y=audio, sr=sample_rate))
-        bf.tonnetz_frames.append(librosa.feature.tonnetz(y=audio, sr=sample_rate))
         bf.contrast_frames.append(
             librosa.feature.spectral_contrast(y=audio, sr=sample_rate, n_bands=6)
         )
         bf.centroid_frames.append(librosa.feature.spectral_centroid(y=audio, sr=sample_rate))
-        bf.rolloff_frames.append(librosa.feature.spectral_rolloff(y=audio, sr=sample_rate))
         bf.flatness_frames.append(librosa.feature.spectral_flatness(y=audio))
         bf.rms_frames.append(librosa.feature.rms(y=audio))
-        bf.zcr_frames.append(librosa.feature.zero_crossing_rate(y=audio))
         bf.onset_env_frames.append(librosa.onset.onset_strength(y=audio, sr=sample_rate))
 
     return bf
@@ -104,23 +98,22 @@ def merge_block_features(target: BlockFeatures, source: BlockFeatures) -> None:
     :param target: Accumulator to merge into.
     :param source: New block features to add.
     """
-    target.mfcc_frames.extend(source.mfcc_frames)
     target.chroma_frames.extend(source.chroma_frames)
-    target.tonnetz_frames.extend(source.tonnetz_frames)
     target.contrast_frames.extend(source.contrast_frames)
     target.centroid_frames.extend(source.centroid_frames)
-    target.rolloff_frames.extend(source.rolloff_frames)
     target.flatness_frames.extend(source.flatness_frames)
     target.rms_frames.extend(source.rms_frames)
-    target.zcr_frames.extend(source.zcr_frames)
     target.onset_env_frames.extend(source.onset_env_frames)
 
 
 def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioAnalysisData:
     """Collapse accumulated per-block features into a populated AudioAnalysisData.
 
-    Derives all computable semantic fields. Fields that require external data
-    (valence, speechiness, instrumentalness, acousticness) are left as None.
+    Populates measurement-based scalar and time-series fields that librosa is
+    well-suited to compute. Fields owned by overlay providers (bpm/key/mode via
+    smart_fades, soft scalars via clap_analysis, real LUFS via loudness_analysis)
+    are left as None and filled in at vector-assembly time by the similarity
+    plugin's overlay system.
 
     :param accumulated: All block features accumulated during streaming.
     :param sample_rate: Sample rate used during extraction.
@@ -132,10 +125,7 @@ def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioA
     contrast = np.concatenate(accumulated.contrast_frames, axis=1)
     flatness = np.concatenate(accumulated.flatness_frames, axis=1).squeeze()
 
-    bpm = _derive_bpm(onset_env, sample_rate)
-    key, mode = _derive_key_and_mode(chroma)
     energy = _derive_energy(rms)
-    danceability = _derive_danceability(onset_env, bpm, sample_rate)
     loudness_integrated, loudness_range = _derive_loudness(rms)
     brightness = _derive_brightness(centroid, sample_rate)
     harmonic_complexity = _derive_harmonic_complexity(chroma)
@@ -145,11 +135,7 @@ def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioA
     spectral_centroid_series = _derive_spectral_centroid_series(centroid, rms_energy_series)
 
     return AudioAnalysisData(
-        bpm=bpm,
-        key=key,
-        mode=mode,
         energy=energy,
-        danceability=danceability,
         loudness_integrated=loudness_integrated,
         loudness_range=loudness_range,
         brightness=brightness,
@@ -166,57 +152,6 @@ def _clamp(value: float) -> float:
     return float(max(0.0, min(1.0, value)))
 
 
-def _derive_bpm(onset_env: np.ndarray, sample_rate: int) -> float:
-    """Estimate BPM from the accumulated onset envelope using librosa.
-
-    :param onset_env: Concatenated onset strength envelope.
-    :param sample_rate: Sample rate in Hz.
-    """
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sample_rate)
-    return float(np.asarray(tempo).flat[0])
-
-
-def _derive_key_and_mode(chroma: np.ndarray) -> tuple[str, str]:
-    """Detect musical key and mode using Krumhansl-Kessler profile correlation.
-
-    :param chroma: Concatenated chroma feature matrix (12 x N_frames).
-    """
-    mean_chroma = chroma.mean(axis=1).astype(np.float64)
-
-    best_score = -np.inf
-    best_pitch = 0
-    best_mode = "major"
-
-    # Suppress numpy divide warnings from corrcoef on flat chroma profiles
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=RuntimeWarning)
-        for pitch in range(12):
-            rolled_major = np.roll(_KK_MAJOR, pitch)
-            rolled_minor = np.roll(_KK_MINOR, pitch)
-
-            corr_major = float(np.corrcoef(mean_chroma, rolled_major)[0, 1])
-            corr_minor = float(np.corrcoef(mean_chroma, rolled_minor)[0, 1])
-
-            # NaN from zero-std chroma — skip
-            if np.isnan(corr_major):
-                corr_major = -np.inf
-            if np.isnan(corr_minor):
-                corr_minor = -np.inf
-
-            if corr_major > best_score:
-                best_score = corr_major
-                best_pitch = pitch
-                best_mode = "major"
-            if corr_minor > best_score:
-                best_score = corr_minor
-                best_pitch = pitch
-                best_mode = "minor"
-
-    return _PITCH_CLASSES[best_pitch], best_mode
-
-
 def _derive_energy(rms: np.ndarray) -> float:
     """Compute normalized mean RMS energy in [0, 1].
 
@@ -226,41 +161,13 @@ def _derive_energy(rms: np.ndarray) -> float:
     return _clamp(float(rms.mean()))
 
 
-def _derive_danceability(onset_env: np.ndarray, bpm: float, sample_rate: int) -> float:
-    """Estimate danceability from onset regularity, tempo suitability, and onset strength.
-
-    :param onset_env: Concatenated onset strength envelope.
-    :param bpm: Estimated tempo in BPM.
-    :param sample_rate: Sample rate in Hz.
-    """
-    hop_length = 512
-    fps = sample_rate / hop_length
-
-    # Onset regularity: low coefficient of variation of inter-onset intervals
-    onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sample_rate)
-    if len(onset_frames) >= 2:
-        ioi = np.diff(onset_frames).astype(np.float64) / fps
-        cv = float(ioi.std() / (ioi.mean() + 1e-8))
-        regularity = _clamp(1.0 - cv)
-    else:
-        regularity = 0.0
-
-    # Tempo suitability: triangle peak at 90-130 BPM
-    if _DANCE_TEMPO_MIN <= bpm <= _DANCE_TEMPO_MAX:
-        tempo_score = 1.0
-    elif bpm < _DANCE_TEMPO_MIN:
-        tempo_score = _clamp(bpm / _DANCE_TEMPO_MIN)
-    else:
-        tempo_score = _clamp(2.0 - bpm / _DANCE_TEMPO_MAX)
-
-    # Normalised mean onset strength
-    onset_strength = _clamp(float(onset_env.mean()) / (float(onset_env.max()) + 1e-8))
-
-    return _clamp(0.4 * regularity + 0.4 * tempo_score + 0.2 * onset_strength)
-
-
 def _derive_loudness(rms: np.ndarray) -> tuple[float, float]:
     """Compute RMS-derived dB approximations for integrated loudness and loudness range.
+
+    Fallback only — real EBU R128 values come from the loudness_analysis
+    provider when enabled; the similarity plugin does not currently overlay
+    those onto primary rows, so these approximations remain the source of
+    truth for loudness fields in the vector until that overlay exists.
 
     :param rms: Per-frame RMS values (1D after squeeze).
     """

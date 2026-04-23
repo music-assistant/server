@@ -1,4 +1,9 @@
-"""Unit tests for sonic analysis helper functions."""
+"""Unit tests for sonic analysis helper functions.
+
+sonic_analysis produces only measurement-based scalars and time-series data.
+Fields owned by overlay providers (bpm, key, mode, danceability, valence,
+arousal, instrumentalness, acousticness) are intentionally left None here.
+"""
 
 import math
 
@@ -13,8 +18,6 @@ from music_assistant.providers.sonic_analysis.helpers import (
     extract_block_features,
     merge_block_features,
 )
-
-_PITCH_CLASSES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
 
 
 def _make_sine(freq: float = 440.0, duration: float = 5.0, sr: int = 22050) -> np.ndarray:
@@ -38,18 +41,15 @@ def test_extract_block_features_returns_block_features() -> None:
     result = extract_block_features(audio, 22050)
 
     assert isinstance(result, BlockFeatures)
-    assert len(result.mfcc_frames) == 1
-    assert result.mfcc_frames[0].shape[0] == 13
-    assert result.mfcc_frames[0].shape[1] > 0
-
     assert len(result.chroma_frames) == 1
     assert result.chroma_frames[0].shape[0] == 12
 
-    assert len(result.tonnetz_frames) == 1
-    assert result.tonnetz_frames[0].shape[0] == 6
-
     assert len(result.contrast_frames) == 1
     assert result.contrast_frames[0].shape[0] == 7
+
+    assert len(result.centroid_frames) == 1
+    assert len(result.flatness_frames) == 1
+    assert len(result.rms_frames) == 1
 
     assert len(result.onset_env_frames) == 1
     assert result.onset_env_frames[0].ndim == 1
@@ -76,15 +76,11 @@ def test_merge_block_features() -> None:
     assert source is not None
     merge_block_features(target, source)
 
-    assert len(target.mfcc_frames) == 2
     assert len(target.chroma_frames) == 2
-    assert len(target.tonnetz_frames) == 2
     assert len(target.contrast_frames) == 2
     assert len(target.centroid_frames) == 2
-    assert len(target.rolloff_frames) == 2
     assert len(target.flatness_frames) == 2
     assert len(target.rms_frames) == 2
-    assert len(target.zcr_frames) == 2
     assert len(target.onset_env_frames) == 2
 
 
@@ -108,20 +104,11 @@ def test_collapse_to_analysis_returns_audio_analysis_data() -> None:
     assert isinstance(result, AudioAnalysisData)
 
 
-def test_collapse_to_analysis_bpm_positive_and_finite() -> None:
-    """BPM must be a positive, finite float."""
-    result = _make_analysis()
-    assert result.bpm is not None
-    assert math.isfinite(result.bpm)
-    assert result.bpm > 0.0
-
-
 def test_collapse_to_analysis_scalars_in_unit_range() -> None:
     """All 0-1 scalar fields must be within [0.0, 1.0]."""
     result = _make_analysis()
     scalar_fields = [
         "energy",
-        "danceability",
         "brightness",
         "harmonic_complexity",
         "roughness",
@@ -131,19 +118,6 @@ def test_collapse_to_analysis_scalars_in_unit_range() -> None:
         value = getattr(result, field_name)
         assert value is not None, f"{field_name} should not be None"
         assert 0.0 <= value <= 1.0, f"{field_name}={value!r} is outside [0.0, 1.0]"
-
-
-def test_collapse_to_analysis_key_is_valid_pitch_class() -> None:
-    """Key must be one of the 12 standard pitch class names."""
-    result = _make_analysis()
-    assert result.key is not None
-    assert result.key in _PITCH_CLASSES, f"Unexpected key: {result.key!r}"
-
-
-def test_collapse_to_analysis_mode_is_major_or_minor() -> None:
-    """Mode must be 'major' or 'minor'."""
-    result = _make_analysis()
-    assert result.mode in {"major", "minor"}, f"Unexpected mode: {result.mode!r}"
 
 
 def test_collapse_to_analysis_loudness_values_finite() -> None:
@@ -156,14 +130,14 @@ def test_collapse_to_analysis_loudness_values_finite() -> None:
 
 
 def test_collapse_to_analysis_time_series_populated() -> None:
-    """Per-second time-series arrays must be populated and non-empty."""
+    """Time-series arrays must be populated and non-empty."""
     result = _make_analysis()
 
-    assert result.rms_energy_per_second is not None
-    assert len(result.rms_energy_per_second) > 0
+    assert result.rms_energy is not None
+    assert len(result.rms_energy) > 0
 
-    assert result.spectral_centroid_per_second is not None
-    assert len(result.spectral_centroid_per_second) > 0
+    assert result.spectral_centroid is not None
+    assert len(result.spectral_centroid) > 0
 
 
 def test_collapse_to_analysis_deterministic() -> None:
@@ -179,19 +153,15 @@ def test_collapse_to_analysis_deterministic() -> None:
     assert bf_b is not None
     result_b = collapse_to_analysis(bf_b, sr)
 
-    assert result_a.bpm == result_b.bpm
-    assert result_a.key == result_b.key
-    assert result_a.mode == result_b.mode
     assert result_a.energy == result_b.energy
-    assert result_a.danceability == result_b.danceability
     assert result_a.brightness == result_b.brightness
     assert result_a.harmonic_complexity == result_b.harmonic_complexity
     assert result_a.roughness == result_b.roughness
     assert result_a.rhythmic_regularity == result_b.rhythmic_regularity
-    np.testing.assert_array_equal(result_a.rms_energy_per_second, result_b.rms_energy_per_second)
-    np.testing.assert_array_equal(
-        result_a.spectral_centroid_per_second, result_b.spectral_centroid_per_second
-    )
+    assert result_a.loudness_integrated == result_b.loudness_integrated
+    assert result_a.loudness_range == result_b.loudness_range
+    np.testing.assert_array_equal(result_a.rms_energy, result_b.rms_energy)
+    np.testing.assert_array_equal(result_a.spectral_centroid, result_b.spectral_centroid)
 
 
 def test_collapse_to_analysis_noise_vs_sine_differ() -> None:
@@ -217,13 +187,26 @@ def test_collapse_to_analysis_noise_vs_sine_differ() -> None:
     )
 
 
-def test_collapse_to_analysis_uncomputed_fields_are_none() -> None:
-    """Fields the provider does not compute must remain None."""
+def test_collapse_to_analysis_overlay_owned_fields_are_none() -> None:
+    """Fields owned by overlay providers must be left None by sonic_analysis.
+
+    Overlay providers fill these in at vector-assembly time:
+      - bpm, key, mode           ← smart_fades
+      - danceability, valence,
+        arousal, instrumentalness,
+        acousticness             ← clap_analysis
+    Plus external-only fields (speechiness) that nothing in our stack computes.
+    """
     result = _make_analysis()
+    assert result.bpm is None
+    assert result.key is None
+    assert result.mode is None
+    assert result.danceability is None
     assert result.valence is None
-    assert result.speechiness is None
+    assert result.arousal is None
     assert result.instrumentalness is None
     assert result.acousticness is None
+    assert result.speechiness is None
 
 
 # Ensure pytest doesn't complain about unused import if no test uses it directly
