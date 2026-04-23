@@ -817,7 +817,37 @@ class SendspinBridgeManager:
                 return
             self.mass.create_task(self.setup_bridge(cast_player))
 
-        self._rebridge_unsubs[client_id] = server_api.add_event_listener(_listener)
+        event_unsub = server_api.add_event_listener(_listener)
+
+        cast_app_was_active = cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
+
+        def _on_cast_status_changed(app_id: str | None) -> None:
+            nonlocal cast_app_was_active
+            if app_id == SENDSPIN_CAST_APP_ID:
+                return
+            if not cast_app_was_active:
+                return
+            cast_app_was_active = False
+            self.logger.info(
+                "Claimed Sendspin Cast client lost on %s (app_id=%s) — detaching",
+                cast_player.display_name,
+                app_id,
+            )
+            client = server_api.get_client(client_id)
+            if client is not None and client.is_connected:
+                client.detach_connection(GoodbyeReason.SHUTDOWN)
+            if cast_player.on_app_status_changed is _on_cast_status_changed:
+                cast_player.on_app_status_changed = None
+
+        cast_player.on_app_status_changed = _on_cast_status_changed
+
+        def _combined_unsub() -> None:
+            with suppress(Exception):
+                event_unsub()
+            if cast_player.on_app_status_changed is _on_cast_status_changed:
+                cast_player.on_app_status_changed = None
+
+        self._rebridge_unsubs[client_id] = _combined_unsub
 
     def get_bridge(self, cast_player_id: str) -> SendspinChromecastBridge | None:
         """Get the bridge for a Chromecast player.
