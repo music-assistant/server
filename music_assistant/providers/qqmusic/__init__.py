@@ -1365,7 +1365,8 @@ class QQMusicProvider(MusicProvider):
             guess_folder = RecommendationFolder(
                 item_id="guess_recommend",
                 provider=self.instance_id,
-                name="猜你喜欢",
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
                 icon="mdi-lightbulb-on-outline",
             )
             for item in guess_tracks:
@@ -1410,7 +1411,8 @@ class QQMusicProvider(MusicProvider):
                 new_song_folder = RecommendationFolder(
                     item_id="new_songs",
                     provider=self.instance_id,
-                    name="推荐新歌",
+                    name="Recommended new tracks",
+                    translation_key="recommended_new_tracks",
                     icon="mdi-music-note-plus",
                 )
                 for item in new_tracks:
@@ -1441,7 +1443,8 @@ class QQMusicProvider(MusicProvider):
                 playlist_folder = RecommendationFolder(
                     item_id="recommended_playlists",
                     provider=self.instance_id,
-                    name="推荐歌单",
+                    name="Recommended playlists",
+                    translation_key="recommended_playlists",
                     icon="mdi-playlist-music",
                 )
                 _add_playlist_folder_items(playlist_folder, playlist_items)

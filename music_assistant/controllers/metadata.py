@@ -251,16 +251,6 @@ class MetaDataController(CoreController):
         """Handle logic after all core controllers have been set up."""
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
         self._register_maintenance_tasks()
-        # migrate theaudiodb images to new url
-        # they updated their cdn url to r2.theaudiodb.com
-        # TODO: remove this after 2.7 release
-        query = (
-            "UPDATE artists SET metadata = "
-            "REPLACE (metadata, 'https://www.theaudiodb.com', 'https://r2.theaudiodb.com') "
-            "WHERE artists.metadata LIKE '%https://www.theaudiodb.com%'"
-        )
-        await self.mass.music.database.execute(query)
-        await self.mass.music.database.commit()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -1251,7 +1241,6 @@ class MetaDataController(CoreController):
 
         # The musicbrainz ID is mandatory for all metadata lookups
         if not artist.mbid:
-            # TODO: Use a global cache/proxy for the MB lookups to save on API calls
             if mbid := await self._get_artist_mbid(artist):
                 artist.mbid = mbid
 
