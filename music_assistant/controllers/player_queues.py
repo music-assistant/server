@@ -1070,22 +1070,33 @@ class PlayerQueuesController(CoreController):
                 )
                 queue_items = [QueueItem.from_cache(item_data) for item_data in prev_items]
                 if queue.enqueued_media_items:
-                    # after deserialization from cache, enqueued_media_items are dicts
-                    queue.enqueued_media_items = [
-                        cast("MediaItemType", media_from_dict(cast("dict[str, Any]", item)))
-                        for item in queue.enqueued_media_items
-                    ]
+                    # mashumaro may deserialize list[MediaItemType] as plain dicts or as
+                    # proper objects depending on the version — handle both.
+                    queue.enqueued_media_items = cast(
+                        "list[MediaItemType]",
+                        [
+                            media_from_dict(item) if isinstance(item, dict) else item
+                            for item in cast(
+                                "list[dict[str, Any] | MediaItemType]",
+                                queue.enqueued_media_items,
+                            )
+                        ],
+                    )
                 if queue.radio_source:
-                    # radio_source suffers from the same deserialisation issue as
-                    # enqueued_media_items: after restoring from cache the items are
-                    # plain dicts, not MediaItemType objects. Without this step the
-                    # isinstance(item, Playlist) check in _fill_radio_tracks() always
-                    # returns False, causing dynamic playlists to fall back to regular
-                    # radio mode and raise UnsupportedFeaturedException.
-                    queue.radio_source = [
-                        cast("MediaItemType", media_from_dict(cast("dict[str, Any]", item)))
-                        for item in queue.radio_source
-                    ]
+                    # radio_source: mashumaro may deserialize list[MediaItemType] as plain
+                    # dicts or as proper objects depending on the version. Ensure all items
+                    # are proper objects so isinstance checks (e.g. Playlist) work correctly
+                    # in _fill_radio_tracks().
+                    queue.radio_source = cast(
+                        "list[MediaItemType]",
+                        [
+                            media_from_dict(item) if isinstance(item, dict) else item
+                            for item in cast(
+                                "list[dict[str, Any] | MediaItemType]",
+                                queue.radio_source,
+                            )
+                        ],
+                    )
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
