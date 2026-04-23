@@ -826,6 +826,16 @@ class SendspinBridgeManager:
         """
         return self._bridges.get(cast_player_id)
 
+    def get_bridge_by_client_id(self, bridge_client_id: str) -> SendspinChromecastBridge | None:
+        """Return the bridge whose `bridge_client_id` matches, if any.
+
+        :param bridge_client_id: The Sendspin client_id used by a bridged Cast device.
+        """
+        for bridge in self._bridges.values():
+            if bridge.bridge_client_id == bridge_client_id:
+                return bridge
+        return None
+
     async def _on_player_config_updated(self, event: MassEvent) -> None:
         """Handle player config updates for bridged Sendspin Chromecast players."""
         if not event.object_id:
