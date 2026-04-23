@@ -384,6 +384,12 @@ class YandexMusicClient:
         runner = self._call_with_retry if with_retry else self._call_no_retry
         try:
             return await runner(_do)
+        except UnauthorizedError as err:
+            # Expired/invalidated token. Surface as LoginFailed so MA prompts
+            # for re-auth instead of the raw yandex_music exception bubbling
+            # through browse / play and crashing the caller.
+            LOGGER.warning("Rotor session POST %s: token no longer valid", path)
+            raise LoginFailed("Invalid Yandex Music token") from err
         except (NetworkError, ProviderUnavailableError) as err:
             LOGGER.warning("Rotor session POST %s failed: %s", path, err)
             return None

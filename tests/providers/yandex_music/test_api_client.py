@@ -11,9 +11,9 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import SecretStr
-from yandex_music.exceptions import NetworkError
+from yandex_music.exceptions import NetworkError, UnauthorizedError
 from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
@@ -418,6 +418,24 @@ async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> Non
     assert event["type"] == "like"
     assert event["trackId"] == "100"
     assert "totalPlayedSeconds" not in event
+
+
+async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None:
+    """Expired/invalid token during /rotor/session/* surfaces as LoginFailed.
+
+    Without this mapping the raw ``UnauthorizedError`` from the MarshalX
+    client would bubble up through browse / play paths and crash the
+    provider instead of triggering MA's re-auth prompt.
+    """
+    client, underlying = _make_client()
+    # _do is awaited via _call_with_retry → _ensure_connected → returns our
+    # AsyncMock underlying client. The underlying client's ._request.post is
+    # what actually raises.
+    underlying._request = mock.MagicMock()
+    underlying._request.post = mock.AsyncMock(side_effect=UnauthorizedError("stale token"))
+
+    with pytest.raises(LoginFailed):
+        await client._rotor_session_request("new", {"seeds": ["user:onyourwave"]})
 
 
 # -- get_similar_artists ------------------------------------------------------
