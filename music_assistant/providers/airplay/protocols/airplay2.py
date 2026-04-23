@@ -66,6 +66,8 @@ class AirPlay2Stream(AirPlayProtocol):
             logger.info(line)
         elif "[ WARN]" in line:
             logger.warning(line)
+        elif "[DEBUG]" in line and "mass_timer_cb" in line:
+            logger.log(VERBOSE_LOG_LEVEL, line)
         elif "[DEBUG]" in line:
             logger.debug(line)
         elif "[ SPAM]" in line:
@@ -120,6 +122,8 @@ class AirPlay2Stream(AirPlayProtocol):
             str(self._cli_loglevel),
             "--dacp_id",
             prov.dacp_id,
+            "--pipe",
+            "-",  # Use stdin for audio input
             "--command_pipe",
             self.commands_pipe.path,
             "--latency",

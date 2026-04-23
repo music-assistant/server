@@ -1741,7 +1741,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="daily_songs",
                 provider=self.instance_id,
-                name="Daily Songs",
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
                 icon="mdi:star",
             )
             for song_obj in daily_songs:
@@ -1764,7 +1765,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="recommended_new_songs",
                 provider=self.instance_id,
-                name="New Songs",
+                name="Recommended new tracks",
+                translation_key="recommended_new_tracks",
                 icon="mdi:music-note",
             )
             for item in raw_new_songs:
@@ -1790,7 +1792,8 @@ class NeteaseCloudMusicProvider(MusicProvider):
             folder = RecommendationFolder(
                 item_id="recommended_playlists",
                 provider=self.instance_id,
-                name="Recommended Playlists",
+                name="Recommended playlists",
+                translation_key="recommended_playlists",
                 icon="mdi:playlist-music",
             )
             for playlist_obj in raw_playlists:
