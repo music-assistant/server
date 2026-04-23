@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -13,6 +14,8 @@ from .constants import (
     CONF_ACTION_AUTH_DEVICE,
     CONF_ACTION_AUTH_QR,
     CONF_ACTION_CLEAR_AUTH,
+    CONF_ACTION_DELETE_WAVE_PRESET,
+    CONF_ACTION_SAVE_WAVE_PRESET,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -20,14 +23,208 @@ from .constants import (
     CONF_REFRESH_TOKEN,
     CONF_REMEMBER_SESSION,
     CONF_TOKEN,
+    CONF_WAVE_PRESET_DRAFT_DIVERSITY,
+    CONF_WAVE_PRESET_DRAFT_LANGUAGE,
+    CONF_WAVE_PRESET_DRAFT_MOOD,
+    CONF_WAVE_PRESET_DRAFT_NAME,
+    CONF_WAVE_PRESET_TO_DELETE,
+    CONF_WAVE_PRESETS_DATA,
     CONF_X_TOKEN,
     DEFAULT_BASE_URL,
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_SUPERB,
+    WAVE_PRESET_DIVERSITY_VALUES,
+    WAVE_PRESET_LANGUAGE_VALUES,
+    WAVE_PRESET_MOOD_VALUES,
 )
+from .presets import parse_stored_presets as _parse_stored_presets
 from .provider import YandexMusicProvider
+
+
+def _save_wave_preset_action(values: dict[str, ConfigValueType]) -> None:
+    """Merge the current draft fields into the stored preset list.
+
+    Overwrites an existing preset with the same name instead of creating a
+    duplicate. Clears draft fields after persisting so the UI returns to a
+    blank state. Raises ``InvalidDataError`` when the name is blank.
+    """
+    name_raw = values.get(CONF_WAVE_PRESET_DRAFT_NAME)
+    name = name_raw.strip() if isinstance(name_raw, str) else ""
+    if not name:
+        raise InvalidDataError("Please fill the preset name before saving.")
+    presets = _parse_stored_presets(values.get(CONF_WAVE_PRESETS_DATA))
+    presets = [p for p in presets if p["name"] != name]
+    new_preset: dict[str, str] = {"name": name}
+    for conf_key, api_key in (
+        (CONF_WAVE_PRESET_DRAFT_DIVERSITY, "diversity"),
+        (CONF_WAVE_PRESET_DRAFT_MOOD, "moodEnergy"),
+        (CONF_WAVE_PRESET_DRAFT_LANGUAGE, "language"),
+    ):
+        val = values.get(conf_key)
+        if isinstance(val, str) and val:
+            new_preset[api_key] = val
+    presets.append(new_preset)
+    values[CONF_WAVE_PRESETS_DATA] = json.dumps(presets, ensure_ascii=False)
+    # Clear draft so the UI is ready for the next preset
+    values[CONF_WAVE_PRESET_DRAFT_NAME] = None
+    values[CONF_WAVE_PRESET_DRAFT_DIVERSITY] = ""
+    values[CONF_WAVE_PRESET_DRAFT_MOOD] = ""
+    values[CONF_WAVE_PRESET_DRAFT_LANGUAGE] = ""
+
+
+def _delete_wave_preset_action(values: dict[str, ConfigValueType]) -> None:
+    """Remove the preset named by CONF_WAVE_PRESET_TO_DELETE from the store.
+
+    Raises ``InvalidDataError`` when no name is selected. Idempotent — absent
+    names simply rewrite an unchanged list.
+    """
+    target_raw = values.get(CONF_WAVE_PRESET_TO_DELETE)
+    target = target_raw.strip() if isinstance(target_raw, str) else ""
+    if not target:
+        raise InvalidDataError("Please select a preset to delete.")
+    presets = _parse_stored_presets(values.get(CONF_WAVE_PRESETS_DATA))
+    presets = [p for p in presets if p["name"] != target]
+    values[CONF_WAVE_PRESETS_DATA] = json.dumps(presets, ensure_ascii=False)
+    values[CONF_WAVE_PRESET_TO_DELETE] = ""
+
+
+def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[ConfigEntry]:
+    """Return the wave-preset builder UI (all advanced settings).
+
+    Layout:
+      - Section label showing how many presets are saved.
+      - Four "draft" fields (name + three dropdowns) the user fills in.
+      - "Save preset" action → copies draft into the JSON store.
+      - "Delete preset" dropdown + action (hidden when no presets exist).
+      - Hidden STRING carrying the JSON store itself.
+
+    Number of presets is unbounded; the user never edits JSON directly.
+    """
+    empty_title = "— Default —"
+    diversity_options = [
+        ConfigValueOption(title=empty_title if not v else v.title(), value=v)
+        for v in WAVE_PRESET_DIVERSITY_VALUES
+    ]
+    mood_options = [
+        ConfigValueOption(title=empty_title if not v else v.title(), value=v)
+        for v in WAVE_PRESET_MOOD_VALUES
+    ]
+    language_options = [
+        ConfigValueOption(title=empty_title if not v else v.replace("-", " ").title(), value=v)
+        for v in WAVE_PRESET_LANGUAGE_VALUES
+    ]
+
+    presets = _parse_stored_presets(values.get(CONF_WAVE_PRESETS_DATA))
+    has_presets = bool(presets)
+    delete_options = [ConfigValueOption(title=p["name"], value=p["name"]) for p in presets]
+    if not delete_options:
+        # Empty options can break some frontends; supply a no-op placeholder.
+        delete_options = [ConfigValueOption(title="(no presets saved)", value="")]
+
+    def _str_value(key: str) -> str | None:
+        v = values.get(key)
+        return v if isinstance(v, str) else None
+
+    return [
+        ConfigEntry(
+            key="wave_preset_section_label",
+            type=ConfigEntryType.LABEL,
+            label=(f"My Wave presets ({len(presets)} saved)" if has_presets else "My Wave presets"),
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_NAME,
+            type=ConfigEntryType.STRING,
+            label="New preset name",
+            description=(
+                "Give the preset a short name, pick up to three dropdowns "
+                "below and click Save. Saving the same name again overwrites."
+            ),
+            default_value=None,
+            required=False,
+            advanced=True,
+            value=_str_value(CONF_WAVE_PRESET_DRAFT_NAME),
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_DIVERSITY,
+            type=ConfigEntryType.STRING,
+            label="New preset: diversity",
+            description="How broadly the wave explores.",
+            options=diversity_options,
+            default_value="",
+            required=False,
+            advanced=True,
+            value=_str_value(CONF_WAVE_PRESET_DRAFT_DIVERSITY),
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_MOOD,
+            type=ConfigEntryType.STRING,
+            label="New preset: mood",
+            description="Energy and mood of the tracks.",
+            options=mood_options,
+            default_value="",
+            required=False,
+            advanced=True,
+            value=_str_value(CONF_WAVE_PRESET_DRAFT_MOOD),
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_LANGUAGE,
+            type=ConfigEntryType.STRING,
+            label="New preset: language",
+            description="Lyrics language filter.",
+            options=language_options,
+            default_value="",
+            required=False,
+            advanced=True,
+            value=_str_value(CONF_WAVE_PRESET_DRAFT_LANGUAGE),
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_SAVE_WAVE_PRESET,
+            type=ConfigEntryType.ACTION,
+            label="Save preset",
+            description=(
+                "Adds the values above to Saved presets. The list is shown "
+                "under Radio then My Presets in Browse."
+            ),
+            action=CONF_ACTION_SAVE_WAVE_PRESET,
+            action_label="Save preset",
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_TO_DELETE,
+            type=ConfigEntryType.STRING,
+            label="Select preset to delete",
+            options=delete_options,
+            default_value="",
+            required=False,
+            advanced=True,
+            hidden=not has_presets,
+            value=_str_value(CONF_WAVE_PRESET_TO_DELETE),
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_DELETE_WAVE_PRESET,
+            type=ConfigEntryType.ACTION,
+            label="Delete selected preset",
+            description="Removes the selected preset from the Saved presets list.",
+            action=CONF_ACTION_DELETE_WAVE_PRESET,
+            action_label="Delete",
+            advanced=True,
+            hidden=not has_presets,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESETS_DATA,
+            type=ConfigEntryType.STRING,
+            label="Saved presets (internal)",
+            default_value="",
+            required=False,
+            advanced=True,
+            hidden=True,
+            value=_str_value(CONF_WAVE_PRESETS_DATA) or "",
+        ),
+    ]
+
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -111,6 +308,13 @@ async def get_config_entries(
         values[CONF_TOKEN] = None
         values[CONF_X_TOKEN] = None
         values[CONF_REFRESH_TOKEN] = None
+
+    # Wave-preset save/delete actions mutate the hidden JSON store and clear
+    # the draft / selection fields so the UI re-renders in a clean state.
+    if action == CONF_ACTION_SAVE_WAVE_PRESET:
+        _save_wave_preset_action(values)
+    if action == CONF_ACTION_DELETE_WAVE_PRESET:
+        _delete_wave_preset_action(values)
 
     # Check if user is authenticated
     is_authenticated = bool(values.get(CONF_TOKEN))
@@ -231,6 +435,8 @@ async def get_config_entries(
             required=False,
             advanced=True,
         ),
+        # User-defined wave presets: builder + save/delete actions (dynamic list)
+        *_wave_preset_config_entries(values),
         # Liked Tracks maximum tracks (advanced)
         ConfigEntry(
             key=CONF_LIKED_TRACKS_MAX_TRACKS,

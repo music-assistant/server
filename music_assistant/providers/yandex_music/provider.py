@@ -57,6 +57,7 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_TOKEN,
+    CONF_WAVE_PRESETS_DATA,
     CONF_X_TOKEN,
     DEFAULT_BASE_URL,
     DISCOVERY_INITIAL_TRACKS,
@@ -65,7 +66,9 @@ from .constants import (
     LIKED_TRACKS_PLAYLIST_ID,
     LISTENING_HISTORY_FOLDER_ID,
     MY_WAVE_BATCH_SIZE,
+    MY_WAVE_MODES_FOLDER_ID,
     MY_WAVE_PLAYLIST_ID,
+    MY_WAVE_PRESETS_FOLDER_ID,
     MY_WAVES_FOLDER_ID,
     MY_WAVES_SET_FOLDER_ID,
     PINNED_ITEMS_FOLDER_ID,
@@ -85,6 +88,9 @@ from .constants import (
     TAG_SLUG_CATEGORY,
     TRACK_BATCH_SIZE,
     WAVE_CATEGORY_DISPLAY_ORDER,
+    WAVE_MODE_ORDER,
+    WAVE_MODE_PRESETS,
+    WAVE_MODE_SEP,
     WAVES_FOLDER_ID,
     WAVES_LANDING_FOLDER_ID,
 )
@@ -102,10 +108,39 @@ from .parsers import (
     parse_podcast_episode,
     parse_track,
 )
+from .presets import parse_stored_presets
 from .streaming import YandexMusicStreamingManager
 
 if TYPE_CHECKING:
     from yandex_music import Album as YandexAlbum
+    from yandex_music import Track as YandexTrack
+
+
+# MediaType sub-paths that MA's default MusicProvider.browse() understands.
+# Used by the Collection dispatcher to delegate nested paths back to core.
+_COLLECTION_SUB_FOLDERS: frozenset[str] = frozenset(
+    {"tracks", "artists", "albums", "playlists", "audiobooks", "podcasts"}
+)
+
+
+def _split_wave_mode(station_id: str) -> tuple[str, dict[str, str]]:
+    """Split a wave-mode station key into its base station ID and preset settings.
+
+    Keys like ``user:onyourwave#discover`` encode a specific preset on top of
+    the base rotor station. The part before ``#`` is the station ID that goes
+    to Yandex; the part after is a key into WAVE_MODE_PRESETS.
+
+    :param station_id: Station key, with or without a ``#preset`` suffix.
+    :return: Tuple of (base_station_id, settings_dict). The suffix, if
+        present, is always stripped — only the base station goes to
+        Yandex. ``settings_dict`` is the preset's settings when the suffix
+        matches a known WAVE_MODE_PRESETS key, or an empty dict otherwise
+        (unknown suffix → base station fired with no extra seeds).
+    """
+    if WAVE_MODE_SEP not in station_id:
+        return (station_id, {})
+    base, preset = station_id.split(WAVE_MODE_SEP, 1)
+    return (base, dict(WAVE_MODE_PRESETS.get(preset, {})))
 
 
 def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
@@ -139,13 +174,23 @@ def _extract_chapter_map_from_album(album: YandexAlbum) -> tuple[list[str], list
 
 
 class _WaveState:
-    """Per-station mutable state for rotor wave playback."""
+    """Per-station mutable state for rotor wave playback.
+
+    Holds both the new session-based rotor identifiers (`session_id`) and the
+    legacy stations-based ones (`batch_id`). Call sites prefer `session_id`
+    when present; `batch_id` is still carried because feedback events anchor
+    to a specific batch within the session.
+    """
 
     def __init__(self) -> None:
+        self.session_id: str | None = None
         self.batch_id: str | None = None
         self.last_track_id: str | None = None
+        self.playlist_next_cursor: str | None = None
         self.seen_track_ids: set[str] = set()
         self.radio_started_sent: bool = False
+        self.prefetched: list[Any] = []
+        self.settings: dict[str, str] = {}
         self.lock: asyncio.Lock = asyncio.Lock()
 
 
@@ -154,13 +199,7 @@ class YandexMusicProvider(MusicProvider):
 
     _client: YandexMusicClient | None = None
     _streaming: YandexMusicStreamingManager | None = None
-    _my_wave_batch_id: str | None = None
-    _my_wave_last_track_id: str | None = None  # last track id for "Load more" (API queue param)
-    _my_wave_playlist_next_cursor: str | None = None  # first_track_id for next playlist page
-    _my_wave_radio_started_sent: bool = False
-    _my_wave_seen_track_ids: set[str]  # Track IDs seen in current My Wave session
-    _my_wave_lock: asyncio.Lock  # Protects My Wave mutable state
-    _wave_states: dict[str, _WaveState]  # Per-station state for tagged wave stations
+    _wave_states: dict[str, _WaveState]  # Per-station state (incl. My Wave)
     _wave_bg_colors: dict[str, str]  # image_url -> hex bg color for transparent covers
     # Short-lived cache to dedupe the three library syncs (albums/podcasts/audiobooks)
     # that all derive from the same liked-albums endpoint.
@@ -307,11 +346,13 @@ class YandexMusicProvider(MusicProvider):
 
         # Suppress yandex_music library DEBUG dumps (full API request/response JSON)
         logging.getLogger("yandex_music").setLevel(self.logger.level + 10)
+        # Propagate the MA instance log level to our per-module loggers
+        # (api_client, streaming, parsers, auth) so DEBUG hooks there actually
+        # print when MA is set to DEBUG for this provider.
+        logging.getLogger("music_assistant.providers.yandex_music").setLevel(self.logger.level)
         self._streaming = YandexMusicStreamingManager(self)
-        # Initialize My Wave duplicate tracking
-        self._my_wave_seen_track_ids = set()
-        self._my_wave_lock = asyncio.Lock()
-        # Initialize per-station wave state dict
+        # Per-station wave state (incl. My Wave under ROTOR_STATION_MY_WAVE).
+        # Entries are created lazily by _get_wave_state() on first access.
         self._wave_states = {}
         self._wave_bg_colors = {}
         self._liked_albums_lock, self._liked_albums_cache = asyncio.Lock(), None
@@ -348,7 +389,9 @@ class YandexMusicProvider(MusicProvider):
             name=name,
         )
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+    async def browse(  # noqa: PLR0911, PLR0915
+        self, path: str
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse provider items with locale-based folder names and My Wave.
 
         Root level shows My Wave, artists, albums, liked tracks, playlists. Names
@@ -365,15 +408,76 @@ class YandexMusicProvider(MusicProvider):
         sub_subpath = path_parts[1] if len(path_parts) > 1 else None
 
         if subpath == MY_WAVE_PLAYLIST_ID:
-            async with self._my_wave_lock:
+            async with self._get_wave_state(ROTOR_STATION_MY_WAVE).lock:
                 return await self._browse_my_wave(path, sub_subpath)
+
+        # Wave modes — accept two equivalent URL forms so both browse
+        # navigation (slash form "my_wave_modes/<preset>", emitted by our
+        # listing) and MA's play-time reconstruction (underscore form
+        # "my_wave_modes_<preset>", built as "<instance>://<item_id>") work.
+        mode_preset: str | None = None
+        if subpath == MY_WAVE_MODES_FOLDER_ID and sub_subpath is None:
+            return self._browse_my_wave_modes_list(path)
+        if subpath == MY_WAVE_MODES_FOLDER_ID and sub_subpath is not None:
+            mode_preset = sub_subpath if sub_subpath != "next" else None
+            if mode_preset is None:
+                return []
+            load_more_modes = len(path_parts) > 2 and path_parts[2] == "next"
+        elif subpath and subpath.startswith(f"{MY_WAVE_MODES_FOLDER_ID}_"):
+            mode_preset = subpath[len(MY_WAVE_MODES_FOLDER_ID) + 1 :]
+            load_more_modes = sub_subpath == "next"
+        if mode_preset is not None:
+            if mode_preset not in WAVE_MODE_PRESETS:
+                return []
+            station_key = f"{ROTOR_STATION_MY_WAVE}{WAVE_MODE_SEP}{mode_preset}"
+            async with self._get_wave_state(station_key).lock:
+                return await self._browse_my_wave_mode(path, station_key, load_more_modes)
+
+        # User-saved wave presets — same dual-form handling.
+        preset_idx: int | None = None
+        load_more_presets = False
+        if subpath == MY_WAVE_PRESETS_FOLDER_ID and sub_subpath is None:
+            return self._browse_user_presets_list(path, self._get_user_wave_presets())
+        if subpath == MY_WAVE_PRESETS_FOLDER_ID and sub_subpath is not None:
+            try:
+                preset_idx = int(sub_subpath)
+            except ValueError:
+                return []
+            load_more_presets = len(path_parts) > 2 and path_parts[2] == "next"
+        elif subpath and subpath.startswith(f"{MY_WAVE_PRESETS_FOLDER_ID}_"):
+            try:
+                preset_idx = int(subpath[len(MY_WAVE_PRESETS_FOLDER_ID) + 1 :])
+            except ValueError:
+                return []
+            load_more_presets = sub_subpath == "next"
+        if preset_idx is not None:
+            user_presets = self._get_user_wave_presets()
+            if not 0 <= preset_idx < len(user_presets):
+                return []
+            preset_data = user_presets[preset_idx]
+            station_key = f"{ROTOR_STATION_MY_WAVE}{WAVE_MODE_SEP}preset_{preset_idx}"
+            wave = self._get_wave_state(station_key)
+            # Stash user-chosen settings so _fetch_rotor_session_batch sends them
+            wave.settings = {
+                k: v
+                for k, v in preset_data.items()
+                if k in ("diversity", "moodEnergy", "language") and v
+            }
+            async with wave.lock:
+                return await self._browse_my_wave_mode(path, station_key, load_more_presets)
 
         # For You folder (picks + mixes)
         if subpath == FOR_YOU_FOLDER_ID:
             return await self._browse_for_you(path, path_parts)
 
-        # Collection folder (library items)
+        # Collection folder (library items). Two shapes:
+        #   <prov>://collection              → listing of library sub-folders
+        #   <prov>://collection/<sub>        → delegate to MA's library handler
+        # The nested form is what lets MA's "back" button return here (strip
+        # last /-segment) instead of dumping the user at the provider root.
         if subpath == COLLECTION_FOLDER_ID:
+            if sub_subpath in _COLLECTION_SUB_FOLDERS:
+                return await super().browse(f"{self.instance_id}://{sub_subpath}")
             return await self._browse_collection(path)
 
         # Handle picks/ path (mood, activity, era, genres)
@@ -455,6 +559,27 @@ class YandexMusicProvider(MusicProvider):
                 is_playable=True,
             )
         )
+        # Wave modes folder (P4): discover / calm / active / language presets
+        folders.append(
+            BrowseFolder(
+                item_id=MY_WAVE_MODES_FOLDER_ID,
+                provider=self.instance_id,
+                path=f"{base}{MY_WAVE_MODES_FOLDER_ID}",
+                name=names.get(MY_WAVE_MODES_FOLDER_ID, "Wave Modes"),
+                is_playable=False,
+            )
+        )
+        # User-defined wave presets (P8) — shown only when any configured.
+        if self._get_user_wave_presets():
+            folders.append(
+                BrowseFolder(
+                    item_id=MY_WAVE_PRESETS_FOLDER_ID,
+                    provider=self.instance_id,
+                    path=f"{base}{MY_WAVE_PRESETS_FOLDER_ID}",
+                    name=names.get(MY_WAVE_PRESETS_FOLDER_ID, "My Presets"),
+                    is_playable=False,
+                )
+            )
         # For You folder — Picks + Mixes (Яндекс «Для вас»)
         folders.append(
             BrowseFolder(
@@ -532,12 +657,13 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_my_wave(
         self, path: str, sub_subpath: str | None
     ) -> list[Track | BrowseFolder]:
-        """Browse My Wave tracks (must be called under _my_wave_lock).
+        """Browse My Wave tracks (must be called under the My Wave state lock).
 
         :param path: Full browse path.
         :param sub_subpath: Sub-path part ('next' for load more, or track_id cursor).
         :return: List of Track and optional BrowseFolder for "Load more".
         """
+        wave = self._get_wave_state(ROTOR_STATION_MY_WAVE)
         max_tracks_config = int(
             self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
         )
@@ -557,11 +683,11 @@ class YandexMusicProvider(MusicProvider):
 
         # Reset seen tracks on fresh browse (not "load more")
         if sub_subpath != "next":
-            self._my_wave_seen_track_ids = set()
+            wave.seen_track_ids = set()
 
         queue: str | int | None = None
         if sub_subpath == "next":
-            queue = self._my_wave_last_track_id
+            queue = wave.last_track_id
         elif sub_subpath:
             queue = sub_subpath
 
@@ -574,24 +700,25 @@ class YandexMusicProvider(MusicProvider):
             if total_track_count >= effective_limit:
                 break
 
-            yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
+            # On a fresh browse (non-"next"), honour any sub_subpath cursor override
+            # by seeding wave.last_track_id so the helper picks it up.
+            if queue is not None:
+                wave.last_track_id = str(queue)
+            yandex_tracks, batch_id = await self._fetch_rotor_session_batch(
+                wave, ROTOR_STATION_MY_WAVE
+            )
             if batch_id:
-                self._my_wave_batch_id = batch_id
                 last_batch_id = batch_id
-            if not self._my_wave_radio_started_sent and yandex_tracks:
-                sent = await self.client.send_rotor_station_feedback(
-                    ROTOR_STATION_MY_WAVE,
-                    "radioStarted",
-                    batch_id=batch_id,
-                )
+            if not wave.radio_started_sent and yandex_tracks:
+                sent = await self._send_wave_feedback(wave, ROTOR_STATION_MY_WAVE, "radioStarted")
                 if sent:
-                    self._my_wave_radio_started_sent = True
+                    wave.radio_started_sent = True
             first_track_id_this_batch = None
             for yt in yandex_tracks:
                 if total_track_count >= effective_limit:
                     break
 
-                track = self._parse_my_wave_track(yt, self._my_wave_seen_track_ids)
+                track = self._parse_my_wave_track(yt, wave.seen_track_ids)
                 if track is None:
                     continue
                 all_tracks.append(track)
@@ -602,7 +729,7 @@ class YandexMusicProvider(MusicProvider):
                     first_track_id_this_batch = track_id
 
             if first_track_id_this_batch is not None:
-                self._my_wave_last_track_id = first_track_id_this_batch
+                wave.last_track_id = first_track_id_this_batch
             if (
                 first_track_id_this_batch is None
                 or not batch_id
@@ -627,15 +754,171 @@ class YandexMusicProvider(MusicProvider):
             )
         return all_tracks
 
-    def _parse_my_wave_track(self, yt: Any, seen_ids: set[str]) -> Track | None:
+    def _get_user_wave_presets(self) -> list[dict[str, str]]:
+        """Decode user-defined wave presets from the hidden JSON config key.
+
+        Thin wrapper around :func:`presets.parse_stored_presets` so browse
+        code and settings actions use the exact same parsing — avoids schema
+        drift when preset fields are added or renamed.
+        """
+        return parse_stored_presets(self.config.get_value(CONF_WAVE_PRESETS_DATA))
+
+    def _browse_user_presets_list(
+        self, path: str, presets: list[dict[str, str]]
+    ) -> list[BrowseFolder]:
+        """Return one playable BrowseFolder per configured user preset.
+
+        ``path`` is nested (``my_wave_presets/<idx>``) so MA's back-nav —
+        which strips the last ``/``-segment — returns the user to the
+        listing instead of the provider root. ``item_id`` uses the
+        underscore form (``my_wave_presets_<idx>``) because MA rebuilds a
+        playable folder's path from its item_id at play time. The browse
+        dispatcher accepts both forms.
+
+        :param path: Current browse path.
+        :param presets: Sanitized presets from ``_get_user_wave_presets``.
+        :return: List of playable BrowseFolder entries.
+        """
+        base = path if path.endswith("/") else f"{path}/"
+        folders: list[BrowseFolder] = []
+        for idx, preset in enumerate(presets):
+            folders.append(
+                BrowseFolder(
+                    item_id=f"{MY_WAVE_PRESETS_FOLDER_ID}_{idx}",
+                    provider=self.instance_id,
+                    path=f"{base}{idx}",
+                    name=preset.get("name", f"Preset {idx + 1}"),
+                    is_playable=True,
+                )
+            )
+        return folders
+
+    def _browse_my_wave_modes_list(self, path: str) -> list[BrowseFolder]:
+        """Return the 11 wave-mode entries as playable browse folders.
+
+        Same dual-form contract as user presets: nested ``path`` keeps
+        back-navigation intact, underscore ``item_id`` survives MA's
+        play-time reconstruction.
+
+        :param path: Browse path the user navigated into.
+        :return: Ordered list of BrowseFolder entries, one per preset.
+        """
+        names = self._get_browse_names()
+        base = path if path.endswith("/") else f"{path}/"
+        folders: list[BrowseFolder] = []
+        for preset in WAVE_MODE_ORDER:
+            name_key = f"wave_mode_{preset}"
+            folders.append(
+                BrowseFolder(
+                    item_id=f"{MY_WAVE_MODES_FOLDER_ID}_{preset}",
+                    provider=self.instance_id,
+                    path=f"{base}{preset}",
+                    name=names.get(name_key, preset.replace("_", " ").title()),
+                    is_playable=True,
+                )
+            )
+        return folders
+
+    async def _browse_my_wave_mode(
+        self, path: str, station_key: str, load_more: bool
+    ) -> list[Track | BrowseFolder]:
+        """Fetch a batch of tracks for a specific wave-mode preset.
+
+        Reuses the session-API machinery: tracks live in
+        ``_wave_states[station_key]`` where station_key is
+        ``user:onyourwave#{preset}``. Tracks carry composite item_ids that
+        route feedback back to this state.
+
+        :param path: Full browse path to this preset.
+        :param station_key: Station key with a ``#preset`` suffix.
+        :param load_more: True when called for ``.../next`` pagination.
+        :return: Tracks + optional "Load more" folder.
+        """
+        wave = self._get_wave_state(station_key)
+        max_tracks_config = int(
+            self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
+        )
+        batch_size_config = MY_WAVE_BATCH_SIZE
+        effective_limit = min(
+            BROWSE_INITIAL_TRACKS if not load_more else max_tracks_config,
+            max_tracks_config,
+        )
+        max_batches = batch_size_config if not load_more else 1
+
+        if not load_more:
+            wave.seen_track_ids = set()
+
+        all_tracks: list[Track | BrowseFolder] = []
+        last_batch_id: str | None = None
+        total_track_count = 0
+
+        for _ in range(max_batches):
+            if total_track_count >= effective_limit:
+                break
+            yandex_tracks, batch_id = await self._fetch_rotor_session_batch(wave, station_key)
+            if batch_id:
+                last_batch_id = batch_id
+            if not wave.radio_started_sent and yandex_tracks:
+                sent = await self._send_wave_feedback(wave, station_key, "radioStarted")
+                if sent:
+                    wave.radio_started_sent = True
+            first_track_id_this_batch: str | None = None
+            for yt in yandex_tracks:
+                if total_track_count >= effective_limit:
+                    break
+                track = self._parse_my_wave_track(yt, wave.seen_track_ids, station_key=station_key)
+                if track is None:
+                    continue
+                all_tracks.append(track)
+                total_track_count += 1
+                track_id = track.item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+                if first_track_id_this_batch is None:
+                    first_track_id_this_batch = track_id
+            if first_track_id_this_batch is not None:
+                wave.last_track_id = first_track_id_this_batch
+            if (
+                first_track_id_this_batch is None
+                or not batch_id
+                or not yandex_tracks
+                or total_track_count >= effective_limit
+            ):
+                break
+
+        if last_batch_id and total_track_count < max_tracks_config:
+            names = self._get_browse_names()
+            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
+            all_tracks.append(
+                BrowseFolder(
+                    item_id="next",
+                    provider=self.instance_id,
+                    path=f"{path.rstrip('/')}/next",
+                    name=next_name,
+                    is_playable=False,
+                )
+            )
+        return all_tracks
+
+    def _parse_my_wave_track(
+        self,
+        yt: Any,
+        seen_ids: set[str],
+        *,
+        station_key: str = ROTOR_STATION_MY_WAVE,
+    ) -> Track | None:
         """Parse a Yandex track into a My Wave Track with composite item_id.
 
         Extracts the track_id, checks for duplicates in the seen_ids set,
-        sets composite item_id (track_id@station_id), and updates provider_mappings.
-        Callers using shared state must hold _my_wave_lock.
+        sets composite item_id (track_id@station_key) and updates
+        provider_mappings. `station_key` is the key in `_wave_states` under
+        which the matching session lives; for preset modes it carries a
+        `#preset` suffix so `on_played`/`on_streamed` find the right session.
+
+        Callers using shared state must hold the My Wave state lock.
 
         :param yt: Yandex track object from rotor station response.
         :param seen_ids: Set of already-seen track IDs to check and update.
+        :param station_key: Station key to embed in the composite item_id.
+            Defaults to the plain My Wave station.
         :return: Parsed Track with composite item_id, or None if duplicate/invalid.
         """
         try:
@@ -653,7 +936,7 @@ class YandexMusicProvider(MusicProvider):
             return None
 
         seen_ids.add(track_id)
-        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
+        t.item_id = f"{track_id}{RADIO_TRACK_ID_SEP}{station_key}"
         for pm in t.provider_mappings:
             if pm.provider_instance == self.instance_id:
                 pm.item_id = t.item_id
@@ -804,72 +1087,36 @@ class YandexMusicProvider(MusicProvider):
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse «Collection» folder — shows library sub-folders (tracks/artists/albums/playlists).
 
+        Child ``path`` is nested (``…/collection/tracks``) so MA's "back"
+        button lands on this listing instead of the provider root. The
+        dispatcher then strips the ``collection/`` prefix and hands off to
+        core's default library handler.
+
         :param path: Full browse path.
         :return: List of library sub-folders.
         """
         names = self._get_browse_names()
-        base_parts = path.split("//", 1)
-        root_base = (base_parts[0] + "//") if len(base_parts) > 1 else path.rstrip("/") + "/"
+        base = path if path.endswith("/") else f"{path}/"
 
         folders: list[BrowseFolder] = []
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
+        feature_map: tuple[tuple[ProviderFeature, str, bool], ...] = (
+            (ProviderFeature.LIBRARY_TRACKS, "tracks", True),
+            (ProviderFeature.LIBRARY_ARTISTS, "artists", True),
+            (ProviderFeature.LIBRARY_ALBUMS, "albums", True),
+            (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", True),
+            (ProviderFeature.LIBRARY_PODCASTS, "podcasts", False),
+            (ProviderFeature.LIBRARY_AUDIOBOOKS, "audiobooks", False),
+        )
+        for feature, sub_id, is_playable in feature_map:
+            if feature not in self.supported_features:
+                continue
             folders.append(
                 BrowseFolder(
-                    item_id="tracks",
+                    item_id=sub_id,
                     provider=self.instance_id,
-                    path=f"{root_base}tracks",
-                    name=names["tracks"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="artists",
-                    provider=self.instance_id,
-                    path=f"{root_base}artists",
-                    name=names["artists"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="albums",
-                    provider=self.instance_id,
-                    path=f"{root_base}albums",
-                    name=names["albums"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="playlists",
-                    provider=self.instance_id,
-                    path=f"{root_base}playlists",
-                    name=names["playlists"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="podcasts",
-                    provider=self.instance_id,
-                    path=f"{root_base}podcasts",
-                    name=names["podcasts"],
-                    is_playable=False,
-                )
-            )
-        if ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="audiobooks",
-                    provider=self.instance_id,
-                    path=f"{root_base}audiobooks",
-                    name=names["audiobooks"],
-                    is_playable=False,
+                    path=f"{base}{sub_id}",
+                    name=names[sub_id],
+                    is_playable=is_playable,
                 )
             )
         return folders
@@ -910,9 +1157,17 @@ class YandexMusicProvider(MusicProvider):
     async def _browse_history(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse user's recent listening history (flattened across days).
 
-        Filters to ``type == "track"`` entries only — album/playlist context
-        items in the history feed are dropped. Tracks are de-duplicated by
-        id and returned in most-recent-first order.
+        Collects ``track_id`` values from each history entry's ``item_id``
+        sub-object (``full_model`` is not populated by the current API
+        response — MarshalX exposes the IDs separately), dedupes, and
+        batch-resolves them via ``get_tracks`` so the returned Track objects
+        carry full artist/album/cover metadata.
+
+        Entries without a resolvable ``track_id`` (e.g. album-only context
+        rows) are skipped silently. Order is preserved — most recent first —
+        by collecting unique IDs in response order into ``ordered_ids``,
+        then rebuilding the final list by iterating ``ordered_ids`` and
+        looking up each batch-fetched track in an id→track map.
 
         :return: List of recently played Track items.
         """
@@ -922,25 +1177,47 @@ class YandexMusicProvider(MusicProvider):
             return []
 
         seen_track_ids: set[str] = set()
-        tracks: list[Track] = []
+        ordered_ids: list[str] = []
         for tab in tabs:
-            groups = getattr(tab, "items", None) or []
-            for group in groups:
-                history_items = getattr(group, "tracks", None) or []
-                for hist_item in history_items:
+            for group in getattr(tab, "items", None) or []:
+                for hist_item in getattr(group, "tracks", None) or []:
                     if getattr(hist_item, "type", None) != "track":
                         continue
-                    full = getattr(getattr(hist_item, "data", None), "full_model", None)
-                    if full is None or getattr(full, "id", None) is None:
+                    item_id_obj = getattr(getattr(hist_item, "data", None), "item_id", None)
+                    track_key: str | None = None
+                    if isinstance(item_id_obj, dict):
+                        track_key = item_id_obj.get("track_id") or item_id_obj.get("id")
+                    else:
+                        track_key = getattr(item_id_obj, "track_id", None) or getattr(
+                            item_id_obj, "id", None
+                        )
+                    if not track_key:
                         continue
-                    track_key = str(full.id)
+                    track_key = str(track_key)
                     if track_key in seen_track_ids:
                         continue
                     seen_track_ids.add(track_key)
-                    try:
-                        tracks.append(parse_track(self, full))
-                    except InvalidDataError as err:
-                        self.logger.debug("Skipping history track: %s", err)
+                    ordered_ids.append(track_key)
+
+        if not ordered_ids:
+            return []
+
+        try:
+            fetched = await self.client.get_tracks(ordered_ids)
+        except ResourceTemporarilyUnavailable as err:
+            self.logger.warning("Failed to hydrate history tracks: %s", err)
+            return []
+
+        by_id = {str(t.id): t for t in fetched if getattr(t, "id", None) is not None}
+        tracks: list[Track] = []
+        for tid in ordered_ids:
+            yt = by_id.get(tid)
+            if yt is None:
+                continue
+            try:
+                tracks.append(parse_track(self, yt))
+            except InvalidDataError as err:
+                self.logger.debug("Skipping history track %s: %s", tid, err)
         return tracks
 
     async def _browse_picks(
@@ -1097,6 +1374,142 @@ class YandexMusicProvider(MusicProvider):
         :return: _WaveState instance for this station.
         """
         return self._wave_states.setdefault(station_id, _WaveState())
+
+    async def _send_wave_feedback(
+        self,
+        wave: _WaveState,
+        station_id: str,
+        event_type: str,
+        *,
+        track_id: str | None = None,
+        total_played_seconds: int | None = None,
+    ) -> bool:
+        """Route rotor feedback to the session endpoint.
+
+        Requires an active ``wave.session_id`` — rotor feedback is only
+        meaningful inside the session it originated from. The legacy
+        stations-based endpoint (``/rotor/station/{id}/feedback``) is no
+        longer reachable (returns 404 "not-found"), so when there's no
+        session we skip silently rather than spamming the log.
+
+        This happens when the track's composite item_id was parsed in a
+        previous provider run (e.g. loaded from MA's library cache) and
+        the corresponding session_id is not in memory any more. History
+        reporting via ``play_audio`` still works in that case — only the
+        rotor recommendation signal is lost.
+
+        :param wave: Station state carrying session_id + batch_id.
+        :param station_id: Rotor station ID (used only for logging here).
+        :param event_type: Rotor event type (radioStarted, trackStarted, …).
+        :param track_id: Yandex track ID the event refers to.
+        :param total_played_seconds: Seconds played (trackFinished / skip only).
+        :return: True if the feedback POST succeeded, False when skipped.
+        """
+        if not wave.session_id:
+            self.logger.debug(
+                "Skipping rotor feedback %s for %s: no active session",
+                event_type,
+                station_id,
+            )
+            return False
+        return await self.client.rotor_session_feedback(
+            wave.session_id,
+            event_type,
+            track_id=track_id,
+            total_played_seconds=total_played_seconds,
+            batch_id=wave.batch_id,
+        )
+
+    async def _prefetch_rotor_session(self, station_key: str) -> None:
+        """Fire-and-forget: fetch the next batch for an active wave session.
+
+        Called from ``on_played`` while a wave track starts playing, so by the
+        time Music Assistant's DSTM asks for more via ``get_similar_tracks``,
+        we already have Yandex-curated wave tracks sitting in
+        ``wave.prefetched`` ready to serve (no extra round-trip).
+
+        No-op when the station has no active session yet (prefetch cannot
+        safely create one — that requires holding the lock across the
+        network call and would stall readers), or when the buffer already
+        has items (avoids burning rate limit).
+
+        Three-phase lock discipline so the network round-trip does not
+        block browse / drain paths that share the lock:
+
+          1. Acquire, verify session + empty buffer, snapshot
+             ``session_id`` and ``last_track_id``, release.
+          2. Call ``client.rotor_session_tracks`` **directly** (no
+             ``_fetch_rotor_session_batch``) — that helper mutates shared
+             state (session creation, batch_id write) and would race with
+             other callers now that we hold no lock. The raw client call
+             only reads the arguments we pass in.
+          3. Re-acquire, verify the session hasn't been recycled and the
+             buffer is still empty, then ``extend``.
+
+        :param station_key: Station key whose state to top up.
+        """
+        wave = self._wave_states.get(station_key)
+        if wave is None:
+            return
+
+        async with wave.lock:
+            if wave.session_id is None or wave.prefetched:
+                return
+            session_id = wave.session_id
+            cursor = wave.last_track_id
+
+        if not cursor:
+            return  # No anchor for the next batch yet; try again later.
+
+        tracks, _ = await self.client.rotor_session_tracks(session_id, current_track_id=str(cursor))
+        if not tracks:
+            return
+
+        async with wave.lock:
+            # Another task could have restarted the session or filled the
+            # buffer while we were awaiting the network call; bail in both
+            # cases to avoid stale extends.
+            if wave.session_id != session_id or wave.prefetched:
+                return
+            wave.prefetched.extend(tracks)
+
+    async def _fetch_rotor_session_batch(
+        self, wave: _WaveState, station_id: str
+    ) -> tuple[list[YandexTrack], str | None]:
+        """Fetch the next rotor-session batch for any station.
+
+        On first call (wave.session_id is None), starts a new rotor session
+        and records session_id + batch_id on the wave state. On subsequent
+        calls, paginates via rotor_session_tracks using wave.last_track_id.
+
+        If station_id carries a wave-mode suffix (e.g. "user:onyourwave#discover"),
+        the suffix maps to a preset in WAVE_MODE_PRESETS and its settings are
+        merged with wave.settings (wave.settings wins on key conflict). The
+        base station ID (before "#") is what actually goes to Yandex.
+
+        :param wave: The _WaveState for this station (persists across calls).
+        :param station_id: Rotor station key (may include a "#preset" suffix).
+        :return: Tuple of (list of yandex tracks, batch_id or None).
+        """
+        # Session-creation path: no session yet, or we have a session but no
+        # cursor yet (`tracks` with an empty queue returns a hard-to-debug
+        # empty batch — starting a fresh session is the same latency but
+        # actually yields tracks).
+        if wave.session_id is None or not wave.last_track_id:
+            base_station, preset_settings = _split_wave_mode(station_id)
+            merged = {**preset_settings, **wave.settings}
+            session_id, tracks, batch_id = await self.client.rotor_session_new(
+                base_station, settings=merged or None
+            )
+            if session_id:
+                wave.session_id = session_id
+        else:
+            tracks, batch_id = await self.client.rotor_session_tracks(
+                wave.session_id, current_track_id=str(wave.last_track_id)
+            )
+        if batch_id:
+            wave.batch_id = batch_id
+        return (tracks, batch_id)
 
     async def _browse_waves(
         self, path: str, path_parts: list[str]
@@ -1306,23 +1719,20 @@ class YandexMusicProvider(MusicProvider):
             )
 
             self.logger.debug(
-                "Browse wave station: station_id=%s path=%s last_track_id=%s",
+                "Browse wave station: station_id=%s path=%s last_track_id=%s session=%s",
                 station_id,
                 path,
                 state.last_track_id,
+                state.session_id,
             )
-            yandex_tracks, batch_id = await self.client.get_rotor_station_tracks(
-                station_id, queue=state.last_track_id
-            )
-            if batch_id:
-                state.batch_id = batch_id
+            # Tagged stations (genre:*, mood:*, activity:*, epoch:*) accept the
+            # same /rotor/session/* endpoint as user:onyourwave / track:{id},
+            # verified against the live Yandex API. Reuse the session helper so
+            # batch_id + session_id stay anchored across browse/play/feedback.
+            yandex_tracks, _ = await self._fetch_rotor_session_batch(state, station_id)
 
             if not state.radio_started_sent and yandex_tracks:
-                sent = await self.client.send_rotor_station_feedback(
-                    station_id,
-                    "radioStarted",
-                    batch_id=batch_id,
-                )
+                sent = await self._send_wave_feedback(state, station_id, "radioStarted")
                 if sent:
                     state.radio_started_sent = True
 
@@ -1384,11 +1794,15 @@ class YandexMusicProvider(MusicProvider):
     def _extract_wave_item_cover(item: dict[str, Any]) -> tuple[str | None, str | None]:
         """Extract cover URI and background color from a wave/mix item.
 
+        Accepts both camelCase (``compactImageUrl`` — what /landing-blocks/
+        actually returns) and snake_case (``compact_image_url`` — retained
+        for safety if MarshalX ever normalises the payload).
+
         :param item: Wave or mix item dict from the API.
         :return: (cover_uri, bg_color) tuple where bg_color is a hex string or None.
         """
         agent_uri = item.get("agent", {}).get("cover", {}).get("uri", "")
-        cover_uri = agent_uri or item.get("compact_image_url")
+        cover_uri = agent_uri or item.get("compactImageUrl") or item.get("compact_image_url")
         bg_color = item.get("colors", {}).get("average")
         return cover_uri, bg_color
 
@@ -1483,7 +1897,9 @@ class YandexMusicProvider(MusicProvider):
                 items = wave_category.get("items", [])
                 result: list[BrowseFolder] = []
                 for item in items:
-                    station_id = item.get("station_id", "")
+                    # API returns camelCase (`stationId`); keep snake_case as a
+                    # safety net if the payload is ever normalised upstream.
+                    station_id = item.get("stationId") or item.get("station_id") or ""
                     title = item.get("title", "")
                     if not station_id or not title:
                         continue
@@ -1882,23 +2298,24 @@ class YandexMusicProvider(MusicProvider):
         :param page: Page number (0 = first batch, 1+ = next batches via queue cursor).
         :return: List of Track objects for this page.
         """
-        async with self._my_wave_lock:
+        wave = self._get_wave_state(ROTOR_STATION_MY_WAVE)
+        async with wave.lock:
             max_tracks_config = int(
                 self.config.get_value(CONF_MY_WAVE_MAX_TRACKS) or 150  # type: ignore[arg-type]
             )
 
             # Reset seen tracks on first page
             if page == 0:
-                self._my_wave_seen_track_ids = set()
+                wave.seen_track_ids = set()
 
             queue: str | int | None = None
             if page > 0:
-                queue = self._my_wave_playlist_next_cursor
+                queue = wave.playlist_next_cursor
                 if not queue:
                     return []
 
             # Check if we've already reached the limit
-            if len(self._my_wave_seen_track_ids) >= max_tracks_config:
+            if len(wave.seen_track_ids) >= max_tracks_config:
                 return []
 
             tracks: list[Track] = []
@@ -1906,30 +2323,30 @@ class YandexMusicProvider(MusicProvider):
 
             # Fetch MY_WAVE_BATCH_SIZE Rotor API batches per page to reduce API round-trips
             for _ in range(MY_WAVE_BATCH_SIZE):
-                if len(self._my_wave_seen_track_ids) >= max_tracks_config:
+                if len(wave.seen_track_ids) >= max_tracks_config:
                     break
 
-                yandex_tracks, batch_id = await self.client.get_my_wave_tracks(queue=queue)
-                if batch_id:
-                    self._my_wave_batch_id = batch_id
-                if not self._my_wave_radio_started_sent and yandex_tracks:
-                    sent = await self.client.send_rotor_station_feedback(
-                        ROTOR_STATION_MY_WAVE,
-                        "radioStarted",
-                        batch_id=batch_id,
+                if queue is not None:
+                    wave.last_track_id = str(queue)
+                yandex_tracks, _ = await self._fetch_rotor_session_batch(
+                    wave, ROTOR_STATION_MY_WAVE
+                )
+                if not wave.radio_started_sent and yandex_tracks:
+                    sent = await self._send_wave_feedback(
+                        wave, ROTOR_STATION_MY_WAVE, "radioStarted"
                     )
                     if sent:
-                        self._my_wave_radio_started_sent = True
+                        wave.radio_started_sent = True
 
                 if not yandex_tracks:
                     break
 
                 first_track_id_this_batch = None
                 for yt in yandex_tracks:
-                    if len(self._my_wave_seen_track_ids) >= max_tracks_config:
+                    if len(wave.seen_track_ids) >= max_tracks_config:
                         break
 
-                    track = self._parse_my_wave_track(yt, self._my_wave_seen_track_ids)
+                    track = self._parse_my_wave_track(yt, wave.seen_track_ids)
                     if track is None:
                         continue
 
@@ -1946,7 +2363,7 @@ class YandexMusicProvider(MusicProvider):
                     break
 
             # Store cursor for next page call (None clears pagination so next call returns [])
-            self._my_wave_playlist_next_cursor = next_cursor
+            wave.playlist_next_cursor = next_cursor
             return tracks
 
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
@@ -2028,26 +2445,80 @@ class YandexMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing album track: %s", err)
         return tracks
 
-    @use_cache(3600 * 3)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get similar tracks using Yandex Rotor station for this track.
+        """Get similar tracks, preferring pre-fetched wave tracks when available.
 
-        Uses rotor station track:{id} so MA radio mode gets Yandex recommendations.
+        Split in two paths with different caching policies:
+
+        - **Wave-drain path** (the seed carries a station suffix and
+          ``wave.prefetched`` is non-empty). Uncached by design: it mutates
+          state, a cache hit would replay the same drained tracks forever and
+          the prefetch buffer would never advance.
+        - **Fallback path** (plain track_id, no active wave, or empty buffer).
+          Creates a per-seed rotor session under ``track:{id}`` and is cached
+          for 3 hours — this is pure and safe to memoise.
 
         :param prov_track_id: Provider track ID (plain or track_id@station_id).
         :param limit: Maximum number of tracks to return.
         :return: List of similar Track objects.
         """
-        track_id, _ = _parse_radio_item_id(prov_track_id)
-        station_id = f"track:{track_id}"
-        yandex_tracks, _ = await self.client.get_rotor_station_tracks(station_id, queue=None)
-        tracks = []
-        for yt in yandex_tracks[:limit]:
+        track_id, station_key = _parse_radio_item_id(prov_track_id)
+
+        if station_key:
+            drained = await self._drain_prefetched_wave_tracks(station_key, limit)
+            if drained:
+                return drained
+
+        return await self._fetch_similar_tracks_for_seed(track_id, limit)
+
+    async def _drain_prefetched_wave_tracks(self, station_key: str, limit: int) -> list[Track]:
+        """Pop up to ``limit`` prefetched tracks off the wave state.
+
+        Runs under ``wave.lock`` so it doesn't race with
+        ``_prefetch_rotor_session`` which extends the same list under the
+        same lock. Returns an empty list when there's no active session or
+        nothing prefetched; callers then fall through to the cached fetch.
+
+        This method is intentionally not cached — it mutates wave state.
+        """
+        wave = self._wave_states.get(station_key)
+        if not (wave and wave.session_id and wave.prefetched):
+            return []
+        async with wave.lock:
+            if not wave.prefetched:
+                return []
+            drained_yt = wave.prefetched[:limit]
+            wave.prefetched = wave.prefetched[limit:]
+        tracks: list[Track] = []
+        for yt in drained_yt:
             try:
                 tracks.append(parse_track(self, yt))
             except InvalidDataError as err:
-                self.logger.debug("Error parsing similar track: %s", err)
+                self.logger.debug("Error parsing prefetched wave track: %s", err)
         return tracks
+
+    @use_cache(3600 * 3)
+    async def _fetch_similar_tracks_for_seed(self, track_id: str, limit: int) -> list[Track]:
+        """Create a one-off rotor session for ``track:{id}`` and return up to ``limit`` tracks.
+
+        Stateless by design: similar-tracks results don't participate in
+        playback feedback or prefetch, so there is no need to keep a
+        ``_WaveState`` entry around. Going through ``_fetch_rotor_session_batch``
+        would create one per unique seed and grow ``_wave_states`` without
+        bound under normal DSTM usage; call ``rotor_session_new`` directly
+        instead.
+
+        Pure function of ``track_id`` / ``limit``, hence safe to memoise
+        via ``@use_cache``.
+        """
+        _, yandex_tracks, _ = await self.client.rotor_session_new(f"track:{track_id}")
+        similar_tracks: list[Track] = []
+        for yt in yandex_tracks[:limit]:
+            try:
+                similar_tracks.append(parse_track(self, yt))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing similar track: %s", err)
+        return similar_tracks
 
     @use_cache(3600 * 3)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
@@ -2125,6 +2596,11 @@ class YandexMusicProvider(MusicProvider):
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """Get My Wave recommendation folder with personalized tracks.
 
+        Shares the same `_WaveState(ROTOR_STATION_MY_WAVE)` with browse and
+        virtual-playlist flows, so session_id + batch_id established here
+        carry into `on_played`/`on_streamed` feedback even when the user
+        starts playback from this discovery card.
+
         :return: RecommendationFolder with My Wave tracks, or None if empty.
         """
         max_tracks_config = int(
@@ -2132,35 +2608,46 @@ class YandexMusicProvider(MusicProvider):
         )
         batch_size_config = MY_WAVE_BATCH_SIZE
 
+        wave = self._get_wave_state(ROTOR_STATION_MY_WAVE)
+        # Local dedup so the recommendations card stays independent from the
+        # browse/virtual-playlist dedup set (which may be larger and stale).
+        # Only session_id + batch_id + last_track_id are shared with `wave`.
         seen_track_ids: set[str] = set()
         items: list[Track] = []
-        queue: str | int | None = None
 
-        for _ in range(batch_size_config):
-            if len(seen_track_ids) >= max_tracks_config:
-                break
-
-            yandex_tracks, _ = await self.client.get_my_wave_tracks(queue=queue)
-            if not yandex_tracks:
-                break
-
-            first_track_id_this_batch = None
-            for yt in yandex_tracks:
+        # Hold the wave lock across the whole fetch chain — we mutate shared
+        # session_id/batch_id/last_track_id via _fetch_rotor_session_batch,
+        # and other call sites (browse, virtual-playlist) guard the same
+        # state with this lock. Concurrent calls without the lock would
+        # interleave cursor updates and leave the session inconsistent.
+        async with wave.lock:
+            for _ in range(batch_size_config):
                 if len(seen_track_ids) >= max_tracks_config:
                     break
 
-                track = self._parse_my_wave_track(yt, seen_ids=seen_track_ids)
-                if track is None:
-                    continue
+                yandex_tracks, _ = await self._fetch_rotor_session_batch(
+                    wave, ROTOR_STATION_MY_WAVE
+                )
+                if not yandex_tracks:
+                    break
 
-                items.append(track)
-                track_id = track.item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+                first_track_id_this_batch: str | None = None
+                for yt in yandex_tracks:
+                    if len(seen_track_ids) >= max_tracks_config:
+                        break
+
+                    track = self._parse_my_wave_track(yt, seen_ids=seen_track_ids)
+                    if track is None:
+                        continue
+
+                    items.append(track)
+                    track_id = track.item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+                    if first_track_id_this_batch is None:
+                        first_track_id_this_batch = track_id
+
                 if first_track_id_this_batch is None:
-                    first_track_id_this_batch = track_id
-
-            queue = first_track_id_this_batch
-            if not queue:
-                break
+                    break
+                wave.last_track_id = first_track_id_this_batch
 
         if not items:
             return None
@@ -2191,7 +2678,10 @@ class YandexMusicProvider(MusicProvider):
         for gen_playlist in feed.generated_playlists:
             if gen_playlist.data and gen_playlist.ready:
                 try:
-                    items.append(parse_playlist(self, gen_playlist.data))
+                    # Mark feed-generated playlists (Playlist of the Day, DejaVu,
+                    # Premiere, Missed Likes) as dynamic — Yandex regenerates them
+                    # on a schedule so MA must not long-cache the track list.
+                    items.append(parse_playlist(self, gen_playlist.data, is_dynamic=True))
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing feed playlist: %s", err)
         if not items:
@@ -2689,16 +3179,26 @@ class YandexMusicProvider(MusicProvider):
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library.
 
+        For tracks carrying a wave station context in the item_id (e.g. when
+        the user adds a My Wave track to favourites during playback), also
+        fires a rotor ``like`` feedback on the active session so the wave
+        algorithm biases toward similar tracks immediately.
+
         :param item: The media item to add.
         :return: True if successful.
         """
         prov_item_id = self._get_provider_item_id(item)
         if not prov_item_id:
             return False
-        track_id, _ = _parse_radio_item_id(prov_item_id)
+        track_id, station_key = _parse_radio_item_id(prov_item_id)
 
         if item.media_type == MediaType.TRACK:
-            return await self.client.like_track(track_id)
+            ok = await self.client.like_track(track_id)
+            if ok and station_key:
+                wave = self._wave_states.get(station_key)
+                if wave and wave.session_id:
+                    await self._send_wave_feedback(wave, station_key, "like", track_id=track_id)
+            return ok
         if item.media_type in (MediaType.ALBUM, MediaType.PODCAST, MediaType.AUDIOBOOK):
             return await self.client.like_album(prov_item_id)
         if item.media_type == MediaType.ARTIST:
@@ -2934,11 +3434,34 @@ class YandexMusicProvider(MusicProvider):
     async def get_rotor_station_tracks(
         self, station_id: str, queue: str | int | None = None
     ) -> tuple[list[Any], str | None]:
-        """Fetch tracks from a rotor station (My Wave, similar, etc.).
+        """Fetch tracks from a rotor station using the session API.
 
-        Wrapper around client.get_rotor_station_tracks for use by ynison plugin.
+        Public surface — pinned by the ynison plugin
+        (`YandexMusicProviderLike.get_rotor_station_tracks`). The
+        ``(tracks, batch_id)`` return contract is kept for that caller even
+        though batch_id is now a session-scoped identifier.
+
+        Routes to ``_fetch_rotor_session_batch`` so the wave session state
+        (`session_id`, seen tracks, prefetch) is shared with our own Browse /
+        on_played / on_streamed flows. ``queue`` is the most recently played
+        track ID the external caller observed — we record it as the
+        pagination cursor before calling through.
+
+        :param station_id: Rotor station ID (e.g. "user:onyourwave",
+            "genre:rock", "mood:calm", "track:1234").
+        :param queue: Last-played track ID for pagination. Ignored on the
+            very first call (no session yet) but still recorded.
+        :return: Tuple of (list of yandex tracks, batch_id or None).
         """
-        return await self.client.get_rotor_station_tracks(station_id, queue=queue)
+        wave = self._get_wave_state(station_id)
+        # Cursor update + batch fetch run under the station's lock, matching
+        # the discipline in browse / recommendations / prefetch. Without it,
+        # ynison replenish racing with a concurrent MA browse could interleave
+        # last_track_id writes and leave session_id / batch_id out of sync.
+        async with wave.lock:
+            if queue is not None:
+                wave.last_track_id = str(queue)
+            return await self._fetch_rotor_session_batch(wave, station_id)
 
     def get_quality(self) -> str:
         """Return the configured audio quality tier (e.g. 'balanced', 'superb')."""
@@ -3001,166 +3524,58 @@ class YandexMusicProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Report playback for rotor feedback when the track is from My Wave.
+        """Report periodic playback updates.
 
-        Sends trackStarted when the track is currently playing (is_playing=True).
-        trackFinished/skip are sent from on_streamed to use accurate seconds_streamed.
+        - Audiobooks: persist chapter progress via play_audio so Yandex's
+          own clients resume at the right point.
+        - Wave tracks: send rotor ``trackStarted`` while actively playing and
+          kick off a background prefetch so DSTM refill serves wave-curated
+          tracks with no extra round-trip. DSTM itself is the user's toggle —
+          the provider does not flip it.
 
-        Also auto-enables "Don't stop the music" for any queue playing a radio track
-        so that MA refills the queue via get_similar_tracks when < 5 tracks remain.
-
-        For audiobooks, persists playback position to Yandex via play_audio so the
-        position is visible across Yandex's other clients.
+        Generic track history reporting is not attempted here — the only
+        known channel Yandex writes into ``/handlers/music-history`` is a
+        long-lived Ynison WebSocket session, which lives in the sibling
+        yandex_ynison plugin. Regular tracks played through MA are therefore
+        invisible to Listening History unless that plugin is also active.
         """
         if media_type == MediaType.AUDIOBOOK:
             await self._report_audiobook_progress(prov_item_id, position)
             return
-        # Radio feedback always enabled
         if media_type != MediaType.TRACK:
             return
-        track_id, station_id = _parse_radio_item_id(prov_item_id)
-        if not station_id:
-            return
-        # Auto-enable "Don't stop the music" on every on_played call for radio tracks.
-        # Calling on every invocation (not just is_playing=True) ensures it fires even
-        # for short tracks that finish before the 30-second periodic callback.
-        self._ensure_dont_stop_the_music(prov_item_id)
-        if is_playing:
-            if station_id == ROTOR_STATION_MY_WAVE:
-                batch_id = self._my_wave_batch_id
-            else:
-                state = self._wave_states.get(station_id)
-                batch_id = state.batch_id if state else None
-            await self.client.send_rotor_station_feedback(
-                station_id,
-                "trackStarted",
-                track_id=track_id,
-                batch_id=batch_id,
-            )
-            # Remove duplicate call that was under is_playing guard.
-            # _ensure_dont_stop_the_music is now called unconditionally above.
-
-    def _ensure_dont_stop_the_music(self, prov_item_id: str) -> None:
-        """Enable 'Don't stop the music' on queues playing this specific radio item.
-
-        Iterates all queues and enables the setting on queues whose current track
-        mapping matches this exact composite item_id (track_id@station_id) for this
-        provider instance.
-
-        Also sets queue.radio_source directly to the current track because
-        enqueued_media_items is empty for BrowseFolder-initiated playback, which
-        normally prevents MA's auto-fill from triggering. Setting radio_source
-        directly bypasses that gap so _fill_radio_tracks runs when < 5 tracks remain.
-        """
-        for queue in self.mass.player_queues:
-            current = queue.current_item
-            if current is None or current.media_item is None:
-                continue
-            item = current.media_item
-            # Match by provider instance and exact composite item_id
-            for mapping in getattr(item, "provider_mappings", []):
-                if (
-                    mapping.provider_instance == self.instance_id
-                    and mapping.item_id == prov_item_id
-                ):
-                    # Set radio_source directly so MA's fill mechanism works even when
-                    # the queue was started from a BrowseFolder (enqueued_media_items empty).
-                    if not queue.radio_source and isinstance(item, Track):
-                        queue.radio_source = [item]
-                    if not queue.dont_stop_the_music_enabled:
-                        try:
-                            self.mass.player_queues.set_dont_stop_the_music(
-                                queue.queue_id, dont_stop_the_music_enabled=True
-                            )
-                            self.logger.info(
-                                "Auto-enabled 'Don't stop the music' for queue %s (radio station)",
-                                queue.display_name,
-                            )
-                        except Exception as err:
-                            self.logger.debug(
-                                "Could not enable 'Don't stop the music' for queue %s: %s",
-                                queue.display_name,
-                                err,
-                            )
-                    break
-
-    def _ensure_dont_stop_the_music_for_queue(self, queue_id: str | None) -> None:
-        """Enable 'Don't stop the music' for a specific queue by ID.
-
-        Faster variant of _ensure_dont_stop_the_music used from on_streamed where
-        queue_id is available directly, avoiding iteration over all queues.
-        """
-        if not queue_id:
-            return
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
-            return
-        current = queue.current_item
-        if current is None or current.media_item is None:
-            return
-        item = current.media_item
-        for mapping in getattr(item, "provider_mappings", []):
-            if (
-                mapping.provider_instance == self.instance_id
-                and RADIO_TRACK_ID_SEP in mapping.item_id
-            ):
-                if not queue.radio_source and isinstance(item, Track):
-                    queue.radio_source = [item]
-                if not queue.dont_stop_the_music_enabled:
-                    try:
-                        self.mass.player_queues.set_dont_stop_the_music(
-                            queue_id, dont_stop_the_music_enabled=True
-                        )
-                        self.logger.info(
-                            "Auto-enabled 'Don't stop the music' for queue %s (radio)",
-                            queue.display_name,
-                        )
-                    except Exception as err:
-                        self.logger.debug(
-                            "Could not enable 'Don't stop the music' for queue %s: %s",
-                            queue.display_name,
-                            err,
-                        )
-                break
+        _, station_id = _parse_radio_item_id(prov_item_id)
+        if station_id and is_playing:
+            track_id, _ = _parse_radio_item_id(prov_item_id)
+            wave = self._wave_states.get(station_id) or self._get_wave_state(station_id)
+            await self._send_wave_feedback(wave, station_id, "trackStarted", track_id=track_id)
+            self.mass.create_task(self._prefetch_rotor_session(station_id))
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Report stream completion for My Wave rotor feedback and audiobooks.
+        """Report stream completion to Yandex.
 
-        For radio: sends trackFinished or skip with actual seconds_streamed so
-        Yandex can improve recommendations.
-
-        For audiobooks: sends a final play_audio with the absolute stream position
-        so the last listening point is preserved in Yandex.
+        - Audiobooks: a final ``play_audio`` with the absolute stream
+          position so the last listening point is preserved across Yandex
+          clients. Cleans up session state even when ``data`` was stripped.
+        - Wave tracks (composite item_id carries a station suffix): a rotor
+          ``trackFinished`` or ``skip`` event with the actual seconds streamed
+          so Yandex can improve recommendations.
         """
         data = streamdetails.data if isinstance(streamdetails.data, dict) else None
         if streamdetails.media_type == MediaType.AUDIOBOOK:
-            # Always let the audiobook branch run so session state
-            # (play_id + chapter cache) is cleaned up even when ``data`` was
-            # stripped. ``_report_audiobook_final`` no-ops the play_audio call
-            # when chapter data is absent.
             await self._report_audiobook_final(streamdetails, data or {})
             return
-        # Radio feedback always enabled
+        if streamdetails.media_type != MediaType.TRACK:
+            return
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
             return
-        # Also ensure Don't stop the music is active — on_streamed fires even for
-        # very short tracks and we have queue_id here directly.
-        self._ensure_dont_stop_the_music_for_queue(streamdetails.queue_id)
         seconds = int(streamdetails.seconds_streamed or 0)
-        duration = streamdetails.duration or 0
+        duration = int(streamdetails.duration or 0)
         feedback_type = "trackFinished" if duration and seconds >= max(0, duration - 10) else "skip"
-        if station_id == ROTOR_STATION_MY_WAVE:
-            batch_id = self._my_wave_batch_id
-        else:
-            state = self._wave_states.get(station_id)
-            batch_id = state.batch_id if state else None
-        await self.client.send_rotor_station_feedback(
-            station_id,
-            feedback_type,
-            track_id=track_id,
-            total_played_seconds=seconds,
-            batch_id=batch_id,
+        wave = self._wave_states.get(station_id) or self._get_wave_state(station_id)
+        await self._send_wave_feedback(
+            wave, station_id, feedback_type, track_id=track_id, total_played_seconds=seconds
         )
 
     def _audiobook_progress_point(

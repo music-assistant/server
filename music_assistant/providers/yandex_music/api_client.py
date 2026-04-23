@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from yandex_music.rotor.dashboard import Dashboard
     from yandex_music.rotor.station_result import StationResult
 
-from .constants import DEFAULT_LIMIT, ROTOR_STATION_MY_WAVE
+from .constants import DEFAULT_LIMIT
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Yandex API moved to these formats around 2025)
@@ -231,17 +231,6 @@ class YandexMusicClient:
         ordered = [order_map[tid] for tid in track_ids if tid in order_map]
         return (ordered, result.batch_id if result else None)
 
-    async def get_my_wave_tracks(
-        self, queue: str | int | None = None
-    ) -> tuple[list[YandexTrack], str | None]:
-        """Get tracks from the My Wave radio station.
-
-        :param queue: Optional track ID of the last track from the previous batch (API uses it for
-            pagination; do not pass batch_id).
-        :return: Tuple of (list of track objects, batch_id for feedback).
-        """
-        return await self.get_rotor_station_tracks(ROTOR_STATION_MY_WAVE, queue=queue)
-
     async def send_rotor_station_feedback(
         self,
         station_id: str,
@@ -336,6 +325,208 @@ class YandexMusicClient:
         except (NetworkError, ProviderUnavailableError) as err:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
+
+    # Rotor session API (new session-based endpoints)
+    #
+    # Yandex's newer rotor API models a wave as a long-lived session:
+    #   POST /rotor/session/new                     → {radioSessionId, sequence, batchId}
+    #   POST /rotor/session/{sessionId}/tracks      → {sequence, batchId}
+    #   POST /rotor/session/{sessionId}/feedback    → {result: "ok"}
+    # All feedback events carry the same sessionId, so we no longer need to
+    # thread per-batch batch_ids through call sites the way the stations-based
+    # API forced us to.
+
+    async def _rotor_session_request(
+        self, path: str, body: dict[str, Any], *, with_retry: bool = True
+    ) -> dict[str, Any] | None:
+        """POST a JSON body to /rotor/session/{path} and return parsed result.
+
+        Reuses the MarshalX ClientAsync internal request object so we inherit
+        its auth headers and parsing. `json=` is forwarded to `aiohttp.request`
+        by MarshalX's `**kwargs` passthrough.
+
+        :param path: Path suffix after /rotor/session/ (e.g. "new",
+            "{session_id}/tracks", "{session_id}/feedback").
+        :param body: JSON body to send.
+        :param with_retry: When True (default), uses the same reconnect-on-
+            transient-connection-error path as normal data fetches —
+            appropriate for ``new`` and ``tracks`` which sit on the
+            user-facing browse/play path. Set to False for ``feedback``,
+            where a dropped request should be silently lost rather than
+            hammered against a potentially rate-limiting server.
+        :return: Parsed result dict, or None on failure.
+        """
+
+        async def _do(c: ClientAsync) -> dict[str, Any] | None:
+            base = getattr(c, "base_url", "https://api.music.yandex.net")
+            url = f"{base}/rotor/session/{path}"
+            LOGGER.debug("Rotor session POST %s body_keys=%s", path, list(body.keys()))
+            try:
+                result = await c._request.post(url, json=body)
+            except NetworkError:
+                # Let the outer retry wrapper see transient drops. On the
+                # no-retry path the outer `except` below swallows it silently.
+                if with_retry:
+                    raise
+                LOGGER.debug("Rotor session POST %s: network error (no retry)", path)
+                return None
+            except BadRequestError as err:
+                # 4xx is terminal — server rejected the body; retry would only
+                # reproduce the same failure.
+                LOGGER.warning("Rotor session POST %s failed: %s", path, err)
+                return None
+            if isinstance(result, dict):
+                LOGGER.debug("Rotor session POST %s → result keys=%s", path, list(result.keys()))
+                return result
+            LOGGER.debug("Rotor session POST %s → non-dict result: %r", path, result)
+            return None
+
+        runner = self._call_with_retry if with_retry else self._call_no_retry
+        try:
+            return await runner(_do)
+        except (NetworkError, ProviderUnavailableError) as err:
+            LOGGER.warning("Rotor session POST %s failed: %s", path, err)
+            return None
+
+    async def rotor_session_new(
+        self,
+        station_id: str,
+        *,
+        settings: dict[str, str] | None = None,
+        queue: list[str] | None = None,
+    ) -> tuple[str | None, list[YandexTrack], str | None]:
+        """Create a new rotor session.
+
+        Sends `includeWaveModel: true` so Yandex applies its wave ML model and
+        `interactive: true` so the session is treated as foreground user play.
+
+        :param station_id: Station ID (e.g. "user:onyourwave" or "track:123").
+        :param settings: Optional {diversity, moodEnergy, language} — each
+            becomes an additional seed like "settingDiversity:discover".
+        :param queue: Optional initial track IDs in the queue; usually empty.
+        :return: Tuple of (radio_session_id, list of tracks, batch_id).
+            Any element may be None/[] on failure.
+        """
+        seeds: list[str] = [station_id]
+        if settings:
+            for key, seed_name in (
+                ("diversity", "settingDiversity"),
+                ("moodEnergy", "settingMoodEnergy"),
+                ("language", "settingLanguage"),
+            ):
+                val = settings.get(key)
+                if val:
+                    seeds.append(f"{seed_name}:{val}")
+        body: dict[str, Any] = {
+            "seeds": seeds,
+            "queue": queue or [],
+            "includeTracksInResponse": True,
+            "includeWaveModel": True,
+            "interactive": True,
+        }
+        result = await self._rotor_session_request("new", body)
+        if not result:
+            return (None, [], None)
+        session_id = result.get("radioSessionId")
+        batch_id = result.get("batchId")
+        tracks = await self._hydrate_session_tracks(result.get("sequence") or [])
+        return (session_id, tracks, batch_id)
+
+    async def rotor_session_tracks(
+        self, session_id: str, *, current_track_id: str
+    ) -> tuple[list[YandexTrack], str | None]:
+        """Fetch the next batch of tracks for an active rotor session.
+
+        :param session_id: radioSessionId from rotor_session_new().
+        :param current_track_id: Track ID just consumed from the previous batch
+            (Yandex uses it to decide what to return next).
+        :return: Tuple of (list of tracks, new batch_id).
+        """
+        body = {"queue": [str(current_track_id)]}
+        result = await self._rotor_session_request(f"{session_id}/tracks", body)
+        if not result:
+            return ([], None)
+        batch_id = result.get("batchId")
+        tracks = await self._hydrate_session_tracks(result.get("sequence") or [])
+        return (tracks, batch_id)
+
+    async def rotor_session_feedback(
+        self,
+        session_id: str,
+        event_type: str,
+        *,
+        track_id: str | None = None,
+        total_played_seconds: int | None = None,
+        batch_id: str | None = None,
+    ) -> bool:
+        """Send a feedback event for an active rotor session.
+
+        Supports the Yandex rotor event types: radioStarted, trackStarted,
+        trackFinished, skip, like, dislike. For radioStarted the track_id goes
+        into `event.from`; all other types use `event.trackId`. Only
+        trackFinished and skip carry `totalPlayedSeconds`.
+
+        :param session_id: radioSessionId.
+        :param event_type: rotor event type string.
+        :param track_id: Yandex track ID the event refers to (required for
+            everything except radioStarted without a seed).
+        :param total_played_seconds: seconds of the track that were played
+            (only meaningful for trackFinished / skip).
+        :param batch_id: batchId from the most recent rotor_session_{new,tracks}
+            response; anchors the event to a specific batch.
+        :return: True if the POST succeeded.
+        """
+        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        event: dict[str, Any] = {"type": event_type, "timestamp": timestamp}
+        if event_type == "radioStarted":
+            if track_id is not None:
+                event["from"] = str(track_id)
+        elif track_id is not None:
+            event["trackId"] = str(track_id)
+        if event_type in ("trackFinished", "skip") and total_played_seconds is not None:
+            event["totalPlayedSeconds"] = int(total_played_seconds)
+        body: dict[str, Any] = {"event": event}
+        if batch_id:
+            body["batchId"] = batch_id
+        LOGGER.debug(
+            "Rotor session feedback: session=%s event=%s track=%s secs=%s batch=%s",
+            session_id,
+            event_type,
+            track_id,
+            total_played_seconds,
+            batch_id,
+        )
+        result = await self._rotor_session_request(f"{session_id}/feedback", body, with_retry=False)
+        return result is not None
+
+    async def _hydrate_session_tracks(self, sequence: list[dict[str, Any]]) -> list[YandexTrack]:
+        """Extract track IDs from a rotor session sequence and hydrate via get_tracks.
+
+        The session endpoints return tracks inline when includeTracksInResponse
+        is true, but full track objects (with download info, covers, etc.) are
+        fetched separately so parsed Track objects have the same shape as in
+        the rest of the provider.
+
+        :param sequence: List of sequence items from a rotor session response.
+        :return: List of full track objects in the same order as `sequence`.
+        """
+        track_ids: list[str] = []
+        for seq in sequence:
+            tr = seq.get("track") if isinstance(seq, dict) else None
+            tid = None
+            if isinstance(tr, dict):
+                tid = tr.get("id") or tr.get("track_id")
+            if tid is not None:
+                track_ids.append(str(tid))
+        if not track_ids:
+            return []
+        try:
+            full_tracks = await self.get_tracks(track_ids)
+        except ResourceTemporarilyUnavailable as err:
+            LOGGER.warning("Rotor session track hydration failed: %s", err)
+            return []
+        order_map = {str(t.id): t for t in full_tracks if hasattr(t, "id") and t.id}
+        return [order_map[tid] for tid in track_ids if tid in order_map]
 
     async def play_audio(
         self,

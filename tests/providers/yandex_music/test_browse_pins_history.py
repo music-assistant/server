@@ -133,30 +133,42 @@ async def test_browse_history_returns_empty_when_no_history(
     assert result == []
 
 
+def _hist_item(track_id: int) -> object:
+    """Build a history entry the way MarshalX actually returns it.
+
+    `data.item_id` is a dict containing track_id, album_id, etc.; `full_model`
+    is not populated by the live API. Callers batch-resolve via get_tracks.
+    """
+    data = type("D", (), {"item_id": {"track_id": str(track_id)}, "full_model": None})()
+    return type("HistItem", (), {"type": "track", "data": data})()
+
+
 @pytest.mark.asyncio
 async def test_browse_history_flattens_and_deduplicates(provider_mock: Mock) -> None:
-    """_browse_history flattens days→groups→tracks and de-dupes by track id."""
-
-    def make_track(track_id: int) -> object:
-        full = type("Track", (), {"id": track_id, "title": f"T{track_id}"})()
-        data = type("D", (), {"full_model": full})()
-        return type("HistItem", (), {"type": "track", "data": data})()
-
-    group1 = type("Group", (), {"tracks": [make_track(1), make_track(2)]})()
-    group2 = type("Group", (), {"tracks": [make_track(2), make_track(3)]})()  # dup id=2
+    """_browse_history flattens days→groups→tracks, de-dupes by track id, preserves order."""
+    group1 = type("Group", (), {"tracks": [_hist_item(1), _hist_item(2)]})()
+    group2 = type("Group", (), {"tracks": [_hist_item(2), _hist_item(3)]})()  # dup id=2
     tab1 = type("Tab", (), {"items": [group1]})()
     tab2 = type("Tab", (), {"items": [group2]})()
     history = type("MusicHistory", (), {"history_tabs": [tab1, tab2]})()
     provider_mock.client.get_music_history = AsyncMock(return_value=history)
 
-    parsed = [Mock(spec=Track), Mock(spec=Track), Mock(spec=Track)]
+    # Batch-hydrate returns the yandex tracks in their own order; the provider
+    # re-orders them to match the de-duplicated id list.
+    yt1 = type("Yt", (), {"id": 1})()
+    yt2 = type("Yt", (), {"id": 2})()
+    yt3 = type("Yt", (), {"id": 3})()
+    provider_mock.client.get_tracks = AsyncMock(return_value=[yt3, yt1, yt2])
+
+    parsed = [Mock(spec=Track, name="p1"), Mock(spec=Track, name="p2"), Mock(spec=Track, name="p3")]
     with patch(
         "music_assistant.providers.yandex_music.provider.parse_track",
         side_effect=parsed,
     ):
         result = await YandexMusicProvider._browse_history(provider_mock)
 
-    assert result == parsed  # 3 unique tracks across two days
+    provider_mock.client.get_tracks.assert_awaited_once_with(["1", "2", "3"])
+    assert result == parsed
 
 
 @pytest.mark.asyncio
@@ -167,31 +179,34 @@ async def test_browse_history_skips_non_track_items(provider_mock: Mock) -> None
         (),
         {
             "type": "album",
-            "data": type("D", (), {"full_model": type("X", (), {"id": 99})()})(),
+            "data": type("D", (), {"item_id": {"track_id": "99"}})(),
         },
     )()
     group = type("Group", (), {"tracks": [album_item]})()
     tab = type("Tab", (), {"items": [group]})()
     history = type("MusicHistory", (), {"history_tabs": [tab]})()
     provider_mock.client.get_music_history = AsyncMock(return_value=history)
+    provider_mock.client.get_tracks = AsyncMock()
 
     with patch("music_assistant.providers.yandex_music.provider.parse_track") as parse_track:
         result = await YandexMusicProvider._browse_history(provider_mock)
         parse_track.assert_not_called()
 
     assert result == []
+    # No IDs collected → no hydration round-trip at all
+    provider_mock.client.get_tracks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_browse_history_skips_invalid_track(provider_mock: Mock) -> None:
     """_browse_history drops tracks where parse_track raises InvalidDataError."""
-    full = type("Track", (), {"id": 1, "title": "T1"})()
-    data = type("D", (), {"full_model": full})()
-    item = type("HistItem", (), {"type": "track", "data": data})()
-    group = type("Group", (), {"tracks": [item]})()
+    group = type("Group", (), {"tracks": [_hist_item(1)]})()
     tab = type("Tab", (), {"items": [group]})()
     history = type("MusicHistory", (), {"history_tabs": [tab]})()
     provider_mock.client.get_music_history = AsyncMock(return_value=history)
+
+    yt1 = type("Yt", (), {"id": 1})()
+    provider_mock.client.get_tracks = AsyncMock(return_value=[yt1])
 
     with patch(
         "music_assistant.providers.yandex_music.provider.parse_track",

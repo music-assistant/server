@@ -244,8 +244,10 @@ class YandexMusicStreamingManager:
             reverse=True,
         )
 
-        # Superb: Prefer FLAC (backward compatibility with "lossless")
-        if preferred_normalized == QUALITY_SUPERB or "lossless" in preferred_normalized:
+        # Superb: Prefer FLAC. The legacy "lossless" alias still maps to Superb,
+        # but we use an exact-match set so a stray value like "lossless_foo"
+        # doesn't sneak in.
+        if preferred_normalized in {QUALITY_SUPERB, "lossless"}:
             for codec in ("flac-mp4", "flac"):
                 for info in sorted_infos:
                     if info.codec and info.codec.lower() == codec:

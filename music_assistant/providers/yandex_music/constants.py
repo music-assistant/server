@@ -112,6 +112,87 @@ LIKED_TRACKS_PLAYLIST_ID: Final[str] = "liked_tracks"
 # Composite item_id for My Wave tracks: track_id + separator + station_id (for rotor feedback)
 RADIO_TRACK_ID_SEP: Final[str] = "@"
 
+# Wave-mode suffix separator: station keys like "user:onyourwave#discover" identify
+# a specific preset (diversity/moodEnergy/language) on top of the base My Wave station.
+# Chosen because # is not part of any rotor station ID format.
+WAVE_MODE_SEP: Final[str] = "#"
+
+# Known wave-mode presets: preset key (suffix after WAVE_MODE_SEP) → rotor session
+# settings dict. Names match the LMS YandexMusic plugin and the Desktop client UI.
+MY_WAVE_MODES_FOLDER_ID: Final[str] = "my_wave_modes"
+MY_WAVE_PRESETS_FOLDER_ID: Final[str] = "my_wave_presets"
+
+# User-defined wave presets are now stored in a single hidden JSON config key.
+# The UI shows a small "builder" (name + three dropdowns) + Save / Delete
+# action buttons, so the user never has to edit JSON by hand but has no fixed
+# upper bound on preset count either.
+
+# Hidden JSON store. Shape: [{"name": str, "diversity"?: str,
+#                             "moodEnergy"?: str, "language"?: str}, ...]
+CONF_WAVE_PRESETS_DATA: Final[str] = "wave_presets_data"
+
+# Visible "working preset" fields — filled in, then copied into the JSON list
+# by the save action and cleared afterwards.
+CONF_WAVE_PRESET_DRAFT_NAME: Final[str] = "wave_preset_draft_name"
+CONF_WAVE_PRESET_DRAFT_DIVERSITY: Final[str] = "wave_preset_draft_diversity"
+CONF_WAVE_PRESET_DRAFT_MOOD: Final[str] = "wave_preset_draft_mood"
+CONF_WAVE_PRESET_DRAFT_LANGUAGE: Final[str] = "wave_preset_draft_language"
+
+# Dropdown of saved preset names for the delete flow.
+CONF_WAVE_PRESET_TO_DELETE: Final[str] = "wave_preset_to_delete"
+
+# Action button ids.
+CONF_ACTION_SAVE_WAVE_PRESET: Final[str] = "save_wave_preset"
+CONF_ACTION_DELETE_WAVE_PRESET: Final[str] = "delete_wave_preset"
+
+# Allowed per-dimension values (plus "" to mean "use wave default").
+WAVE_PRESET_DIVERSITY_VALUES: Final[tuple[str, ...]] = (
+    "",
+    "discover",
+    "favorite",
+    "popular",
+)
+WAVE_PRESET_MOOD_VALUES: Final[tuple[str, ...]] = (
+    "",
+    "active",
+    "fun",
+    "calm",
+    "sad",
+)
+WAVE_PRESET_LANGUAGE_VALUES: Final[tuple[str, ...]] = (
+    "",
+    "russian",
+    "not-russian",
+    "without-words",
+)
+
+WAVE_MODE_PRESETS: Final[dict[str, dict[str, str]]] = {
+    "discover": {"diversity": "discover"},
+    "favorite": {"diversity": "favorite"},
+    "popular": {"diversity": "popular"},
+    "calm": {"moodEnergy": "calm"},
+    "active": {"moodEnergy": "active"},
+    "fun": {"moodEnergy": "fun"},
+    "sad": {"moodEnergy": "sad"},
+    "russian": {"language": "russian"},
+    "not_russian": {"language": "not-russian"},
+    "without_words": {"language": "without-words"},
+}
+
+# Ordered list of preset keys for Browse display.
+WAVE_MODE_ORDER: Final[tuple[str, ...]] = (
+    "discover",
+    "favorite",
+    "popular",
+    "calm",
+    "active",
+    "fun",
+    "sad",
+    "russian",
+    "not_russian",
+    "without_words",
+)
+
 # Browse folder names by locale (item_id -> display name)
 BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "my_wave": "Моя волна",
@@ -188,6 +269,19 @@ BROWSE_NAMES_RU: Final[dict[str, str]] = {
     "genre": "Жанры",
     "epoch": "Эпоха",
     "local": "Местное",
+    # Wave-mode folder + presets (P4)
+    "my_wave_modes": "Режимы волны",
+    "my_wave_presets": "Мои пресеты",
+    "wave_mode_discover": "Открытия",
+    "wave_mode_favorite": "Любимое",
+    "wave_mode_popular": "Популярное",
+    "wave_mode_calm": "Спокойнее",
+    "wave_mode_active": "Активнее",
+    "wave_mode_fun": "Весёлое",
+    "wave_mode_sad": "Грустное",
+    "wave_mode_russian": "Русское",
+    "wave_mode_not_russian": "Не русское",  # noqa: RUF001
+    "wave_mode_without_words": "Без слов",
 }
 BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "my_wave": "My Wave",
@@ -264,6 +358,19 @@ BROWSE_NAMES_EN: Final[dict[str, str]] = {
     "genre": "Genres",
     "epoch": "Era",
     "local": "Local",
+    # Wave-mode folder + presets (P4)
+    "my_wave_modes": "Wave Modes",
+    "my_wave_presets": "My Presets",
+    "wave_mode_discover": "Discover",
+    "wave_mode_favorite": "Favorites",
+    "wave_mode_popular": "Popular",
+    "wave_mode_calm": "Calm",
+    "wave_mode_active": "Active",
+    "wave_mode_fun": "Fun",
+    "wave_mode_sad": "Sad",
+    "wave_mode_russian": "Russian",
+    "wave_mode_not_russian": "Non-Russian",
+    "wave_mode_without_words": "Without Words",
 }
 
 # Tag categories for Picks and Recommendations

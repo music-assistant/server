@@ -92,15 +92,19 @@ def test_select_best_quality_balanced_falls_back_to_highest(
     assert result.bitrate_in_kbps == 320
 
 
-def test_select_best_quality_label_lossless_flac_returns_flac(
+def test_select_best_quality_legacy_lossless_alias_returns_flac(
     streaming_manager: YandexMusicStreamingManager,
 ) -> None:
-    """When preferred_quality is UI label 'Lossless (FLAC)', FLAC is selected."""
+    """Legacy stored value 'lossless' (pre-Superb rename) still maps to FLAC.
+
+    Current UI writes ``superb``; older configs may still hold the literal
+    ``lossless`` string. The selector must treat the two as synonyms.
+    """
     mp3 = _make_download_info("mp3", 320, "https://example.com/track.mp3")
     flac = _make_download_info("flac", 0, "https://example.com/track.flac")
     download_infos = [mp3, flac]
 
-    result = streaming_manager._select_best_quality(download_infos, "Lossless (FLAC)")
+    result = streaming_manager._select_best_quality(download_infos, "lossless")
 
     assert result is not None
     assert result.codec == "flac"

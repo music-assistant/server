@@ -360,13 +360,21 @@ def parse_track(
 
 
 def parse_playlist(
-    provider: YandexMusicProvider, playlist_obj: YandexPlaylist, owner_name: str | None = None
+    provider: YandexMusicProvider,
+    playlist_obj: YandexPlaylist,
+    owner_name: str | None = None,
+    *,
+    is_dynamic: bool = False,
 ) -> Playlist:
     """Parse Yandex playlist object to MA Playlist model.
 
     :param provider: The Yandex Music provider instance.
     :param playlist_obj: Yandex playlist object.
     :param owner_name: Optional owner name override.
+    :param is_dynamic: Mark the playlist as dynamic so Music Assistant does
+        not long-cache its content. Yandex regenerates "Playlist of the Day",
+        "DejaVu", "Premiere" etc. on a schedule, and those need a fresh read
+        on every browse so users actually see the updated selection.
     :return: Music Assistant Playlist model.
     """
     # Playlist ID in Yandex is a combination of owner uid and playlist kind
@@ -405,6 +413,7 @@ def parse_playlist(
             )
         },
         is_editable=is_editable,
+        is_dynamic=is_dynamic,
     )
 
     # Metadata

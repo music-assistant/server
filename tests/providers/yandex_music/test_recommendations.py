@@ -21,7 +21,7 @@ from music_assistant.providers.yandex_music.constants import (
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
 )
-from music_assistant.providers.yandex_music.provider import YandexMusicProvider
+from music_assistant.providers.yandex_music.provider import YandexMusicProvider, _WaveState
 
 
 @pytest.fixture
@@ -54,18 +54,26 @@ def provider_mock() -> Mock:
     return provider
 
 
+def _install_wave_state(provider_mock: Mock) -> _WaveState:
+    """Stub _get_wave_state to return a fresh in-memory _WaveState per provider_mock."""
+    wave = _WaveState()
+    provider_mock._get_wave_state = Mock(return_value=wave)
+    return wave
+
+
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations returns data when API provides tracks."""
-    # Create mock track with required attributes
+    """Test _get_my_wave_recommendations returns data when session API provides tracks."""
+    _install_wave_state(provider_mock)
     mock_track = Mock()
     mock_track.id = "12345"
     mock_track.track_id = "12345"
 
-    # Mock get_my_wave_tracks to return tracks
-    provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([mock_track], None))
+    # Mock the session-API helper; return the same track every time — matches
+    # the old single-track-per-batch test intent where the fake rotor returns
+    # the same shape across repeated batch calls.
+    provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([mock_track], "batch_a"))
 
-    # Mock _parse_my_wave_track to return a Track object with composite item_id
     mock_parsed_track = Mock(spec=Track)
     mock_parsed_track.item_id = f"12345{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
     mock_parsed_track.name = "Test Track"
@@ -85,8 +93,9 @@ async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_empty(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations returns None when API returns no tracks."""
-    provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([], None))
+    """Test _get_my_wave_recommendations returns None when session API yields no tracks."""
+    _install_wave_state(provider_mock)
+    provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([], None))
 
     result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
 
@@ -95,8 +104,8 @@ async def test_get_my_wave_recommendations_empty(provider_mock: Mock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations filters duplicate tracks."""
-    # Create mock tracks with same ID
+    """Test _get_my_wave_recommendations filters duplicate tracks across batches."""
+    _install_wave_state(provider_mock)
     mock_track1 = Mock()
     mock_track1.id = "12345"
     mock_track1.track_id = "12345"
@@ -105,11 +114,11 @@ async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mo
     mock_track2.id = "12345"  # Same ID
     mock_track2.track_id = "12345"
 
-    # First call returns track1, second call returns track2 (duplicate)
-    provider_mock.client.get_my_wave_tracks = AsyncMock(
+    # First batch returns track1, second batch returns track2 (duplicate)
+    provider_mock._fetch_rotor_session_batch = AsyncMock(
         side_effect=[
-            ([mock_track1], None),
-            ([mock_track2], None),
+            ([mock_track1], "batch_a"),
+            ([mock_track2], "batch_b"),
         ]
     )
 
@@ -130,12 +139,13 @@ async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mo
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_invalid_data_error(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations handles InvalidDataError gracefully."""
+    """Test _get_my_wave_recommendations handles parse failures gracefully."""
+    _install_wave_state(provider_mock)
     mock_track = Mock()
     mock_track.id = "12345"
     mock_track.track_id = "12345"
 
-    provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([mock_track], None))
+    provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([mock_track], "batch_a"))
 
     # _parse_my_wave_track returns None (simulates parse error handled internally)
     provider_mock._parse_my_wave_track = Mock(return_value=None)

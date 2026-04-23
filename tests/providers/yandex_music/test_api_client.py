@@ -6,6 +6,8 @@ import base64
 import hashlib
 import hmac
 import re
+from collections.abc import Mapping
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -125,47 +127,6 @@ async def test_get_tracks_retry_on_network_error_both_fail() -> None:
     assert underlying.tracks.await_count == 2
 
 
-# -- get_my_wave_tracks --------------------------------------------------------
-
-
-async def test_get_my_wave_tracks_returns_tracks_and_batch_id() -> None:
-    """get_my_wave_tracks calls rotor_station_tracks and returns ordered tracks and batch_id."""
-    client, underlying = _make_client()
-
-    seq_track = type("TrackShort", (), {"id": 100, "track_id": 100})()
-    sequence_item = type("SequenceItem", (), {"track": seq_track})()
-    result_obj = type(
-        "StationTracksResult",
-        (),
-        {"sequence": [sequence_item], "batch_id": "batch_abc"},
-    )()
-    underlying.rotor_station_tracks = mock.AsyncMock(return_value=result_obj)
-
-    full_track = type("Track", (), {"id": 100, "title": "My Wave Track"})()
-    underlying.tracks = mock.AsyncMock(return_value=[full_track])
-
-    tracks, batch_id = await client.get_my_wave_tracks()
-
-    underlying.rotor_station_tracks.assert_awaited_once()
-    assert batch_id == "batch_abc"
-    assert len(tracks) == 1
-    assert tracks[0].id == 100
-
-
-async def test_get_my_wave_tracks_empty_sequence_returns_empty() -> None:
-    """When rotor returns no sequence, get_my_wave_tracks returns ([], batch_id or None)."""
-    client, underlying = _make_client()
-
-    result_obj = type("StationTracksResult", (), {"sequence": [], "batch_id": None})()
-    underlying.rotor_station_tracks = mock.AsyncMock(return_value=result_obj)
-
-    tracks, batch_id = await client.get_my_wave_tracks()
-
-    assert tracks == []
-    assert batch_id is None
-    underlying.tracks.assert_not_awaited()
-
-
 async def test_send_rotor_station_feedback_track_started() -> None:
     """send_rotor_station_feedback delegates trackStarted to public helper."""
     client, underlying = _make_client()
@@ -243,6 +204,220 @@ async def test_send_rotor_station_feedback_skip() -> None:
     _, kwargs = underlying.rotor_station_feedback_skip.await_args
     assert kwargs["track_id"] == "12345"
     assert kwargs["total_played_seconds"] == 10.0
+
+
+# -- rotor session API (/rotor/session/*) --------------------------------------
+
+
+def _patch_rotor_session_request(client: YandexMusicClient, response: object) -> mock.AsyncMock:
+    """Install a mocked _rotor_session_request on the client and return the mock."""
+    req_mock = mock.AsyncMock(return_value=response)
+    client._rotor_session_request = req_mock  # type: ignore[method-assign]
+    return req_mock
+
+
+def _patch_get_tracks(client: YandexMusicClient, tracks: list[object]) -> mock.AsyncMock:
+    """Install a mocked get_tracks on the client and return the mock."""
+    tracks_mock = mock.AsyncMock(return_value=tracks)
+    client.get_tracks = tracks_mock  # type: ignore[method-assign]
+    return tracks_mock
+
+
+def _call_args(m: mock.AsyncMock) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
+    """Return (args, kwargs) from the most recent await on ``m``.
+
+    Raises AssertionError when the mock was never awaited — intentionally
+    surfacing missed setup rather than letting mypy's `None is not iterable`
+    propagate into destructuring sites.
+    """
+    call = m.await_args
+    assert call is not None, "mock was not awaited"
+    return call.args, call.kwargs
+
+
+async def test_rotor_session_new_posts_expected_body_and_returns_session() -> None:
+    """rotor_session_new POSTs to /rotor/session/new with wave-model flags and parses result."""
+    client, underlying = _make_client()
+    del underlying  # unused; session API bypasses MarshalX client
+    response = {
+        "radioSessionId": "sess_abc",
+        "batchId": "batch_1",
+        "sequence": [{"track": {"id": 100, "title": "T"}, "liked": False}],
+    }
+    req_mock = _patch_rotor_session_request(client, response)
+    _patch_get_tracks(client, [type("T", (), {"id": 100})()])
+
+    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+
+    req_mock.assert_awaited_once()
+    args, _ = _call_args(req_mock)
+    path, body = args[0], args[1]
+    assert path == "new"
+    assert body["seeds"] == ["user:onyourwave"]
+    assert body["queue"] == []
+    assert body["includeTracksInResponse"] is True
+    assert body["includeWaveModel"] is True
+    assert body["interactive"] is True
+    assert session_id == "sess_abc"
+    assert batch_id == "batch_1"
+    assert len(tracks) == 1
+    assert tracks[0].id == 100
+
+
+async def test_rotor_session_new_appends_settings_as_seeds() -> None:
+    """rotor_session_new appends settingDiversity / settingMoodEnergy / settingLanguage seeds."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(
+        client, {"radioSessionId": "s1", "batchId": "b1", "sequence": []}
+    )
+    _patch_get_tracks(client, [])
+
+    await client.rotor_session_new(
+        "user:onyourwave",
+        settings={"diversity": "discover", "moodEnergy": "calm", "language": "russian"},
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    assert body["seeds"] == [
+        "user:onyourwave",
+        "settingDiversity:discover",
+        "settingMoodEnergy:calm",
+        "settingLanguage:russian",
+    ]
+
+
+async def test_rotor_session_new_returns_empty_on_missing_session_id() -> None:
+    """If the response lacks radioSessionId the call returns (None, [], None) without raising."""
+    client, underlying = _make_client()
+    del underlying
+    _patch_rotor_session_request(client, None)
+
+    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+
+    assert session_id is None
+    assert tracks == []
+    assert batch_id is None
+
+
+async def test_rotor_session_tracks_posts_current_track_queue() -> None:
+    """rotor_session_tracks POSTs {queue: [current_track_id]} and returns tracks + batch_id."""
+    client, underlying = _make_client()
+    del underlying
+    response = {
+        "batchId": "batch_2",
+        "sequence": [{"track": {"id": 200}}, {"track": {"id": 201}}],
+    }
+    req_mock = _patch_rotor_session_request(client, response)
+    _patch_get_tracks(client, [type("T", (), {"id": 200})(), type("T", (), {"id": 201})()])
+
+    tracks, batch_id = await client.rotor_session_tracks("sess_abc", current_track_id="100")
+
+    args, _ = _call_args(req_mock)
+    path, body = args[0], args[1]
+    assert path == "sess_abc/tracks"
+    assert body == {"queue": ["100"]}
+    assert batch_id == "batch_2"
+    assert [t.id for t in tracks] == [200, 201]
+
+
+async def test_rotor_session_feedback_radio_started_sends_from_field() -> None:
+    """RadioStarted event uses event.from=track_id (not trackId)."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    result = await client.rotor_session_feedback(
+        "sess_abc", "radioStarted", track_id="100", batch_id="batch_1"
+    )
+
+    assert result is True
+    args, _ = _call_args(req_mock)
+    path, body = args[0], args[1]
+    assert path == "sess_abc/feedback"
+    assert body["batchId"] == "batch_1"
+    event = body["event"]
+    assert event["type"] == "radioStarted"
+    assert event["from"] == "100"
+    assert "trackId" not in event
+    assert "timestamp" in event
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T", event["timestamp"])
+
+
+async def test_rotor_session_feedback_track_started_sends_track_id() -> None:
+    """TrackStarted event uses event.trackId (not from)."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback(
+        "sess_abc", "trackStarted", track_id="100", batch_id="batch_1"
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "trackStarted"
+    assert event["trackId"] == "100"
+    assert "from" not in event
+    assert "totalPlayedSeconds" not in event
+
+
+async def test_rotor_session_feedback_track_finished_includes_seconds() -> None:
+    """TrackFinished event includes totalPlayedSeconds."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback(
+        "sess_abc",
+        "trackFinished",
+        track_id="100",
+        total_played_seconds=42,
+        batch_id="batch_1",
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "trackFinished"
+    assert event["trackId"] == "100"
+    assert event["totalPlayedSeconds"] == 42
+
+
+async def test_rotor_session_feedback_skip_includes_seconds() -> None:
+    """Skip event includes totalPlayedSeconds and trackId."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback(
+        "sess_abc", "skip", track_id="100", total_played_seconds=10, batch_id="batch_1"
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "skip"
+    assert event["trackId"] == "100"
+    assert event["totalPlayedSeconds"] == 10
+
+
+async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> None:
+    """like/dislike events use trackId but do NOT include totalPlayedSeconds."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback("sess_abc", "like", track_id="100", batch_id="batch_1")
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "like"
+    assert event["trackId"] == "100"
+    assert "totalPlayedSeconds" not in event
 
 
 # -- get_similar_artists ------------------------------------------------------
