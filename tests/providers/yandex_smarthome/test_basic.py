@@ -39,7 +39,7 @@ def test_manifest_valid() -> None:
     assert data["multi_instance"] is False
     assert data["builtin"] is False
     assert isinstance(data["requirements"], list)
-    assert "ya-passport-auth==1.2.3" in data["requirements"]
+    assert "ya-passport-auth==1.3.0" in data["requirements"]
 
 
 def test_manifest_has_codeowners() -> None:
