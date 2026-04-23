@@ -185,16 +185,43 @@ def test_parse_mp4_audio_params_no_box_returns_zero() -> None:
     assert KionMusicStreamingManager._parse_mp4_audio_params(b"\x00" * 128) == (0, 0)
 
 
-def test_get_content_type_flac_mp4_returns_flac(
+def test_get_content_type_flac_mp4_returns_mp4_flac(
     streaming_manager: KionMusicStreamingManager,
 ) -> None:
-    """flac-mp4 codec maps content_type to FLAC (audio) with codec_type FLAC for MP4 container."""
-    content_type = streaming_manager._get_content_type("flac-mp4")
-    assert content_type[0] == ContentType.FLAC
-    assert content_type[1] == ContentType.FLAC
-    content_type_upper = streaming_manager._get_content_type("FLAC-MP4")
-    assert content_type_upper[0] == ContentType.FLAC
-    assert content_type_upper[1] == ContentType.FLAC
+    """flac-mp4 → (MP4 container, FLAC codec), matching yandex_music convention."""
+    assert streaming_manager._get_content_type("flac-mp4") == (
+        ContentType.MP4,
+        ContentType.FLAC,
+    )
+    assert streaming_manager._get_content_type("FLAC-MP4") == (
+        ContentType.MP4,
+        ContentType.FLAC,
+    )
+
+
+def test_get_content_type_aac_mp4_returns_mp4_aac(
+    streaming_manager: KionMusicStreamingManager,
+) -> None:
+    """aac-mp4 / he-aac-mp4 → (MP4 container, AAC codec)."""
+    assert streaming_manager._get_content_type("aac-mp4") == (
+        ContentType.MP4,
+        ContentType.AAC,
+    )
+    assert streaming_manager._get_content_type("he-aac-mp4") == (
+        ContentType.MP4,
+        ContentType.AAC,
+    )
+
+
+def test_get_content_type_plain_codecs(
+    streaming_manager: KionMusicStreamingManager,
+) -> None:
+    """Plain codecs report themselves as content_type with UNKNOWN codec_type."""
+    assert streaming_manager._get_content_type("flac") == (ContentType.FLAC, ContentType.UNKNOWN)
+    assert streaming_manager._get_content_type("mp3") == (ContentType.MP3, ContentType.UNKNOWN)
+    assert streaming_manager._get_content_type("mpeg") == (ContentType.MP3, ContentType.UNKNOWN)
+    assert streaming_manager._get_content_type("aac") == (ContentType.AAC, ContentType.UNKNOWN)
+    assert streaming_manager._get_content_type("he-aac") == (ContentType.AAC, ContentType.UNKNOWN)
 
 
 def _make_stream_details(
