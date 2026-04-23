@@ -1,1 +1,1 @@
-yandex-music==3.0.0
+
