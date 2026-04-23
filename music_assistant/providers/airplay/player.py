@@ -21,12 +21,14 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, i
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
-    AIRPLAY2_CONNECT_TIME_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
+    AIRPLAY_PAIRING_LATENCY_DEFAULT_MS,
+    AIRPLAY_PAIRING_LATENCY_MAX_MS,
+    AIRPLAY_PAIRING_LATENCY_MIN_MS,
     BASE_PLAYER_FEATURES,
     BROKEN_AIRPLAY_WARN,
     CONF_ACTION_FINISH_PAIRING,
@@ -39,6 +41,7 @@ from .constants import (
     CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
+    CONF_PAIRING_LATENCY,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
@@ -175,10 +178,20 @@ class AirPlayPlayer(Player):
         )
 
     @property
+    def pairing_latency_ms(self) -> int:
+        """Get the configured pairing latency in milliseconds."""
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            return cast(
+                "int",
+                self.config.get_value(CONF_PAIRING_LATENCY, AIRPLAY_PAIRING_LATENCY_DEFAULT_MS),
+            )
+        return RAOP_CONNECT_TIME_MS
+
+    @property
     def wait_start(self) -> int:
         """Get the time in ms to allow device to connect before starting stream."""
         if self.protocol == StreamingProtocol.AIRPLAY2:
-            base = AIRPLAY2_CONNECT_TIME_MS
+            base = self.pairing_latency_ms
         else:
             base = RAOP_CONNECT_TIME_MS
         return int(base + self.output_buffer_duration_ms)
@@ -297,6 +310,24 @@ class AirPlayPlayer(Player):
                     "of playback. \n"
                     "Try increasing value if playback is unreliable."
                 ),
+                category="protocol_generic",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_PAIRING_LATENCY,
+                type=ConfigEntryType.INTEGER,
+                default_value=AIRPLAY_PAIRING_LATENCY_DEFAULT_MS,
+                range=(
+                    AIRPLAY_PAIRING_LATENCY_MIN_MS,
+                    AIRPLAY_PAIRING_LATENCY_MAX_MS,
+                ),
+                label="Expected milliseconds to pair with AirPlay device and "
+                "negotiate the playback session.",
+                description="Improve playback latency by aligning this value "
+                "with the actual duration your device takes to pair and negotiate "
+                "the session.\nYou can calculate it by looking at timestamps in the "
+                "log.",
+                hidden=is_raop,
                 category="protocol_generic",
                 advanced=True,
             ),

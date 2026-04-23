@@ -131,6 +131,8 @@ class AirPlay2Stream(AirPlayProtocol):
             self.commands_pipe.path,
             "--latency",
             str(self.player.output_buffer_duration_ms),
+            "--pairing_latency",
+            str(self.player.pairing_latency_ms),
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)

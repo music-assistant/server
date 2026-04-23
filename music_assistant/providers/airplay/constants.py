@@ -24,6 +24,7 @@ class StreamingProtocol(IntEnum):
 CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
+CONF_PAIRING_LATENCY: Final[str] = "pairing_latency"
 CONF_PASSWORD: Final[str] = "password"
 CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
@@ -41,8 +42,11 @@ AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
 AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 500
 # Maximum output buffer duration permitted.
 AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
+# Default pairing latency i.e. expected duration to pair with AirPlay device and negotiate session
+AIRPLAY_PAIRING_LATENCY_DEFAULT_MS: Final[int] = 2500
+AIRPLAY_PAIRING_LATENCY_MIN_MS: Final[int] = 150  # Minimum pairing latency permitted
+AIRPLAY_PAIRING_LATENCY_MAX_MS: Final[int] = 4000  # Maximum pairing latency permitted
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
-AIRPLAY2_CONNECT_TIME_MS: Final[int] = 4000  # Time in ms to allow AirPlay2 device to connect
 RAOP_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow RAOP device to connect
 
 # Per-protocol credential storage keys
