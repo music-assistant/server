@@ -481,6 +481,32 @@ def test_get_user_wave_presets_skips_items_without_name() -> None:
     ]
 
 
+def test_get_user_wave_presets_drops_whitespace_only_values() -> None:
+    """Whitespace-only dropdown values (e.g. hand-edited JSON) are treated as empty.
+
+    Yandex rejects ``settingDiversity:`` with a 4xx, so the parser must not
+    propagate such values. Valid values are also stripped to their canonical
+    form so the downstream rotor seed builder always gets the stored string
+    without surrounding whitespace.
+    """
+    provider = Mock(spec=YandexMusicProvider)
+    provider.config = _preset_config(
+        {
+            "wave_presets_data": (
+                '[{"name": "WS-only", "diversity": "   ",'
+                ' "moodEnergy": "\\t", "language": ""},'
+                ' {"name": "Trim", "diversity": "  discover  "}]'
+            ),
+        }
+    )
+    provider.logger = Mock()
+
+    assert YandexMusicProvider._get_user_wave_presets(provider) == [
+        {"name": "WS-only"},
+        {"name": "Trim", "diversity": "discover"},
+    ]
+
+
 # -- save / delete preset actions --------------------------------------------
 
 

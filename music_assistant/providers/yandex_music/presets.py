@@ -15,9 +15,12 @@ def parse_stored_presets(raw: object) -> list[dict[str, str]]:
 
     Only entries with a non-empty ``name`` string are kept. The optional
     ``diversity`` / ``moodEnergy`` / ``language`` fields are carried through
-    as long as they are non-empty strings. Any other keys are dropped.
-    Malformed JSON, non-list roots or non-dict items yield an empty list —
-    the UI treats that as "no presets yet".
+    as long as they are non-empty *after stripping whitespace* — Yandex
+    would reject rotor seeds like ``settingDiversity: `` (space) with a 4xx,
+    so we never pass such values through. Stripped form is stored so the
+    downstream seed builder gets the canonical value. Any other keys are
+    dropped. Malformed JSON, non-list roots or non-dict items yield an
+    empty list — the UI treats that as "no presets yet".
 
     :param raw: Value read from the ``wave_presets_data`` config entry.
     :return: List of sanitised preset dicts in source order.
@@ -40,7 +43,9 @@ def parse_stored_presets(raw: object) -> list[dict[str, str]]:
         clean: dict[str, str] = {"name": name.strip()}
         for key in ("diversity", "moodEnergy", "language"):
             val = item.get(key)
-            if isinstance(val, str) and val:
-                clean[key] = val
+            if isinstance(val, str):
+                val = val.strip()
+                if val:
+                    clean[key] = val
         result.append(clean)
     return result
