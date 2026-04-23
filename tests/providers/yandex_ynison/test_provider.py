@@ -24,6 +24,7 @@ from music_assistant.providers.yandex_ynison.constants import (
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
     CONF_TOKEN,
+    CONF_X_TOKEN,
     CONF_YM_INSTANCE,
     DEFAULT_DISPLAY_NAME,
     OUTPUT_AUTO,
@@ -1177,13 +1178,37 @@ class TestResolveTokenOwnMode:
         assert result.get_secret() == "manual-token"
 
     async def test_raises_when_no_token(self) -> None:
-        """Raises LoginFailed when CONF_TOKEN is empty."""
+        """Raises LoginFailed when CONF_TOKEN and CONF_X_TOKEN are both empty."""
         provider = _make_provider()
-        provider.config = _make_mock_config({CONF_TOKEN: None, CONF_YM_INSTANCE: YM_INSTANCE_OWN})
+        provider.config = _make_mock_config(
+            {CONF_TOKEN: None, CONF_X_TOKEN: None, CONF_YM_INSTANCE: YM_INSTANCE_OWN}
+        )
         provider._ym_instance_id = None
 
         with pytest.raises(LoginFailed, match="No Yandex Music token"):
             await provider._resolve_token()
+
+    async def test_falls_back_to_x_token_refresh_when_token_missing(self) -> None:
+        """Own mode with stored x_token but no music token refreshes in-memory."""
+        provider = _make_provider()
+        provider.config = _make_mock_config(
+            {CONF_TOKEN: None, CONF_X_TOKEN: "own-x-token", CONF_YM_INSTANCE: YM_INSTANCE_OWN}
+        )
+        provider._ym_instance_id = None
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
+            new_callable=AsyncMock,
+            return_value=SecretStr("refreshed"),
+        ) as mock_refresh:
+            result = await provider._resolve_token()
+
+        assert result.get_secret() == "refreshed"
+        mock_refresh.assert_awaited_once()
+        await_args = mock_refresh.await_args
+        assert await_args is not None
+        sent: SecretStr = await_args.args[0]
+        assert sent.get_secret() == "own-x-token"
 
 
 class TestResolveTokenBorrowMode:
@@ -1251,13 +1276,40 @@ class TestResolveTokenBorrowMode:
 class TestRefreshYnisonToken:
     """_refresh_ynison_token on YnisonClient auth-failure callback."""
 
-    async def test_own_mode_raises_login_failed(self) -> None:
-        """In own mode, no refresh path — surface LoginFailed for manual re-entry."""
+    async def test_own_mode_no_x_token_raises_login_failed(self) -> None:
+        """Own mode with neither token nor stored x_token — surface LoginFailed."""
         provider = _make_provider()
         provider._ym_instance_id = None
+        # Stub the config: no token, no x_token.
+        provider.config = MagicMock()
+        provider.config.get_value = MagicMock(return_value=None)
 
-        with pytest.raises(LoginFailed, match="re-enter"):
+        with pytest.raises(LoginFailed, match="Re-authenticate"):
             await provider._refresh_ynison_token()
+
+    async def test_own_mode_with_stored_x_token_refreshes(self) -> None:
+        """Own mode with CONF_X_TOKEN set refreshes in-memory via passport."""
+        provider = _make_provider()
+        provider._ym_instance_id = None
+        provider.config = MagicMock()
+        provider.config.get_value = MagicMock(
+            side_effect=lambda key: "own-x-token" if key == CONF_X_TOKEN else None
+        )
+
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.refresh_music_token",
+            new_callable=AsyncMock,
+            return_value=SecretStr("fresh"),
+        ) as mock_refresh:
+            result = await provider._refresh_ynison_token()
+
+        assert result.get_secret() == "fresh"
+        mock_refresh.assert_awaited_once()
+        # The refresh argument is a SecretStr wrapping the stored x_token.
+        await_args = mock_refresh.await_args
+        assert await_args is not None
+        sent: SecretStr = await_args.args[0]
+        assert sent.get_secret() == "own-x-token"
 
     async def test_borrow_mode_refreshes_from_ym_x_token(self) -> None:
         """Reads x_token from linked YM and refreshes in-memory only."""

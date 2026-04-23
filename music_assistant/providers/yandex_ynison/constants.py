@@ -15,6 +15,9 @@ YNISON_ORIGIN: Final[str] = "https://music.yandex.ru"
 
 # Configuration keys
 CONF_TOKEN: Final[str] = "token"
+CONF_X_TOKEN: Final[str] = "x_token"
+CONF_ACCOUNT_LOGIN: Final[str] = "account_login"
+CONF_REMEMBER_SESSION: Final[str] = "remember_session"
 CONF_YM_INSTANCE: Final[str] = "ym_instance"
 CONF_MASS_PLAYER_ID: Final[str] = "mass_player_id"
 CONF_PUBLISH_NAME: Final[str] = "publish_name"
@@ -22,6 +25,10 @@ CONF_ALLOW_PLAYER_SWITCH: Final[str] = "allow_player_switch"
 CONF_DEVICE_ID: Final[str] = "device_id"
 CONF_OUTPUT_SAMPLE_RATE: Final[str] = "output_sample_rate"
 CONF_OUTPUT_BIT_DEPTH: Final[str] = "output_bit_depth"
+
+# Action keys (own-mode QR auth flow)
+CONF_ACTION_AUTH_QR: Final[str] = "auth_qr"
+CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 
 # Special value for "auto" config options
 OUTPUT_AUTO: Final[str] = "auto"

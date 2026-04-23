@@ -39,6 +39,7 @@ from .constants import (
     CONF_OUTPUT_SAMPLE_RATE,
     CONF_PUBLISH_NAME,
     CONF_TOKEN,
+    CONF_X_TOKEN,
     CONF_YM_INSTANCE,
     DEFAULT_DISPLAY_NAME,
     OUTPUT_AUTO,
@@ -557,7 +558,8 @@ class YandexYnisonProvider(PluginProvider):
         If only x_token is present (YM hasn't refreshed yet), do a one-shot
         in-memory refresh without writing back — YM owns token persistence.
 
-        In own mode: return the manually entered CONF_TOKEN. No auto-refresh.
+        In own mode: return CONF_TOKEN if set; otherwise, when CONF_X_TOKEN
+        is present (QR-with-Remember-session path), refresh in-memory.
         """
         if self._ym_instance_id is not None:
             token, x_token = self._read_ym_tokens()
@@ -569,9 +571,13 @@ class YandexYnisonProvider(PluginProvider):
             raise LoginFailed(f"Yandex Music instance '{self._ym_instance_id}' has no credentials")
 
         token = cast("str | None", self.config.get_value(CONF_TOKEN))
-        if not token:
-            raise LoginFailed("No Yandex Music token configured")
-        return SecretStr(token)
+        if token:
+            return SecretStr(token)
+        x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
+        if x_token:
+            self.logger.debug("Own-mode token not present — refreshing from stored x_token")
+            return await refresh_music_token(SecretStr(x_token))
+        raise LoginFailed("No Yandex Music token configured")
 
     async def _refresh_ynison_token(self) -> SecretStr:
         """Refresh the OAuth token for Ynison reconnection.
@@ -581,8 +587,9 @@ class YandexYnisonProvider(PluginProvider):
         In borrow mode: re-read the linked YM instance's x_token and refresh
         in-memory only (no config writes — YM owns token persistence).
 
-        In own mode: no refresh path — surface LoginFailed so the user knows
-        to paste a new token manually.
+        In own mode: refresh from stored CONF_X_TOKEN when present (QR with
+        "Remember session" enabled). When absent (manual token paste only),
+        surface LoginFailed so the user knows to paste a new token.
         """
         if self._ym_instance_id is not None:
             _, x_token = self._read_ym_tokens()
@@ -591,9 +598,14 @@ class YandexYnisonProvider(PluginProvider):
             self.logger.info("Refreshing Yandex Music token for Ynison reconnect (borrow mode)")
             return await refresh_music_token(SecretStr(x_token))
 
+        x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
+        if x_token:
+            self.logger.info("Refreshing Yandex Music token for Ynison reconnect (own mode)")
+            return await refresh_music_token(SecretStr(x_token))
+
         raise LoginFailed(
-            "Token expired. Please re-enter a valid Yandex Music token or switch to "
-            "borrowing from a Yandex Music instance."
+            "Token expired and no stored x_token to refresh from. Re-authenticate "
+            "via QR or paste a fresh Yandex Music token."
         )
 
     # ------------------------------------------------------------------

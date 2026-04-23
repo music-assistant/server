@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
+
+import pytest
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.yandex_ynison import get_config_entries
 from music_assistant.providers.yandex_ynison.constants import (
+    CONF_ACCOUNT_LOGIN,
+    CONF_ACTION_AUTH_QR,
+    CONF_ACTION_CLEAR_AUTH,
+    CONF_REMEMBER_SESSION,
     CONF_TOKEN,
+    CONF_X_TOKEN,
     CONF_YM_INSTANCE,
     YM_INSTANCE_OWN,
 )
@@ -114,6 +123,167 @@ async def test_upgrade_with_existing_token_preserves_own_mode() -> None:
     token = by_key[CONF_TOKEN]
     assert token.hidden is False
     assert token.required is True
+
+
+async def test_own_mode_surfaces_qr_login_button() -> None:
+    """Own mode unauthenticated → QR action visible, reset action hidden."""
+    mass = _make_mock_mass({})
+    entries = await get_config_entries(mass, values={CONF_YM_INSTANCE: YM_INSTANCE_OWN})
+    by_key = _entries_by_key(entries)
+
+    qr = by_key[CONF_ACTION_AUTH_QR]
+    reset = by_key[CONF_ACTION_CLEAR_AUTH]
+    remember = by_key[CONF_REMEMBER_SESSION]
+    assert qr.hidden is False
+    assert qr.action == CONF_ACTION_AUTH_QR
+    assert remember.hidden is False
+    assert remember.default_value is True
+    assert reset.hidden is True
+
+
+async def test_borrow_mode_hides_own_mode_actions() -> None:
+    """Borrow mode → QR / reset / remember-session entries are all hidden."""
+    mass = _make_mock_mass({"ym-a": {"domain": "yandex_music", "name": "Primary"}})
+    entries = await get_config_entries(mass, values={CONF_YM_INSTANCE: "ym-a"})
+    by_key = _entries_by_key(entries)
+
+    assert by_key[CONF_ACTION_AUTH_QR].hidden is True
+    assert by_key[CONF_ACTION_CLEAR_AUTH].hidden is True
+    assert by_key[CONF_REMEMBER_SESSION].hidden is True
+
+
+async def test_authenticated_own_mode_shows_reset_hides_qr() -> None:
+    """Once a token is stored, hide the QR/remember entries and show reset."""
+    mass = _make_mock_mass({})
+    entries = await get_config_entries(
+        mass,
+        values={
+            CONF_YM_INSTANCE: YM_INSTANCE_OWN,
+            CONF_TOKEN: "music-tok",
+            CONF_X_TOKEN: "x-tok",
+            CONF_ACCOUNT_LOGIN: "alice",
+        },
+    )
+    by_key = _entries_by_key(entries)
+
+    assert by_key[CONF_ACTION_AUTH_QR].hidden is True
+    assert by_key[CONF_REMEMBER_SESSION].hidden is True
+    assert by_key[CONF_ACTION_CLEAR_AUTH].hidden is False
+
+
+async def test_qr_action_persists_tokens_into_values() -> None:
+    """CONF_ACTION_AUTH_QR action calls perform_qr_auth and stores both tokens."""
+    mass = _make_mock_mass({})
+    values: dict[str, Any] = {
+        CONF_YM_INSTANCE: YM_INSTANCE_OWN,
+        "session_id": "sess-1",
+    }
+
+    with mock.patch(
+        "music_assistant.providers.yandex_ynison.perform_qr_auth",
+        new=mock.AsyncMock(return_value=("x-tok", "music-tok", "alice")),
+    ) as mocked:
+        await get_config_entries(mass, action=CONF_ACTION_AUTH_QR, values=values)
+
+    mocked.assert_awaited_once_with(mass, "sess-1")
+    assert values[CONF_TOKEN] == "music-tok"
+    assert values[CONF_X_TOKEN] == "x-tok"
+    assert values[CONF_ACCOUNT_LOGIN] == "alice"
+
+
+async def test_qr_action_without_remember_session_skips_x_token() -> None:
+    """remember_session=False → music token stored, x_token cleared."""
+    mass = _make_mock_mass({})
+    values: dict[str, Any] = {
+        CONF_YM_INSTANCE: YM_INSTANCE_OWN,
+        CONF_REMEMBER_SESSION: False,
+        "session_id": "sess-1",
+    }
+
+    with mock.patch(
+        "music_assistant.providers.yandex_ynison.perform_qr_auth",
+        new=mock.AsyncMock(return_value=("x-tok", "music-tok", "alice")),
+    ):
+        await get_config_entries(mass, action=CONF_ACTION_AUTH_QR, values=values)
+
+    assert values[CONF_TOKEN] == "music-tok"
+    assert values[CONF_X_TOKEN] is None
+    assert values[CONF_ACCOUNT_LOGIN] == "alice"
+
+
+async def test_qr_action_in_borrow_mode_is_refused() -> None:
+    """A stray QR action while the dropdown is on borrow must not mutate values."""
+    mass = _make_mock_mass({"ym-a": {"domain": "yandex_music", "name": "Primary"}})
+    values: dict[str, Any] = {CONF_YM_INSTANCE: "ym-a", "session_id": "sess-1"}
+
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_ynison.perform_qr_auth", new=mock.AsyncMock()
+        ) as mocked,
+        pytest.raises(LoginFailed, match="own-mode action"),
+    ):
+        await get_config_entries(mass, action=CONF_ACTION_AUTH_QR, values=values)
+
+    mocked.assert_not_awaited()
+    assert CONF_TOKEN not in values
+    assert CONF_X_TOKEN not in values
+
+
+async def test_clear_action_in_borrow_mode_is_refused() -> None:
+    """Clear-auth must also be refused outside own mode."""
+    mass = _make_mock_mass({"ym-a": {"domain": "yandex_music", "name": "Primary"}})
+    values: dict[str, Any] = {
+        CONF_YM_INSTANCE: "ym-a",
+        CONF_TOKEN: "leftover",
+        CONF_X_TOKEN: "leftover-x",
+    }
+
+    with pytest.raises(LoginFailed, match="own-mode action"):
+        await get_config_entries(mass, action=CONF_ACTION_CLEAR_AUTH, values=values)
+
+    # Borrow-mode token fields must be untouched on refusal.
+    assert values[CONF_TOKEN] == "leftover"
+    assert values[CONF_X_TOKEN] == "leftover-x"
+
+
+async def test_qr_action_without_session_id_raises() -> None:
+    """Missing session_id is a programmer error from the MA frontend."""
+    mass = _make_mock_mass({})
+    with pytest.raises(LoginFailed, match="session_id"):
+        await get_config_entries(
+            mass,
+            action=CONF_ACTION_AUTH_QR,
+            values={CONF_YM_INSTANCE: YM_INSTANCE_OWN},
+        )
+
+
+async def test_clear_auth_action_zeroes_token_x_token_login() -> None:
+    """CONF_ACTION_CLEAR_AUTH wipes all three persisted auth fields."""
+    mass = _make_mock_mass({})
+    values: dict[str, Any] = {
+        CONF_YM_INSTANCE: YM_INSTANCE_OWN,
+        CONF_TOKEN: "music-tok",
+        CONF_X_TOKEN: "x-tok",
+        CONF_ACCOUNT_LOGIN: "alice",
+    }
+
+    await get_config_entries(mass, action=CONF_ACTION_CLEAR_AUTH, values=values)
+
+    assert values[CONF_TOKEN] is None
+    assert values[CONF_X_TOKEN] is None
+    assert values[CONF_ACCOUNT_LOGIN] is None
+
+
+async def test_own_mode_with_only_x_token_marks_token_optional() -> None:
+    """Stored x_token alone is enough — the token field becomes optional."""
+    mass = _make_mock_mass({})
+    entries = await get_config_entries(
+        mass,
+        values={CONF_YM_INSTANCE: YM_INSTANCE_OWN, CONF_X_TOKEN: "x-tok"},
+    )
+    by_key = _entries_by_key(entries)
+    token = by_key[CONF_TOKEN]
+    assert token.required is False
 
 
 async def test_stale_ym_selection_clamps_default_to_own() -> None:
