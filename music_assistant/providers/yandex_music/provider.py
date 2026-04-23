@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import uuid
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from io import BytesIO
@@ -122,6 +123,21 @@ def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
     return (item_id, None)
 
 
+def _extract_chapter_map_from_album(album: YandexAlbum) -> tuple[list[str], list[int]]:
+    """Flatten an audiobook album's volumes into (chapter_track_ids, chapter_durations_ms).
+
+    Shared by ``_get_audiobook_stream_details`` and ``_resolve_audiobook_chapter_map``
+    so the two code paths can't drift (e.g. when we later filter bad tracks).
+    """
+    chapter_ids: list[str] = []
+    chapter_durations_ms: list[int] = []
+    for disc in album.volumes or []:
+        for track_obj in disc:
+            chapter_ids.append(str(track_obj.id))
+            chapter_durations_ms.append(int(track_obj.duration_ms or 0))
+    return chapter_ids, chapter_durations_ms
+
+
 class _WaveState:
     """Per-station mutable state for rotor wave playback."""
 
@@ -150,6 +166,11 @@ class YandexMusicProvider(MusicProvider):
     # that all derive from the same liked-albums endpoint.
     _liked_albums_cache: tuple[float, list[YandexAlbum]] | None = None
     _liked_albums_lock: asyncio.Lock
+    # Per-audiobook cache of (chapter_track_ids, chapter_durations_ms) used to
+    # report playback progress per chapter via play_audio.
+    _audiobook_chapter_cache: dict[str, tuple[list[str], list[int]]]
+    # Stable play_id per audiobook session, cleared in on_streamed.
+    _audiobook_play_ids: dict[str, str]
 
     @property
     def client(self) -> YandexMusicClient:
@@ -293,8 +314,8 @@ class YandexMusicProvider(MusicProvider):
         # Initialize per-station wave state dict
         self._wave_states = {}
         self._wave_bg_colors = {}
-        self._liked_albums_lock = asyncio.Lock()
-        self._liked_albums_cache = None
+        self._liked_albums_lock, self._liked_albums_cache = asyncio.Lock(), None
+        self._audiobook_chapter_cache, self._audiobook_play_ids = {}, {}
         self.logger.info("Successfully connected to Yandex Music")
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -306,6 +327,8 @@ class YandexMusicProvider(MusicProvider):
             await self._client.disconnect()
         self._client = None
         self._streaming = None
+        self._audiobook_chapter_cache.clear()
+        self._audiobook_play_ids.clear()
         await super().unload(is_removed)
 
     def get_item_mapping(self, media_type: MediaType | str, key: str, name: str) -> ItemMapping:
@@ -389,6 +412,8 @@ class YandexMusicProvider(MusicProvider):
             "albums",
             "tracks",
             "playlists",
+            "audiobooks",
+            "podcasts",
             LIKED_TRACKS_PLAYLIST_ID,
             WAVES_FOLDER_ID,
             RADIO_FOLDER_ID,
@@ -825,6 +850,26 @@ class YandexMusicProvider(MusicProvider):
                     path=f"{root_base}playlists",
                     name=names["playlists"],
                     is_playable=True,
+                )
+            )
+        if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
+            folders.append(
+                BrowseFolder(
+                    item_id="podcasts",
+                    provider=self.instance_id,
+                    path=f"{root_base}podcasts",
+                    name=names["podcasts"],
+                    is_playable=False,
+                )
+            )
+        if ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features:
+            folders.append(
+                BrowseFolder(
+                    item_id="audiobooks",
+                    provider=self.instance_id,
+                    path=f"{root_base}audiobooks",
+                    name=names["audiobooks"],
+                    is_playable=False,
                 )
             )
         return folders
@@ -1529,15 +1574,19 @@ class YandexMusicProvider(MusicProvider):
         result = SearchResults()
 
         # Determine search type based on requested media types
-        # Map MediaType to Yandex API search type
+        # Map MediaType to Yandex API search type. AUDIOBOOK has no dedicated
+        # Yandex type — it maps to "album" and is filtered by classify_album below.
         type_mapping = {
             MediaType.TRACK: "track",
             MediaType.ALBUM: "album",
+            MediaType.AUDIOBOOK: "album",
             MediaType.ARTIST: "artist",
             MediaType.PLAYLIST: "playlist",
             MediaType.PODCAST: "podcast",
         }
-        requested_types = [type_mapping[mt] for mt in media_types if mt in type_mapping]
+        requested_types = list(
+            dict.fromkeys(type_mapping[mt] for mt in media_types if mt in type_mapping)
+        )
 
         # Use specific type if only one requested, otherwise search all
         search_type = requested_types[0] if len(requested_types) == 1 else "all"
@@ -1554,13 +1603,24 @@ class YandexMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing track: %s", err)
 
-        # Parse albums
-        if MediaType.ALBUM in media_types and search_result.albums:
+        # Parse albums — audiobooks are split into the audiobooks bucket via
+        # classify_album. Yandex-returned podcast albums are handled separately
+        # through the dedicated `.podcasts` node below.
+        want_album = MediaType.ALBUM in media_types
+        want_audiobook = MediaType.AUDIOBOOK in media_types
+        if (want_album or want_audiobook) and search_result.albums:
             for album in search_result.albums.results[:limit]:
+                kind = classify_album(album)
                 try:
-                    result.albums = [*result.albums, parse_album(self, album)]
+                    if kind == "audiobook" and want_audiobook:
+                        result.audiobooks = [
+                            *result.audiobooks,
+                            parse_audiobook(self, album),
+                        ]
+                    elif kind == "music" and want_album:
+                        result.albums = [*result.albums, parse_album(self, album)]
                 except InvalidDataError as err:
-                    self.logger.debug("Error parsing album: %s", err)
+                    self.logger.debug("Error parsing %s album: %s", kind, err)
 
         # Parse artists
         if MediaType.ARTIST in media_types and search_result.artists:
@@ -2694,14 +2754,11 @@ class YandexMusicProvider(MusicProvider):
         if not album or not (album.volumes or []):
             raise MediaNotFoundError(f"Audiobook {audiobook_id} has no chapters")
 
-        chapter_ids: list[str] = []
-        chapter_durations_ms: list[int] = []
-        for disc in album.volumes or []:
-            for track_obj in disc:
-                chapter_ids.append(str(track_obj.id))
-                chapter_durations_ms.append(int(track_obj.duration_ms or 0))
+        chapter_ids, chapter_durations_ms = _extract_chapter_map_from_album(album)
         if not chapter_ids:
             raise MediaNotFoundError(f"Audiobook {audiobook_id} has no chapters")
+
+        self._audiobook_chapter_cache[audiobook_id] = (chapter_ids, chapter_durations_ms)
 
         # Resolve first-chapter format so MA/ffmpeg know what it's decoding
         first = await self.streaming.get_stream_details(chapter_ids[0])
@@ -2757,6 +2814,25 @@ class YandexMusicProvider(MusicProvider):
             accumulated_ms += dur_ms
         # Seek past end — start at last chapter from 0
         return max(n_chapters - 1, 0), 0
+
+    async def _resolve_audiobook_chapter_map(
+        self, audiobook_id: str
+    ) -> tuple[list[str], list[int]]:
+        """Return (chapter_track_ids, chapter_durations_ms) for an audiobook.
+
+        Served from an in-memory cache populated by ``_get_audiobook_stream_details``.
+        On a miss (e.g. ``on_played`` fires before streaming has started), falls back
+        to a fresh ``get_album_with_tracks`` call and refills the cache.
+        """
+        cached = self._audiobook_chapter_cache.get(audiobook_id)
+        if cached is not None:
+            return cached
+        album = await self.client.get_album_with_tracks(audiobook_id)
+        if not album or not (album.volumes or []):
+            return [], []
+        chapter_ids, chapter_durations_ms = _extract_chapter_map_from_album(album)
+        self._audiobook_chapter_cache[audiobook_id] = (chapter_ids, chapter_durations_ms)
+        return chapter_ids, chapter_durations_ms
 
     async def _stream_audiobook_chapters(
         self, data: dict[str, Any], seek_position: int
@@ -2922,7 +2998,13 @@ class YandexMusicProvider(MusicProvider):
 
         Also auto-enables "Don't stop the music" for any queue playing a radio track
         so that MA refills the queue via get_similar_tracks when < 5 tracks remain.
+
+        For audiobooks, persists playback position to Yandex via play_audio so the
+        position is visible across Yandex's other clients.
         """
+        if media_type == MediaType.AUDIOBOOK:
+            await self._report_audiobook_progress(prov_item_id, position)
+            return
         # Radio feedback always enabled
         if media_type != MediaType.TRACK:
             return
@@ -3032,11 +3114,22 @@ class YandexMusicProvider(MusicProvider):
                 break
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
-        """Report stream completion for My Wave rotor feedback.
+        """Report stream completion for My Wave rotor feedback and audiobooks.
 
-        Sends trackFinished or skip with actual seconds_streamed so Yandex
-        can improve recommendations.
+        For radio: sends trackFinished or skip with actual seconds_streamed so
+        Yandex can improve recommendations.
+
+        For audiobooks: sends a final play_audio with the absolute stream position
+        so the last listening point is preserved in Yandex.
         """
+        data = streamdetails.data if isinstance(streamdetails.data, dict) else None
+        if streamdetails.media_type == MediaType.AUDIOBOOK:
+            # Always let the audiobook branch run so session state
+            # (play_id + chapter cache) is cleaned up even when ``data`` was
+            # stripped. ``_report_audiobook_final`` no-ops the play_audio call
+            # when chapter data is absent.
+            await self._report_audiobook_final(streamdetails, data or {})
+            return
         # Radio feedback always enabled
         track_id, station_id = _parse_radio_item_id(streamdetails.item_id)
         if not station_id:
@@ -3058,4 +3151,113 @@ class YandexMusicProvider(MusicProvider):
             track_id=track_id,
             total_played_seconds=seconds,
             batch_id=batch_id,
+        )
+
+    def _audiobook_progress_point(
+        self,
+        chapter_durations_ms: list[int],
+        n_chapters: int,
+        absolute_sec: int,
+    ) -> tuple[int, int, int]:
+        """Resolve an absolute book position into a play_audio-ready tuple.
+
+        Returns ``(chapter_idx, track_length_seconds, offset_seconds)``, applying
+        two invariants Yandex cares about and that ``_resolve_audiobook_seek``
+        alone doesn't guarantee:
+
+        - At/beyond end-of-book, map to end of the last chapter (not start),
+          so Yandex's resume point doesn't rewind to the start of the final
+          chapter on natural completion.
+        - ``track_length_seconds`` is clamped to at least 1 and ``offset`` to
+          ``[0, track_length_seconds]`` — a chapter with ``duration_ms=None``
+          (coerced to 0 by the chapter-map builder) would otherwise send
+          ``track_length_seconds=0`` and block progress from syncing.
+        """
+        absolute_sec = max(0, absolute_sec)
+        total_duration_sec = sum(chapter_durations_ms) // 1000
+        last_idx = max(n_chapters - 1, 0)
+        if absolute_sec >= total_duration_sec > 0:
+            idx = last_idx
+            track_length_sec = max(1, chapter_durations_ms[idx] // 1000)
+            offset = track_length_sec
+        else:
+            idx, offset_raw = self._resolve_audiobook_seek(
+                chapter_durations_ms, absolute_sec, n_chapters
+            )
+            track_length_sec = max(1, chapter_durations_ms[idx] // 1000)
+            offset = max(0, min(int(offset_raw), track_length_sec))
+        return idx, track_length_sec, offset
+
+    async def _report_audiobook_progress(self, audiobook_id: str, position_sec: int) -> None:
+        """Push current listening position of an audiobook to Yandex.
+
+        Resolves the playing chapter + offset from the cached chapter map, then
+        calls play_audio so Yandex persists the position for cross-client resume.
+
+        Best-effort: any non-cancellation failure while resolving the chapter
+        map (rate-limit, network blip, auth edge case bubbling out of
+        ``_call_with_retry``) must never break pause/stop, so it is swallowed
+        here in addition to the errors already absorbed inside
+        ``api_client.play_audio``.
+        """
+        try:
+            chapter_ids, chapter_durations_ms = await self._resolve_audiobook_chapter_map(
+                audiobook_id
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            self.logger.debug(
+                "Skipping audiobook progress report for %s (chapter map resolution failed): %s",
+                audiobook_id,
+                err,
+            )
+            return
+        if not chapter_ids:
+            self.logger.debug(
+                "Audiobook %s has no chapter map; skipping progress report", audiobook_id
+            )
+            return
+        idx, track_length_sec, offset = self._audiobook_progress_point(
+            chapter_durations_ms, len(chapter_ids), int(position_sec)
+        )
+        play_id = self._audiobook_play_ids.setdefault(audiobook_id, uuid.uuid4().hex)
+        await self.client.play_audio(
+            track_id=chapter_ids[idx],
+            album_id=audiobook_id,
+            play_id=play_id,
+            track_length_seconds=track_length_sec,
+            total_played_seconds=offset,
+            end_position_seconds=offset,
+        )
+
+    async def _report_audiobook_final(
+        self, streamdetails: StreamDetails, data: dict[str, Any]
+    ) -> None:
+        """Send a closing play_audio for an audiobook stream.
+
+        Uses the streamdetails' own ``chapter_ids`` / ``chapter_durations_ms``
+        (populated when the StreamDetails was created) to stay consistent with
+        what was actually played, then clears the session play_id and drops
+        the chapter-map cache entry so long-running instances can't grow the
+        cache without bound as users play more audiobooks.
+        """
+        audiobook_id = streamdetails.item_id
+        chapter_ids = data.get("chapter_ids") or []
+        chapter_durations_ms = data.get("chapter_durations_ms") or []
+        play_id = self._audiobook_play_ids.pop(audiobook_id, None) or uuid.uuid4().hex
+        self._audiobook_chapter_cache.pop(audiobook_id, None)
+        if not chapter_ids or not chapter_durations_ms:
+            return
+        absolute_sec = int(streamdetails.seek_position + (streamdetails.seconds_streamed or 0))
+        idx, track_length_sec, offset = self._audiobook_progress_point(
+            chapter_durations_ms, len(chapter_ids), absolute_sec
+        )
+        await self.client.play_audio(
+            track_id=chapter_ids[idx],
+            album_id=audiobook_id,
+            play_id=play_id,
+            track_length_seconds=track_length_sec,
+            total_played_seconds=offset,
+            end_position_seconds=offset,
         )

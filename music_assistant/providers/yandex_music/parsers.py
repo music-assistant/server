@@ -663,4 +663,8 @@ def parse_audiobook(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Au
         with suppress(ValueError):
             audiobook.metadata.release_date = datetime.fromisoformat(album_obj.release_date)
 
+    listening_finished = getattr(album_obj, "listening_finished", None)
+    if listening_finished is not None:
+        audiobook.fully_played = bool(listening_finished)
+
     return audiobook

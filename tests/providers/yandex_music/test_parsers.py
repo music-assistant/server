@@ -380,6 +380,33 @@ def test_parse_audiobook(example: pathlib.Path, provider_stub: ProviderStub) -> 
     assert list(result.narrators) == []
 
 
+def test_parse_audiobook_fully_played_true(provider_stub: ProviderStub) -> None:
+    """parse_audiobook propagates album.listening_finished=True to fully_played."""
+    album_obj = _album_from_fixture(FIXTURES_DIR / "audiobooks" / "basic.json")
+    assert album_obj is not None
+    album_obj.listening_finished = True
+    result = parse_audiobook(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.fully_played is True
+
+
+def test_parse_audiobook_fully_played_false(provider_stub: ProviderStub) -> None:
+    """parse_audiobook propagates album.listening_finished=False to fully_played."""
+    album_obj = _album_from_fixture(FIXTURES_DIR / "audiobooks" / "basic.json")
+    assert album_obj is not None
+    album_obj.listening_finished = False
+    result = parse_audiobook(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.fully_played is False
+
+
+def test_parse_audiobook_fully_played_none(provider_stub: ProviderStub) -> None:
+    """parse_audiobook leaves fully_played=None when the flag is missing."""
+    album_obj = _album_from_fixture(FIXTURES_DIR / "audiobooks" / "basic.json")
+    assert album_obj is not None
+    album_obj.listening_finished = None
+    result = parse_audiobook(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.fully_played is None
+
+
 def test_parse_podcast_episode(provider_stub: ProviderStub) -> None:
     """parse_podcast_episode links episode to its parent podcast."""
     podcast_album = _album_from_fixture(FIXTURES_DIR / "podcasts" / "basic.json")

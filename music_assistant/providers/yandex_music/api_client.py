@@ -337,6 +337,49 @@ class YandexMusicClient:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
 
+    async def play_audio(
+        self,
+        *,
+        track_id: str,
+        album_id: str,
+        play_id: str,
+        track_length_seconds: int,
+        total_played_seconds: int,
+        end_position_seconds: int,
+        from_: str = "music_assistant-audiobook",
+    ) -> bool:
+        """Report playback progress for an audiobook chapter or podcast episode.
+
+        Yandex persists this server-side so progress is visible across its
+        other clients. Failures are swallowed — progress sync is advisory and
+        must never abort pause/stop handling — so auth failures, rate-limits
+        and network blips all log at debug and return False.
+        """
+        try:
+            return bool(
+                await self._call_no_retry(
+                    lambda c: c.play_audio(
+                        track_id=track_id,
+                        album_id=album_id,
+                        from_=from_,
+                        play_id=play_id,
+                        track_length_seconds=track_length_seconds,
+                        total_played_seconds=total_played_seconds,
+                        end_position_seconds=end_position_seconds,
+                    )
+                )
+            )
+        except (
+            BadRequestError,
+            NetworkError,
+            ProviderUnavailableError,
+            UnauthorizedError,
+            LoginFailed,
+            ResourceTemporarilyUnavailable,
+        ) as err:
+            LOGGER.debug("play_audio failed for %s: %s", track_id, err)
+            return False
+
     # Library methods
 
     async def get_liked_tracks(self) -> list[TrackShort]:
