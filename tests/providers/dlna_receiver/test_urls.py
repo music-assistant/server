@@ -44,18 +44,33 @@ def test_validate_stream_url_rejects_missing_host() -> None:
     assert validate_stream_url("https://") is None
 
 
-def test_redact_url_passthrough_when_no_userinfo() -> None:
-    """URLs without userinfo are returned verbatim."""
-    uri = "http://example.com:8080/path?q=1"
-    assert redact_url(uri) == uri
+def test_redact_url_strips_query_without_userinfo() -> None:
+    """Query params are dropped even when there is no userinfo to mask.
+
+    Signed URLs / bearer tokens commonly live in the query string; keeping
+    them in logs would defeat the purpose of redact_url.
+    """
+    redacted = redact_url("http://example.com:8080/path?token=secret&sig=abc")
+    assert "secret" not in redacted
+    assert "sig" not in redacted
+    assert "token" not in redacted
+    assert redacted == "http://example.com:8080/path"
 
 
-def test_redact_url_masks_user_and_password() -> None:
-    """user:pass@host is replaced with ***@host, preserving port/path/query."""
+def test_redact_url_strips_fragment() -> None:
+    """Fragment is dropped (may also contain sensitive data in some flows)."""
+    redacted = redact_url("https://example.com/foo#access_token=secret")
+    assert "secret" not in redacted
+    assert redacted == "https://example.com/foo"
+
+
+def test_redact_url_masks_user_and_password_and_drops_query() -> None:
+    """user:pass@host is replaced with ***@host; query is dropped entirely."""
     redacted = redact_url("http://alice:secret@example.com:8080/stream?token=xyz")
     assert "alice" not in redacted
     assert "secret" not in redacted
-    assert redacted == "http://***@example.com:8080/stream?token=xyz"
+    assert "xyz" not in redacted
+    assert redacted == "http://***@example.com:8080/stream"
 
 
 def test_redact_url_masks_user_only() -> None:

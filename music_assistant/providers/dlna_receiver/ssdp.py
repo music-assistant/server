@@ -63,12 +63,35 @@ class SSDPAdvertiser:
             sock=send_sock,
         )
 
-        # Receiving socket — join multicast group on port 1900 for M-SEARCH
+        # Receiving socket — join multicast group on port 1900 for M-SEARCH.
+        # In multi-player mode each instance binds its own ("", 1900) socket,
+        # which only works if SO_REUSEPORT is available: track whether we
+        # managed to enable it so we can turn the subsequent bind() error
+        # into a clear, actionable message instead of a raw EADDRINUSE.
         recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        with contextlib.suppress(AttributeError, OSError):
+        reuse_port_enabled = False
+        try:
             recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        recv_sock.bind(("", SSDP_PORT))
+            reuse_port_enabled = True
+        except (AttributeError, OSError):
+            reuse_port_enabled = False
+        try:
+            recv_sock.bind(("", SSDP_PORT))
+        except OSError as err:
+            recv_sock.close()
+            # EADDRINUSE: 48 on macOS/BSD, 98 on Linux, 10048 on Windows.
+            if not reuse_port_enabled and err.errno in (48, 98, 10048):
+                msg = (
+                    f"Unable to bind SSDP receive socket to port {SSDP_PORT}: "
+                    "this platform does not support sharing the SSDP port "
+                    "across multiple DLNA receiver instances because "
+                    "SO_REUSEPORT could not be enabled. Run with a single "
+                    "target player, or use a platform that supports "
+                    "SO_REUSEPORT."
+                )
+                raise RuntimeError(msg) from err
+            raise
         mreq = socket.inet_aton(SSDP_MULTICAST_ADDR) + socket.inet_aton(self.bind_ip)
         recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         recv_sock.setblocking(False)

@@ -28,13 +28,19 @@ def validate_stream_url(uri: str) -> str | None:
 
 
 def redact_url(uri: str) -> str:
-    """Return a log-safe copy of a URL with userinfo replaced by ``***``."""
+    """Return a log-safe copy of a URL: strip userinfo and query/fragment.
+
+    The query string on DLNA/streaming URLs commonly carries bearer tokens
+    (``?token=...``), pre-signed GET parameters (``?sig=...&expires=...``),
+    session keys, etc.; logging them would defeat the point of redacting
+    userinfo. Drop both query and fragment unconditionally and replace any
+    ``user[:pass]@`` with ``***@`` — callers only need something the
+    operator can correlate, not a replayable URL.
+    """
     try:
         parts = urlsplit(uri)
     except ValueError:
         return "<invalid-url>"
-    if not parts.username and not parts.password:
-        return uri
     host = parts.hostname or ""
     # urlsplit strips the enclosing brackets from IPv6 hostnames; restore them
     # so the reconstructed URL is syntactically valid.
@@ -43,4 +49,9 @@ def redact_url(uri: str) -> str:
     netloc = host
     if parts.port:
         netloc = f"{netloc}:{parts.port}"
-    return urlunsplit((parts.scheme, f"***@{netloc}", parts.path, parts.query, parts.fragment))
+    if parts.username or parts.password:
+        netloc = f"***@{netloc}"
+    # Drop query + fragment (positions 3 and 4) regardless of whether
+    # userinfo was present — query params are the common source of
+    # accidental secret leakage into logs.
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))

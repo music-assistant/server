@@ -321,6 +321,11 @@ class DLNAReceiverProvider(PluginProvider):
         # (port collision, multicast permission denied, etc.) doesn't
         # leave the HTTP runner holding the port across reloads.
         await renderer.start()
+        # If http_port was 0, renderer.start() just learned the ephemeral
+        # port from the bound socket; refresh the cached SSDP LOCATION so
+        # alive/M-SEARCH responses advertise the real port instead of
+        # whatever description_url resolved to at construction time.
+        inst.ssdp.description_url = renderer.description_url
         try:
             await inst.ssdp.start()
         except Exception:
