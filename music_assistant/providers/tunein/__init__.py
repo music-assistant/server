@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import random
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
+from urllib.parse import unquote
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -17,9 +18,12 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
     MediaItemImage,
+    MediaItemType,
     ProviderMapping,
     Radio,
+    RecommendationFolder,
     SearchResults,
     UniqueList,
 )
@@ -41,11 +45,13 @@ if TYPE_CHECKING:
 
 
 CACHE_CATEGORY_STREAMS = 1
+CACHE_CATEGORY_BROWSE_MAP = 2
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -88,16 +94,110 @@ class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
     _throttler: Throttler
+    _browse_url_map: dict[str, str]
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=2)
+        self._browse_url_map = {}
         username = self.config.get_value(CONF_USERNAME)
         if isinstance(username, str) and "@" in username:
             self.logger.warning(
                 "Email address detected instead of username, "
                 "it is advised to use the tunein username instead of email."
             )
+
+    @staticmethod
+    def _browse_path_key(text: str) -> str:
+        """Convert a display name to a URL-safe path segment."""
+        if " (" in text:
+            text = text[: text.rfind(" (")]
+        result = "".join(c if c.isalnum() else "_" for c in text.strip())
+        while "__" in result:
+            result = result.replace("__", "_")
+        return result.strip("_") or "item"
+
+    async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
+        """Browse TuneIn catalog."""
+        instance_base = path.split("://", 1)[0] + "://"
+        sub_path = path.split("://", 1)[1] if "://" in path else ""
+
+        if not sub_path:
+            # top-level: fetch TuneIn catalog root categories
+            data = await self.__get_data("Browse.ashx")
+            if not data or "body" not in data:
+                return []
+            result: list[MediaItemType | BrowseFolder] = []
+            for item in data["body"]:
+                if item.get("type") == "link" and item.get("key") != "podcast":
+                    key = self._browse_path_key(item["text"])
+                    folder_path = f"{instance_base}{key}"
+                    self._browse_url_map[folder_path] = item["URL"]
+                    await self.mass.cache.set(
+                        key=folder_path,
+                        data=item["URL"],
+                        provider=self.instance_id,
+                        category=CACHE_CATEGORY_BROWSE_MAP,
+                    )
+                    result.append(
+                        BrowseFolder(
+                            item_id=item["key"],
+                            provider=self.instance_id,
+                            path=folder_path,
+                            name=item["text"],
+                        )
+                    )
+            return result
+
+        # sub-level: resolve TuneIn URL from map (populated during navigation)
+        tunein_url = self._browse_url_map.get(path)
+        if not tunein_url:
+            # try persistent cache so deep links work after a restart
+            tunein_url = await self.mass.cache.get(
+                path, provider=self.instance_id, category=CACHE_CATEGORY_BROWSE_MAP
+            )
+            if tunein_url:
+                self._browse_url_map[path] = tunein_url
+        if not tunein_url:
+            # backward-compat: old paths had the URL-encoded TuneIn URL as sub_path
+            if "%3A" in sub_path or sub_path.startswith("http"):
+                tunein_url = unquote(sub_path)
+            else:
+                return []
+
+        data = await self.__get_data(tunein_url, render="json")
+        if not data or "body" not in data:
+            return []
+
+        result = []
+        for item in data["body"]:
+            item_type = item.get("type", "")
+            if item_type == "audio" and "preset_id" in item:
+                result.append(self._parse_radio_lazy(item))
+            elif item_type == "link" and item.get("key") != "podcast":
+                key = item.get("key") or self._browse_path_key(item["text"])
+                folder_path = f"{path}/{key}"
+                self._browse_url_map[folder_path] = item["URL"]
+                await self.mass.cache.set(
+                    key=folder_path,
+                    data=item["URL"],
+                    provider=self.instance_id,
+                    category=CACHE_CATEGORY_BROWSE_MAP,
+                )
+                result.append(
+                    BrowseFolder(
+                        item_id=key,
+                        provider=self.instance_id,
+                        path=folder_path,
+                        name=item["text"],
+                    )
+                )
+            elif item.get("children"):
+                # inline children group (e.g. "Stations", "Local Stations" on genre pages)
+                for child in item["children"]:
+                    if child.get("type") == "audio" and "preset_id" in child:
+                        result.append(self._parse_radio_lazy(child))
+        return result
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
@@ -158,6 +258,64 @@ class TuneInProvider(MusicProvider):
                 return radio
         msg = f"Item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)
+
+    @use_cache(3600 * 3)
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Return trending stations as a recommendation folder."""
+        data = await self.__get_data("Browse.ashx", c="trending")
+        if not data or "body" not in data:
+            return []
+        all_stations = [
+            self._parse_radio_lazy(item)
+            for item in data["body"]
+            if item.get("type") == "audio" and "preset_id" in item
+        ]
+        stations: list[Radio] = random.sample(all_stations, min(20, len(all_stations)))
+        return [
+            RecommendationFolder(
+                item_id="trending",
+                provider=self.instance_id,
+                name="Trending",
+                items=UniqueList(stations),
+            )
+        ]
+
+    def _parse_radio_lazy(self, details: dict[str, Any]) -> Radio:
+        """Create a Radio from a browse item without fetching stream info."""
+        if "name" in details:
+            name = details["name"]
+        else:
+            name = details["text"]
+            if " | " in name:
+                name = name.split(" | ")[1]
+            name = name.split(" (")[0]
+        radio = Radio(
+            item_id=details["preset_id"],
+            provider=self.instance_id,
+            name=name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=details["preset_id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                    details=details.get("URL", details["preset_id"]),
+                    available=details.get("is_available", True),
+                )
+            },
+        )
+        if img := details.get("image") or details.get("logo"):
+            radio.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=img,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+        return radio
 
     def _parse_radio(
         self,
@@ -299,7 +457,7 @@ class TuneInProvider(MusicProvider):
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600)
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
@@ -307,27 +465,16 @@ class TuneInProvider(MusicProvider):
         result = SearchResults()
         if MediaType.RADIO not in media_types:
             return result
-        params = {
-            "query": quote(search_query),
-            "formats": "ogg,aac,wma,mp3,hls",
-            "username": self.config.get_value(CONF_USERNAME),
-            "partnerId": "1",
-            "render": "json",
-        }
-        data = await self.__get_data("search.ashx", **params)
+        data = await self.__get_data("Search.ashx", query=search_query)
         radios = []
         if data and "body" in data:
             count = 0
             for item in data["body"]:
                 if item.get("type") == "audio" and "preset_id" in item:
-                    try:
-                        stream_info = await self._get_stream_info(item["preset_id"])
-                        radios.append(self._parse_radio(item, stream_info))
-                        count += 1
-                        if count >= limit:
-                            break
-                    except Exception as err:
-                        self.logger.debug("Failed to parse radio: %s", err)
+                    radios.append(self._parse_radio_lazy(item))
+                    count += 1
+                    if count >= limit:
+                        break
         result.radio = radios
         return result
 
