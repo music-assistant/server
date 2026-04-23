@@ -133,6 +133,8 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
+
     from .provider import SendspinProvider
 
 
@@ -615,23 +617,53 @@ class SendspinPlayer(SendspinBasePlayer):
         await self.playback_session.cancel("stop command")
         await self.api.group.stop()
 
+    def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
+        """Return the Chromecast provider's Sendspin bridge manager, if loaded."""
+        chromecast_provider = self.mass.get_provider("chromecast")
+        if chromecast_provider is None:
+            return None
+        manager = getattr(chromecast_provider, "bridge_manager", None)
+        if manager is None:
+            return None
+        return cast("SendspinBridgeManager", manager)
+
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
         self.logger.debug(
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
-        # Set current media; elapsed_time will be updated once audio actually commits.
         self._attr_current_media = media
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
-        # playback_state will be set by the group state change event
 
-        # Stop previous stream in case we were already playing something.
-        # Do not call group.stop() here to avoid STOPPED-event races with next-track transitions.
         await self.playback_session.cancel("new media requested")
+
+        # Reset the cast-ready future *before* starting playback so it cannot
+        # race with `_on_stream_start`, and so a stale pending future from a
+        # previous timed-out attempt is cancelled and replaced. Non-Cast
+        # Sendspin players have no bridge and skip this entirely.
+        cast_ready_future: asyncio.Future[None] | None = None
+        bridge_manager = self._get_cast_bridge_manager()
+        if bridge_manager is not None:
+            bridge = bridge_manager.get_bridge_by_client_id(self.player_id)
+            if bridge is not None:
+                cast_ready_future = bridge.reset_cast_ready_future()
+
         await self.playback_session.start(media)
         self.update_state()
+
+        if cast_ready_future is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(cast_ready_future), timeout=30.0)
+        except TimeoutError:
+            self.logger.warning(
+                "Timed out waiting for Cast app on %s to report ready",
+                self.display_name,
+            )
+            if not cast_ready_future.done():
+                cast_ready_future.cancel()
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
