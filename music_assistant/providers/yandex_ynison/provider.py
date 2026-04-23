@@ -427,6 +427,19 @@ class YandexYnisonProvider(PluginProvider):
             self._stream_stop_event.set()
             return
 
+        # Re-capture the provider after the above await: _yandex_provider may
+        # have flipped to None while we were fetching stream details.  Using
+        # the attribute directly below would race with
+        # _check_yandex_provider_match.
+        provider = self._yandex_provider
+        if provider is None:
+            self.logger.warning(
+                "Linked Yandex Music provider unloaded mid-stream — stopping track %s",
+                track_id,
+            )
+            self._stream_stop_event.set()
+            return
+
         await self._update_metadata_from_stream(stream_details, seek_ms)
 
         extra_input_args = PROBE_ARGS + pacing_args()
@@ -443,9 +456,8 @@ class YandexYnisonProvider(PluginProvider):
             stream_details.audio_format,
             seek_ms,
         )
-        assert self._yandex_provider is not None  # guarded by get_audio_stream
         async for chunk in get_ffmpeg_stream(
-            audio_input=self._yandex_provider.get_audio_stream(stream_details),
+            audio_input=provider.get_audio_stream(stream_details),
             input_format=stream_details.audio_format,
             output_format=out_fmt,
             extra_input_args=extra_input_args,
@@ -458,6 +470,18 @@ class YandexYnisonProvider(PluginProvider):
         media_type: MediaType = MediaType.TRACK,
     ) -> StreamDetails:
         """Fetch stream details with caching, throttling, and retry."""
+        # Capture the linked yandex_music provider into a local ref at entry.
+        # self._yandex_provider can flip to None mid-await when the linked
+        # MusicProvider is unloaded (see _check_yandex_provider_match, which
+        # runs as a background task on provider-loaded/unloaded events).
+        # Dereferencing the attribute after an await would raise
+        # AttributeError and hard-stop the audio generator.
+        provider = self._yandex_provider
+        if provider is None:
+            raise LoginFailed(
+                "Linked Yandex Music provider is not loaded — cannot fetch stream details"
+            )
+
         cache_key = f"ynison_sd_{track_id}"
         cached = await self.mass.cache.get(
             cache_key,
@@ -475,9 +499,7 @@ class YandexYnisonProvider(PluginProvider):
                 if delay > 0:
                     self.logger.debug("get_stream_details throttled %.1fs", delay)
             try:
-                sd = await self._yandex_provider.get_stream_details(  # type: ignore[union-attr]
-                    track_id, media_type
-                )
+                sd = await provider.get_stream_details(track_id, media_type)
                 # StreamDetails.data has serialize="omit", so to_dict()
                 # strips it. Manually include it so cached entries keep
                 # the URL / decryption key needed by get_audio_stream().

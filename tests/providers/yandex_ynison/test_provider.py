@@ -1144,6 +1144,39 @@ class TestPCMNormalization:
 
         assert collected == []
 
+    async def test_stream_track_provider_unloaded_mid_stream_aborts_cleanly(
+        self,
+    ) -> None:
+        """Unloaded linked provider mid-stream aborts cleanly (no AttributeError).
+
+        Regression: the path between `await _get_stream_details_with_retry`
+        and the ffmpeg stream builder used to dereference
+        `self._yandex_provider` directly, racing with
+        `_check_yandex_provider_match` which nulls the attribute on unload.
+        """
+        provider = _make_provider()
+        mock_yandex = MagicMock()
+        sd = MagicMock()
+        sd.expiration = 600
+        sd.audio_format = MagicMock()
+        sd.to_dict.return_value = {"track_id": "t1"}
+        sd.data = {"url": "https://cdn.example.com/audio.mp3"}
+
+        async def fetch_and_null(_track_id: str, _media_type: Any = None) -> Any:
+            # Simulate the background unload task firing while we awaited.
+            provider._yandex_provider = None
+            return sd
+
+        mock_yandex.get_stream_details = AsyncMock(side_effect=fetch_and_null)
+        provider._yandex_provider = mock_yandex
+
+        collected: list[bytes] = []
+        async for chunk in provider._stream_track("t1"):
+            collected.append(chunk)
+
+        assert collected == []
+        assert provider._stream_stop_event.is_set()
+
 
 def _make_ym_provider_stub(
     instance_id: str = "ym-inst",
@@ -1983,6 +2016,24 @@ class TestGetStreamDetailsWithRetry:
         with pytest.raises(asyncio.CancelledError):
             await provider._get_stream_details_with_retry("t1")
         mock_yp.get_stream_details.assert_awaited_once()
+
+    async def test_unloaded_provider_raises_login_failed_not_attribute_error(
+        self,
+    ) -> None:
+        """Linked yandex_music unloaded → LoginFailed, not AttributeError.
+
+        Regression: _yandex_provider can be set to None by the background
+        _check_yandex_provider_match task between awaits in this function.
+        Prior code dereferenced `self._yandex_provider.get_stream_details`
+        directly, raising AttributeError and hard-stopping the audio
+        generator.  We now capture a local ref at entry and surface a
+        clean LoginFailed instead.
+        """
+        provider = _make_provider()
+        provider._yandex_provider = None
+
+        with pytest.raises(LoginFailed, match="not loaded"):
+            await provider._get_stream_details_with_retry("t1")
 
 
 # ------------------------------------------------------------------
