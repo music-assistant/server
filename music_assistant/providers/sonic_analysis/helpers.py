@@ -68,6 +68,13 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
 
     Returns None if the audio is too short for STFT processing.
 
+    Computes a single STFT up front and passes it to each spectral feature
+    via the `S=` kwarg. librosa functions used here (chroma_stft,
+    spectral_contrast, spectral_centroid, spectral_flatness) all share the
+    same default n_fft=2048 / hop_length=512, so a single STFT is the
+    correct input for all of them. Output is numerically identical to
+    calling each with raw audio — we just skip 3 redundant STFT passes.
+
     :param audio: Mono float32 audio samples for this block.
     :param sample_rate: Sample rate in Hz.
     """
@@ -80,13 +87,21 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="n_fft=", category=UserWarning)
         warnings.filterwarnings("ignore", message="Trying to estimate tuning", category=UserWarning)
-        bf.chroma_frames.append(librosa.feature.chroma_stft(y=audio, sr=sample_rate))
+
+        # One STFT, shared across spectral features
+        stft_mag = np.abs(librosa.stft(audio))
+        stft_power = stft_mag**2
+
+        bf.chroma_frames.append(librosa.feature.chroma_stft(S=stft_power, sr=sample_rate))
         bf.contrast_frames.append(
-            librosa.feature.spectral_contrast(y=audio, sr=sample_rate, n_bands=6)
+            librosa.feature.spectral_contrast(S=stft_mag, sr=sample_rate, n_bands=6)
         )
-        bf.centroid_frames.append(librosa.feature.spectral_centroid(y=audio, sr=sample_rate))
-        bf.flatness_frames.append(librosa.feature.spectral_flatness(y=audio))
+        bf.centroid_frames.append(librosa.feature.spectral_centroid(S=stft_mag, sr=sample_rate))
+        bf.flatness_frames.append(librosa.feature.spectral_flatness(S=stft_mag))
+        # RMS operates in time domain, doesn't benefit from STFT sharing.
         bf.rms_frames.append(librosa.feature.rms(y=audio))
+        # onset_strength uses a MEL spectrogram internally with different
+        # parameters; not worth sharing the linear STFT here.
         bf.onset_env_frames.append(librosa.onset.onset_strength(y=audio, sr=sample_rate))
 
     return bf
