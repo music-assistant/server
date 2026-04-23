@@ -159,24 +159,36 @@ def _extract_song_image_url(song_obj: dict[str, Any]) -> str | None:
 
 
 def _parse_track_duration_seconds(song_obj: dict[str, Any]) -> int:
-    """Parse track duration in seconds from heterogeneous NCM payloads."""
-    duration_raw = (
-        song_obj.get("dt")
-        or song_obj.get("duration")
-        or song_obj.get("songTime")
-        or song_obj.get("durationMs")
-        or song_obj.get("playTime")
-        or (
+    """Parse track duration in seconds from NCM payload fields with known units."""
+    # Fields documented/observed in NCM payloads as milliseconds.
+    duration_ms_candidates = (
+        song_obj.get("dt"),
+        song_obj.get("duration"),
+        song_obj.get("songTime"),
+        song_obj.get("durationMs"),
+        song_obj.get("playTime"),
+        (
             song_obj.get("bMusic", {}).get("playTime")
             if isinstance(song_obj.get("bMusic"), dict)
             else None
-        )
+        ),
     )
-    duration_value = _to_positive_int(duration_raw)
-    if duration_value <= 0:
-        return 0
-    # NCM payloads are usually milliseconds, but some variants return seconds.
-    return int(duration_value / 1000) if duration_value >= 1000 else duration_value
+    for duration_ms in duration_ms_candidates:
+        parsed_ms = _to_positive_int(duration_ms)
+        if parsed_ms > 0:
+            return parsed_ms // 1000
+
+    # Optional normalized fields that may already be in seconds.
+    duration_sec_candidates = (
+        song_obj.get("durationSec"),
+        song_obj.get("durationSeconds"),
+        song_obj.get("lengthSeconds"),
+    )
+    for duration_sec in duration_sec_candidates:
+        parsed_sec = _to_positive_int(duration_sec)
+        if parsed_sec > 0:
+            return parsed_sec
+    return 0
 
 
 class NcmApiClient:
