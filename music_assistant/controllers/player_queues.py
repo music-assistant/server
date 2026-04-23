@@ -1062,6 +1062,9 @@ class PlayerQueuesController(CoreController):
                 # reset the play action in progress flag on restore
                 # this can happen if MA was killed while a play action was in progress
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                # from_cache fixes up radio_source and enqueued_media_items,
+                # which mashumaro deserializes as plain dicts instead of MediaItemType objects
+                queue.from_cache(prev_state)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1069,34 +1072,6 @@ class PlayerQueuesController(CoreController):
                     default=[],
                 )
                 queue_items = [QueueItem.from_cache(item_data) for item_data in prev_items]
-                if queue.enqueued_media_items:
-                    # mashumaro may deserialize list[MediaItemType] as plain dicts or as
-                    # proper objects depending on the version — handle both.
-                    queue.enqueued_media_items = cast(
-                        "list[MediaItemType]",
-                        [
-                            media_from_dict(item) if isinstance(item, dict) else item
-                            for item in cast(
-                                "list[dict[str, Any] | MediaItemType]",
-                                queue.enqueued_media_items,
-                            )
-                        ],
-                    )
-                if queue.radio_source:
-                    # radio_source: mashumaro may deserialize list[MediaItemType] as plain
-                    # dicts or as proper objects depending on the version. Ensure all items
-                    # are proper objects so isinstance checks (e.g. Playlist) work correctly
-                    # in _fill_radio_tracks().
-                    queue.radio_source = cast(
-                        "list[MediaItemType]",
-                        [
-                            media_from_dict(item) if isinstance(item, dict) else item
-                            for item in cast(
-                                "list[dict[str, Any] | MediaItemType]",
-                                queue.radio_source,
-                            )
-                        ],
-                    )
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
