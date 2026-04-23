@@ -66,7 +66,9 @@ def _is_concrete_ipv4(value: str) -> bool:
     SSDP uses ``socket.inet_aton`` + ``IP_ADD_MEMBERSHIP`` which require a
     concrete IPv4 interface; ``0.0.0.0`` joins the multicast group on the
     wrong interface (silently dropping alive packets on multi-homed hosts),
-    and IPv6 / hostnames fail outright.
+    ``127.0.0.1`` joins on the loopback interface where SSDP multicast
+    never reaches real DLNA control points, and IPv6 / hostnames fail
+    outright.
     """
     if not value:
         return False
@@ -74,7 +76,9 @@ def _is_concrete_ipv4(value: str) -> bool:
         addr = ipaddress.ip_address(value)
     except ValueError:
         return False
-    return isinstance(addr, ipaddress.IPv4Address) and not addr.is_unspecified
+    return (
+        isinstance(addr, ipaddress.IPv4Address) and not addr.is_unspecified and not addr.is_loopback
+    )
 
 
 @dataclass
@@ -293,6 +297,9 @@ class DLNAReceiverProvider(PluginProvider):
             bind_ip=bind_ip,
             http_port=http_port,
             udn=udn,
+            # Reuse MA's shared HTTP session so every GENA NOTIFY across
+            # all three services on every renderer shares one connector.
+            session=self.mass.http_session,
         )
 
         inst = RendererInstance(
@@ -732,8 +739,14 @@ class DLNAReceiverProvider(PluginProvider):
         if self._plugin_source:
             self._plugin_source.metadata = None
             self._plugin_source.in_use_by = None
-        if self._metadata_task and not self._metadata_task.done():
-            self._metadata_task.cancel()
+        # Drop the reference after cancel so the next playback cycle creates
+        # a fresh task. Without this, a canceled-but-not-yet-done task still
+        # reports done() == False to _ensure_metadata_task for a brief
+        # window, and a rapid stop→play would skip restarting the loop.
+        if self._metadata_task is not None:
+            if not self._metadata_task.done():
+                self._metadata_task.cancel()
+            self._metadata_task = None
 
     def _ensure_metadata_task(self) -> None:
         """Start the metadata update loop if not already running."""

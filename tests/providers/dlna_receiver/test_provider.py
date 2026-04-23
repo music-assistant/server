@@ -152,10 +152,10 @@ def test_get_source_uses_unknown_content_type(provider_cls) -> None:  # type: ig
 
 @pytest.mark.parametrize(
     "value",
-    ["192.168.1.5", "10.0.0.1", "127.0.0.1", "8.8.8.8"],
+    ["192.168.1.5", "10.0.0.1", "8.8.8.8", "172.16.0.1"],
 )
-def test_is_concrete_ipv4_accepts_real_addresses(value: str) -> None:
-    """Concrete non-wildcard IPv4 addresses are accepted."""
+def test_is_concrete_ipv4_accepts_routable_addresses(value: str) -> None:
+    """Concrete non-wildcard, non-loopback IPv4 addresses are accepted."""
     from music_assistant.providers.dlna_receiver.provider import _is_concrete_ipv4  # noqa: PLC0415
 
     assert _is_concrete_ipv4(value) is True
@@ -166,6 +166,8 @@ def test_is_concrete_ipv4_accepts_real_addresses(value: str) -> None:
     [
         "",
         "0.0.0.0",  # wildcard — SSDP would join multicast on wrong interface
+        "127.0.0.1",  # IPv4 loopback — multicast on lo never reaches real CPs
+        "127.1.2.3",  # entire 127.0.0.0/8 is loopback
         "::1",  # IPv6 loopback — inet_aton rejects
         "fe80::1",  # IPv6 link-local
         "2001:db8::1",  # IPv6 documentation
@@ -174,8 +176,8 @@ def test_is_concrete_ipv4_accepts_real_addresses(value: str) -> None:
         "not-an-ip",
     ],
 )
-def test_is_concrete_ipv4_rejects_non_ipv4(value: str) -> None:
-    """Empty / wildcard / IPv6 / hostname / garbage must all be rejected."""
+def test_is_concrete_ipv4_rejects_non_routable(value: str) -> None:
+    """Empty / wildcard / loopback / IPv6 / hostname / garbage all rejected."""
     from music_assistant.providers.dlna_receiver.provider import _is_concrete_ipv4  # noqa: PLC0415
 
     assert _is_concrete_ipv4(value) is False

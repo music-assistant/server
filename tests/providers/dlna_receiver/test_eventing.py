@@ -145,3 +145,35 @@ def test_build_propertyset_escapes_values() -> None:
 async def test_notify_no_subscribers(manager: EventingManager) -> None:
     """Notify with no subscribers should be a no-op."""
     await manager.notify({"TransportState": "PLAYING"})
+
+
+async def test_injected_session_is_not_closed_on_stop() -> None:
+    """A caller-owned session must survive ``stop()`` unchanged.
+
+    Provider-level wiring injects ``mass.http_session`` and closing it
+    would break the rest of MA. Only managers that created their own
+    session are allowed to close it.
+    """
+    import aiohttp  # noqa: PLC0415
+
+    shared = aiohttp.ClientSession()
+    try:
+        mgr = EventingManager(session=shared)
+        await mgr.start()
+        # start() must reuse the injected session, not overwrite it.
+        assert mgr._session is shared
+        await mgr.stop()
+        # stop() must not close a session it does not own.
+        assert not shared.closed
+    finally:
+        await shared.close()
+
+
+async def test_owned_session_is_closed_on_stop() -> None:
+    """When no session is injected, the manager creates + closes its own."""
+    mgr = EventingManager()
+    await mgr.start()
+    owned = mgr._session
+    assert owned is not None
+    await mgr.stop()
+    assert owned.closed

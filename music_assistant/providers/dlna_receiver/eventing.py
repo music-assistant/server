@@ -44,18 +44,29 @@ class EventingManager:
     service name (e.g., "AVTransport", "RenderingControl").
     """
 
-    def __init__(self) -> None:
-        """Initialize with no subscriptions and no background session."""
+    def __init__(self, session: aiohttp.ClientSession | None = None) -> None:
+        """Initialize with no subscriptions and (optionally) a shared session.
+
+        If ``session`` is provided, NOTIFY traffic reuses it and the manager
+        does not own its lifecycle; this lets a single renderer instance
+        share one connector/DNS cache across all three services, and lets
+        the provider pass down ``mass.http_session`` in the typical case.
+        When ``session`` is None we fall back to owning a private session
+        (kept for standalone/test use) that is closed in ``stop()``.
+        """
         self._subscriptions: dict[str, Subscription] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
         self._pending_tasks: set[asyncio.Task[None]] = set()
-        self._session: aiohttp.ClientSession | None = None
+        self._session: aiohttp.ClientSession | None = session
+        self._owns_session: bool = session is None
 
     async def start(self) -> None:
         """Start the periodic subscription cleanup task."""
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=5),
-        )
+        if self._session is None:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5),
+            )
+            self._owns_session = True
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def stop(self) -> None:
@@ -72,7 +83,9 @@ class EventingManager:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
             self._pending_tasks.clear()
-        if self._session is not None:
+        # Only close the session if we created it ourselves; an injected
+        # (shared) session is owned by the caller (e.g. Music Assistant).
+        if self._session is not None and self._owns_session:
             await self._session.close()
             self._session = None
         self._subscriptions.clear()
@@ -203,6 +216,11 @@ class EventingManager:
         }
         sub.seq += 1
 
+        # Per-request timeout so we don't depend on the injected session's
+        # default (mass.http_session has no 5s cap) and stay consistent with
+        # the timeout we used when owning our own session.
+        timeout = aiohttp.ClientTimeout(total=5)
+
         # UDA §4.1.2: CALLBACK lists URLs in preference order. Use the first
         # one that actually accepts the NOTIFY (2xx); on HTTP errors or network
         # failures, fall through to the next URL.
@@ -213,6 +231,7 @@ class EventingManager:
                     url,
                     headers=headers,
                     data=xml_body,
+                    timeout=timeout,
                 ) as resp:
                     if resp.status >= 300:
                         LOGGER.warning(

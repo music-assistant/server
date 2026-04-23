@@ -15,6 +15,7 @@ from pathlib import Path
 from xml.etree.ElementTree import Element, ParseError, SubElement, fromstring, tostring
 from xml.sax.saxutils import escape
 
+import aiohttp
 from aiohttp import web
 
 from .constants import (
@@ -57,8 +58,16 @@ class UPnPRenderer:
         bind_ip: str,
         http_port: int = DEFAULT_HTTP_PORT,
         udn: str | None = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> None:
-        """Create a renderer bound to the given IP/port with a stable UDN."""
+        """Create a renderer bound to the given IP/port with a stable UDN.
+
+        ``session`` — optional shared aiohttp session. When supplied (the
+        typical provider path passes ``mass.http_session``), all three
+        GENA eventing managers reuse the same connector/DNS cache instead
+        of each spinning up its own. In multi-player mode this collapses
+        ``3 * N`` sessions down to one.
+        """
         self.friendly_name = friendly_name
         self.bind_ip = bind_ip
         self.http_port = http_port
@@ -82,10 +91,12 @@ class UPnPRenderer:
         }
         self._setup_routes()
 
-        # GENA eventing managers (one per service)
-        self._evt_av_transport = EventingManager()
-        self._evt_rendering_control = EventingManager()
-        self._evt_connection_manager = EventingManager()
+        # GENA eventing managers (one per service). Share the provided
+        # aiohttp session across all three so NOTIFY traffic reuses a
+        # single connector instead of spawning one per service per renderer.
+        self._evt_av_transport = EventingManager(session=session)
+        self._evt_rendering_control = EventingManager(session=session)
+        self._evt_connection_manager = EventingManager(session=session)
 
         # Callbacks (set by provider)
         self.on_set_av_transport_uri: SoapCallback | None = None
