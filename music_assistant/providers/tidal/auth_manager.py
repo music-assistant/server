@@ -16,13 +16,10 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 
+from .constants import AUTH_URL, LOGIN_URL, REDIRECT_URI, SESSIONS_URL
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
-
-# Configuration constants
-TOKEN_TYPE = "Bearer"
-AUTH_URL = "https://auth.tidal.com/v1/oauth2"
-REDIRECT_URI = "https://tidal.com/android/login/auth"
 
 TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
 
@@ -216,7 +213,7 @@ class TidalAuthManager:
             "restrict_signup": "true",
         }
 
-        url = f"https://login.tidal.com/authorize?{urllib.parse.urlencode(params)}"
+        url = f"{LOGIN_URL}?{urllib.parse.urlencode(params)}"
 
         # Send URL to user
         auth_helper.mass.loop.call_soon_threadsafe(auth_helper.send_url, url)
@@ -281,10 +278,9 @@ class TidalAuthManager:
 
         # Get user information using the new token
         headers = {"Authorization": f"Bearer {token_data['access_token']}"}
-        sessions_url = "https://api.tidal.com/v1/sessions"
 
         # Again use mass.http_session
-        async with http_session.get(sessions_url, headers=headers) as response:
+        async with http_session.get(SESSIONS_URL, headers=headers) as response:
             if response.status != 200:
                 error_text = await response.text()
                 raise LoginFailed(f"Failed to get user info: {error_text}")
