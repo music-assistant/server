@@ -28,6 +28,7 @@ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFo
 from aiosendspin.models.types import AudioCodec, GoodbyeReason
 from aiosendspin.server import ClientRemovedEvent
 from music_assistant_models.enums import EventType, IdentifierType
+from music_assistant_models.errors import PlayerCommandFailed
 from pychromecast.controllers import BaseController
 
 from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
@@ -86,15 +87,18 @@ class SendspinCastController(BaseController):
         self,
         logger: logging.Logger,
         on_fatal_audio_error: Callable[[], None] | None = None,
+        on_cast_connected: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the controller.
 
         :param logger: Logger to forward Cast receiver messages to.
         :param on_fatal_audio_error: Callback when Cast app reports audio is unsupported.
+        :param on_cast_connected: Callback when Cast app reports it connected to Sendspin.
         """
         super().__init__(SENDSPIN_CAST_NAMESPACE)
         self._log = logger
         self._on_fatal_audio_error = on_fatal_audio_error
+        self._on_cast_connected = on_cast_connected
 
     def receive_message(self, _message: CastMessage, data: dict[str, Any]) -> bool:
         """Handle incoming messages on the Sendspin namespace.
@@ -128,6 +132,8 @@ class SendspinCastController(BaseController):
             self._log.error("[CastApp] Error: %s", message)
             if "Audio output is not supported" in message and self._on_fatal_audio_error:
                 self._on_fatal_audio_error()
+        elif state == "connected" and self._on_cast_connected:
+            self._on_cast_connected()
         return True
 
 
@@ -242,6 +248,24 @@ class SendspinChromecastBridge:
         self._launch_task: asyncio.Task[None] | None = None
         self._log_controller: SendspinCastController | None = None
         self._cast_app_was_active: bool = False
+        self._cast_ready_future: asyncio.Future[None] | None = None
+
+    def reset_cast_ready_future(self) -> asyncio.Future[None]:
+        """Return a fresh cast-ready future, cancelling any prior pending one."""
+        prior = self._cast_ready_future
+        if prior is not None and not prior.done():
+            prior.cancel()
+        fut: asyncio.Future[None] = self.mass.loop.create_future()
+        self._cast_ready_future = fut
+        return fut
+
+    def ensure_cast_ready_future(self) -> asyncio.Future[None]:
+        """Return the current pending future, creating one if missing or done."""
+        fut = self._cast_ready_future
+        if fut is None or fut.done():
+            fut = self.mass.loop.create_future()
+            self._cast_ready_future = fut
+        return fut
 
     @property
     def bridge_client_id(self) -> str:
@@ -280,6 +304,7 @@ class SendspinChromecastBridge:
         self._log_controller = SendspinCastController(
             self.logger,
             on_fatal_audio_error=self._on_cast_fatal_audio_error,
+            on_cast_connected=self._on_cast_connected,
         )
         self.cast_player.cc.register_handler(self._log_controller)
 
@@ -295,6 +320,10 @@ class SendspinChromecastBridge:
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         self.cast_player.on_app_status_changed = None
+
+        if self._cast_ready_future is not None and not self._cast_ready_future.done():
+            self._cast_ready_future.cancel()
+        self._cast_ready_future = None
 
         if self._log_controller is not None:
             self.cast_player.cc.unregister_handler(self._log_controller)
@@ -329,6 +358,28 @@ class SendspinChromecastBridge:
         self.mass.config.set_raw_player_config_value(
             self._bridge_client_id, CONF_CAST_AUDIO_UNSUPPORTED, True
         )
+        self._resolve_cast_ready_future(
+            PlayerCommandFailed(
+                "This Cast device does not support audio playback (AudioContext unavailable)."
+            )
+        )
+
+    def _on_cast_connected(self) -> None:
+        """Handle Cast app "connected" status (called from socket thread)."""
+        self.mass.loop.call_soon_threadsafe(self._resolve_cast_ready_future, None)
+
+    def _resolve_cast_ready_future(self, error: BaseException | None) -> None:
+        """Resolve the cast-ready future if still pending.
+
+        :param error: Exception to set on the future, or None for success.
+        """
+        fut = self._cast_ready_future
+        if fut is None or fut.done():
+            return
+        if error is None:
+            fut.set_result(None)
+        else:
+            fut.set_exception(error)
 
     def on_cast_status_changed(self, app_id: str | None) -> None:
         """Handle Cast app id change / connection loss.
@@ -348,6 +399,9 @@ class SendspinChromecastBridge:
         client = self._sendspin_client
         if client is not None and client.is_connected:
             client.detach_connection(GoodbyeReason.SHUTDOWN)
+        self._resolve_cast_ready_future(
+            PlayerCommandFailed("Cast app stopped before reporting ready.")
+        )
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle stream start request from Sendspin server.
@@ -362,6 +416,7 @@ class SendspinChromecastBridge:
             self.cast_player.display_name,
             request.connection_reason,
         )
+        self.ensure_cast_ready_future()
         if not self.cast_player.available:
             self.logger.warning("Cannot start Sendspin stream for %s: player not available")
             return
