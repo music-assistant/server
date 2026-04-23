@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec
+from aiosendspin.models.types import AudioCodec, GoodbyeReason
 from aiosendspin.server import ClientRemovedEvent
 from music_assistant_models.enums import EventType, IdentifierType
 from pychromecast.controllers import BaseController
@@ -241,6 +241,7 @@ class SendspinChromecastBridge:
         self._bridge_role: BridgePlayerRole | None = None
         self._launch_task: asyncio.Task[None] | None = None
         self._log_controller: SendspinCastController | None = None
+        self._cast_app_was_active: bool = False
 
     @property
     def bridge_client_id(self) -> str:
@@ -282,6 +283,9 @@ class SendspinChromecastBridge:
         )
         self.cast_player.cc.register_handler(self._log_controller)
 
+        self._cast_app_was_active = self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
+        self.cast_player.on_app_status_changed = self.on_cast_status_changed
+
         self.logger.info(
             "Sendspin bridge registered for %s (client_id=%s)",
             self.cast_player.display_name,
@@ -290,6 +294,8 @@ class SendspinChromecastBridge:
 
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
+        self.cast_player.on_app_status_changed = None
+
         if self._log_controller is not None:
             self.cast_player.cc.unregister_handler(self._log_controller)
             self._log_controller = None
@@ -323,6 +329,25 @@ class SendspinChromecastBridge:
         self.mass.config.set_raw_player_config_value(
             self._bridge_client_id, CONF_CAST_AUDIO_UNSUPPORTED, True
         )
+
+    def on_cast_status_changed(self, app_id: str | None) -> None:
+        """Handle Cast app id change / connection loss.
+
+        :param app_id: The current Cast app id, or None if the device disconnected.
+        """
+        if app_id == SENDSPIN_CAST_APP_ID:
+            return
+        if not self._cast_app_was_active:
+            return
+        self._cast_app_was_active = False
+        self.logger.info(
+            "Sendspin Cast app no longer active on %s (app_id=%s) — detaching client",
+            self.cast_player.display_name,
+            app_id,
+        )
+        client = self._sendspin_client
+        if client is not None and client.is_connected:
+            client.detach_connection(GoodbyeReason.SHUTDOWN)
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle stream start request from Sendspin server.
@@ -375,6 +400,7 @@ class SendspinChromecastBridge:
             # Send config with retry — the Cast app's message listener
             # may not be ready immediately after the launch callback fires.
             await self._send_sendspin_config_with_retry()
+            self._cast_app_was_active = True
 
             self.logger.info(
                 "Sendspin Cast App launched on %s (client_id=%s)",
