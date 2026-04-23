@@ -147,6 +147,11 @@ class AirPlayPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of this player."""
         features = set(BASE_PLAYER_FEATURES)
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            # AP2 sync is broken — cliap2 doesn't respect the NTP start time
+            # correctly, so grouping produces multi-second sync offsets.
+            # See https://github.com/music-assistant/cliairplay/issues/102
+            features.discard(PlayerFeature.SET_MEMBERS)
         if not (self.group_members or self.synced_to):
             # we only support pause when the player is not synced,
             # because we don't want to deal with the complexity of pausing a group of players
@@ -159,11 +164,18 @@ class AirPlayPlayer(Player):
     def can_group_with(self) -> set[str]:
         """Return player IDs this player can group with.
 
-        AP2 and RAOP players can group with one another.
+        AP2 players cannot group (broken NTP sync in cliap2).
+        RAOP players can group with other RAOP players only.
         """
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            return set()
         prov = cast("AirPlayProvider", self.provider)
         return {
-            p.player_id for p in prov.get_players() if p.available and p.player_id != self.player_id
+            p.player_id
+            for p in prov.get_players()
+            if p.available
+            and p.player_id != self.player_id
+            and p.protocol != StreamingProtocol.AIRPLAY2
         }
 
     @property
@@ -221,7 +233,10 @@ class AirPlayPlayer(Player):
                 "Some newer devices do not fully support RAOP and "
                 "will only work with AirPlay version 2, "
                 "while older devices may only support RAOP.\n\n"
-                "In most cases the default automatic selection will work fine.",
+                "In most cases the default automatic selection will work fine.\n\n"
+                "NOTE: AirPlay 2 currently does not support audio synchronization. "
+                "Grouping/syncing with other players is only available when "
+                "using AirPlay 1 (RAOP).",
                 options=[
                     opt
                     for opt in (
@@ -304,6 +319,24 @@ class AirPlayPlayer(Player):
 
         if is_broken_airplay_model(self.device_info.manufacturer, self.device_info.model):
             base_entries.insert(-1, BROKEN_AIRPLAY_WARN)
+
+        if effective_protocol == StreamingProtocol.AIRPLAY2:
+            # Insert the warning right after the protocol choice entry
+            for i, entry in enumerate(base_entries):
+                if entry.key == CONF_AIRPLAY_PROTOCOL:
+                    base_entries.insert(
+                        i + 1,
+                        ConfigEntry(
+                            key="AIRPLAY2_SYNC_WARN",
+                            type=ConfigEntryType.ALERT,
+                            default_value=None,
+                            required=False,
+                            label="AirPlay 2 currently does not support audio synchronization. "
+                            "Grouping/syncing with other players is not available. "
+                            "Switch to AirPlay 1 (RAOP) if you need multi-room sync.",
+                        ),
+                    )
+                    break
 
         return base_entries
 
@@ -915,8 +948,12 @@ class AirPlayPlayer(Player):
         await super().on_config_updated()
         prov = cast("AirPlayProvider", self.provider)
         bridge_manager = prov.bridge_manager
-        if bridge_manager.get_bridge(self.player_id) is None:
-            # Set up the Sendspin bridge
+        has_bridge = bridge_manager.get_bridge(self.player_id) is not None
+        if self.protocol == StreamingProtocol.AIRPLAY2 and has_bridge:
+            # AP2 doesn't support sync — tear down the Sendspin bridge
+            await bridge_manager.remove_bridge(self.player_id)
+        elif self.protocol != StreamingProtocol.AIRPLAY2 and not has_bridge:
+            # Switched back to RAOP — set up the Sendspin bridge
             await bridge_manager.setup_bridge(self)
 
     async def on_unload(self) -> None:
