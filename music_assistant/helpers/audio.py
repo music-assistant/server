@@ -271,6 +271,12 @@ def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
     for key, value in matches:
         metadata[key.lower()] = value
 
+    # Fallback: RFC 8216 plain title format `#EXTINF:<duration>,<title>`
+    if not metadata and "," in extinf_line:
+        title = extinf_line.split(",", 1)[1].strip()
+        if title:
+            metadata["title"] = title
+
     return metadata
 
 

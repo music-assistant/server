@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 import aiofiles
 import aiohttp
 import shortuuid
-from aiohttp import ClientConnectorSSLError, ClientTimeout
+from aiohttp import ClientConnectorSSLError, ClientResponseError, ClientTimeout
 from music_assistant_models.dsp import DSPConfig, DSPDetails, DSPState
 from music_assistant_models.enums import (
     ContentType,
@@ -2183,9 +2183,17 @@ class StreamsAudio:
 
             # Fetch the media playlist
             timeout = ClientTimeout(total=0, connect=10, sock_read=30)
-            async with mass.http_session_no_ssl.get(media_playlist_url, timeout=timeout) as resp:
-                resp.raise_for_status()
-                playlist_content = await resp.text()
+            try:
+                async with mass.http_session_no_ssl.get(
+                    media_playlist_url, timeout=timeout
+                ) as resp:
+                    resp.raise_for_status()
+                    playlist_content = await resp.text()
+            except ClientResponseError as err:
+                # Session token likely expired (410/403) — drop cache so next poll re-resolves
+                if err.status in (403, 410):
+                    streamdetails.data.pop("hls_media_playlist_url", None)
+                raise
 
             # Parse the playlist and look for EXTINF metadata
             # The most recent segment usually has the current metadata
@@ -2201,7 +2209,8 @@ class StreamsAudio:
                     image_url = (
                         metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
                     )
-
+                    if not artist and " - " in title:
+                        artist, title = title.split(" - ", 1)
                     if title or artist:
                         # Format as "Artist - Title"
                         if artist and title:
