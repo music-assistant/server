@@ -99,6 +99,51 @@ async def test_search_album_and_audiobook_split(provider_mock: Mock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_audiobook_not_dropped_by_limit_when_music_dominates(
+    provider_mock: Mock,
+) -> None:
+    """Limit applied per bucket after classification, not before.
+
+    Audiobooks tail-listed by Yandex must still appear when top ``limit``
+    results are music albums.
+    """
+    music_albums = [
+        _fake_album(album_id=i, title=f"Music {i}", meta_type="music", type_="music")
+        for i in range(5)
+    ]
+    tail_audiobook = _fake_album(
+        album_id=99, title="Tail Book", meta_type="podcast", type_="audiobook"
+    )
+    provider_mock.client.search = AsyncMock(
+        return_value=_fake_search_result([*music_albums, tail_audiobook])
+    )
+
+    result = await YandexMusicProvider.search(provider_mock, "q", [MediaType.AUDIOBOOK], limit=3)
+
+    # Even with only 3 results requested and 5 music albums ahead of it,
+    # the audiobook tail entry still lands in the audiobooks bucket.
+    assert [a.item_id for a in result.audiobooks] == ["99"]
+
+
+@pytest.mark.asyncio
+async def test_search_album_bucket_respects_limit_independently(
+    provider_mock: Mock,
+) -> None:
+    """Albums bucket is capped at ``limit`` regardless of audiobook count."""
+    albums = [
+        _fake_album(album_id=i, title=f"M{i}", meta_type="music", type_="music") for i in range(10)
+    ]
+    provider_mock.client.search = AsyncMock(return_value=_fake_search_result(albums))
+
+    result = await YandexMusicProvider.search(
+        provider_mock, "q", [MediaType.ALBUM, MediaType.AUDIOBOOK], limit=3
+    )
+
+    assert len(result.albums) == 3
+    assert list(result.audiobooks) == []
+
+
+@pytest.mark.asyncio
 async def test_search_albums_type_mapping_dedupe(provider_mock: Mock) -> None:
     """ALBUM + AUDIOBOOK both map to Yandex 'album' — dedup keeps a single call type."""
     provider_mock.client.search = AsyncMock(return_value=_fake_search_result([]))

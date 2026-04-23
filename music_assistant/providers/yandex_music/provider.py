@@ -1605,20 +1605,30 @@ class YandexMusicProvider(MusicProvider):
 
         # Parse albums — audiobooks are split into the audiobooks bucket via
         # classify_album. Yandex-returned podcast albums are handled separately
-        # through the dedicated `.podcasts` node below.
+        # through the dedicated `.podcasts` node below. ``limit`` is applied per
+        # bucket AFTER classification — slicing first would drop audiobooks when
+        # the first ``limit`` results happen to be music albums (or vice versa).
         want_album = MediaType.ALBUM in media_types
         want_audiobook = MediaType.AUDIOBOOK in media_types
         if (want_album or want_audiobook) and search_result.albums:
-            for album in search_result.albums.results[:limit]:
+            album_count = 0
+            audiobook_count = 0
+            for album in search_result.albums.results:
+                album_full = not want_album or album_count >= limit
+                audiobook_full = not want_audiobook or audiobook_count >= limit
+                if album_full and audiobook_full:
+                    break
                 kind = classify_album(album)
                 try:
-                    if kind == "audiobook" and want_audiobook:
+                    if kind == "audiobook" and want_audiobook and not audiobook_full:
                         result.audiobooks = [
                             *result.audiobooks,
                             parse_audiobook(self, album),
                         ]
-                    elif kind == "music" and want_album:
+                        audiobook_count += 1
+                    elif kind == "music" and want_album and not album_full:
                         result.albums = [*result.albums, parse_album(self, album)]
+                        album_count += 1
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing %s album: %s", kind, err)
 
