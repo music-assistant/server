@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.enums import MediaType, ProviderFeature, TaskStatus
 
-from music_assistant.helpers.playlists import parse_m3u
+from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
 from music_assistant.helpers.uri import create_uri
 from music_assistant.providers.ai_radio.models import AIRadioError, AudioSection, SessionState
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
@@ -300,152 +299,110 @@ async def test_generate_text_wraps_not_connected_error() -> None:
     assert "hass_1" in str(error.value)
 
 
-async def test_register_builtin_section_names_sets_display_name() -> None:
-    """Register section streams in builtin radio library with friendly names."""
-    calls: list[tuple[str, str]] = []
+def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
+    """Compose builtin M3U items without relying on provider-side title parsing."""
 
-    class DummyBuiltinProvider:
+    class DummyProvider:
+        domain = "builtin"
         instance_id = "builtin_1"
-
-        async def add_radio(self, url: str, name: str) -> None:
-            calls.append((url, name))
 
     class DummyMass:
         def get_provider(self, provider: str) -> Any:
-            if provider == "builtin":
-                return DummyBuiltinProvider()
+            if provider in {"builtin", "builtin_1"}:
+                return DummyProvider()
             return None
 
     runtime = DummyRuntime()
     _set_runtime_mass(runtime, DummyMass())
-    sections = [
-        AudioSection(
-            order=1,
-            section_id="news_short",
-            section_name="News Short",
-            insert_at_index=0,
-            uri=create_uri(
-                MediaType.RADIO,
-                "builtin_1",
-                "http://example.test/api/tts_proxy/news.mp3",
-            ),
-        ),
-        AudioSection(
-            order=2,
-            section_id="music",
-            section_name="Music",
-            insert_at_index=1,
-            uri=create_uri(MediaType.TRACK, "library", "123"),
-        ),
-    ]
-
-    await runtime._register_builtin_section_names(sections)
-
-    assert calls == [
-        (
-            "http://example.test/api/tts_proxy/news.mp3",
-            "AI Radio: News Short",
-        )
-    ]
-
-
-async def test_rewrite_builtin_playlist_section_titles_updates_metadata(
-    tmp_path: Path,
-) -> None:
-    """Rewrite generated section entries in builtin playlist M3U metadata."""
-    playlists_dir = tmp_path / "playlists"
-    playlists_dir.mkdir(parents=True, exist_ok=True)
-    playlist_id = "pl_test"
-    playlist_name = "AI Radio: Test"
-    section_stream_url = "http://example.test/api/tts_proxy/section.mp3"
-    section_uri = create_uri(MediaType.TRACK, "builtin", section_stream_url)
-    persisted_uri = create_uri(MediaType.RADIO, "builtin", section_stream_url)
-    playlist_path = playlists_dir / f"{playlist_id}.m3u"
-    playlist_path.write_text(
-        "\n".join(
-            [
-                "#EXTM3U",
-                f"#PLAYLIST:{playlist_name}",
-                "#EXTMA:media_type=radio||name=section-token",
-                f"{persisted_uri}",
-                "",
-            ]
-        ),
-        encoding="utf-8",
+    section_url = "http://example.test/api/tts_proxy/section-random-id.mp3"
+    source_item = PlaylistItem(
+        path=create_uri(MediaType.TRACK, "library", "123"),
+        title="Artist - Song",
+        metadata={"media_type": MediaType.TRACK.value, "name": "Song"},
     )
 
-    class DummyMass:
-        storage_path = str(tmp_path)
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-    await runtime._rewrite_builtin_playlist_section_titles(
-        playlist_id=playlist_id,
-        playlist_name=playlist_name,
+    items, track_count = runtime._compose_builtin_playlist_items(
+        tracks=[
+            {
+                "uri": source_item.path,
+                "name": "Song",
+                "songinfo": "Artist - Song",
+                "duration": 180,
+                "playlist_item": source_item,
+            }
+        ],
         sections=[
             AudioSection(
                 order=1,
-                section_id="song_intro_start",
-                section_name="Song Introduction Start",
+                section_id="intro",
+                section_name="Intro",
                 insert_at_index=0,
-                uri=section_uri,
+                uri=create_uri(MediaType.TRACK, "builtin_1", section_url),
             )
         ],
     )
 
-    updated = parse_m3u(playlist_path.read_text(encoding="utf-8"))
-    assert updated
-    assert updated[0].metadata is not None
-    assert updated[0].metadata.get("name") == "AI Radio: Song Introduction Start"
-    assert updated[0].metadata.get("media_type") == MediaType.RADIO.value
+    assert track_count == 1
+    assert len(items) == 2
+    assert items[0].title == "AI Radio: Intro"
+    assert items[0].metadata == {
+        "media_type": MediaType.TRACK.value,
+        "name": "AI Radio: Intro",
+    }
+    assert items[0].images
+    assert items[0].images[0].path == runtime._ai_radio_cover_image_path()
+    assert items[0].providers
+    assert items[0].providers[0].domain == "builtin"
+    assert items[0].providers[0].instance_id == "builtin_1"
+    assert items[0].providers[0].item_id == section_url
+    assert items[1] == source_item
 
 
-def test_resolve_builtin_playlist_storage_id_uses_builtin_mapping() -> None:
-    """Resolve builtin storage playlist id from provider mappings."""
+async def test_import_builtin_playlist_preserves_m3u_metadata() -> None:
+    """Import builtin playlist from a fully described M3U payload."""
 
-    class DummyMapping:
-        provider_domain = "builtin"
-        provider_instance = "builtin_1"
-        item_id = "AI Radio_ Test [abcd]"
+    class DummyPlaylistsController:
+        def __init__(self) -> None:
+            self.m3u_data = ""
 
-    class DummyPlaylist:
-        provider_mappings = [DummyMapping()]
+        async def import_playlist(self, m3u_data: str) -> dict[str, str]:
+            self.m3u_data = m3u_data
+            return {"item_id": "42", "name": "AI Radio: Test"}
 
     class DummyMass:
-        def get_provider(self, provider: str) -> Any:
-            if provider == "builtin":
+        def __init__(self) -> None:
+            self.music = type("DummyMusic", (), {})()
+            self.music.playlists = DummyPlaylistsController()
 
-                class DummyBuiltinProvider:
-                    instance_id = "builtin_1"
-
-                return DummyBuiltinProvider()
+        def get_provider(self, provider: str) -> None:
             return None
 
     runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    mass = DummyMass()
+    _set_runtime_mass(runtime, mass)
+    item = runtime._section_to_playlist_item(
+        AudioSection(
+            order=1,
+            section_id="intro",
+            section_name="Intro",
+            insert_at_index=0,
+            uri=create_uri(MediaType.TRACK, "builtin", "http://example.test/intro.mp3"),
+        )
+    )
 
-    assert runtime._resolve_builtin_playlist_storage_id(DummyPlaylist()) == "AI Radio_ Test [abcd]"
+    playlist = await runtime._import_builtin_playlist("AI Radio: Test", [item])
 
-
-def test_resolve_builtin_playlist_storage_id_returns_empty_without_mapping() -> None:
-    """Return empty string if playlist has no builtin provider mapping."""
-
-    class DummyMapping:
-        provider_domain = "spotify"
-        provider_instance = "spotify_1"
-        item_id = "123"
-
-    class DummyPlaylist:
-        provider_mappings = [DummyMapping()]
-
-    class DummyMass:
-        def get_provider(self, provider: str) -> Any:
-            return None
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
-
-    assert runtime._resolve_builtin_playlist_storage_id(DummyPlaylist()) == ""
+    assert playlist == {"item_id": "42", "name": "AI Radio: Test"}
+    assert parse_m3u_playlist_image(mass.music.playlists.m3u_data) == (
+        runtime._ai_radio_cover_image_path()
+    )
+    parsed = parse_m3u(mass.music.playlists.m3u_data)
+    assert parsed[0].title == "AI Radio: Intro"
+    assert parsed[0].metadata == {
+        "media_type": MediaType.TRACK.value,
+        "name": "AI Radio: Intro",
+    }
+    assert parsed[0].images[0].path == runtime._ai_radio_cover_image_path()
 
 
 async def test_wait_for_background_task_completion_returns_on_success() -> None:
