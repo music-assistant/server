@@ -5,18 +5,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from collections import defaultdict
 from copy import deepcopy
+from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 from aiohttp import ClientTimeout
-from music_assistant_models.enums import MediaType, ProviderFeature, QueueOption
+from music_assistant_models.enums import MediaType, ProviderFeature, QueueOption, TaskStatus
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.playlists import (
+    generate_m3u,
+    parse_m3u,
+    parse_m3u_playlist_image,
+    parse_m3u_playlist_name,
+)
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
@@ -109,7 +117,7 @@ class AIRadioRuntimeMixin:
             raise
         except Exception as err:
             session.status = "failed"
-            session.error = str(err)
+            session.error = str(err).strip() or err.__class__.__name__
             self.logger.exception("AI Radio session failed: %s", err)
         finally:
             session.ended_at = utc_now_iso()
@@ -160,8 +168,11 @@ class AIRadioRuntimeMixin:
             source_tracks=len(tracks),
             sections=len(generated_sections),
         )
+        target_provider = str(station.get("target_playlist_provider") or "builtin")
         run_id = session.session_id[:8]
         audio_sections = await self._synthesize_sections(generated_sections=generated_sections)
+        if self._is_builtin_provider_reference(target_provider):
+            await self._register_builtin_section_names(audio_sections)
 
         entries, track_count = self._compose_entries(tracks=tracks, sections=audio_sections)
         if not entries:
@@ -172,8 +183,6 @@ class AIRadioRuntimeMixin:
             entries=len(entries),
             tracks=track_count,
         )
-
-        target_provider = str(station.get("target_playlist_provider") or "builtin")
 
         station_name = str(station.get("name") or "AI Radio").strip()
         timezone_name = str(station.get("general", {}).get("timezone") or "UTC")
@@ -189,7 +198,26 @@ class AIRadioRuntimeMixin:
             target_playlist_name,
             provider_instance_or_domain=target_provider,
         )
-        await self.mass.music.playlists.add_playlist_tracks(int(playlist.item_id), entries)
+        add_task = await self.mass.music.playlists.add_playlist_tracks(
+            int(playlist.item_id), entries
+        )
+        await self._wait_for_background_task_completion(add_task.id, timeout_seconds=120)
+        if self._is_builtin_provider_reference(target_provider):
+            storage_playlist_id = self._resolve_builtin_playlist_storage_id(playlist)
+            if not storage_playlist_id:
+                storage_playlist_id = await self._find_builtin_playlist_storage_id_by_name(
+                    target_playlist_name
+                )
+            if not storage_playlist_id:
+                self.logger.debug(
+                    "Could not resolve builtin storage playlist id for db_id=%s",
+                    playlist.item_id,
+                )
+            await self._rewrite_builtin_playlist_section_titles(
+                playlist_id=storage_playlist_id,
+                playlist_name=target_playlist_name,
+                sections=audio_sections,
+            )
         self.logger.info(
             "Playlist mode published '%s' (%s entries, %s generated sections)",
             target_playlist_name,
@@ -873,6 +901,248 @@ class AIRadioRuntimeMixin:
                     track_count += 1
         return entries, track_count
 
+    async def _register_builtin_section_names(self, sections: list[AudioSection]) -> None:
+        """Register friendly names for builtin radio section URIs used in playlists."""
+        if not sections:
+            return
+        builtin_provider = self.mass.get_provider("builtin")
+        add_radio = getattr(builtin_provider, "add_radio", None)
+        if add_radio is None:
+            return
+        accepted_prefixes = {f"builtin://{MediaType.RADIO.value}/"}
+        if instance_id := str(getattr(builtin_provider, "instance_id", "") or "").strip():
+            accepted_prefixes.add(f"{instance_id}://{MediaType.RADIO.value}/")
+        registered = 0
+        for section in sections:
+            uri = str(section.uri).strip()
+            matching_prefix = next(
+                (prefix for prefix in accepted_prefixes if uri.startswith(prefix)), None
+            )
+            if matching_prefix is None:
+                continue
+            stream_url = uri[len(matching_prefix) :].strip()
+            if not stream_url.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+                continue
+            try:
+                await add_radio(
+                    stream_url,
+                    f"AI Radio: {section.section_name}",
+                )
+            except Exception:
+                self.logger.debug(
+                    "Failed to register builtin section radio name for uri=%s",
+                    uri,
+                    exc_info=True,
+                )
+            else:
+                registered += 1
+        if registered:
+            self.logger.debug(
+                "Registered %d AI Radio section stream(s) in builtin radio library",
+                registered,
+            )
+
+    async def _rewrite_builtin_playlist_section_titles(
+        self,
+        playlist_id: str,
+        playlist_name: str,
+        sections: list[AudioSection],
+    ) -> None:
+        """Rewrite builtin playlist section entries with friendly titles/metadata."""
+        if not playlist_id:
+            return
+        playlist_path = os.path.join(self.mass.storage_path, "playlists", f"{playlist_id}.m3u")
+        try:
+            m3u_data = await asyncio.to_thread(
+                self._read_file_text,
+                playlist_path,
+            )
+        except OSError:
+            self.logger.debug(
+                "Could not rewrite section titles; playlist file missing: %s",
+                playlist_path,
+            )
+            return
+
+        entries = parse_m3u(m3u_data)
+        if not entries:
+            return
+        image_url = parse_m3u_playlist_image(m3u_data)
+        name_by_uri: dict[str, str] = {}
+        name_by_stream_url: dict[str, str] = {}
+        for section in sections:
+            section_display_name = f"AI Radio: {section.section_name}"
+            section_uri = str(section.uri).strip()
+            if not section_uri:
+                continue
+            name_by_uri[section_uri] = section_display_name
+            stream_url = self._extract_stream_url_from_media_uri(section_uri)
+            if stream_url:
+                name_by_stream_url[stream_url] = section_display_name
+
+        changed = False
+        for item in entries:
+            display_name: str | None = name_by_uri.get(item.path)
+            if not display_name:
+                stream_url = self._extract_stream_url_from_media_uri(item.path)
+                if stream_url:
+                    display_name = name_by_stream_url.get(stream_url)
+            if not display_name:
+                continue
+            if item.title != display_name:
+                item.title = display_name
+                changed = True
+            if item.metadata is None:
+                item.metadata = {}
+            if item.metadata.get("name") != display_name:
+                item.metadata["name"] = display_name
+                changed = True
+            media_type = self._extract_media_type_from_uri(item.path)
+            if media_type and item.metadata.get("media_type") != media_type:
+                item.metadata["media_type"] = media_type
+                changed = True
+
+        if not changed:
+            return
+        updated_m3u = generate_m3u(
+            playlist_name,
+            entries,
+            image_url,
+        )
+        await asyncio.to_thread(
+            self._write_file_text,
+            playlist_path,
+            updated_m3u,
+        )
+        self.logger.debug(
+            "Rewrote AI Radio section titles in builtin playlist '%s'",
+            playlist_id,
+        )
+
+    @staticmethod
+    def _extract_stream_url_from_radio_uri(uri: str) -> str:
+        """Extract stream URL from an MA radio URI."""
+        marker = f"://{MediaType.RADIO.value}/"
+        if marker in uri:
+            return uri.split(marker, 1)[1].strip()
+        return ""
+
+    @staticmethod
+    def _extract_stream_url_from_media_uri(uri: str) -> str:
+        """Extract raw stream URL from MA radio/track URI."""
+        for media_type in (MediaType.RADIO, MediaType.TRACK):
+            marker = f"://{media_type.value}/"
+            if marker not in uri:
+                continue
+            value = uri.split(marker, 1)[1].strip()
+            if value.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+                return value
+            return ""
+        if uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+            return uri
+        return ""
+
+    @staticmethod
+    def _extract_media_type_from_uri(uri: str) -> str | None:
+        """Extract MediaType string from an MA URI."""
+        if "://" not in uri:
+            return None
+        _provider, rest = uri.split("://", 1)
+        if "/" not in rest:
+            return None
+        media_type, _item_id = rest.split("/", 1)
+        return media_type or None
+
+    async def _wait_for_background_task_completion(
+        self, task_id: str, timeout_seconds: int
+    ) -> None:
+        """Wait for a background task to complete so dependent file operations can run safely."""
+        deadline = asyncio.get_running_loop().time() + max(1, timeout_seconds)
+        while True:
+            try:
+                task = self.mass.tasks.get_task(task_id)
+            except Exception:
+                # If task history is gone, assume it is no longer active.
+                return
+            status = task.status
+            if status in {TaskStatus.SUCCESS, TaskStatus.PARTIAL_SUCCESS, TaskStatus.IDLE}:
+                return
+            if status in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
+                self.logger.warning(
+                    "Background task %s ended with status '%s' before AI Radio post-processing",
+                    task_id,
+                    status.value,
+                )
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                self.logger.warning(
+                    "Timed out waiting for background task %s (status=%s)",
+                    task_id,
+                    status.value,
+                )
+                return
+            await asyncio.sleep(0.1)
+
+    def _resolve_builtin_playlist_storage_id(self, playlist: Any) -> str:
+        """Resolve builtin provider playlist id (M3U filename stem) from a library playlist."""
+        mappings = getattr(playlist, "provider_mappings", None)
+        if not mappings:
+            return ""
+        builtin_provider = self.mass.get_provider("builtin")
+        builtin_instance_id = str(getattr(builtin_provider, "instance_id", "") or "").strip()
+        for mapping in mappings:
+            provider_domain = str(getattr(mapping, "provider_domain", "") or "").strip()
+            provider_instance = str(getattr(mapping, "provider_instance", "") or "").strip()
+            item_id = str(getattr(mapping, "item_id", "") or "").strip()
+            if not item_id:
+                continue
+            if provider_domain == "builtin":
+                return item_id
+            if builtin_instance_id and provider_instance == builtin_instance_id:
+                return item_id
+        return ""
+
+    def _is_builtin_provider_reference(self, provider_ref: str) -> bool:
+        """Return True when provider reference points to builtin provider."""
+        value = str(provider_ref or "").strip()
+        if value == "builtin":
+            return True
+        provider = self.mass.get_provider(value)
+        return str(getattr(provider, "domain", "") or "").strip() == "builtin"
+
+    async def _find_builtin_playlist_storage_id_by_name(self, playlist_name: str) -> str:
+        """Fallback: resolve builtin playlist id by scanning M3U files for playlist title."""
+        playlists_dir = Path(self.mass.storage_path) / "playlists"
+        if not await asyncio.to_thread(playlists_dir.exists):
+            return ""
+        candidate_files = await asyncio.to_thread(
+            lambda: sorted(
+                playlists_dir.glob("*.m3u"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        )
+        for playlist_file in candidate_files:
+            try:
+                m3u_data = await asyncio.to_thread(self._read_file_text, str(playlist_file))
+            except OSError:
+                continue
+            if parse_m3u_playlist_name(m3u_data) == playlist_name:
+                return playlist_file.stem
+        return ""
+
+    @staticmethod
+    def _read_file_text(path: str) -> str:
+        """Read UTF-8 text from file path."""
+        with open(path, encoding="utf-8") as file_handle:
+            return file_handle.read()
+
+    @staticmethod
+    def _write_file_text(path: str, data: str) -> None:
+        """Write UTF-8 text to file path."""
+        with open(path, "w", encoding="utf-8") as file_handle:
+            file_handle.write(data)
+
     async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
         """Prepare runtime tokens (including weather placeholders) for one run."""
         runtime_tokens: dict[str, str] = {}
@@ -1201,7 +1471,21 @@ class AIRadioRuntimeMixin:
             web_mode,
             len(query),
         )
-        response = await plugin.ai_query(query)
+        try:
+            response = await plugin.ai_query(query)
+        except Exception as err:
+            error_name = err.__class__.__name__
+            error_text = str(err).strip()
+            if error_name == "NotConnected":
+                raise AIRadioError(
+                    "AI provider "
+                    f"'{plugin.instance_id}' is not connected. Reconnect the provider "
+                    "(for example Home Assistant) and retry."
+                ) from err
+            details = error_text or error_name
+            raise AIRadioError(
+                f"AI provider '{plugin.instance_id}' query failed: {details}"
+            ) from err
         if not response or not str(response).strip():
             raise AIRadioError(
                 f"AI provider '{plugin.instance_id}' returned an empty response for section text"
@@ -1223,6 +1507,12 @@ class AIRadioRuntimeMixin:
         stream_details = await plugin.get_tts_message(text)
         uri = str(getattr(stream_details, "path", "") or "").strip()
         if uri:
+            if uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+                builtin_provider = self.mass.get_provider("builtin")
+                builtin_instance_id = str(
+                    getattr(builtin_provider, "instance_id", "") or ""
+                ).strip()
+                return create_uri(MediaType.TRACK, builtin_instance_id or "builtin", uri)
             return uri
         raise AIRadioError(
             f"TTS provider '{plugin.instance_id}' returned no direct stream path in StreamDetails.path"
