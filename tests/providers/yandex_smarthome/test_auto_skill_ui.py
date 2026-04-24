@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from music_assistant.providers.yandex_smarthome.auto_skill_state import (
     SkillCreationArtifacts,
     SkillCreationState,
@@ -24,8 +26,13 @@ from music_assistant.providers.yandex_smarthome.constants import (
     CONNECTION_TYPE_DIRECT,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
-def _find(entries, key):  # type: ignore[no-untyped-def]
+    from music_assistant_models.config_entries import ConfigEntry
+
+
+def _find(entries: Iterable[ConfigEntry], key: str) -> ConfigEntry | None:
     for e in entries:
         if e.key == key:
             return e
@@ -119,7 +126,7 @@ class TestAutoCreateEntries:
         state: SkillCreationState = SkillCreationState.NONE,
         cloud_instance_id: str = "abc",
         base_url: str = "https://ma.example.com",
-    ):  # type: ignore[no-untyped-def]
+    ) -> Sequence[ConfigEntry]:
         return auto_create_entries(
             connection_type=connection_type,
             artifacts=SkillCreationArtifacts(state=state),
@@ -205,7 +212,7 @@ class TestBuildCloudPlusEntries:
         state: SkillCreationState = SkillCreationState.NONE,
         otp_code: str | None = None,
         skill_id: str = "",
-    ):  # type: ignore[no-untyped-def]
+    ) -> list[ConfigEntry]:
         return build_cloud_plus_entries(
             otp_code=otp_code,
             is_registered=is_registered,
@@ -329,7 +336,7 @@ class TestBuildDirectEntries:
         state: SkillCreationState = SkillCreationState.NONE,
         base_url: str = "https://ma.example.com",
         direct_client_secret: str = "secret-123",  # noqa: S107
-    ):  # type: ignore[no-untyped-def]
+    ) -> list[ConfigEntry]:
         return build_direct_entries(
             artifacts=SkillCreationArtifacts(state=state),
             session_id=None,

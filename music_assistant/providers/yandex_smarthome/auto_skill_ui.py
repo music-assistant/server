@@ -122,10 +122,7 @@ def should_show_button(
         return False
     if connection_type == CONNECTION_TYPE_CLOUD_PLUS and not cloud_instance_id:
         return False
-    return not (
-        connection_type == CONNECTION_TYPE_DIRECT
-        and not base_url.startswith("https://")
-    )
+    return not (connection_type == CONNECTION_TYPE_DIRECT and not base_url.startswith("https://"))
 
 
 def auto_create_entries(
@@ -288,9 +285,7 @@ def build_cloud_plus_entries(  # noqa: PLR0913
     return entries
 
 
-def _step1_register_entries(
-    is_registered: bool, cloud_instance_id: str
-) -> list[ConfigEntry]:
+def _step1_register_entries(is_registered: bool, cloud_instance_id: str) -> list[ConfigEntry]:
     """Step 1 — yaha-cloud.ru instance registration."""
     status_text = (
         f"✅ Cloud instance registered (id: {cloud_instance_id})."
@@ -355,8 +350,7 @@ def _create_skill_step_entries(
                 type=ConfigEntryType.STRING,
                 label="Device code for ya.ru/device",
                 description=(
-                    "Open the URL below, log in to your Yandex account, "
-                    "and enter this code."
+                    "Open the URL below, log in to your Yandex account, and enter this code."
                 ),
                 value=user_code,
                 required=False,
@@ -382,9 +376,8 @@ def _create_skill_step_entries(
     # backends. If MA's Base URL is not HTTPS, show the user what's
     # wrong (and what URL we'd have used) so they can fix it in
     # Settings → Core → Webserver → Base URL.
-    direct_https_missing = (
-        connection_type == CONNECTION_TYPE_DIRECT
-        and not base_url.startswith("https://")
+    direct_https_missing = connection_type == CONNECTION_TYPE_DIRECT and not base_url.startswith(
+        "https://"
     )
     if direct_https_missing:
         entries.append(
@@ -561,9 +554,7 @@ def _manual_fallback_entries(
     """
     if connection_type == CONNECTION_TYPE_CLOUD_PLUS:
         backend_uri = CLOUD_SKILL_WEBHOOK_TEMPLATE
-        client_id = CLOUD_SKILL_CLIENT_ID_TEMPLATE.format(
-            instance_id=cloud_instance_id
-        )
+        client_id = CLOUD_SKILL_CLIENT_ID_TEMPLATE.format(instance_id=cloud_instance_id)
         client_secret = CLOUD_SKILL_CLIENT_SECRET
         auth_url = CLOUD_OAUTH_AUTHORIZE_URL
         token_url = CLOUD_OAUTH_TOKEN_URL
@@ -673,9 +664,7 @@ def _manual_fallback_entries(
                     key="manual_client_secret",
                     type=ConfigEntryType.STRING,
                     label="Client Secret value (for reference)",
-                    description=(
-                        "Copy this string into 'Account linking' → 'Client secret'."
-                    ),
+                    description=("Copy this string into 'Account linking' → 'Client secret'."),
                     required=False,
                     default_value=client_secret,
                     advanced=advanced,

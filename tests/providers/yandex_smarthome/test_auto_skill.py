@@ -40,9 +40,7 @@ from music_assistant.providers.yandex_smarthome.constants import (
 # ---------------------------------------------------------------------------
 
 
-def _mock_response(
-    *, status: int = 200, body_text: str = "", body_json: Any = None
-) -> AsyncMock:
+def _mock_response(*, status: int = 200, body_text: str = "", body_json: Any = None) -> AsyncMock:
     """Build a mock aiohttp.ClientResponse.
 
     If *body_json* is given, ``text()`` returns its JSON-encoded form;
@@ -97,9 +95,9 @@ class TestFetchCsrf:
     async def test_happy_path_returns_token(self) -> None:
         """CSRF is extracted from the secretkey field in the developer HTML."""
         html = (
-            '<html><head><script>'
+            "<html><head><script>"
             'window.state = {"user":{"id":1},"secretkey":"u9c94f1aca53bf156be4abc","foo":"bar"}'
-            '</script></head></html>'
+            "</script></head></html>"
         )
         session = _make_session()
         _install_ctx(session.get, _mock_response(status=200, body_text=html))
@@ -511,10 +509,7 @@ class TestDeriveClientId:
 
     def test_cloud_plus_templated(self) -> None:
         """cloud_plus wraps the instance_id in the yaha protocol prefix."""
-        assert (
-            derive_client_id(CONNECTION_TYPE_CLOUD_PLUS, "abc123")
-            == "yandex_smart_home:abc123"
-        )
+        assert derive_client_id(CONNECTION_TYPE_CLOUD_PLUS, "abc123") == "yandex_smart_home:abc123"
 
     def test_cloud_plus_missing_instance_raises(self) -> None:
         """Empty instance_id is a configuration bug — raise early."""
@@ -523,10 +518,7 @@ class TestDeriveClientId:
 
     def test_direct_fixed_value(self) -> None:
         """Direct mode uses the fixed Yandex social redirect base."""
-        assert (
-            derive_client_id(CONNECTION_TYPE_DIRECT, "")
-            == "https://social.yandex.net/"
-        )
+        assert derive_client_id(CONNECTION_TYPE_DIRECT, "") == "https://social.yandex.net/"
 
 
 class TestBuildDraftPayload:
@@ -865,9 +857,7 @@ class TestAutoCreateSkillFailure:
     async def test_csrf_miss_becomes_failed_state(self) -> None:
         """CSRF extraction failure doesn't crash — surfaces as FAILED."""
         creator = _make_creator_mock()
-        creator.fetch_csrf.side_effect = DialogsCsrfError(
-            "secretkey not found", step="fetch_csrf"
-        )
+        creator.fetch_csrf.side_effect = DialogsCsrfError("secretkey not found", step="fetch_csrf")
 
         result = await _run_orch(creator=creator)
 
@@ -935,6 +925,4 @@ class TestLoadDefaultLogoBytes:
         # PNG magic: 89 50 4E 47 0D 0A 1A 0A
         assert data[:8] == bytes.fromhex("89504e470d0a1a0a")
         # Sanity: the bundled asset is non-trivial, not the 1x1 fallback.
-        assert len(data) > 1000, (
-            f"expected real logo asset, got {len(data)} bytes (fallback?)"
-        )
+        assert len(data) > 1000, f"expected real logo asset, got {len(data)} bytes (fallback?)"

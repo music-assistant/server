@@ -110,9 +110,7 @@ def load_artifacts(raw: str | None) -> SkillCreationArtifacts:
     )
 
 
-def mark_failed(
-    artifacts: SkillCreationArtifacts, error: str
-) -> SkillCreationArtifacts:
+def mark_failed(artifacts: SkillCreationArtifacts, error: str) -> SkillCreationArtifacts:
     """Return a copy of *artifacts* flipped to ``FAILED`` with an error."""
     return dataclasses.replace(
         artifacts,

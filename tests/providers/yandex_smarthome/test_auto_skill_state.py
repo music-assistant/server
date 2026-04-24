@@ -125,5 +125,5 @@ def test_mark_failed_preserves_ids() -> None:
 
 def test_state_is_string_enum() -> None:
     """State values compare equal to plain strings — useful for config storage."""
-    assert SkillCreationState.DONE == "done"
-    assert SkillCreationState.FAILED == "failed"
+    assert SkillCreationState.DONE.value == "done"
+    assert SkillCreationState.FAILED.value == "failed"

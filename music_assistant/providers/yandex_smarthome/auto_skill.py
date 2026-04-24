@@ -271,10 +271,7 @@ class DialogsSkillCreator:
         The logo file is sent as multipart with the field name ``file``
         and filename ``icon.png`` (matching the HAR capture).
         """
-        url = (
-            f"{DIALOGS_API_BASE}/apps/{skill_id}/draft/upload-logo"
-            f"?channel={SMART_HOME_CHANNEL}"
-        )
+        url = f"{DIALOGS_API_BASE}/apps/{skill_id}/draft/upload-logo?channel={SMART_HOME_CHANNEL}"
         form = aiohttp.FormData()
         form.add_field(
             "file",
@@ -310,9 +307,7 @@ class DialogsSkillCreator:
     # Step 5: update draft settings
     # -----------------------------------------------------------------------
 
-    async def update_draft(
-        self, csrf: str, skill_id: str, payload: Mapping[str, Any]
-    ) -> None:
+    async def update_draft(self, csrf: str, skill_id: str, payload: Mapping[str, Any]) -> None:
         """PATCH the skill draft with backend URL / publishing metadata."""
         url = f"{DIALOGS_API_BASE}/apps/{skill_id}/draft/update"
         await self._patch_json(url, dict(payload), csrf=csrf, step="update_draft")
@@ -367,14 +362,9 @@ class DialogsSkillCreator:
     # Step 7: bind OAuth app to the skill
     # -----------------------------------------------------------------------
 
-    async def attach_oauth(
-        self, csrf: str, skill_id: str, oauth_app_id: str
-    ) -> None:
+    async def attach_oauth(self, csrf: str, skill_id: str, oauth_app_id: str) -> None:
         """Attach an existing OAuth app to the skill's account-linking slot."""
-        url = (
-            f"{DIALOGS_API_BASE}/apps/{skill_id}/oauthApp"
-            f"?channel={SMART_HOME_CHANNEL}"
-        )
+        url = f"{DIALOGS_API_BASE}/apps/{skill_id}/oauthApp?channel={SMART_HOME_CHANNEL}"
         payload = {"oauthAppId": oauth_app_id}
         await self._post_json(url, payload, csrf=csrf, step="attach_oauth")
 
@@ -389,8 +379,7 @@ class DialogsSkillCreator:
         2xx; otherwise raises.
         """
         url = (
-            f"{DIALOGS_API_BASE}/apps/{skill_id}/draft/request-deploy"
-            f"?channel={SMART_HOME_CHANNEL}"
+            f"{DIALOGS_API_BASE}/apps/{skill_id}/draft/request-deploy?channel={SMART_HOME_CHANNEL}"
         )
         headers = {"x-csrf-token": csrf}
         async with self._session.post(url, headers=headers) as resp:
@@ -406,9 +395,7 @@ class DialogsSkillCreator:
     # Internal helpers
     # -----------------------------------------------------------------------
 
-    async def _get_json(
-        self, url: str, *, csrf: str, step: str
-    ) -> dict[str, Any]:
+    async def _get_json(self, url: str, *, csrf: str, step: str) -> dict[str, Any]:
         headers = {"x-csrf-token": csrf}
         async with self._session.get(url, headers=headers) as resp:
             body = await resp.text()
@@ -449,16 +436,13 @@ class DialogsSkillCreator:
             "x-csrf-token": csrf,
             "content-type": "application/json",
         }
-        async with self._session.request(
-            method, url, json=payload, headers=headers
-        ) as resp:
+        async with self._session.request(method, url, json=payload, headers=headers) as resp:
             body = await resp.text()
             # Only ``create_app`` can fail with duplicate-name errors —
             # other endpoints use 409 for unrelated conflicts and would
             # be misclassified as duplicates if the mapping were global.
             duplicate_candidate = step == "create_app" and (
-                resp.status == 409
-                or (resp.status in (400, 422) and _looks_like_duplicate(body))
+                resp.status == 409 or (resp.status in (400, 422) and _looks_like_duplicate(body))
             )
             if duplicate_candidate:
                 raise DialogsDuplicateSkillError(
@@ -504,8 +488,7 @@ def _looks_like_duplicate(body: str) -> bool:
         return False
     lowered = body.lower()
     return any(
-        kw in lowered
-        for kw in ("already exists", "duplicate", "exists with name", "not_unique")
+        kw in lowered for kw in ("already exists", "duplicate", "exists with name", "not_unique")
     )
 
 
@@ -545,9 +528,7 @@ def derive_backend_uri(mass: MusicAssistant, connection_type: str) -> str:
     raise ValueError(msg)
 
 
-def derive_auth_urls(
-    mass: MusicAssistant, connection_type: str
-) -> tuple[str, str]:
+def derive_auth_urls(mass: MusicAssistant, connection_type: str) -> tuple[str, str]:
     """Return (authorize_url, token_url) for the OAuth app.
 
     cloud_plus uses the yaha-cloud relay's OAuth endpoints; direct
@@ -722,8 +703,8 @@ def check_preconditions(
 # Orchestrator: device flow + resumable pipeline
 # ---------------------------------------------------------------------------
 
+# Hard cap on how long we'll wait for the user to enter the code.
 DEVICE_FLOW_TIMEOUT_SECONDS = 300.0
-"""Hard cap on how long we'll wait for the user to enter the code."""
 
 _DEVICE_CODE_PAGE_PATH = "/yandex_smarthome/device_code"
 # Keep the intermediate HTML page alive long enough for one more poll
@@ -738,9 +719,7 @@ _DEVICE_FLOW_POLL_INTERVAL = 2.0
 _SAFE_SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 
 
-def _build_device_code_page(
-    user_code: str, verification_url: str, status_url: str
-) -> str:
+def _build_device_code_page(user_code: str, verification_url: str, status_url: str) -> str:
     """Render the HTML page shown during Device Flow login.
 
     Yandex's ya.ru/device page does not pre-fill from query params and
@@ -1073,9 +1052,7 @@ async def auto_create_skill(  # noqa: PLR0913
         raise
     except Exception as exc:
         _LOGGER.exception("auto-create hit unexpected error")
-        return dataclasses.replace(
-            artifacts, state=SkillCreationState.FAILED, last_error=repr(exc)
-        )
+        return dataclasses.replace(artifacts, state=SkillCreationState.FAILED, last_error=repr(exc))
 
 
 async def _run_pipeline_with_recovery(
@@ -1124,12 +1101,8 @@ async def _run_pipeline_with_recovery(
             progress_cb=_track,
         )
     except DialogsApiError as exc:
-        _LOGGER.warning(
-            "auto-create failed at %s: %s", exc.step, exc, exc_info=True
-        )
-        return dataclasses.replace(
-            current, state=SkillCreationState.FAILED, last_error=str(exc)
-        )
+        _LOGGER.warning("auto-create failed at %s: %s", exc.step, exc, exc_info=True)
+        return dataclasses.replace(current, state=SkillCreationState.FAILED, last_error=str(exc))
 
 
 async def _execute_pipeline(  # noqa: PLR0913
@@ -1185,9 +1158,7 @@ async def _execute_pipeline(  # noqa: PLR0913
         )
         _LOGGER.info("auto-skill: [3/5] updating draft with settings")
         await creator.update_draft(csrf, skill_id, draft)
-        artifacts = dataclasses.replace(
-            artifacts, state=SkillCreationState.DRAFT_UPDATED
-        )
+        artifacts = dataclasses.replace(artifacts, state=SkillCreationState.DRAFT_UPDATED)
         await _maybe_save(progress_cb, artifacts)
         state = artifacts.state
 
@@ -1226,9 +1197,7 @@ async def _execute_pipeline(  # noqa: PLR0913
     # -- Step 7: attach OAuth app to skill --
     if state == SkillCreationState.OAUTH_CREATED:
         await creator.attach_oauth(csrf, skill_id, oauth_app_id_str)
-        artifacts = dataclasses.replace(
-            artifacts, state=SkillCreationState.OAUTH_ATTACHED
-        )
+        artifacts = dataclasses.replace(artifacts, state=SkillCreationState.OAUTH_ATTACHED)
         await _maybe_save(progress_cb, artifacts)
         state = artifacts.state
 
@@ -1239,9 +1208,7 @@ async def _execute_pipeline(  # noqa: PLR0913
     ):
         _LOGGER.info("auto-skill: [5/5] publishing skill")
         await creator.request_deploy(csrf, skill_id)
-        artifacts = dataclasses.replace(
-            artifacts, state=SkillCreationState.DONE
-        )
+        artifacts = dataclasses.replace(artifacts, state=SkillCreationState.DONE)
         await _maybe_save(progress_cb, artifacts)
 
     return artifacts

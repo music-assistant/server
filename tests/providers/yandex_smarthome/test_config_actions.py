@@ -53,7 +53,8 @@ async def test_auto_create_done_populates_skill_id(monkeypatch) -> None:  # type
         )
 
     monkeypatch.setattr(
-        provider_module, "auto_create_skill",
+        provider_module,
+        "auto_create_skill",
         _fake_auto_create,
     )
 
@@ -90,7 +91,8 @@ async def test_auto_create_failed_preserves_artifacts(monkeypatch) -> None:  # t
         )
 
     monkeypatch.setattr(
-        provider_module, "auto_create_skill",
+        provider_module,
+        "auto_create_skill",
         _fake_auto_create,
     )
 
@@ -119,7 +121,7 @@ async def test_auto_create_failed_preserves_artifacts(monkeypatch) -> None:  # t
 
 @pytest.mark.asyncio
 async def test_auto_create_precondition_valueerror_becomes_failed(
-    monkeypatch,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ValueError from preconditions is caught and stored as a FAILED artifact."""
 
@@ -128,7 +130,8 @@ async def test_auto_create_precondition_valueerror_becomes_failed(
         raise ValueError(msg)
 
     monkeypatch.setattr(
-        provider_module, "auto_create_skill",
+        provider_module,
+        "auto_create_skill",
         _raises_value_error,
     )
 
@@ -162,7 +165,8 @@ async def test_auto_create_unexpected_error_caught(monkeypatch) -> None:  # type
         raise RuntimeError(msg)
 
     monkeypatch.setattr(
-        provider_module, "auto_create_skill",
+        provider_module,
+        "auto_create_skill",
         _raises_runtime,
     )
 
@@ -197,7 +201,8 @@ async def test_auto_create_non_action_is_noop(monkeypatch) -> None:  # type: ign
         return SkillCreationArtifacts()
 
     monkeypatch.setattr(
-        provider_module, "auto_create_skill",
+        provider_module,
+        "auto_create_skill",
         _fake,
     )
 
@@ -330,7 +335,8 @@ async def test_existing_action_register_still_works(monkeypatch) -> None:  # typ
     """Gap-fill: pre-existing CONF_ACTION_REGISTER path is still covered."""
 
     async def _fake_register(
-        _session: Any, platform: str | None = None  # noqa: ARG001
+        _session: Any,
+        platform: str | None = None,  # noqa: ARG001
     ) -> dict[str, str]:
         return {"id": "inst-new", "password": "p", "connection_token": "t"}
 
