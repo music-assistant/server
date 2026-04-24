@@ -16,6 +16,7 @@ Reference: https://github.com/dext0r/yandex_smart_home
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import logging
@@ -215,6 +216,10 @@ async def _run_auto_create_action(
             logo_bytes=load_default_logo_bytes(),
             session_id=session_id,
         )
+    except asyncio.CancelledError:
+        # Preserve cooperative cancellation so config-flow shutdown
+        # doesn't get converted into a FAILED artifact.
+        raise
     except ValueError as exc:
         # Precondition failures come back here — surface as FAILED.
         new_artifacts = dataclasses.replace(

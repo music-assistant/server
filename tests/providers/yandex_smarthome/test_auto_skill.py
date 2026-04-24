@@ -911,6 +911,20 @@ class TestAutoCreateSkillFailure:
         result = await _run_orch(creator=_make_creator_mock(), progress_cb=_boom)
         assert result.state == SkillCreationState.DONE
 
+    @pytest.mark.asyncio
+    async def test_cancelled_error_propagates(self) -> None:
+        """CancelledError must propagate, not be converted into a FAILED artifact.
+
+        Swallowing it would break cooperative task cancellation during
+        HA shutdown or config-flow abort.
+        """
+        import asyncio  # noqa: PLC0415
+
+        creator = _make_creator_mock()
+        creator.create_app.side_effect = asyncio.CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await _run_orch(creator=creator)
+
 
 class TestAutoCreateSkillDirectMode:
     """Direct mode wires the MA webserver URLs into the payloads."""

@@ -30,6 +30,7 @@ The CSRF token (returned by ``fetch_csrf``) must be passed as the
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -871,8 +872,6 @@ async def _default_authenticator(
 
     Pattern copied from ``ma-provider-yandex-station/provider/auth.py``.
     """
-    import asyncio  # noqa: PLC0415
-
     from aiohttp import web  # noqa: PLC0415
     from ya_passport_auth import ClientConfig, PassportClient  # noqa: PLC0415
     from ya_passport_auth.config import DEFAULT_ALLOWED_HOSTS  # noqa: PLC0415
@@ -1071,6 +1070,9 @@ async def auto_create_skill(  # noqa: PLR0913
                 developer_name=developer_name,
                 progress_cb=progress_cb,
             )
+    except asyncio.CancelledError:
+        # Preserve cooperative cancellation — do not absorb into FAILED.
+        raise
     except ValueError:
         raise
     except Exception as exc:

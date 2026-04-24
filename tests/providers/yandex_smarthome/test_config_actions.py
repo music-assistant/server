@@ -259,6 +259,41 @@ async def test_session_id_forwarded_from_frontend(monkeypatch) -> None:  # type:
 
 
 @pytest.mark.asyncio
+async def test_auto_create_cancelled_error_propagates(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """CancelledError must not be absorbed into a FAILED artifact.
+
+    Config-flow shutdown and HA stop rely on cooperative cancellation;
+    converting it into state=FAILED would both leak the error into the
+    UI and break clean task teardown.
+    """
+    import asyncio  # noqa: PLC0415
+
+    async def _raises_cancelled(**_kwargs: Any) -> SkillCreationArtifacts:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(provider_module, "auto_create_skill", _raises_cancelled)
+
+    mass = _make_mass()
+    values: dict[str, Any] = {
+        CONF_INSTANCE_NAME: "X",
+        CONF_CLOUD_INSTANCE_ID: "inst-1",
+    }
+
+    with pytest.raises(asyncio.CancelledError):
+        await _handle_config_actions(
+            mass,
+            CONF_ACTION_AUTO_CREATE,
+            values,
+            instance_id=None,
+            is_cloud_plus=True,
+            connection_type=CONNECTION_TYPE_CLOUD_PLUS,
+        )
+
+    # The FAILED artifact must NOT have been written on cancellation.
+    assert CONF_AUTO_CREATE_ARTIFACTS not in values
+
+
+@pytest.mark.asyncio
 async def test_auto_create_prefers_saved_direct_secret(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """SECURE_STRING client secret: saved_config beats empty ``values`` on re-open.
 
