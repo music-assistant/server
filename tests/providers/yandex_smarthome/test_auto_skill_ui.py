@@ -168,6 +168,7 @@ class TestAutoCreateEntries:
         entries = list(self._entries(state=SkillCreationState.OAUTH_CREATED))
         action = _find(entries, CONF_ACTION_AUTO_CREATE)
         assert action is not None
+        assert action.action_label is not None
         assert "Retry" in action.action_label
 
     def test_hidden_artifacts_always_round_tripped(self) -> None:
