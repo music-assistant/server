@@ -1036,7 +1036,8 @@ class YoutubeMusicProvider(MusicProvider):
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
-                if not (stream_format := next(format_selector({"formats": info["formats"]})), None):
+                stream_format = next(format_selector({"formats": info["formats"]}), None)
+                if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
                 return stream_format
 
