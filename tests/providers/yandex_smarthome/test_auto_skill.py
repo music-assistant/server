@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 import aiohttp
 import pytest
@@ -411,7 +415,7 @@ class TestRequestDeploy:
 
 
 class TestListExistingSkills:
-    """GET /snapshot — returns existing skills or empty on malformed JSON."""
+    """GET /snapshot — returns existing skills; raises DialogsApiError on malformed JSON."""
 
     @pytest.mark.asyncio
     async def test_returns_skill_dicts(self) -> None:
@@ -767,6 +771,7 @@ class TestAutoCreateSkillHappyPath:
             SkillCreationState.DRAFT_UPDATED,
             SkillCreationState.OAUTH_CREATED,
             SkillCreationState.OAUTH_ATTACHED,
+            SkillCreationState.DEPLOY_REQUESTED,
             SkillCreationState.DONE,
         ]
 
@@ -794,6 +799,26 @@ class TestAutoCreateSkillResume:
         creator = _make_creator_mock()
         starting = SkillCreationArtifacts(
             state=SkillCreationState.OAUTH_ATTACHED,
+            skill_id="s1",
+            logo_id="l1",
+            oauth_app_id="o1",
+        )
+        result = await _run_orch(creator=creator, artifacts=starting)
+
+        creator.create_app.assert_not_awaited()
+        creator.upload_logo.assert_not_awaited()
+        creator.update_draft.assert_not_awaited()
+        creator.create_oauth_app.assert_not_awaited()
+        creator.attach_oauth.assert_not_awaited()
+        creator.request_deploy.assert_awaited_once()
+        assert result.state == SkillCreationState.DONE
+
+    @pytest.mark.asyncio
+    async def test_resume_from_deploy_requested(self) -> None:
+        """DEPLOY_REQUESTED is a real checkpoint: resume re-runs publish only."""
+        creator = _make_creator_mock()
+        starting = SkillCreationArtifacts(
+            state=SkillCreationState.DEPLOY_REQUESTED,
             skill_id="s1",
             logo_id="l1",
             oauth_app_id="o1",
@@ -914,6 +939,43 @@ class TestAutoCreateSkillDirectMode:
             oauth_call.kwargs["authorize_url"]
             == "https://ma.example.com/api/yandex_smarthome/auth/authorize"
         )
+
+
+class TestAuthenticatorInjection:
+    """Both async-generator and already-decorated async-CM authenticators work.
+
+    Re-wrapping a callable that already returns an async CM with
+    ``@asynccontextmanager`` breaks at runtime — the orchestrator must
+    detect that shape and pass it through.
+    """
+
+    @pytest.mark.asyncio
+    async def test_accepts_already_decorated_context_manager(self) -> None:
+        """Authenticator whose call returns an async CM must not be re-wrapped."""
+        session = MagicMock(spec=aiohttp.ClientSession)
+        creator = _make_creator_mock()
+
+        @asynccontextmanager
+        async def _cm_auth(
+            *, mass: Any, session_id: str, timeout: float
+        ) -> AsyncIterator[aiohttp.ClientSession]:
+            _ = (mass, session_id, timeout)
+            yield session
+
+        mass = _mass_with_base_url("https://ma.example.com")
+        result = await auto_create_skill(
+            mass=mass,
+            connection_type=CONNECTION_TYPE_CLOUD_PLUS,
+            skill_name="Music Assistant",
+            artifacts=SkillCreationArtifacts(),
+            cloud_instance_id="inst-1",
+            direct_client_secret="",
+            logo_bytes=b"\x89PNG",
+            session_id="test-session-id",
+            authenticator=_cm_auth,  # type: ignore[arg-type]
+            creator_factory=lambda _s: creator,
+        )
+        assert result.state == SkillCreationState.DONE
 
 
 class TestLoadDefaultLogoBytes:

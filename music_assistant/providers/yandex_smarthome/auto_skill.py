@@ -979,13 +979,36 @@ def _build_authenticator_cm(
 ) -> Any:
     """Wrap *authenticator* so it supports ``async with`` uniformly.
 
-    The default implementation is a plain async generator; tests may
-    pass either a generator or an already-decorated
-    ``@asynccontextmanager``. ``asynccontextmanager`` is idempotent on
-    an already-decorated callable, so we wrap unconditionally.
+    The default implementation is a plain async generator, but callers
+    may inject an already-decorated ``@asynccontextmanager``. Re-wrapping
+    a CM factory with ``asynccontextmanager`` is *not* idempotent — the
+    outer wrapper would call ``__anext__`` on the inner CM object and
+    crash — so detect the CM result and pass it through unchanged.
     """
-    cm_factory = asynccontextmanager(authenticator)
-    return cm_factory(mass=mass, session_id=session_id, timeout=timeout)
+    result = authenticator(mass=mass, session_id=session_id, timeout=timeout)
+    if hasattr(result, "__aenter__") and hasattr(result, "__aexit__"):
+        return result
+
+    # Adapt the async iterator returned above into a proper context
+    # manager. We have to drive the existing iterator (not call the
+    # authenticator again) to avoid leaving a half-created generator
+    # unawaited and to preserve any work it already did (e.g. starting
+    # a Device Flow session).
+    @asynccontextmanager
+    async def _cm() -> AsyncIterator[aiohttp.ClientSession]:
+        session = await result.__anext__()
+        try:
+            yield session
+        finally:
+            try:
+                await result.__anext__()
+            except StopAsyncIteration:
+                pass
+            else:
+                msg = "authenticator yielded more than one session"
+                raise RuntimeError(msg)
+
+    return _cm()
 
 
 async def auto_create_skill(  # noqa: PLR0913
@@ -1105,7 +1128,7 @@ async def _run_pipeline_with_recovery(
         return dataclasses.replace(current, state=SkillCreationState.FAILED, last_error=str(exc))
 
 
-async def _execute_pipeline(  # noqa: PLR0913
+async def _execute_pipeline(  # noqa: PLR0913, PLR0915
     *,
     creator: DialogsSkillCreator,
     csrf: str,
@@ -1202,10 +1225,16 @@ async def _execute_pipeline(  # noqa: PLR0913
         state = artifacts.state
 
     # -- Step 8: publish --
-    if state in (
-        SkillCreationState.OAUTH_ATTACHED,
-        SkillCreationState.DEPLOY_REQUESTED,
-    ):
+    # Checkpoint state=DEPLOY_REQUESTED *before* calling request_deploy
+    # so a crash after the call reached Yandex but before we returned
+    # can skip straight to DONE on retry (Yandex accepts the idempotent
+    # re-deploy but we'd rather not re-drive the flow end-to-end).
+    if state == SkillCreationState.OAUTH_ATTACHED:
+        artifacts = dataclasses.replace(artifacts, state=SkillCreationState.DEPLOY_REQUESTED)
+        await _maybe_save(progress_cb, artifacts)
+        state = artifacts.state
+
+    if state == SkillCreationState.DEPLOY_REQUESTED:
         _LOGGER.info("auto-skill: [5/5] publishing skill")
         await creator.request_deploy(csrf, skill_id)
         artifacts = dataclasses.replace(artifacts, state=SkillCreationState.DONE)
