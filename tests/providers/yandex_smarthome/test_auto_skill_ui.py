@@ -315,6 +315,20 @@ class TestBuildCloudPlusEntries:
         backend = _find(list(entries), "manual_backend_url")
         assert getattr(backend, "advanced", False) is True
 
+    def test_manual_fallback_suppressed_before_cloud_register(self) -> None:
+        """Don't render manual fields with an invalid `yandex_smart_home:` Client ID.
+
+        cloud_plus Client ID embeds the yaha-cloud instance UUID; before
+        the user clicks Register there's no UUID, and emitting a
+        half-formed ``yandex_smart_home:`` value would lead power users
+        (Advanced view) to create a skill with broken account-linking.
+        """
+        entries = self._call(is_registered=False, state=SkillCreationState.NONE)
+        keys = [e.key for e in entries]
+        assert "manual_backend_url" not in keys
+        assert "manual_client_id" not in keys
+        assert "manual_fallback_label" not in keys
+
     def test_otp_code_appears_when_present(self) -> None:
         """OTP code field is visible once an OTP has been fetched."""
         entries = self._call(is_registered=True, skill_id="s1", otp_code="ABC123")

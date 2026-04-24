@@ -553,6 +553,13 @@ def _manual_fallback_entries(
     needing to click Advanced.
     """
     if connection_type == CONNECTION_TYPE_CLOUD_PLUS:
+        # The cloud_plus Client ID embeds the yaha-cloud instance UUID,
+        # which doesn't exist until the user registers. Suppress the
+        # manual block entirely before registration rather than render
+        # an invalid ``yandex_smart_home:`` Client ID that would lead
+        # someone to create a broken skill.
+        if not cloud_instance_id:
+            return []
         backend_uri = CLOUD_SKILL_WEBHOOK_TEMPLATE
         client_id = CLOUD_SKILL_CLIENT_ID_TEMPLATE.format(instance_id=cloud_instance_id)
         client_secret = CLOUD_SKILL_CLIENT_SECRET
