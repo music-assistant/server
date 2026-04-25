@@ -44,11 +44,13 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
     ImageType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
     RepeatMode,
 )
+from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
@@ -747,35 +749,34 @@ class SendspinPlayer(SendspinBasePlayer):
         return artwork_url
 
     async def _send_artist_artwork(self, current_item: QueueItem) -> None:
-        """
-        Send artist artwork to the sendspin group.
+        """Send artist artwork to the sendspin group."""
+        artist_artwork_url: str | None = None
+        fetch_target: Artist | None = None
 
-        Args:
-            current_item: The current queue item.
-        """
-        # Extract primary artist if available
-        artist_artwork_url = None
-        if current_item.media_item is not None and hasattr(current_item.media_item, "artists"):
-            artists = getattr(current_item.media_item, "artists", None)
-            if artists and len(artists) > 0:
+        if current_item.media_item is not None and is_track(current_item.media_item):
+            artists = current_item.media_item.artists
+            if artists:
                 primary_artist = artists[0]
-                if hasattr(primary_artist, "image"):
-                    artist_image = getattr(primary_artist, "image", None)
-                    if artist_image is not None:
-                        artist_artwork_url = self.mass.metadata.get_image_url(artist_image)
+                # Prefer a full library artist (has reliable up-to-date artwork) over
+                # the ItemMapping in the queue item, which often has image=None.
+                result = await self.mass.music.get_library_item_by_prov_id(
+                    MediaType.ARTIST, primary_artist.item_id, primary_artist.provider
+                )
+                fetch_target = result if isinstance(result, Artist) else None
+                image = fetch_target.image if fetch_target else primary_artist.image
+                if image is not None:
+                    artist_artwork_url = self.mass.metadata.get_image_url(image)
 
         if artist_artwork_url != self.last_sent_artist_artwork_url:
-            # Artist image changed, resend the artwork
             self.last_sent_artist_artwork_url = artist_artwork_url
-            if artist_artwork_url is not None:
+            if artist_artwork_url is not None and fetch_target is not None:
                 artist_image_data = await self.mass.metadata.get_image_data_for_item(
-                    primary_artist, img_type=ImageType.THUMB
+                    fetch_target, img_type=ImageType.THUMB
                 )
                 if artist_image_data is not None:
                     artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
                     if (artwork_role := self._artwork_role) is not None:
                         await artwork_role.set_artist_artwork(artist_image)
-            # Clear artist artwork if none available
             elif (artwork_role := self._artwork_role) is not None:
                 await artwork_role.set_artist_artwork(None)
 
@@ -784,13 +785,17 @@ class SendspinPlayer(SendspinBasePlayer):
         if self.synced_to is not None:
             # Only leader sends metadata
             return
-
-        if self.state.current_media is None:
-            # Clear metadata when no media loaded
-            if (metadata_role := self._metadata_role) is not None:
-                metadata_role.set_metadata(Metadata())
-            return
         self.mass.create_task(self.send_current_media_metadata())
+
+    async def _clear_current_media_metadata(self) -> None:
+        """Clear all metadata and artwork from the sendspin group."""
+        if (metadata_role := self._metadata_role) is not None:
+            metadata_role.set_metadata(Metadata())
+        if (artwork_role := self._artwork_role) is not None:
+            await artwork_role.set_album_artwork(None)
+            await artwork_role.set_artist_artwork(None)
+        self.last_sent_artwork_url = None
+        self.last_sent_artist_artwork_url = None
 
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
@@ -798,6 +803,7 @@ class SendspinPlayer(SendspinBasePlayer):
             return
         current_media = self.state.current_media
         if current_media is None:
+            await self._clear_current_media_metadata()
             return
         # check if we are playing a MA queue item
         queue_item: QueueItem | None = None
@@ -812,6 +818,26 @@ class SendspinPlayer(SendspinBasePlayer):
         if queue_item:
             await self._send_album_artwork(queue_item)
             await self._send_artist_artwork(queue_item)
+
+        track_number: int | None = None
+        year: int | None = None
+        album_artist: str | None = None
+        if queue_item and queue_item.media_item and is_track(queue_item.media_item):
+            track = queue_item.media_item
+            track_number = track.track_number or None
+            album_mapping = track.album
+            if album_mapping is not None:
+                year = album_mapping.year
+                if not isinstance(album_mapping, Album):
+                    # Cheap DB-only lookup, no external API call; None if not in library
+                    result = await self.mass.music.get_library_item_by_prov_id(
+                        MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
+                    )
+                    full_album: Album | None = result if isinstance(result, Album) else None
+                else:
+                    full_album = album_mapping
+                if full_album and full_album.artists:
+                    album_artist = full_album.artist_str
 
         track_duration = current_media.duration or 0
         repeat = SendspinRepeatMode.OFF
@@ -837,11 +863,11 @@ class SendspinPlayer(SendspinBasePlayer):
         metadata = Metadata(
             title=current_media.title,
             artist=current_media.artist,
-            album_artist=None,
+            album_artist=album_artist,
             album=current_media.album,
             artwork_url=current_media.image_url,
-            year=None,
-            track=None,
+            year=year,
+            track=track_number,
             track_duration=track_duration * 1000 if track_duration is not None else None,
             track_progress=track_progress,
             playback_speed=1000 if is_playing else 0,
