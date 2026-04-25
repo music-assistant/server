@@ -50,7 +50,7 @@ from music_assistant_models.enums import (
     PlayerType,
     RepeatMode,
 )
-from music_assistant_models.media_items import Album, Artist, is_track
+from music_assistant_models.media_items import Album, Artist, ItemMapping, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
@@ -751,7 +751,7 @@ class SendspinPlayer(SendspinBasePlayer):
     async def _send_artist_artwork(self, current_item: QueueItem) -> None:
         """Send artist artwork to the sendspin group."""
         artist_artwork_url: str | None = None
-        fetch_target: Artist | None = None
+        fetch_target: Artist | ItemMapping | None = None
 
         if current_item.media_item is not None and is_track(current_item.media_item):
             artists = current_item.media_item.artists
@@ -762,16 +762,19 @@ class SendspinPlayer(SendspinBasePlayer):
                 result = await self.mass.music.get_library_item_by_prov_id(
                     MediaType.ARTIST, primary_artist.item_id, primary_artist.provider
                 )
-                fetch_target = result if isinstance(result, Artist) else None
-                image = fetch_target.image if fetch_target else primary_artist.image
-                if image is not None:
-                    artist_artwork_url = self.mass.metadata.get_image_url(image)
+                if isinstance(result, Artist):
+                    fetch_target = result
+                elif primary_artist.image is not None:
+                    fetch_target = primary_artist
+                if fetch_target is not None and fetch_target.image is not None:
+                    artist_artwork_url = self.mass.metadata.get_image_url(fetch_target.image)
 
         if artist_artwork_url != self.last_sent_artist_artwork_url:
             self.last_sent_artist_artwork_url = artist_artwork_url
             if artist_artwork_url is not None and fetch_target is not None:
                 artist_image_data = await self.mass.metadata.get_image_data_for_item(
-                    fetch_target, img_type=ImageType.THUMB
+                    fetch_target,  # type: ignore[arg-type]
+                    img_type=ImageType.THUMB,
                 )
                 if artist_image_data is not None:
                     artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
@@ -785,7 +788,11 @@ class SendspinPlayer(SendspinBasePlayer):
         if self.synced_to is not None:
             # Only leader sends metadata
             return
-        self.mass.create_task(self.send_current_media_metadata())
+        self.mass.create_task(
+            self.send_current_media_metadata(),
+            task_id=f"sendspin_metadata_{self.player_id}",
+            abort_existing=True,
+        )
 
     async def _clear_current_media_metadata(self) -> None:
         """Clear all metadata and artwork from the sendspin group."""
