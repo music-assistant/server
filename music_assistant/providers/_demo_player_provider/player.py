@@ -308,8 +308,8 @@ class DemoPlayer(Player):
     async def select_sound_mode(self, sound_mode: str) -> None:
         """Handle SELECT SOUND MODE command on the player."""
         # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOUND_MODE.
-        # This method is optional and should be implemented if the player support selecting a native sound mode
-        # (e.g. stereo, 5.1, classic...).
+        # This method is optional and should be implemented if the player supports
+        # selecting a native sound mode (e.g. stereo, 5.1, classic...).
         # The sound_mode is the sound mode's id, and available sound modes
         # are specified in the Player.sound_mode_list property.
 
@@ -326,7 +326,7 @@ class DemoPlayer(Player):
     async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
         """Handle SET_OPTION command on the player."""
         # OPTIONAL - required only if you specified PlayerFeature.OPTIONS.
-        # PlayerOptions are native settings of the player adjustable on on the fly,
+        # PlayerOptions are native settings of the player adjustable on the fly,
         # e.g. a treble value, toggable settings etc. In the ui they are accessible
         # on the player menu, or via
         # player settings -> players -> <select player> -> player options.
@@ -337,18 +337,23 @@ class DemoPlayer(Player):
         # PlayerOptionType.FLOAT or PlayerOptionType.INTEGER (w/o options) -> NumberEntity
         # PlayerOptionType.STRING (w/o options) -> TextEntity
         # PlayerOptionType.FLOAT/ INTEGER/ STRING with options -> SelectEntity.
-        # Read-only options will be mapped to sensor once a provider using them exists.
+        # Read-only options will be mapped to SensorEntities once a provider using them exists.
         #
         # The translation key of the respective option must be present in the HA integration,
         # otherwise, the option is ignored. Currently available keys are listed in the following
         # dictionaries right at the top of the respective entity type:
         #
-        # PLAYER_OPTIONS_SWITCH in https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/switch.py
-        # PLAYER_OPTIONS_SELECT in https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/select.py
-        # PLAYER_OPTIONS_NUMBER in https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/number.py
-        # PLAYER_OPTIONS_TEXT in https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/text.py
+        # PLAYER_OPTIONS_SWITCH in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/switch.py
+        # PLAYER_OPTIONS_SELECT in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/select.py
+        # PLAYER_OPTIONS_NUMBER in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/number.py
+        # PLAYER_OPTIONS_TEXT in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/text.py
         #
-        # Before creating a PR to HA core to support new translation keys, complete the review process in MA. We are also happy to create the HA PR for you after the review process.
+        # Before creating a PR to HA core to support new translation keys, complete the review process in MA.
+        # We are also happy to create the HA PR for you after the review process.
         # The MusicCast provider can serve as an example for player options.
 
     async def poll(self) -> None:
