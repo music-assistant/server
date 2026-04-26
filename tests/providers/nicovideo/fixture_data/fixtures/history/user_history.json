@@ -1,13 +1,13 @@
 {
   "items": [
     {
-      "frontendId": 6,
+      "itemId": "h#20250101#sm45285955",
       "isMaybeLikeUserItem": false,
-      "lastViewedAt": "2025-01-01T00:00:00+09:00",
-      "playbackPosition": 0.0,
+      "viewedAt": "2025-01-01T00:00:00+09:00",
       "video": {
         "type": "essential",
         "id": "sm45285955",
+        "contentType": "long",
         "title": "APIテスト用",
         "registeredAt": "2025-01-01T00:00:00+09:00",
         "count": {
@@ -28,7 +28,7 @@
         "latestCommentSummary": "",
         "isChannelVideo": false,
         "isPaymentRequired": false,
-        "playbackPosition": 0.0,
+        "playbackPosition": null,
         "owner": {
           "ownerType": "user",
           "type": "user",
@@ -40,10 +40,8 @@
         "requireSensitiveMasking": false,
         "videoLive": null,
         "isMuted": false
-      },
-      "views": 1,
-      "watchId": "sm45285955"
+      }
     }
   ],
-  "totalCount": 1
+  "nextCursor": null
 }
