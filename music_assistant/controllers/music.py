@@ -2683,7 +2683,7 @@ class MusicController(CoreController):
             # "artist the default, as this was the only artist type supported
             try:
                 await self._database.execute(
-                    f"ALTER TABLE {DB_TABLE_ARTISTS} ADD COLUMN artist_type TEXT DEFAULT 'artist' NOT NULL"
+                    f"ALTER TABLE {DB_TABLE_ARTISTS} ADD COLUMN artist_type TEXT DEFAULT 'singer' NOT NULL"
                 )
             except Exception as err:
                 if "duplicate column" not in str(err):

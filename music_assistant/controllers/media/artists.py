@@ -60,7 +60,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         favorite_only: bool = False,
         album_artists_only: bool = False,
-        artist_type: ArtistType = ArtistType.ARTIST,
+        artist_type: ArtistType = ArtistType.SINGER,
     ) -> int:
         """Return the total number of items in the library."""
         sql_query = f"SELECT item_id FROM {self.db_table}"
@@ -86,7 +86,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         album_artists_only: bool = False,
-        artist_type: ArtistType = ArtistType.ARTIST,
+        artist_type: ArtistType = ArtistType.SINGER,
         **kwargs: Any,
     ) -> list[Artist]:
         """Get in-database (album) artists.
@@ -103,7 +103,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts = [f"artist_type = '{artist_type}'"]
-        if album_artists_only and artist_type == ArtistType.ARTIST:
+        if album_artists_only and artist_type == ArtistType.SINGER:
             extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
@@ -137,7 +137,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         library_artist = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
-        if library_artist and library_artist.artist_type != ArtistType.ARTIST:
+        if library_artist and library_artist.artist_type != ArtistType.SINGER:
             self.logger.debug(
                 "Ignoring tracks request for artist of type %s", library_artist.artist_type
             )
@@ -186,7 +186,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         library_artist = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
-        if library_artist and library_artist.artist_type != ArtistType.ARTIST:
+        if library_artist and library_artist.artist_type != ArtistType.SINGER:
             self.logger.debug(
                 "Ignoring album request for artist of type %s", library_artist.artist_type
             )
@@ -227,7 +227,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
 
-        if library_item.artist_type == ArtistType.ARTIST:
+        if library_item.artist_type == ArtistType.SINGER:
             await self._remove_music_artist_from_library(db_id=db_id, recursive=recursive)
         elif library_item.artist_type in (ArtistType.AUTHOR, ArtistType.NARRATOR):
             await self._remove_author_narrator_from_library(db_id=db_id, recursive=recursive)
@@ -289,7 +289,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id,
             provider_instance_id_or_domain,
         ):
-            if db_artist.artist_type != ArtistType.ARTIST:
+            if db_artist.artist_type != ArtistType.SINGER:
                 self.logger.debug("Top tracks only available for artists of type ARTIST")
                 return []
             db_artist_id = int(db_artist.item_id)  # ensure integer
@@ -309,7 +309,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return all tracks for an artist in the library/db."""
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
-        if library_item.artist_type != ArtistType.ARTIST:
+        if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Tracks only available for artists of type ARTIST")
             return []
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
@@ -336,7 +336,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id,
             provider_instance_id_or_domain,
         ):
-            if db_artist.artist_type != ArtistType.ARTIST:
+            if db_artist.artist_type != ArtistType.SINGER:
                 self.logger.debug("Albums only available for artists of type ARTIST")
                 return []
             db_artist_id = int(db_artist.item_id)  # ensure integer
@@ -356,7 +356,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return all in-library albums for an artist."""
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
-        if library_item.artist_type != ArtistType.ARTIST:
+        if library_item.artist_type != ArtistType.SINGER:
             self.logger.debug("Albums only available for artists of type ARTIST")
             return []
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
@@ -461,7 +461,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item: The Artist to get base tracks for.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
         """
-        if item.artist_type != ArtistType.ARTIST:
+        if item.artist_type != ArtistType.SINGER:
             raise MusicAssistantError("Radio mode tracks only exists for artists of type ARTIST.")
         return await self.tracks(
             item.item_id,
@@ -610,14 +610,14 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Artist_type can be omitted for in-library artists.
         """
-        if artist_type == ArtistType.ARTIST:
+        if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type ARTIST.")
             return []
         # always check if we have a library item for this artist
         library_artist = await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
-        if library_artist and library_artist.artist_type == ArtistType.ARTIST:
+        if library_artist and library_artist.artist_type == ArtistType.SINGER:
             self.logger.debug(
                 "Ignoring audiobook request for artist of type %s", library_artist.artist_type
             )
