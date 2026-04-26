@@ -74,6 +74,22 @@ class MusicCastZoneDevice:
                 await entity._check_client_list()
 
     @property
+    def sound_mode_id(self) -> str | None:
+        """ID of current sound mode."""
+        zone = self.device.data.zones.get(self.zone_name)
+        assert zone is not None  # for type checking
+        assert isinstance(zone.sound_program, str | None)  # for type checking
+        return zone.sound_program
+
+    @property
+    def sound_mode_list(self) -> list[str]:
+        """Return a list of available sound modes."""
+        zone = self.device.data.zones.get(self.zone_name)
+        assert zone is not None  # for type checking
+        assert isinstance(zone.sound_program_list, list)  # for type checking
+        return zone.sound_program_list
+
+    @property
     def source_id(self) -> str:
         """ID of the current input source.
 
@@ -327,6 +343,10 @@ class MusicCastZoneDevice:
     async def select_source(self, source_id: str) -> None:
         """Select input source. Internal source name."""
         await self.device.select_source(self.zone_name, source_id)
+
+    async def select_sound_mode(self, sound_mode_id: str) -> None:
+        """Select sound mode. Internal sound_mode name."""
+        await self.device.select_sound_mode(self.zone_name, sound_mode_id)
 
     def is_part_of_group(self, group_server: "MusicCastZoneDevice") -> bool:
         """Return True if the given server is the server of self's group."""

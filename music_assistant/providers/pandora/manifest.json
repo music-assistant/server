@@ -1,0 +1,11 @@
+{
+  "domain": "pandora",
+  "name": "Pandora",
+  "description": "Pandora is a music and podcast streaming service that creates personalized radio stations based on your favorite songs and artists.",
+  "documentation": "https://music-assistant.io/music-providers/pandora/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false,
+  "stage": "beta"
+}

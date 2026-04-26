@@ -32,9 +32,8 @@ class FixtureLoader:
         try:
             if isinstance(data, list):
                 return [fixture_type.model_validate(item) for item in data]
-            else:
-                # Single object case
-                return fixture_type.model_validate(data)
+            # Single object case
+            return fixture_type.model_validate(data)
         except Exception as e:
             pytest.fail(f"Failed to validate fixture {relative_path}: {e}")
 

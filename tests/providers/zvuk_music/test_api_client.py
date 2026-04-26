@@ -1,0 +1,589 @@
+"""Tests for ZvukMusicClient in provider/api_client.py."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from music_assistant_models.errors import (
+    LoginFailed,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
+from zvuk_music import StreamQuality
+from zvuk_music.exceptions import (
+    BadRequestError,
+    BotDetectedError,
+    GraphQLError,
+    NetworkError,
+    NotFoundError,
+    TimedOutError,
+    UnauthorizedError,
+)
+
+from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.providers.zvuk_music.api_client import ZvukMusicClient, handle_zvuk_errors
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_client(token: str = "test-token") -> ZvukMusicClient:  # noqa: S107
+    """Create a ZvukMusicClient with a fake token."""
+    return ZvukMusicClient(token=token)
+
+
+def _make_connected_client() -> tuple[ZvukMusicClient, MagicMock]:
+    """Create a ZvukMusicClient with _client already set (simulates post-connect state).
+
+    :return: Tuple of (client, inner_mock) where inner_mock is the mocked ClientAsync.
+    """
+    zvuk_client = _make_client()
+    inner = MagicMock()
+    zvuk_client._client = inner
+    zvuk_client._user_id = "42"
+    return zvuk_client, inner
+
+
+# ---------------------------------------------------------------------------
+# Tests for handle_zvuk_errors decorator
+# ---------------------------------------------------------------------------
+
+
+class TestHandleZvukErrors:
+    """Tests for the handle_zvuk_errors decorator."""
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_error_raises_login_failed(self) -> None:
+        """UnauthorizedError is mapped to LoginFailed."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise UnauthorizedError("bad token")
+
+        with pytest.raises(LoginFailed):
+            await failing(None)
+
+    @pytest.mark.asyncio
+    async def test_network_error_raises_resource_temporarily_unavailable(self) -> None:
+        """NetworkError is mapped to ResourceTemporarilyUnavailable."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise NetworkError("connection reset")
+
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await failing(None)
+
+    @pytest.mark.asyncio
+    async def test_timed_out_error_raises_resource_temporarily_unavailable(self) -> None:
+        """TimedOutError is mapped to ResourceTemporarilyUnavailable."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise TimedOutError("timeout")
+
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await failing(None)
+
+    @pytest.mark.asyncio
+    async def test_bad_request_error_raises_resource_temporarily_unavailable(self) -> None:
+        """BadRequestError is mapped to ResourceTemporarilyUnavailable."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise BadRequestError("bad request")
+
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await failing(None)
+
+    @pytest.mark.asyncio
+    async def test_bot_detected_error_raises_provider_unavailable(self) -> None:
+        """BotDetectedError is mapped to ProviderUnavailableError."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise BotDetectedError("bot detected")
+
+        with pytest.raises(ProviderUnavailableError):
+            await failing(None)
+
+    @pytest.mark.asyncio
+    async def test_not_found_returns_sentinel_value_when_provided(self) -> None:
+        """NotFoundError returns not_found_return when the param is set."""
+
+        @handle_zvuk_errors(not_found_return=None)
+        async def failing(_self: object) -> str | None:
+            raise NotFoundError("not found")
+
+        result = await failing(None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_not_found_empty_list_sentinel(self) -> None:
+        """not_found_return=[] returns an empty list on NotFoundError."""
+
+        @handle_zvuk_errors(not_found_return=[])
+        async def failing(_self: object) -> list[str]:
+            raise NotFoundError("not found")
+
+        result = await failing(None)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_not_found_error_reraised_when_no_sentinel(self) -> None:
+        """NotFoundError is re-raised when not_found_return is not provided."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise NotFoundError("not found")
+
+        with pytest.raises(NotFoundError):
+            await failing(None)
+
+    @pytest.mark.asyncio
+    async def test_success_returns_value(self) -> None:
+        """The decorated function returns its value normally on success."""
+
+        @handle_zvuk_errors(not_found_return=None)
+        async def succeeding(_self: object) -> str:
+            return "ok"
+
+        result = await succeeding(None)
+        assert result == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Tests for handle_zvuk_errors — rate-limit backoff
+# ---------------------------------------------------------------------------
+
+
+class TestHandleZvukErrorsRateLimit:
+    """Test that 429 NetworkError gets backoff treatment."""
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_network_error_raises_with_backoff(self) -> None:
+        """NetworkError with 429 raises ResourceTemporarilyUnavailable(backoff_time=60)."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise NetworkError("HTTP 429 Too Many Requests")
+
+        with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+            await failing(None)
+        assert exc_info.value.backoff_time == 60
+
+    @pytest.mark.asyncio
+    async def test_generic_network_error_raises_without_backoff(self) -> None:
+        """Ordinary NetworkError raises ResourceTemporarilyUnavailable without backoff."""
+
+        @handle_zvuk_errors()
+        async def failing(_self: object) -> None:
+            raise NetworkError("connection reset")
+
+        with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+            await failing(None)
+        assert getattr(exc_info.value, "backoff_time", None) != 60
+
+
+# ---------------------------------------------------------------------------
+# Tests for connect()
+# ---------------------------------------------------------------------------
+
+
+class TestConnect:
+    """Tests for ZvukMusicClient.connect()."""
+
+    @pytest.mark.asyncio
+    async def test_connect_calls_init_and_is_authorized(self) -> None:
+        """connect() calls ClientAsync(token=...).init() and is_authorized()."""
+        client = _make_client(token="my-token")
+
+        mock_inner = MagicMock()
+        mock_inner.init = AsyncMock(return_value=mock_inner)
+        mock_inner.is_authorized = AsyncMock(return_value=True)
+        profile = MagicMock()
+        profile.result.id = 99
+        mock_inner.get_profile = AsyncMock(return_value=profile)
+
+        with patch(
+            "music_assistant.providers.zvuk_music.api_client.ClientAsync",
+            return_value=mock_inner,
+        ):
+            await client.connect()
+
+        mock_inner.init.assert_awaited_once()
+        mock_inner.is_authorized.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_sets_user_id_from_profile(self) -> None:
+        """connect() sets _user_id from profile.result.id."""
+        client = _make_client()
+
+        mock_inner = MagicMock()
+        mock_inner.init = AsyncMock(return_value=mock_inner)
+        mock_inner.is_authorized = AsyncMock(return_value=True)
+        profile = MagicMock()
+        profile.result.id = 777
+        mock_inner.get_profile = AsyncMock(return_value=profile)
+
+        with patch(
+            "music_assistant.providers.zvuk_music.api_client.ClientAsync",
+            return_value=mock_inner,
+        ):
+            await client.connect()
+
+        assert client._user_id == "777"
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_login_failed_when_not_authorized(self) -> None:
+        """connect() raises LoginFailed when is_authorized() returns False."""
+        client = _make_client()
+
+        mock_inner = MagicMock()
+        mock_inner.init = AsyncMock(return_value=mock_inner)
+        mock_inner.is_authorized = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "music_assistant.providers.zvuk_music.api_client.ClientAsync",
+                return_value=mock_inner,
+            ),
+            pytest.raises(LoginFailed),
+        ):
+            await client.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_login_failed_on_unauthorized_error(self) -> None:
+        """connect() raises LoginFailed when ClientAsync.init() raises UnauthorizedError."""
+        client = _make_client()
+
+        mock_inner = MagicMock()
+        mock_inner.init = AsyncMock(side_effect=UnauthorizedError("bad token"))
+
+        with (
+            patch(
+                "music_assistant.providers.zvuk_music.api_client.ClientAsync",
+                return_value=mock_inner,
+            ),
+            pytest.raises(LoginFailed),
+        ):
+            await client.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_resource_temporarily_unavailable_on_network_error(
+        self,
+    ) -> None:
+        """connect() raises ResourceTemporarilyUnavailable on NetworkError."""
+        client = _make_client()
+
+        mock_inner = MagicMock()
+        mock_inner.init = AsyncMock(side_effect=NetworkError("timeout"))
+
+        with (
+            patch(
+                "music_assistant.providers.zvuk_music.api_client.ClientAsync",
+                return_value=mock_inner,
+            ),
+            pytest.raises(ResourceTemporarilyUnavailable),
+        ):
+            await client.connect()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _ensure_connected()
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureConnected:
+    """Tests for ZvukMusicClient._ensure_connected()."""
+
+    def test_raises_provider_unavailable_when_client_is_none(self) -> None:
+        """_ensure_connected() raises ProviderUnavailableError if _client is None."""
+        client = _make_client()
+        assert client._client is None
+
+        with pytest.raises(ProviderUnavailableError):
+            client._ensure_connected()
+
+    def test_returns_client_when_connected(self) -> None:
+        """_ensure_connected() returns the inner client when connected."""
+        client, inner = _make_connected_client()
+        result = client._ensure_connected()
+        assert result is inner
+
+
+# ---------------------------------------------------------------------------
+# Tests for get_collection()
+# ---------------------------------------------------------------------------
+
+
+class TestGetCollection:
+    """Tests for ZvukMusicClient.get_collection() — regression for bug B2."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_not_found_error(self) -> None:
+        """get_collection() returns None on NotFoundError (bug B2 regression)."""
+        client, inner = _make_connected_client()
+        inner.get_collection = AsyncMock(side_effect=NotFoundError("not found"))
+
+        result = await client.get_collection()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_collection_on_success(self) -> None:
+        """get_collection() returns the collection object on success."""
+        client, inner = _make_connected_client()
+        mock_collection = MagicMock()
+        inner.get_collection = AsyncMock(return_value=mock_collection)
+
+        result = await client.get_collection()
+
+        assert result is mock_collection
+
+
+# ---------------------------------------------------------------------------
+# Tests for get_editorial_playlist_ids()
+# ---------------------------------------------------------------------------
+
+
+class TestGetEditorialPlaylistIds:
+    """Tests for ZvukMusicClient.get_editorial_playlist_ids()."""
+
+    @pytest.mark.asyncio
+    async def test_returns_ids_from_library(self) -> None:
+        """get_editorial_playlist_ids() returns the list from the library client."""
+        client, inner = _make_connected_client()
+        inner.get_editorial_playlist_ids = AsyncMock(return_value=["111", "222", "333"])
+
+        result = await client.get_editorial_playlist_ids()
+
+        assert result == ["111", "222", "333"]
+        inner.get_editorial_playlist_ids.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_library_returns_empty(self) -> None:
+        """get_editorial_playlist_ids() returns [] when library returns []."""
+        client, inner = _make_connected_client()
+        inner.get_editorial_playlist_ids = AsyncMock(return_value=[])
+
+        result = await client.get_editorial_playlist_ids()
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for get_direct_stream_url()
+# ---------------------------------------------------------------------------
+
+
+class TestGetDirectStreamUrl:
+    """Tests for ZvukMusicClient.get_direct_stream_url()."""
+
+    @pytest.mark.asyncio
+    async def test_returns_stream_url_from_result(self) -> None:
+        """get_direct_stream_url() returns the stream URL from the library result."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(
+            return_value=MagicMock(stream="https://cdn.zvuk.com/track.flac")
+        )
+
+        result = await client.get_direct_stream_url("12345", "flac")
+
+        assert result == "https://cdn.zvuk.com/track.flac"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_stream_is_empty(self) -> None:
+        """get_direct_stream_url() returns None when stream field is empty."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(return_value=MagicMock(stream=""))
+
+        result = await client.get_direct_stream_url("12345", "flac")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_library_returns_none(self) -> None:
+        """get_direct_stream_url() returns None when library returns None."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(return_value=None)
+
+        result = await client.get_direct_stream_url("12345", "high")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_passes_quality_as_stream_quality_enum(self) -> None:
+        """get_direct_stream_url() passes StreamQuality enum to the library."""
+        client, inner = _make_connected_client()
+        inner.get_direct_stream_url = AsyncMock(
+            return_value=MagicMock(stream="https://cdn.zvuk.com/t.mp3")
+        )
+
+        await client.get_direct_stream_url("99999", "mid")
+
+        inner.get_direct_stream_url.assert_awaited_once_with("99999", StreamQuality.MID)
+
+
+# ---------------------------------------------------------------------------
+# Tests for get_lyrics()
+# ---------------------------------------------------------------------------
+
+
+class TestGetLyrics:
+    """Tests for ZvukMusicClient.get_lyrics()."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_library_returns_none(self) -> None:
+        """get_lyrics() returns None when library returns None."""
+        client, inner = _make_connected_client()
+        inner.get_lyrics = AsyncMock(return_value=None)
+
+        result = await client.get_lyrics("12345")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_lyrics_object_when_present(self) -> None:
+        """get_lyrics() returns the Lyrics object from the library."""
+        client, inner = _make_connected_client()
+        mock_lyrics = MagicMock(lyrics="Some lyrics text", is_synced=False)
+        inner.get_lyrics = AsyncMock(return_value=mock_lyrics)
+
+        result = await client.get_lyrics("12345")
+
+        assert result is mock_lyrics
+        inner.get_lyrics.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_returns_synced_lyrics_object(self) -> None:
+        """get_lyrics() returns the Lyrics object for synced (LRC) lyrics."""
+        client, inner = _make_connected_client()
+        lrc = "[00:00.68]First line\n[00:04.71]Second line\n"
+        mock_lyrics = MagicMock(lyrics=lrc, is_synced=True)
+        inner.get_lyrics = AsyncMock(return_value=mock_lyrics)
+
+        result = await client.get_lyrics("12345")
+
+        assert result is not None
+        assert result.lyrics == lrc
+        assert result.is_synced is True
+
+
+# ---------------------------------------------------------------------------
+# Tests for like_track() / unlike_track()
+# ---------------------------------------------------------------------------
+
+
+class TestThrottler:
+    """Tests for throttling behaviour in ZvukMusicClient."""
+
+    def test_throttler_initialized_on_construction(self) -> None:
+        """ZvukMusicClient should have a _throttler attribute after construction."""
+        client = _make_client()
+        assert hasattr(client, "_throttler")
+        assert isinstance(client._throttler, Throttler)
+
+
+class TestGetClient:
+    """Tests for ZvukMusicClient._get_client()."""
+
+    @pytest.mark.asyncio
+    async def test_get_client_acquires_throttle_slot(self) -> None:
+        """_get_client() must call throttler.acquire() before returning client."""
+        client, inner = _make_connected_client()
+        client._throttler = MagicMock()
+        client._throttler.acquire = AsyncMock()
+
+        result = await client._get_client()
+
+        client._throttler.acquire.assert_awaited_once()
+        assert result is inner
+
+    @pytest.mark.asyncio
+    async def test_get_client_raises_when_not_connected(self) -> None:
+        """_get_client() raises ProviderUnavailableError if client not connected."""
+        client = _make_client()
+        client._throttler = MagicMock()
+        client._throttler.acquire = AsyncMock()
+
+        with pytest.raises(ProviderUnavailableError):
+            await client._get_client()
+
+
+class TestLikeUnlikeTrack:
+    """Tests for ZvukMusicClient.like_track() and unlike_track()."""
+
+    @pytest.mark.asyncio
+    async def test_like_track_returns_true_on_success(self) -> None:
+        """like_track() returns True when the API call succeeds."""
+        client, inner = _make_connected_client()
+        inner.like_track = AsyncMock(return_value=True)
+
+        result = await client.like_track("123")
+
+        assert result is True
+        inner.like_track.assert_awaited_once_with("123")
+
+    @pytest.mark.asyncio
+    async def test_like_track_returns_false_on_bad_request_error(self) -> None:
+        """like_track() returns False when BadRequestError is raised."""
+        client, inner = _make_connected_client()
+        inner.like_track = AsyncMock(side_effect=BadRequestError("bad request"))
+
+        result = await client.like_track("123")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_like_track_returns_false_on_network_error(self) -> None:
+        """like_track() returns False when NetworkError is raised."""
+        client, inner = _make_connected_client()
+        inner.like_track = AsyncMock(side_effect=NetworkError("connection error"))
+
+        result = await client.like_track("123")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_like_track_returns_false_on_graphql_error(self) -> None:
+        """like_track() returns False when GraphQLError is raised."""
+        client, inner = _make_connected_client()
+        inner.like_track = AsyncMock(side_effect=GraphQLError("graphql error"))
+
+        result = await client.like_track("123")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_unlike_track_returns_true_on_success(self) -> None:
+        """unlike_track() returns True when the API call succeeds."""
+        client, inner = _make_connected_client()
+        inner.unlike_track = AsyncMock(return_value=True)
+
+        result = await client.unlike_track("456")
+
+        assert result is True
+        inner.unlike_track.assert_awaited_once_with("456")
+
+    @pytest.mark.asyncio
+    async def test_unlike_track_returns_false_on_bad_request_error(self) -> None:
+        """unlike_track() returns False when BadRequestError is raised."""
+        client, inner = _make_connected_client()
+        inner.unlike_track = AsyncMock(side_effect=BadRequestError("bad request"))
+
+        result = await client.unlike_track("456")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_unlike_track_returns_false_on_network_error(self) -> None:
+        """unlike_track() returns False when NetworkError is raised."""
+        client, inner = _make_connected_client()
+        inner.unlike_track = AsyncMock(side_effect=NetworkError("connection error"))
+
+        result = await client.unlike_track("456")
+
+        assert result is False

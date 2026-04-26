@@ -9,7 +9,7 @@
     "[libraop (RAOP)](https://github.com/music-assistant/libraop)",
     "[OwnTone (AirPlay2)](https://github.com/OwnTone)"
   ],
-  "requirements": [],
+  "requirements": ["srptools>=1.0.0"],
   "documentation": "https://music-assistant.io/player-support/airplay/",
   "multi_instance": false,
   "builtin": false,

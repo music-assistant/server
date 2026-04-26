@@ -1,15 +1,18 @@
 {
-    "id": 12345,
-    "name": "Test Artist",
-    "picture": "1234-5678-90ab-cdef",
-    "url": "http://www.tidal.com/artist/12345",
-    "artistTypes": [
-        "ARTIST"
-    ],
-    "popularity": 75,
-    "banner": "banner-1234-5678-90ab",
-    "releaseDateOriginal": "2010-01-01",
-    "mixes": {
-        "ARTIST_MIX": "artist_mix_id_123"
+    "created": "2024-06-10T12:00:00Z",
+    "item": {
+        "id": 12345,
+        "name": "Test Artist",
+        "picture": "1234-5678-90ab-cdef",
+        "url": "http://www.tidal.com/artist/12345",
+        "artistTypes": [
+            "ARTIST"
+        ],
+        "popularity": 75,
+        "banner": "banner-1234-5678-90ab",
+        "releaseDateOriginal": "2010-01-01",
+        "mixes": {
+            "ARTIST_MIX": "artist_mix_id_123"
+        }
     }
 }

@@ -13,6 +13,7 @@ from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.musiccast.constants import (
@@ -96,7 +97,7 @@ class MusicCastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Call on unload."""
-        for mc_player in self.mass.players.all(provider_filter=self.instance_id):
+        for mc_player in self.mass.players.all_players(provider_filter=self.instance_id):
             assert isinstance(mc_player, MusicCastPlayer)  # for type checking
             mc_player.physical_device.remove()
 
@@ -124,7 +125,8 @@ class MusicCastProvider(PlayerProvider):
             return
         try:
             device_info = await self.mass.http_session.get(
-                f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}", raise_for_status=True
+                f"http://{format_ip_for_url(device_ip)}/{MC_DEVICE_INFO_ENDPOINT}",
+                raise_for_status=True,
             )
             device_info_json = await device_info.json()
         except ClientError:
@@ -138,7 +140,9 @@ class MusicCastProvider(PlayerProvider):
         device_id = device_info_json.get("device_id")
         if device_id is None:
             return
-        description_url = f"http://{device_ip}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_ENDPOINT}"
+        description_url = (
+            f"http://{format_ip_for_url(device_ip)}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_ENDPOINT}"
+        )
 
         _check = await self.mass.http_session.get(description_url)
         if _check.status == 404:
@@ -159,7 +163,7 @@ class MusicCastProvider(PlayerProvider):
         if not check:
             return
 
-        if self.mass.players.get(device_id) is not None:
+        if self.mass.players.get_player(device_id) is not None:
             return
         mc_player_known = self.musiccast_player_helpers.get(device_id)
         if mc_player_known is not None and (
@@ -169,25 +173,24 @@ class MusicCastProvider(PlayerProvider):
         ):
             # nothing to do, device is already connected
             return
-        else:
-            # new or updated player detected
-            physical_device = MusicCastPhysicalDevice(
-                device=MusicCastDevice(
-                    client=self.mass.http_session,
-                    ip=device_ip,
-                    upnp_description=description_url,
-                ),
-                controller=self.mc_controller,
+        # new or updated player detected
+        physical_device = MusicCastPhysicalDevice(
+            device=MusicCastDevice(
+                client=self.mass.http_session,
+                ip=device_ip,
+                upnp_description=description_url,
+            ),
+            controller=self.mc_controller,
+        )
+        self.update_player_locks[device_id] = asyncio.Lock()
+        success = await physical_device.async_init()  # fetch + polling
+        if not success:
+            self.logger.debug(
+                "Had trouble setting up device at %s. Will be retried on next discovery.",
+                device_ip,
             )
-            self.update_player_locks[device_id] = asyncio.Lock()
-            success = await physical_device.async_init()  # fetch + polling
-            if not success:
-                self.logger.debug(
-                    "Had trouble setting up device at %s. Will be retried on next discovery.",
-                    device_ip,
-                )
-                return
-            await self._register_player(physical_device, device_id)
+            return
+        await self._register_player(physical_device, device_id)
 
     async def _register_player(
         self, physical_device: MusicCastPhysicalDevice, device_id: str

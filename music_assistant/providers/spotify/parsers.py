@@ -45,9 +45,11 @@ def parse_images(
     if not filtered_images:
         return UniqueList([])
 
-    # Spotify orders images from largest to smallest (640x640, 300x300, 64x64)
-    # Select the largest (highest quality) image - the first one
-    best_image = filtered_images[0]
+    # Spotify images come in various sizes (typically 640x640, 300x300, 64x64)
+    # Find the largest image available
+    best_image = max(
+        filtered_images, key=lambda img: img.get("height", 0), default=filtered_images[0]
+    )
 
     return UniqueList(
         [
@@ -259,9 +261,10 @@ def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Pod
     if "explicit" in podcast_obj:
         podcast.metadata.explicit = podcast_obj["explicit"]
 
-    # Convert languages list to genres for categorization
-    if "languages" in podcast_obj:
-        podcast.metadata.genres = set(podcast_obj["languages"])
+    if podcast_obj.get("languages"):
+        podcast.metadata.languages = UniqueList(podcast_obj["languages"])
+
+    podcast.metadata.genres = {"Spoken Word"}
 
     return podcast
 
@@ -399,7 +402,9 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
         audiobook.metadata.explicit = audiobook_obj["explicit"]
 
     if audiobook_obj.get("languages"):
-        audiobook.metadata.languages = audiobook_obj["languages"][0]
+        audiobook.metadata.languages = UniqueList(audiobook_obj["languages"])
+
+    audiobook.metadata.genres = {"Spoken Word"}
 
     # Set publication date if available
     if audiobook_obj.get("publication_date"):

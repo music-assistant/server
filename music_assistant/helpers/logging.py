@@ -9,7 +9,6 @@ All rights reserved.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
 import logging.handlers
@@ -130,7 +129,7 @@ def catch_log_exception(
         check_func = check_func.func
 
     wrapper_func: Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]
-    if asyncio.iscoroutinefunction(check_func):
+    if inspect.iscoroutinefunction(check_func):
         async_func = cast("Callable[..., Coroutine[Any, Any, None]]", func)
 
         @wraps(async_func)

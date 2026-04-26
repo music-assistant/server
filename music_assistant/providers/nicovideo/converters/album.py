@@ -96,7 +96,7 @@ class NicovideoAlbumConverter(NicovideoConverterBase):
             owner_artist = Artist(
                 item_id=str(owner_id),
                 provider=self.provider.instance_id,
-                name=owner_name if owner_name else "",
+                name=owner_name or "",
                 provider_mappings=self.helper.create_provider_mapping(
                     item_id=str(owner_id),
                     url_path="user",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
@@ -9,7 +10,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from .constants import CACHE_CATEGORY_ISRC_MAP, CONF_QUALITY
+from .constants import CACHE_CATEGORY_ISRC_MAP, CONF_QUALITY, OPEN_API_URL
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
@@ -72,21 +73,78 @@ class TidalStreamingManager:
         else:
             content_type = ContentType.MP4
 
+        resolved_audio_format = AudioFormat(
+            content_type=content_type,
+            sample_rate=stream_data.get("sampleRate", 44100),
+            bit_depth=stream_data.get("bitDepth", 16),
+            channels=2,
+        )
+
+        # Never block or fail playback on DB issues.
+        self.mass.create_task(
+            self._async_update_provider_mapping_audio_format(
+                provider_track_id=track.item_id,
+                resolved_audio_format=resolved_audio_format,
+            )
+        )
+
         return StreamDetails(
             item_id=track.item_id,
             provider=self.provider.instance_id,
-            audio_format=AudioFormat(
-                content_type=content_type,
-                sample_rate=stream_data.get("sampleRate", 44100),
-                bit_depth=stream_data.get("bitDepth", 16),
-                channels=2,
-            ),
+            audio_format=resolved_audio_format,
             stream_type=StreamType.HTTP,
             duration=track.duration,
             path=url,
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _async_update_provider_mapping_audio_format(
+        self,
+        provider_track_id: str,
+        resolved_audio_format: AudioFormat,
+    ) -> None:
+        """Persist resolved audio format on the provider mapping (best-effort)."""
+        try:
+            lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+                provider_track_id, self.provider.instance_id
+            )
+            if not lib_track:
+                return
+
+            cur_mapping = next(
+                (
+                    m
+                    for m in lib_track.provider_mappings
+                    if m.provider_instance == self.provider.instance_id
+                    and m.item_id == provider_track_id
+                ),
+                None,
+            )
+            if not cur_mapping or cur_mapping.audio_format == resolved_audio_format:
+                return
+
+            await self.mass.music.tracks.update_provider_mapping(
+                item_id=lib_track.item_id,
+                provider_instance_id=self.provider.instance_id,
+                provider_item_id=provider_track_id,
+                audio_format=resolved_audio_format,
+            )
+        except (MediaNotFoundError, OperationalError, AssertionError) as err:
+            self.provider.logger.debug(
+                "Failed to persist audio_format on provider mapping for Tidal track %s "
+                "(provider_instance=%s): %s",
+                provider_track_id,
+                self.provider.instance_id,
+                err,
+            )
+        except Exception:
+            self.provider.logger.exception(
+                "Unexpected error while persisting audio_format on provider mapping for "
+                "Tidal track %s (provider_instance=%s)",
+                provider_track_id,
+                self.provider.instance_id,
+            )
 
     async def _get_track_by_isrc(self, item_id: str) -> Track | None:
         """Lookup track by ISRC with caching."""
@@ -114,7 +172,7 @@ class TidalStreamingManager:
 
         # Lookup by ISRC
         api_result = await self.api.get(
-            "/tracks", params={"filter[isrc]": isrc}, base_url=self.api.OPEN_API_URL
+            "tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL
         )
         data = api_result[0] if isinstance(api_result, tuple) else api_result
 

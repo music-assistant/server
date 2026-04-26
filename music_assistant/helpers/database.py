@@ -20,6 +20,29 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.database")
 
+
+class _UnsetType:
+    """Sentinel value to indicate a field should use the database default."""
+
+    _instance: _UnsetType | None = None
+
+    def __new__(cls) -> _UnsetType:
+        """Create singleton instance."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        """Return string representation."""
+        return "UNSET"
+
+    def __bool__(self) -> bool:
+        """Return False for boolean context."""
+        return False
+
+
+UNSET: _UnsetType = _UnsetType()
+
 ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 
 
@@ -188,6 +211,8 @@ class DatabaseConnection:
         allow_replace: bool = False,
     ) -> int:
         """Insert data in given table."""
+        # Filter out UNSET values so database defaults are used
+        values = {k: v for k, v in values.items() if v is not UNSET}
         keys = tuple(values.keys())
         if allow_replace:
             sql_query = f"INSERT OR REPLACE INTO {table}({','.join(keys)})"
@@ -206,6 +231,8 @@ class DatabaseConnection:
 
     async def upsert(self, table: str, values: dict[str, Any]) -> None:
         """Upsert data in given table."""
+        # Filter out UNSET values so database defaults are used
+        values = {k: v for k, v in values.items() if v is not UNSET}
         keys = tuple(values.keys())
         sql_query = (
             f"INSERT INTO {table}({','.join(keys)}) VALUES ({','.join(f':{x}' for x in keys)})"
@@ -221,6 +248,8 @@ class DatabaseConnection:
         values: dict[str, Any],
     ) -> Mapping[str, Any]:
         """Update record."""
+        # Filter out UNSET values so those fields are not updated
+        values = {k: v for k, v in values.items() if v is not UNSET}
         keys = tuple(values.keys())
         sql_query = f"UPDATE {table} SET {','.join(f'{x}=:{x}' for x in keys)} WHERE "
         sql_query += " AND ".join(f"{x} = :{x}" for x in match)

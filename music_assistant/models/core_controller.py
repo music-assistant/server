@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -23,8 +24,9 @@ class CoreController:
     manifest: ProviderManifest  # some info for the UI only
 
     def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize MusicProvider."""
+        """Initialize core controller."""
         self.mass = mass
+        self.initialized = asyncio.Event()
         self._set_logger()
         self.manifest = ProviderManifest(
             type=ProviderType.CORE,
@@ -49,6 +51,9 @@ class CoreController:
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
 
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
+
     async def close(self) -> None:
         """Handle logic on server stop."""
 
@@ -60,6 +65,32 @@ class CoreController:
         log_level = str(config.get_value(CONF_LOG_LEVEL))
         self._set_logger(log_level)
         await self.setup(config)
+        await self.post_setup()
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        # always update the stored config so dynamic reads pick up new values
+        self.config = config
+
+        # apply log level change dynamically (doesn't require reload)
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            log_value = str(config.get_value(CONF_LOG_LEVEL))
+            self._set_logger(log_value)
+
+        # reload if any changed value entry has requires_reload set to True
+        needs_reload = any(
+            (entry := config.values.get(key.removeprefix("values/"))) is not None
+            and entry.requires_reload is True
+            for key in changed_keys
+            if key.startswith("values/")
+        )
+        if needs_reload:
+            self.logger.info(
+                "Config updated, reloading %s core controller",
+                self.manifest.name,
+            )
+            task_id = f"core_reload_{self.domain}"
+            self.mass.call_later(1, self.reload, config, task_id=task_id)
 
     def _set_logger(self, log_level: str | None = None) -> None:
         """Set the logger settings."""

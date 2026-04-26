@@ -17,6 +17,7 @@ from .sonic_provider import (
     CONF_OVERRIDE_OFFSET,
     CONF_PAGE_SIZE,
     CONF_PLAYED_ALBUMS,
+    CONF_RAW_FILE,
     CONF_RECO_FAVES,
     CONF_RECO_SIZE,
     OpenSonicProvider,
@@ -47,6 +48,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_ARTISTS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
+    ProviderFeature.LYRICS,
 }
 
 
@@ -159,6 +161,14 @@ async def get_config_entries(
             default_value=10,
         ),
         ConfigEntry(
+            key=CONF_RAW_FILE,
+            type=ConfigEntryType.BOOLEAN,
+            label="No Transcoding For Streams",
+            required=False,
+            description="Request that the server provide the original source file without applying any transcoding rules.",
+            default_value=True,
+        ),
+        ConfigEntry(
             key=CONF_PAGE_SIZE,
             type=ConfigEntryType.INTEGER,
             label="Number of items included per server request.",
@@ -167,6 +177,6 @@ async def get_config_entries(
             "request. Smaller will require more requests but is better for low bandwidth "
             "connections. The Open Subsonic spec says the max value for this is 500 items.",
             default_value=200,
-            category="advanced",
+            advanced=True,
         ),
     )

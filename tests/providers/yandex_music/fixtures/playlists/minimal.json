@@ -1,0 +1,9 @@
+{
+  "owner": {
+    "uid": 12345,
+    "name": "Me",
+    "login": "me"
+  },
+  "kind": 3,
+  "title": "My Playlist"
+}

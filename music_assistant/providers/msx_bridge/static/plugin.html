@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Music Assistant MSX Plugin</title>
+    <script src="/msx/tvx-plugin-module.min.js"></script>
+</head>
+<body>
+<script>
+(function() {
+    var BRIDGE = window.location.protocol + "//" + window.location.host;
+    var WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
+    var WS_URL = WS_PROTOCOL + "//" + window.location.host + "/ws";
+
+    function addDeviceParam(url, deviceId) {
+        if (!deviceId) return url;
+        var sep = url.indexOf("?") >= 0 ? "&" : "?";
+        return url + sep + "device_id=" + encodeURIComponent(deviceId);
+    }
+
+    function buildSearchRequestAction(deviceId) {
+        var searchUrl = BRIDGE + "/msx/search-input.json?q={INPUT}";
+        if (deviceId) searchUrl += "&device_id=" + encodeURIComponent(deviceId);
+        var inputPluginUrl = BRIDGE + "/msx/input.html";
+        if (deviceId) inputPluginUrl += "?device_id=" + encodeURIComponent(deviceId);
+        return "request:interaction:" + searchUrl + "|search:3|en|Search Music||||Search..." + "@" + inputPluginUrl;
+    }
+
+    function buildMenu(deviceId) {
+        return [
+            { icon: "history", label: "Recently played", data: addDeviceParam(BRIDGE + "/msx/recently-played.json", deviceId) },
+            { icon: "album", label: "Albums", data: addDeviceParam(BRIDGE + "/msx/albums.json", deviceId) },
+            { icon: "person", label: "Artists", data: addDeviceParam(BRIDGE + "/msx/artists.json", deviceId) },
+            { icon: "queue-music", label: "Playlists", data: addDeviceParam(BRIDGE + "/msx/playlists.json", deviceId) },
+            { icon: "audiotrack", label: "Tracks", data: addDeviceParam(BRIDGE + "/msx/tracks.json", deviceId) },
+            { icon: "search", label: "Search", data: buildSearchRequestAction(deviceId) }
+        ];
+    }
+
+    function formatDuration(seconds) {
+        if (seconds == null || !isFinite(seconds) || seconds < 0) return "";
+        var m = Math.floor(seconds / 60);
+        var s = Math.floor(seconds % 60);
+        return m + ":" + (s < 10 ? "0" : "") + s;
+    }
+
+    function resolveAction(action) {
+        if (!action) return null;
+        if (action.indexOf("request:interaction:/") === 0) {
+            return action.replace("request:interaction:/", "request:interaction:" + BRIDGE + "/");
+        }
+        if (action.indexOf("/") === 0) {
+            return BRIDGE + action;
+        }
+        return action;
+    }
+
+    var wsRetryDelay = 1000;
+    var wsConnection = null;
+    var positionTimer = null;
+    var positionStartTime = 0;
+    var positionStartValue = 0;
+    var pausedByServer = false;
+    var resumedByServer = false;
+    var pausedAtPosition = 0;
+    var monitoredElement = null;
+    var mediaObserver = null;
+
+    function stopPositionTimer() {
+        if (positionTimer) {
+            clearInterval(positionTimer);
+            positionTimer = null;
+        }
+    }
+
+    function startPositionTimer(startPosition) {
+        stopPositionTimer();
+        positionStartValue = startPosition || 0;
+        positionStartTime = Date.now() / 1000;
+        positionTimer = setInterval(function() {
+            if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                var position;
+                if (monitoredElement && !monitoredElement.paused) {
+                    position = monitoredElement.currentTime;
+                } else {
+                    var elapsed = (Date.now() / 1000) - positionStartTime;
+                    position = positionStartValue + elapsed;
+                }
+                try {
+                    wsConnection.send(JSON.stringify({ type: "position", position: position }));
+                } catch (e) {
+                    if (typeof console !== "undefined" && console.warn) {
+                        console.warn("WebSocket position send failed", e);
+                    }
+                }
+            }
+        }, 3000);
+    }
+
+    function connectPushWebSocket(deviceId) {
+        if (typeof WebSocket === "undefined") return null;
+        var url = deviceId ? WS_URL + "?device_id=" + encodeURIComponent(deviceId) : WS_URL;
+        var ws = new WebSocket(url);
+        var thisConnection = ws;
+        wsConnection = ws;
+        ws.onopen = function() { wsRetryDelay = 1000; };
+        ws.onmessage = function(ev) {
+            try {
+                var msg = JSON.parse(ev.data);
+                if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    stopPositionTimer();
+                    var action = msg.showNotification ? "eject" : "[player:eject|player:hide]";
+                    tvx.InteractionPlugin.executeAction(action);
+                } else if (msg.type === "pause" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    pausedAtPosition = monitoredElement ? monitoredElement.currentTime : getCurrentPosition();
+                    stopPositionTimer();
+                    pausedByServer = true;
+                    tvx.InteractionPlugin.executeAction("player:pause");
+                } else if (msg.type === "resume" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    startPositionTimer(pausedAtPosition);
+                    resumedByServer = true;
+                    tvx.InteractionPlugin.executeAction("player:play");
+                } else if (msg.type === "play" && msg.path && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    var playerLabel = msg.title || "Music Assistant";
+                    var labelParts = [];
+                    if (msg.artist) labelParts.push(msg.artist);
+                    var dur = formatDuration(msg.duration);
+                    if (dur) labelParts.push(dur);
+                    var label = labelParts.join(" · ") || "";
+                    var data = { playerLabel: playerLabel };
+                    if (label) data.label = label;
+                    if (msg.image_url) data.background = msg.image_url;
+                    if (msg.duration != null && msg.duration > 0) data.duration = msg.duration;
+                    if (msg.next_action) data.nextAction = resolveAction(msg.next_action);
+                    if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
+                    startPositionTimer(0);
+
+                    var audioUrl = BRIDGE + msg.path;
+                    var audioAction = "audio:" + audioUrl;
+                    tvx.InteractionPlugin.executeAction(audioAction, data);
+                } else if (msg.type === "playlist" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
+                    startPositionTimer(0);
+                    tvx.InteractionPlugin.executeAction("playlist:" + playlistUrl);
+                } else if (msg.type === "seek" && msg.position != null && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    var seekSecs = Math.round(msg.position);
+                    startPositionTimer(seekSecs);
+                    tvx.InteractionPlugin.executeAction("player:seek:" + seekSecs);
+                } else if (msg.type === "goto_index" && msg.index != null && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    startPositionTimer(0);
+                    tvx.InteractionPlugin.executeAction("player:goto:index:" + msg.index);
+                } else if (msg.type === "play_update" && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    // Update metadata of the currently playing item without restarting audio.
+                    // 'player:set-data' or 'player:update' is not supported on all MSX clients.
+                    // For now, we just log it. Real metadata updates happen on track change via 'play' event.
+                    /*
+                    var playerLabelUpdate = msg.title || "Music Assistant";
+                    var labelPartsUpdate = [];
+                    if (msg.artist) labelPartsUpdate.push(msg.artist);
+                    var durUpdate = formatDuration(msg.duration);
+                    if (durUpdate) labelPartsUpdate.push(durUpdate);
+                    var labelUpdate = labelPartsUpdate.join(" · ") || "";
+                    var updateData = { playerLabel: playerLabelUpdate };
+                    if (labelUpdate) updateData.label = labelUpdate;
+                    if (msg.image_url) updateData.background = msg.image_url;
+                    if (msg.duration != null && msg.duration > 0) updateData.duration = msg.duration;
+                    if (msg.next_action) updateData.nextAction = resolveAction(msg.next_action);
+                    if (msg.prev_action) updateData.prevAction = resolveAction(msg.prev_action);
+                    tvx.InteractionPlugin.executeAction("player:set-data", updateData);
+                    */
+                    if (typeof console !== "undefined" && console.log) {
+                        console.log("MSX play_update received", msg);
+                    }
+                }
+            } catch (e) {
+                if (typeof console !== "undefined" && console.warn) {
+                    console.warn("MSX push message error", e);
+                }
+            }
+        };
+        ws.onclose = function(event) {
+            if (wsConnection !== thisConnection) return; // stale connection
+            stopPositionTimer();
+            wsConnection = null;
+            if (event.code !== 1000 && event.code !== 1001) {
+                var jitter = Math.random() * 1000;
+                setTimeout(function() { connectPushWebSocket(deviceId); }, wsRetryDelay + jitter);
+                wsRetryDelay = Math.min(wsRetryDelay * 2, 10000);
+            }
+        };
+        return ws;
+    }
+
+    function MAHandler() {}
+
+    function getCurrentPosition() {
+        return positionStartValue + (Date.now() / 1000 - positionStartTime);
+    }
+
+    function sendWsMessage(msg) {
+        if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+            try {
+                wsConnection.send(JSON.stringify(msg));
+            } catch (e) {
+                if (typeof console !== "undefined" && console.warn) {
+                    console.warn("WebSocket send failed", e);
+                }
+            }
+        }
+    }
+
+    function onMediaPause() {
+        if (pausedByServer) {
+            pausedByServer = false;
+            return;
+        }
+        // User-initiated pause (TV remote) — notify MA
+        var pos = monitoredElement ? monitoredElement.currentTime : getCurrentPosition();
+        pausedAtPosition = pos;
+        stopPositionTimer();
+        sendWsMessage({ type: "pause", position: pos });
+    }
+
+    function onMediaPlay() {
+        if (resumedByServer) {
+            resumedByServer = false;
+            return;
+        }
+        // User-initiated resume (TV remote) — notify MA
+        startPositionTimer(pausedAtPosition);
+        sendWsMessage({ type: "resume" });
+    }
+
+    function attachMediaListeners(el) {
+        if (monitoredElement === el) return;
+        detachMediaListeners();
+        monitoredElement = el;
+        el.addEventListener("pause", onMediaPause);
+        el.addEventListener("play", onMediaPlay);
+    }
+
+    function detachMediaListeners() {
+        if (monitoredElement) {
+            monitoredElement.removeEventListener("pause", onMediaPause);
+            monitoredElement.removeEventListener("play", onMediaPlay);
+            monitoredElement = null;
+        }
+    }
+
+    function scanForMediaElements() {
+        var elements = document.querySelectorAll("audio, video");
+        for (var i = 0; i < elements.length; i++) {
+            if (elements[i].src || elements[i].currentSrc) {
+                attachMediaListeners(elements[i]);
+                return;
+            }
+        }
+    }
+
+    function startMediaObserver() {
+        if (mediaObserver) return;
+        scanForMediaElements();
+        if (typeof MutationObserver !== "undefined") {
+            mediaObserver = new MutationObserver(function() {
+                scanForMediaElements();
+            });
+            mediaObserver.observe(document.body, { childList: true, subtree: true });
+        }
+    }
+
+    // Generate a random UUID for device identification
+    function generateUUID() {
+        // Try tvx.Tools.getUniqueId() first
+        if (typeof tvx !== "undefined" && tvx.Tools && typeof tvx.Tools.getUniqueId === "function") {
+            try {
+                var tvxId = tvx.Tools.getUniqueId();
+                if (tvxId) return tvxId;
+            } catch (e) {}
+        }
+        if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+            return crypto.randomUUID();
+        }
+        if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+            return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, function(c) {
+                return (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16);
+            });
+        }
+        // Crypto API completely unavailable — generate a timestamp-based fallback.
+        // This is non-secure but prevents cross-TV player ID collisions better than Math.random().
+        return 'msx-' + Date.now().toString(36) + '-' + Math.floor(performance.now() * 1000).toString(36);
+    }
+
+    // Try multiple methods to get a device ID from MSX/TVX
+    function getMsxDeviceId() {
+        // Method 1: tvx.VideoPlugin.getDeviceId() - synchronous (found in debug!)
+        if (typeof tvx !== "undefined" && tvx.VideoPlugin && typeof tvx.VideoPlugin.getDeviceId === "function") {
+            try {
+                var videoDeviceId = tvx.VideoPlugin.getDeviceId();
+                if (videoDeviceId) {
+                    console.log("MSX device_id from VideoPlugin.getDeviceId:", videoDeviceId);
+                    return videoDeviceId;
+                }
+            } catch (e) {}
+        }
+
+        // Method 2: tvx.Tools.getHostDeviceId() - synchronous
+        if (typeof tvx !== "undefined" && tvx.Tools && typeof tvx.Tools.getHostDeviceId === "function") {
+            try {
+                var hostId = tvx.Tools.getHostDeviceId();
+                if (hostId) {
+                    console.log("MSX device_id from getHostDeviceId:", hostId);
+                    return hostId;
+                }
+            } catch (e) {}
+        }
+
+        // Method 3: tvx.Settings.get("device")
+        if (typeof tvx !== "undefined" && tvx.Settings && typeof tvx.Settings.get === "function") {
+            try {
+                var deviceInfo = tvx.Settings.get("device");
+                if (deviceInfo && deviceInfo.id) {
+                    console.log("MSX device_id from Settings.device:", deviceInfo.id);
+                    return deviceInfo.id;
+                }
+            } catch (e) {}
+        }
+
+        // Method 4: tvx.Tools.getUniqueId()
+        if (typeof tvx !== "undefined" && tvx.Tools && typeof tvx.Tools.getUniqueId === "function") {
+            try {
+                var uniqueId = tvx.Tools.getUniqueId();
+                if (uniqueId) {
+                    console.log("MSX device_id from getUniqueId:", uniqueId);
+                    return uniqueId;
+                }
+            } catch (e) {}
+        }
+
+        return null;
+    }
+
+    // Get or create a persistent device ID stored in localStorage
+    function getOrCreateLocalDeviceId() {
+        var STORAGE_KEY = "ma_msx_device_id";
+        var storedId = null;
+        try {
+            storedId = localStorage.getItem(STORAGE_KEY);
+        } catch (e) {}
+        if (storedId) {
+            console.log("MSX device_id from localStorage:", storedId);
+            return storedId;
+        }
+        var newId = "msx_" + generateUUID();
+        try {
+            localStorage.setItem(STORAGE_KEY, newId);
+            console.log("MSX device_id generated and saved:", newId);
+        } catch (e) {
+            console.log("MSX device_id generated (no localStorage):", newId);
+        }
+        return newId;
+    }
+
+    // Debug: collect all available TVX info and return as object
+    function collectTvxDebugInfo() {
+        var info = { tvx_available: typeof tvx !== "undefined" };
+        if (typeof tvx === "undefined") return info;
+
+        // tvx.Tools methods
+        if (tvx.Tools) {
+            info.tools_methods = Object.keys(tvx.Tools);
+            try { info.getHostDeviceId = tvx.Tools.getHostDeviceId(); } catch(e) { info.getHostDeviceId_error = String(e); }
+            try { info.getUniqueId = tvx.Tools.getUniqueId(); } catch(e) { info.getUniqueId_error = String(e); }
+            try { info.getHostInfo = tvx.Tools.getHostInfo(); } catch(e) { info.getHostInfo_error = String(e); }
+            try { info.getPlatformInfo = tvx.Tools.getPlatformInfo(); } catch(e) { info.getPlatformInfo_error = String(e); }
+        }
+
+        // tvx.Settings
+        if (tvx.Settings && typeof tvx.Settings.get === "function") {
+            try { info.settings_device = tvx.Settings.get("device"); } catch(e) { info.settings_device_error = String(e); }
+            try { info.settings_platform = tvx.Settings.get("platform"); } catch(e) { info.settings_platform_error = String(e); }
+            try { info.settings_info = tvx.Settings.get("info"); } catch(e) { info.settings_info_error = String(e); }
+            try { info.settings_id = tvx.Settings.get("id"); } catch(e) { info.settings_id_error = String(e); }
+        }
+
+        // tvx.VideoPlugin
+        if (tvx.VideoPlugin) {
+            info.videoPlugin_methods = Object.keys(tvx.VideoPlugin);
+            try { info.videoPlugin_getDeviceId = tvx.VideoPlugin.getDeviceId(); } catch(e) { info.videoPlugin_getDeviceId_error = String(e); }
+        }
+
+        // tvx.InteractionPlugin
+        if (tvx.InteractionPlugin && typeof tvx.InteractionPlugin.getInfo === "function") {
+            try { info.interactionPlugin_info = tvx.InteractionPlugin.getInfo(); } catch(e) {}
+        }
+
+        // User agent
+        info.userAgent = navigator.userAgent;
+
+        return info;
+    }
+
+    // Send debug info to server via WebSocket
+    function sendDebugInfoToServer(ws) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+            var debugInfo = collectTvxDebugInfo();
+            ws.send(JSON.stringify({ type: "debug_info", data: debugInfo }));
+        } catch(e) {}
+    }
+
+    MAHandler.prototype.handleRequest = function(dataId, data, callback) {
+        if (dataId === "init") {
+            var respond = function(deviceId) {
+                // Priority: MSX provided ID > sync methods > localStorage fallback
+                var finalDeviceId = deviceId || getMsxDeviceId() || getOrCreateLocalDeviceId();
+                console.log("MSX Bridge final device_id:", finalDeviceId);
+
+                callback({
+                    name: "Music Assistant",
+                    version: "1.0.0",
+                    headline: "Music Assistant",
+                    menu: buildMenu(finalDeviceId)
+                });
+
+                var ws = connectPushWebSocket(finalDeviceId);
+                // Send debug info after connection opens
+                if (ws) {
+                    var origOnOpen = ws.onopen;
+                    ws.onopen = function() {
+                        if (origOnOpen) origOnOpen.apply(this, arguments);
+                        setTimeout(function() { sendDebugInfoToServer(ws); }, 500);
+                    };
+                }
+                startMediaObserver();
+            };
+            // Try async method first (tvx.VideoPlugin.requestDeviceId)
+            if (typeof tvx !== "undefined" && tvx.VideoPlugin && typeof tvx.VideoPlugin.requestDeviceId === "function") {
+                var responded = false;
+                var deviceIdTimeout = setTimeout(function() {
+                    if (!responded) {
+                        responded = true;
+                        respond(null);
+                    }
+                }, 1500);  // 1.5s timeout for async method
+                tvx.VideoPlugin.requestDeviceId(function(data) {
+                    if (!responded) {
+                        responded = true;
+                        clearTimeout(deviceIdTimeout);
+                        var id = (data && data.deviceId) ? data.deviceId : null;
+                        if (id) console.log("MSX device_id from VideoPlugin.requestDeviceId:", id);
+                        respond(id);
+                    }
+                });
+            } else {
+                respond(null);
+            }
+        }
+    };
+
+    tvx.PluginTools.onReady(function() {
+        tvx.InteractionPlugin.setupHandler(new MAHandler());
+        tvx.InteractionPlugin.init();
+    });
+})();
+</script>
+</body>
+</html>

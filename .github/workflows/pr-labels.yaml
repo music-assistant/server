@@ -26,6 +26,9 @@ on:
       - stable
       - dev
 
+permissions:
+  contents: read
+
 jobs:
   pr_labels:
     name: Verify

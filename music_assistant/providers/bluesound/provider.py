@@ -28,7 +28,6 @@ class BluesoundDiscoveryInfo(TypedDict):
     port: str
     mac: str
     model: str
-    zs: bool
 
 
 class BluesoundPlayerProvider(PlayerProvider):
@@ -73,7 +72,7 @@ class BluesoundPlayerProvider(PlayerProvider):
 
         # Handle update of existing player
         assert player_id is not None  # for type checker
-        if bluos_player := self.mass.players.get(player_id):
+        if bluos_player := self.mass.players.get_player(player_id):
             bluos_player = cast("BluesoundPlayer", bluos_player)
             # Check if the IP address has changed
             if ip_address and ip_address != bluos_player.ip_address:
@@ -96,7 +95,6 @@ class BluesoundPlayerProvider(PlayerProvider):
             port=str(port),
             mac=mac_address,
             model=info.decoded_properties.get("model", ""),
-            zs=info.decoded_properties.get("zs", False),
         )
 
         # Create BluOS player

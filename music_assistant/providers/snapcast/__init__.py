@@ -16,9 +16,7 @@ from music_assistant.helpers.process import check_output
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.providers.snapcast.constants import (
-    CONF_CATEGORY_ADVANCED,
     CONF_CATEGORY_BUILT_IN,
-    CONF_CATEGORY_GENERIC,
     CONF_HELP_LINK,
     CONF_SERVER_BUFFER_SIZE,
     CONF_SERVER_CHUNK_MS,
@@ -163,9 +161,7 @@ async def get_config_entries(
             default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
-            category=(
-                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
-            ),
+            advanced=local_snapserver_present,
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
@@ -174,9 +170,7 @@ async def get_config_entries(
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=(
-                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
-            ),
+            advanced=local_snapserver_present,
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -185,9 +179,7 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=(
-                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
-            ),
+            advanced=local_snapserver_present,
         ),
         ConfigEntry(
             key=CONF_STREAM_IDLE_THRESHOLD,
@@ -195,6 +187,6 @@ async def get_config_entries(
             default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
             label="Snapcast idle threshold stream parameter",
             required=True,
-            category=CONF_CATEGORY_ADVANCED,
+            advanced=local_snapserver_present,
         ),
     )

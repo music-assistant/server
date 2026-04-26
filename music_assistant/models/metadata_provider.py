@@ -18,6 +18,11 @@ class MetadataProvider(Provider):
     Metadata Provider implementations should inherit from this base model.
     """
 
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 50
+
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on this Metadata provider."""
         if ProviderFeature.ARTIST_METADATA in self.supported_features:

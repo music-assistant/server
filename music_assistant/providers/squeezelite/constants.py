@@ -43,7 +43,7 @@ CONF_ENTRY_DISPLAY = ConfigEntry(
     required=False,
     label="Enable display support",
     description="Enable/disable native display support on squeezebox or squeezelite32 hardware.",
-    category="advanced",
+    advanced=True,
 )
 CONF_ENTRY_VISUALIZATION = ConfigEntry(
     key=CONF_VISUALIZATION,
@@ -57,7 +57,7 @@ CONF_ENTRY_VISUALIZATION = ConfigEntry(
     label="Visualization type",
     description="The type of visualization to show on the display "
     "during playback if the device supports this.",
-    category="advanced",
+    advanced=True,
     depends_on=CONF_DISPLAY,
 )
 

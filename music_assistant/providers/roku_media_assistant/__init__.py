@@ -52,7 +52,7 @@ async def get_config_entries(
             "of Media Assistant (ID: 782875). If you sideloaded the App on your Roku "
             "this will need to be set to (ID: dev).",
             required=False,
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_AUTO_DISCOVER,
@@ -60,6 +60,6 @@ async def get_config_entries(
             label="Allow automatic Roku discovery",
             default_value=True,
             description="Enable automatic discovery of Roku players.",
-            category="advanced",
+            advanced=True,
         ),
     )

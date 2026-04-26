@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "emby",
+  "stage": "alpha",
+  "name": "Emby Media Server Library",
+  "description": "Stream music from your self-hosted Emby server.",
+  "codeowners": ["@hatharry"],
+  "credits": [],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/emby/",
+  "multi_instance": true
+}

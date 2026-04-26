@@ -19,32 +19,43 @@ class Filter(ABC):
         """Apply the filter and return the FFmpeg filter strings."""
 
 
-class TimeStretchFilter(Filter):
-    """Filter that applies time stretching to match BPM using rubberband."""
+class GradualTimeStretchFilter(Filter):
+    """Gradual tempo change using asendcmd + rubberband with S-curve steps."""
 
-    output_fadeout_label: str = "fadeout_stretched"
+    output_fadeout_label: str = "fadeout_gradstretch"
     output_fadein_label: str = "fadein_unchanged"
 
-    def __init__(
-        self,
-        logger: logging.Logger,
-        stretch_ratio: float,
-    ):
-        """Initialize time stretch filter."""
-        self.stretch_ratio = stretch_ratio
+    def __init__(self, logger: logging.Logger, tempo_steps: list[tuple[float, float]]) -> None:
+        """Initialize with tempo steps from compute_gradual_tempo_steps."""
         super().__init__(logger)
+        # each tempo step is a tuple of (timestamp, tempo_ratio)
+        self.tempo_steps = tempo_steps
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
-        """Create FFmpeg filters to gradually adjust tempo from original BPM to target BPM."""
+        """Build FFmpeg filter string for gradual time stretching."""
+        if not self.tempo_steps:
+            self.output_fadeout_label = input_fadeout_label.strip("[]")
+            self.output_fadein_label = input_fadein_label.strip("[]")
+            return []
+
+        cmd_parts = [f"{ts:.3f} rubberband@rb tempo {ratio:.6f}" for ts, ratio in self.tempo_steps]
+        cmd_string = "; ".join(cmd_parts)
+        initial_ratio = self.tempo_steps[0][1]
+
         return [
-            f"{input_fadeout_label}rubberband=tempo={self.stretch_ratio:.6f}:transients=mixed:detector=soft:pitchq=quality"
-            f"[{self.output_fadeout_label}]",
-            f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
+            f"{input_fadeout_label} asendcmd=c='{cmd_string}',"
+            f"rubberband@rb=tempo={initial_ratio:.6f}"
+            f":transients=crisp:detector=compound:pitchq=quality"
+            f" [{self.output_fadeout_label}]",
+            f"{input_fadein_label} acopy [{self.output_fadein_label}]",
         ]
 
     def __repr__(self) -> str:
-        """Return string representation of TimeStretchFilter."""
-        return f"TimeStretch(ratio={self.stretch_ratio:.2f})"
+        """Return string representation."""
+        n = len(self.tempo_steps)
+        start = self.tempo_steps[0][1] if self.tempo_steps else 1.0
+        end = self.tempo_steps[-1][1] if self.tempo_steps else 1.0
+        return f"GradualTimeStretch(steps={n}, {start:.4f}->{end:.4f})"
 
 
 class TrimFilter(Filter):
@@ -131,18 +142,15 @@ class FrequencySweepFilter(Filter):
             # Exponential curve for smoother transitions
             if direction == "up":
                 return f"'pow({norm_t},2)':eval=frame"
-            else:
-                return f"'1-pow({norm_t},2)':eval=frame"
-        elif curve == "logarithmic":
+            return f"'1-pow({norm_t},2)':eval=frame"
+        if curve == "logarithmic":
             # Logarithmic curve for more aggressive initial change
             if direction == "up":
                 return f"'sqrt({norm_t})':eval=frame"
-            else:
-                return f"'1-sqrt({norm_t})':eval=frame"
-        elif direction == "up":
+            return f"'1-sqrt({norm_t})':eval=frame"
+        if direction == "up":
             return f"'{norm_t}':eval=frame"
-        else:
-            return f"'1-{norm_t}':eval=frame"
+        return f"'1-{norm_t}':eval=frame"
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Generate FFmpeg filters for frequency sweep effect."""

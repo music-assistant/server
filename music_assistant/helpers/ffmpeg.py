@@ -59,6 +59,7 @@ class FFMpeg(AsyncProcess):
         self.input_format = input_format
         self.collect_log_history = collect_log_history
         self.log_history: deque[str] = deque(maxlen=100)
+        self.concat_error = False  # switch to True if concat demuxer fails on MultiPartFiles
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
         self._input_codec_parsed = False
@@ -108,10 +109,17 @@ class FFMpeg(AsyncProcess):
                 self._stdin_feeder_task.cancel()
             # Always await the task to consume any exception and prevent
             # "Task exception was never retrieved" errors.
-            # Suppress CancelledError (from cancel) and any other exception
-            # since exceptions have already been propagated through the generator chain.
-            with suppress(asyncio.CancelledError, Exception):
+            try:
                 await self._stdin_feeder_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                # Log unexpected exceptions from the stdin feeder before suppressing
+                # The audio source may have failed, and we need visibility into this
+                self.logger.warning(
+                    "FFMpeg stdin feeder task ended with error: %s",
+                    err,
+                )
         if self._stderr_reader_task:
             if not self._stderr_reader_task.done():
                 self._stderr_reader_task.cancel()
@@ -136,6 +144,15 @@ class FFMpeg(AsyncProcess):
                 decode_errors += 1
             if decode_errors >= 50:
                 self.logger.error(line)
+
+            # Log reconnection events for radio streams
+            if "Opening" in line or "Reconnect" in line or "reconnect" in line:
+                self.logger.debug("FFmpeg: %s", line)
+
+            if "Error during demuxing" in line:
+                # this can occur if using the concat demuxer for multipart files
+                # and should raise an exception to prevent false progress logging
+                self.concat_error = True
 
             # if streamdetails contenttype is unknown, try parse it from the ffmpeg log
             if line.startswith("Stream #") and ": Audio: " in line:
@@ -223,9 +240,10 @@ async def get_ffmpeg_stream(
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
             yield chunk
-        if ffmpeg_proc.returncode not in (None, 0):
+        if ffmpeg_proc.returncode not in (None, 0) or ffmpeg_proc.concat_error:
             # unclean exit of ffmpeg - raise error with log tail
-            log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
+            log_lines = -20 if ffmpeg_proc.concat_error else -5
+            log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[log_lines:])
             raise AudioError(log_tail)
 
 

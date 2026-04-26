@@ -1,22 +1,22 @@
 """Constants for DLNA provider."""
 
-from music_assistant.constants import (
-    CONF_ENTRY_ENABLE_ICY_METADATA,
-    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_OUTPUT_CODEC,
-    create_sample_rates_config_entry,
-)
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
+
+from music_assistant.constants import CONF_ENTRY_FLOW_MODE, create_sample_rates_config_entry
 
 PLAYER_CONFIG_ENTRIES = [
-    CONF_ENTRY_OUTPUT_CODEC,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_ENABLE_ICY_METADATA,
     # enable flow mode by default because
     # most dlna players do not support enqueueing
-    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
+    ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
+    # Replace Pause with Stop for legacy audiophile gear that does not support pause on unseekable streams (e.g., radio or chunked HTTP).
+    ConfigEntry(
+        key="replace_pause_with_stop",
+        type=ConfigEntryType.BOOLEAN,
+        label="Replace Pause with Stop",
+        default_value=False,
+        description="Forces Music Assistant to stop playback instead of pausing. Enable for some legacy streamers which are unable to pause/resume playback when streaming uPnP/DLNA.",
+        advanced=True,
+    ),
 ]
-
-
-CONF_NETWORK_SCAN = "network_scan"

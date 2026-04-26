@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import shortuuid
+from music_assistant_models.enums import PlayerType
 
 from music_assistant.constants import CONF_DYNAMIC_GROUP_MEMBERS, CONF_GROUP_MEMBERS
 from music_assistant.models.player_provider import PlayerProvider
@@ -31,6 +32,7 @@ class UniversalGroupProvider(PlayerProvider):
         self.mass.config.create_default_player_config(
             player_id=player_id,
             provider=self.instance_id,
+            player_type=PlayerType.GROUP,
             name=name,
             enabled=True,
             values={

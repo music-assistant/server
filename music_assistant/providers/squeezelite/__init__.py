@@ -64,7 +64,7 @@ async def get_config_entries(
             "player compatibility, so security risks are minimized to practically zero."
             "You may safely disable this option if you have no players that rely on this feature "
             "or you dont care about the additional metadata.",
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_CLI_JSON_PORT,
@@ -80,7 +80,7 @@ async def get_config_entries(
             "it on a different port. Set to 0 to disable this functionality.\n\n"
             "You may safely disable this option if you have no players that rely on this feature "
             "or you dont care about the additional metadata.",
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_DISCOVERY,
@@ -91,7 +91,7 @@ async def get_config_entries(
             "discover and connect to this server. \n\n"
             "You may want to disable this feature if you are running multiple slimproto servers "
             "on your network and/or you don't want clients to auto connect to this server.",
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_PORT,

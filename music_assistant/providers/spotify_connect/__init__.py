@@ -98,7 +98,7 @@ async def get_config_entries(
                 *(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in sorted(
-                        mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
                 ),
             ],
@@ -169,6 +169,12 @@ class SpotifyConnectProvider(PluginProvider):
         self._librespot_started = asyncio.Event()
         self.named_pipe = f"/tmp/{self.instance_id}"  # noqa: S108
         connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
+        self.logger.debug(
+            "Init plugin with name '%s' for player '%s' with instance id '%s'",
+            self.name,
+            self._default_player_id,
+            self.instance_id,
+        )
         self._source_details = PluginSource(
             id=self.instance_id,
             name=self.name,
@@ -257,14 +263,14 @@ class SpotifyConnectProvider(PluginProvider):
         # If there's an active player (source was selected on a player), use it
         if self._active_player_id:
             # Validate that the active player still exists
-            if self.mass.players.get(self._active_player_id):
+            if self.mass.players.get_player(self._active_player_id):
                 return self._active_player_id
             # Active player no longer exists, clear it
             self._active_player_id = None
 
         # Handle auto selection
         if self._default_player_id == PLAYER_ID_AUTO:
-            all_players = list(self.mass.players.all(False, False))
+            all_players = list(self.mass.players.all_players(False, False))
             # First, try to find a playing player
             for player in all_players:
                 if player.state.playback_state == PlaybackState.PLAYING:
@@ -281,7 +287,7 @@ class SpotifyConnectProvider(PluginProvider):
             return None
 
         # Use the specific default player if configured and it still exists
-        if self.mass.players.get(self._default_player_id):
+        if self.mass.players.get_player(self._default_player_id):
             return self._default_player_id
         self.logger.warning(
             "Configured default player '%s' no longer exists", self._default_player_id
@@ -626,13 +632,13 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.warning("Error parsing Spotify username from line: %s - %s", line, err)
             return
-        self.logger.debug(line)
+        self.logger.debug("[%s] %s", self.name, line)
 
     async def _librespot_runner(self) -> None:
         """Run the spotify connect daemon in a background task."""
         assert self._librespot_bin
-        self.logger.info("Starting Spotify Connect background daemon")
-        os.environ["MASS_CALLBACK"] = f"{self.mass.streams.base_url}/{self.instance_id}"
+        self.logger.info("Starting Spotify Connect background daemon [%s]", self.name)
+        env = {"MASS_CALLBACK": f"{self.mass.streams.base_url}/{self.instance_id}"}
         await check_output("rm", "-f", self.named_pipe)
         await asyncio.sleep(0.1)
         await check_output("mkfifo", self.named_pipe)
@@ -641,7 +647,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Get initial volume from default player if available, or use 20 as fallback
             initial_volume = 20
             if self._default_player_id and self._default_player_id != PLAYER_ID_AUTO:
-                if _player := self.mass.players.get(self._default_player_id):
+                if _player := self.mass.players.get_player(self._default_player_id):
                     if _player.volume_level:
                         initial_volume = _player.volume_level
             args: list[str] = [
@@ -672,8 +678,11 @@ class SpotifyConnectProvider(PluginProvider):
                 str(EVENTS_SCRIPT),
                 "--emit-sink-events",
             ]
+            bind_ip = self.mass.streams.bind_ip
+            if bind_ip and bind_ip != "0.0.0.0":
+                args.extend(["--zeroconf-interface", bind_ip])
             self._librespot_proc = librespot = AsyncProcess(
-                args, stdout=False, stderr=True, name=f"librespot[{self.name}]"
+                args, stdout=False, stderr=True, name=f"librespot[{self.name}]", env=env
             )
             await librespot.start()
 
@@ -701,7 +710,7 @@ class SpotifyConnectProvider(PluginProvider):
     async def _handle_custom_webservice(self, request: Request) -> Response:  # noqa: PLR0915
         """Handle incoming requests on the custom webservice."""
         json_data = await request.json()
-        self.logger.debug("Received metadata on webservice: \n%s", json_data)
+        self.logger.debug("Received metadata on webservice [%s]: \n%s", self.name, json_data)
 
         event_name = json_data.get("event")
 
@@ -730,8 +739,11 @@ class SpotifyConnectProvider(PluginProvider):
             if self._spotify_provider is not None:
                 self._spotify_provider = None
                 self._update_source_capabilities()
-            # Clear active player and potentially stop daemon on session disconnect
+            # Clear active player and stop the player on session disconnect
+            prev_player_id = self._active_player_id
             self._clear_active_player()
+            if prev_player_id:
+                self.mass.create_task(self.mass.players.deselect_source(prev_player_id))
 
         # handle paused event - clear in_use_by so UI shows correct active source
         # this happens when MA starts playing while Spotify Connect was active
@@ -749,6 +761,13 @@ class SpotifyConnectProvider(PluginProvider):
         # this player has become the active spotify connect player
         # we need to start the playback
         if event_name in ("sink", "playing") and (not self._source_details.in_use_by):
+            # If we receive a 'sink' event but we are not officially connected
+            # (i.e. we just disconnected), ignore it to prevent accidental
+            # re-activation of this player (trailing event from dying session).
+            if event_name == "sink" and not self._connected_spotify_username:
+                self.logger.debug("Ignoring trailing sink event while disconnected")
+                return Response()
+
             # Check for matching Spotify provider now that playback is starting
             # This ensures the Spotify music provider has had time to initialize
             if not self._connected_spotify_username or not self._spotify_provider:
@@ -762,7 +781,11 @@ class SpotifyConnectProvider(PluginProvider):
             target_player_id = self._get_target_player_id()
             if target_player_id:
                 # initiate playback by selecting this source on the target player
-                self.logger.info("Starting Spotify Connect playback on player %s", target_player_id)
+                self.logger.info(
+                    "Starting Spotify Connect playback [%s] on player %s",
+                    self.instance_id,
+                    target_player_id,
+                )
                 self._active_player_id = target_player_id
                 self.mass.create_task(
                     self.mass.players.select_source(target_player_id, self.instance_id)

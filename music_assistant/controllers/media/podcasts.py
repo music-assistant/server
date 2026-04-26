@@ -11,16 +11,19 @@ from music_assistant_models.media_items import Podcast, PodcastEpisode, Provider
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
 from music_assistant.controllers.media.base import MediaControllerBase
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_podcast,
     create_safe_string,
     loose_compare_strings,
 )
+from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.media_items import Track
 
     from music_assistant import MusicAssistant
@@ -50,8 +53,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         offset: int = 0,
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
-        extra_query: str | None = None,
-        extra_query_params: dict[str, Any] | None = None,
+        genre: int | list[int] | None = None,
+        **kwargs: Any,
     ) -> list[Podcast]:
         """Get in-database podcasts.
 
@@ -61,35 +64,36 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param offset: Number of items to skip.
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
-        :param extra_query: Additional SQL query string.
-        :param extra_query_params: Additional query parameters.
+        :param genre: Filter by genre id(s).
         """
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = [extra_query] if extra_query else []
-        result = await self._get_library_items_by_query(
+        result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
+            genre_ids=genre,
             limit=limit,
             offset=offset,
             order_by=order_by,
             provider_filter=self._ensure_provider_filter(provider),
-            extra_query_parts=extra_query_parts,
-            extra_query_params=extra_query_params,
+            in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
-            extra_query_parts = [
+            extra_query_parts: list[str] = [
                 "WHERE podcasts.publisher LIKE :search",
             ]
-            extra_query_params["search"] = f"%{search}%"
-            return result + await self._get_library_items_by_query(
+            extra_query_params: dict[str, Any] = {
+                "search": f"%{search}%",
+            }
+            return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
+                genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
+                in_library_only=True,
             )
         return result
 
@@ -162,6 +166,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "total_episodes": item.total_episodes or 0,
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -194,6 +199,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "total_episodes": cur_item.total_episodes or update.total_episodes or 0,
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
             },
         )
         # update/set provider_mappings table
@@ -213,26 +221,41 @@ class PodcastsController(MediaControllerBase[Podcast]):
         if not isinstance(prov, MusicProvider):
             return
 
+        # Get user who initiated the query. Querying the userid as well is most useful
+        # in a multi-user environment where a single instance provider is used.
+        user: User | None = None
+        if session_user := get_current_user():
+            # this is the active session user that triggered the action
+            user = session_user
+        elif provider_user := await self.mass.music._get_user_for_provider(
+            provider_mappings_or_instance_id=provider_instance_id_or_domain
+        ):
+            # based on configured provider filter we can try to find a user
+            user = provider_user
+
         async def set_resume_position(episode: PodcastEpisode) -> None:
             if episode.fully_played is not None or episode.resume_position_ms:
                 # provider supports resume info, we can skip
                 return
             # for providers that do not natively support providing resume info,
             # we fallback to the playlog db table
+            match = {
+                "item_id": episode.item_id,
+                "provider": prov.instance_id,
+                "media_type": MediaType.PODCAST_EPISODE,
+            }
+            if user is not None:
+                match["userid"] = user.user_id
             resume_info_db_row = await self.mass.music.database.get_row(
                 DB_TABLE_PLAYLOG,
-                {
-                    "item_id": episode.item_id,
-                    "provider": prov.instance_id,
-                    "media_type": MediaType.PODCAST_EPISODE,
-                },
+                match=match,
             )
             if resume_info_db_row is None:
                 return
             if resume_info_db_row["seconds_played"]:
                 episode.resume_position_ms = int(resume_info_db_row["seconds_played"] * 1000)
             if resume_info_db_row["fully_played"] is not None:
-                episode.fully_played = resume_info_db_row["fully_played"]
+                episode.fully_played = bool(resume_info_db_row["fully_played"])
 
         # grab the episodes from the provider
         # note that we do not cache any of this because its

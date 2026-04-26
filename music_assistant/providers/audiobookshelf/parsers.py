@@ -19,6 +19,7 @@ from aioaudiobookshelf.schema.library import (
     LibraryItemPodcast as AbsLibraryItemPodcast,
 )
 from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
+from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
@@ -33,8 +34,44 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     UniqueList,
 )
+from music_assistant_models.media_items import Playlist as MassPlaylist
 from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
+
+
+def parse_playlist(
+    *,
+    abs_playlist: AbsPlaylistExpanded,
+    instance_id: str,
+    domain: str,
+    token: str,
+    base_url: str,
+    owner: str,
+    media_type: MediaType,
+) -> MassPlaylist:
+    """Translate AbsPlaylist to MassPlaylist."""
+    mass_playlist = MassPlaylist(
+        item_id=abs_playlist.id_,
+        provider=instance_id,
+        name=abs_playlist.name,
+        sort_name=abs_playlist.name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=abs_playlist.id_, provider_domain=domain, provider_instance=instance_id
+            )
+        },
+        supported_mediatypes={media_type},
+        is_editable=True,
+        owner=owner,
+    )
+    # cover
+    if abs_playlist.cover_path is not None:
+        api_url = f"/api/items/{abs_playlist.id_}/cover?token={token}"
+        cover_url = f"{base_url}{api_url}"
+        mass_playlist.metadata.images = UniqueList(
+            [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
+        )
+    return mass_playlist
 
 
 def parse_podcast(
@@ -66,7 +103,7 @@ def parse_podcast(
         },
     )
     mass_podcast.metadata.description = abs_podcast.media.metadata.description
-    if token is not None:
+    if token is not None and abs_podcast.media.cover_path is not None:
         image_url = f"{base_url}/api/items/{abs_podcast.id_}/cover?token={token}"
         mass_podcast.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=image_url, provider=instance_id)]
@@ -102,6 +139,7 @@ def parse_podcast_episode(
     token: str | None,
     base_url: str,
     media_progress: AbsMediaProgress | None = None,
+    add_cover: bool = False,
 ) -> MassPodcastEpisode:
     """Translate ABSPodcastEpisode to MassPodcastEpisode.
 
@@ -167,7 +205,7 @@ def parse_podcast_episode(
     mass_episode.metadata.release_date = release_date
 
     # cover image
-    if token is not None:
+    if token is not None and add_cover:
         url_api = f"/api/items/{prov_podcast_id}/cover?token={token}"
         url_cover = f"{base_url}{url_api}"
         mass_episode.metadata.images = UniqueList(
@@ -234,7 +272,7 @@ def parse_audiobook(
     mass_audiobook.metadata.explicit = abs_audiobook.media.metadata.explicit
 
     # cover
-    if token is not None:
+    if token is not None and abs_audiobook.media.cover_path is not None:
         api_url = f"/api/items/{abs_audiobook.id_}/cover?token={token}"
         cover_url = f"{base_url}{api_url}"
         mass_audiobook.metadata.images = UniqueList(
@@ -264,5 +302,7 @@ def parse_audiobook(
     if media_progress is not None and media_progress.current_time is not None:
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
         mass_audiobook.fully_played = media_progress.is_finished
+
+    mass_audiobook.date_added = datetime.fromtimestamp(abs_audiobook.added_at / 1000)
 
     return mass_audiobook

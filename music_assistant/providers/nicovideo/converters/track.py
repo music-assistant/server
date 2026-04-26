@@ -426,5 +426,5 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         # Type-specific availability checks
         if isinstance(video, EssentialVideo):
             return not video.is_payment_required and not video.is_muted
-        else:  # WatchVideo
-            return not video.is_deleted
+        # WatchVideo
+        return not video.is_deleted

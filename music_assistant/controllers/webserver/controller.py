@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import inspect
 import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -19,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import quote
 
 import aiofiles
-from aiohttp import ClientTimeout, web
+from aiohttp import web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
@@ -31,6 +32,7 @@ from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
 )
@@ -40,10 +42,9 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     verify_ssl_certificate,
 )
 from music_assistant.helpers.api import parse_arguments
-from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
-from music_assistant.helpers.util import get_ip_addresses
+from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
@@ -65,7 +66,6 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 DEFAULT_SERVER_PORT = 8095
-INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
@@ -98,8 +98,11 @@ class WebserverController(CoreController):
 
     @property
     def base_url(self) -> str:
-        """Return the base_url for the streamserver."""
-        return self._server.base_url
+        """Return the base_url for the webserver."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return ""
+        return str(config.get_value(CONF_BASE_URL)).removesuffix("/")
 
     async def get_config_entries(
         self,
@@ -107,7 +110,7 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_publish_ip = ip_addresses[0]
 
         # Handle verify SSL action
@@ -122,7 +125,9 @@ class WebserverController(CoreController):
         # Determine if SSL is enabled from values
         ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
         protocol = "https" if ssl_enabled else "http"
-        default_base_url = f"{protocol}://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
+        default_base_url = (
+            f"{protocol}://{format_ip_for_url(default_publish_ip)}:{DEFAULT_SERVER_PORT}"
+        )
         return (
             ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -131,6 +136,7 @@ class WebserverController(CoreController):
                 label="Allow User Self-Registration",
                 description="Allow users to create accounts via Home Assistant OAuth.",
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                requires_reload=False,
             ),
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -140,6 +146,7 @@ class WebserverController(CoreController):
                 description="The (base) URL to reach this webserver in the network. \n"
                 "Override this in advanced scenarios where for example you're running "
                 "the webserver behind a reverse proxy.",
+                requires_reload=False,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -147,6 +154,7 @@ class WebserverController(CoreController):
                 default_value=DEFAULT_SERVER_PORT,
                 label="TCP Port",
                 description="The TCP port to run the webserver.",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key="webserver_warn",
@@ -169,6 +177,7 @@ class WebserverController(CoreController):
                 label="Enable SSL/TLS",
                 description="Enable HTTPS by providing an SSL certificate and private key. \n"
                 "This encrypts all communication with the webserver.",
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_CERTIFICATE,
@@ -181,6 +190,7 @@ class WebserverController(CoreController):
                 "Both RSA and ECDSA certificates are supported.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_PRIVATE_KEY,
@@ -193,6 +203,7 @@ class WebserverController(CoreController):
                 "This is securely encrypted and stored.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_ACTION_VERIFY_SSL,
@@ -220,13 +231,15 @@ class WebserverController(CoreController):
                 options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces. \n"
+                "Use 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \n"
                 "Set this address for example to a docker-internal network, "
                 "when you are running a reverse proxy to enhance security and "
                 "protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                category="advanced",
+                category="generic",
+                advanced=True,
+                requires_reload=True,
             ),
         )
 
@@ -246,6 +259,7 @@ class WebserverController(CoreController):
         # add index (with onboarding check)
         self._index_path = os.path.join(frontend_dir, "index.html")
         routes.append(("GET", "/", self._handle_index))
+        routes.append(("HEAD", "/", self._handle_index))
         # add logo
         logo_path = str(RESOURCES_DIR.joinpath("logo.png"))
         handler = partial(self._server.serve_static, logo_path)
@@ -294,7 +308,7 @@ class WebserverController(CoreController):
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
-        all_ip_addresses = await get_ip_addresses()
+        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
@@ -363,17 +377,13 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        if self.mass.running_as_hass_addon:
-            # (re)announce to HA supervisor to make sure that HA picks it up
-            await self._announce_to_homeassistant()
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        if self.remote_access.is_running:
-            await self.remote_access.close()
+        await self.remote_access.close()
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
@@ -414,13 +424,58 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
+    def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
+        """Set the sendspin player_id on websocket clients for a specific user.
+
+        This is called by the sendspin proxy when a client connects, allowing
+        the player controller to auto-whitelist the player for that user's session.
+
+        :param user_id: The user ID to set the sendspin player for.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._authenticated_user and client._authenticated_user.user_id == user_id:
+                client._sendspin_player_id = player_id
+                self.logger.debug(
+                    "Set sendspin player %s for websocket client of user %s",
+                    player_id,
+                    client._authenticated_user.username,
+                )
+
+    def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
+        """Set the sendspin player_id on a websocket client for a WebRTC session.
+
+        This is called by the WebRTC gateway when it extracts the client_id from
+        the sendspin auth message, allowing auto-whitelisting of the player.
+
+        :param session_id: The WebRTC session ID.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._webrtc_session_id == session_id:
+                client._sendspin_player_id = player_id
+                username = (
+                    client._authenticated_user.username
+                    if client._authenticated_user
+                    else "unauthenticated"
+                )
+                self.logger.debug(
+                    "Set sendspin player %s for WebRTC session %s (user: %s)",
+                    player_id,
+                    session_id,
+                    username,
+                )
+                return
+
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
         provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
+        async for chunk in self.mass.streams.get_preview_stream(
+            provider_instance_id_or_domain, item_id
+        ):
             await resp.write(chunk)
         return resp
 
@@ -525,7 +580,7 @@ class WebserverController(CoreController):
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
             return web.json_response(result, dumps=json_dumps)
         except Exception as e:
@@ -1006,33 +1061,3 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
-
-    async def _announce_to_homeassistant(self) -> None:
-        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
-        addon_hostname = os.environ["HOSTNAME"]
-        # Get or create auth token for the HA system user
-        ha_integration_token = await self.auth.get_homeassistant_system_user_token()
-        discovery_payload = {
-            "service": "music_assistant",
-            "config": {
-                "host": addon_hostname,
-                "port": INGRESS_SERVER_PORT,
-                "auth_token": ha_integration_token,
-            },
-        }
-        try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
-        except Exception as err:
-            self.logger.warning("Failed to announce to Home Assistant: %s", err)

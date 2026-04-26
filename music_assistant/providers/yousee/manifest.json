@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "yousee",
+  "name": "YouSee Musik",
+  "stage": "experimental",
+  "description": "YouSee Musik, a Danish music streaming service.",
+  "codeowners": ["@math625f"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/yousee/",
+  "multi_instance": true
+}

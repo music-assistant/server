@@ -41,7 +41,7 @@ def sort_dict_keys_and_lists(obj: JsonValue) -> JsonValue:
     if isinstance(obj, dict):
         # Sort dictionary keys and recursively process values
         return {key: sort_dict_keys_and_lists(obj[key]) for key in sorted(obj.keys())}
-    elif isinstance(obj, list):
+    if isinstance(obj, list):
         # Recursively process list items first
         sorted_items = [sort_dict_keys_and_lists(item) for item in obj]
         try:

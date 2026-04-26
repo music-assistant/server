@@ -10,6 +10,7 @@ FIXME skipping in non-live radio shows restarts the stream but keeps the seek ti
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
@@ -125,14 +126,14 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=_Constants.CONF_SHOW_LOCAL,
-            category="advanced",
+            advanced=True,
             type=ConfigEntryType.BOOLEAN,
             label="Show local radio stations?",
             default_value=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_STREAM_FORMAT,
-            category="advanced",
+            advanced=True,
             label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
@@ -308,23 +309,25 @@ class BBCSoundsProvider(MusicProvider):
         self.logger.debug(f"Getting stream details for {item_id} ({media_type})")
         if media_type in [MediaType.PODCAST_EPISODE, MediaType.TRACK]:
             return await self._get_playable_stream_details(item_id, media_type)
-        else:
-            return await self._get_station_stream_details(item_id)
+        return await self._get_station_stream_details(item_id)
 
     async def _get_programme_segments(self, vpid: str) -> list[Segment] | None:
         """Get on demand segments from cache or API."""
-        segments = await self.mass.cache.get(
+        cached = await self.mass.cache.get(
             provider=self.domain, key=f"programme_segments_{vpid}", default=False
         )
-        if segments is False:
+        if cached is False:
             segments = await self.client.streaming.get_show_segments(vpid)
-            await self.mass.cache.set(
-                provider=self.domain,
-                key=f"programme_segments_{vpid}",
-                data=segments,
-            )
-        if isinstance(segments, list):
-            return segments
+            if isinstance(segments, list):
+                await self.mass.cache.set(
+                    provider=self.domain,
+                    key=f"programme_segments_{vpid}",
+                    data=[dataclasses.asdict(s) for s in segments],
+                )
+                return segments
+            return None
+        if isinstance(cached, list):
+            return [Segment(**item) for item in cached]
         return None
 
     async def _update_on_demand_stream_metadata(
@@ -410,6 +413,7 @@ class BBCSoundsProvider(MusicProvider):
             return StreamMetadata(title=title, artist=None, image_url=station.image_url)
         return None
 
+    @use_cache(3600 * 6)  # Cache for 6 hours
     async def _station_list(self, include_local: bool = False) -> list[Radio]:
         """Get list of stations as Radios."""
         radio_list: list[Radio] = []
@@ -454,6 +458,7 @@ class BBCSoundsProvider(MusicProvider):
                 )
         return radio_list
 
+    @use_cache(3600)  # Cache for 1 hour
     async def _get_category(
         self, category_name: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -465,9 +470,9 @@ class BBCSoundsProvider(MusicProvider):
                 for obj in [await self._render_browse_item(item) for item in category.sub_items]
                 if obj is not None
             ]
-        else:
-            return []
+        return []
 
+    @use_cache(3600)  # Cache for 1 hour
     async def _get_collection(
         self, pid: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -480,16 +485,14 @@ class BBCSoundsProvider(MusicProvider):
                 ]
                 if obj
             ]
-        else:
-            return []
+        return []
 
     async def _get_menu(
         self, path_parts: list[str] | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         if self.client.auth.is_logged_in and await self.client.auth.is_uk_listener:
             return await self._get_full_menu(path_parts=path_parts)
-        else:
-            return await self._get_slim_menu(path_parts=path_parts)
+        return await self._get_slim_menu(path_parts=path_parts)
 
     async def _get_full_menu(
         self, path_parts: list[str] | None = None
@@ -563,8 +566,7 @@ class BBCSoundsProvider(MusicProvider):
             (BrowseFolder | Track | Podcast | PodcastEpisode | RecommendationFolder | Radio),
         ):
             return new_item
-        else:
-            return None
+        return None
 
     async def _get_subpath_menu(
         self, sub_path: str
@@ -626,7 +628,7 @@ class BBCSoundsProvider(MusicProvider):
                     if new_folder:
                         items.append(new_folder)
             return items
-        elif sub_sub_path:
+        if sub_sub_path:
             # Date listings for a station
             date_folders = [
                 BrowseFolder(
@@ -662,25 +664,24 @@ class BBCSoundsProvider(MusicProvider):
                     ]
                 )
             return date_folders
-        else:
-            return [
-                BrowseFolder(
-                    item_id=station.item_id,
-                    provider=self.domain,
-                    name=station.name,
-                    path="/".join([*path_parts, station.item_id]),
-                    image=(
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=station.metadata.images[0].path,
-                            provider=self.domain,
-                        )
-                        if station.metadata.images
-                        else None
-                    ),
-                )
-                for station in await self._station_list(include_local=show_local)
-            ]
+        return [
+            BrowseFolder(
+                item_id=station.item_id,
+                provider=self.domain,
+                name=station.name,
+                path="/".join([*path_parts, station.item_id]),
+                image=(
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=station.metadata.images[0].path,
+                        provider=self.domain,
+                    )
+                    if station.metadata.images
+                    else None
+                ),
+            )
+            for station in await self._station_list(include_local=show_local)
+        ]
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
@@ -702,18 +703,17 @@ class BBCSoundsProvider(MusicProvider):
 
         if sub_path == "":
             return await self._get_menu()
-        elif sub_path == "categories" and sub_sub_path:
+        if sub_path == "categories" and sub_sub_path:
             return await self._get_category(sub_sub_path)
-        elif sub_path == "collections" and sub_sub_path:
+        if sub_path == "collections" and sub_sub_path:
             return await self._get_collection(sub_sub_path)
-        elif sub_path != "stations":
+        if sub_path != "stations":
             return await self._get_subpath_menu(sub_path)
-        elif sub_path == "stations":
+        if sub_path == "stations":
             return await self._get_station_schedule_menu(
                 self.show_local_stations, path_parts, sub_sub_path, sub_sub_sub_path
             )
-        else:
-            return []
+        return []
 
     async def search(
         self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
