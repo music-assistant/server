@@ -96,8 +96,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             extra_join_parts = [f"AND playlog.userid = '{session_user.user_id}'"]
         if without_series:
             extra_query_parts = [
-                "WHERE json_extract(audiobooks.metadata, '$.series') IS NULL "
-                "OR json_extract(audiobooks.metadata, '$.series') = '[]'",
+                "WHERE (json_extract(audiobooks.metadata, '$.series') IS NULL "
+                "OR json_extract(audiobooks.metadata, '$.series') = '[]')",
             ]
         result = await self.get_library_items_by_query(
             favorite=favorite,
@@ -379,8 +379,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     async def series(
         self,
-        limit: int = 500,
-        offset: int = 0,
     ) -> list[AudiobookSeries]:
         """Get all available audiobook series.
 
@@ -390,8 +388,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # key is the series' title
         series_dict: dict[str, list[Audiobook]] = {}
         audiobooks_with_series = await self.get_library_items_by_query(
-            limit=limit,
-            offset=offset,
             extra_query_parts=[
                 "WHERE json_extract(audiobooks.metadata, '$.series') IS NOT NULL "
                 "AND json_extract(audiobooks.metadata, '$.series') != '[]'",
