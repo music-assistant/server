@@ -588,16 +588,7 @@
       "addVideo": null,
       "tagRelatedBanner": null,
       "tagRelatedMarquee": null,
-      "pcWatchHeaderCustomBanner": {
-        "imageUrl": "https://wktk.nimg.jp/wktk/8323/banner/PPiBe9K2u-.png",
-        "backgroundType": "colorCode",
-        "backgroundColorCode": "#A4DBFD",
-        "backgroundPatternImageUrl": null,
-        "linkUrl": "https://chokaigi.jp/",
-        "linkType": "link",
-        "linkOrigin": "https://chokaigi.jp/",
-        "isNewWindow": false
-      }
+      "pcWatchHeaderCustomBanner": null
     }
   },
   "selected_audio": {

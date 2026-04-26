@@ -1,13 +1,12 @@
 {
   "items": [
     {
-      "itemId": "h#20250101#sm45285955",
+      "itemId": "h#20250101#sm00000000",
       "isMaybeLikeUserItem": false,
       "viewedAt": "2025-01-01T00:00:00+09:00",
       "video": {
         "type": "essential",
         "id": "sm45285955",
-        "contentType": "long",
         "title": "APIテスト用",
         "registeredAt": "2025-01-01T00:00:00+09:00",
         "count": {
@@ -28,7 +27,7 @@
         "latestCommentSummary": "",
         "isChannelVideo": false,
         "isPaymentRequired": false,
-        "playbackPosition": null,
+        "playbackPosition": 0.0,
         "owner": {
           "ownerType": "user",
           "type": "user",
