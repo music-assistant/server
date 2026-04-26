@@ -4,17 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from math import inf
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.background_task import TaskSchedule
+from music_assistant_models.enums import MediaType, ProviderType, StreamType
 
-from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
+from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    LOUDNESS_MEASUREMENT_MIN_LUFS,
+)
+from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 
-CHUNK_PROCESS_TIMEOUT = 0.8
+CHUNK_PROCESS_TIMEOUT = 1.0
+LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
+BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
+BACKGROUND_SCAN_BATCH_SIZE = 250
+BACKGROUND_SCAN_SLEEP_BETWEEN_ITEMS = 2.0
+# providers whose tracks can be analyzed from their local filesystem path
+FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
+    "filesystem_local",
+    "filesystem_smb",
+    "filesystem_nfs",
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -37,6 +54,17 @@ class AudioAnalysisController:
         self.logger = self.mass.logger.getChild("audio_analysis")
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
+
+    def setup(self) -> None:
+        """Register the nightly background scan task."""
+        utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
+        self.mass.tasks.register_scheduled_task(
+            task_id=BACKGROUND_SCAN_TASK_ID,
+            name="Audio analysis — background scan of local files",
+            handler=self._run_background_scan,
+            schedule=TaskSchedule.daily(hour=utc_hour, minute=utc_minute),
+            metadata={"task_domain": "audio_analysis"},
+        )
 
     @property
     def providers(self) -> list[AudioAnalysisProvider]:
@@ -210,6 +238,46 @@ class AudioAnalysisController:
             found = True
         return merged if found else None
 
+    async def set_track_loudness(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        loudness: float,
+        loudness_album: float | None = None,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Store track loudness measurement from an external source (tags, ReplayGain, etc).
+
+        Persists the loudness values under the builtin loudness_analysis provider so
+        the runtime ebur128 analysis will not re-analyze the track on playback.
+
+        :param item_id: Provider-native item ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param loudness: Integrated track loudness in LUFS.
+        :param loudness_album: Optional album-level integrated loudness in LUFS.
+        :param media_type: The media type of the item.
+        """
+        if loudness in (None, inf, -inf) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+            return
+        if (
+            loudness_album is None
+            or loudness_album in (inf, -inf)
+            or loudness_album <= LOUDNESS_MEASUREMENT_MIN_LUFS
+        ):
+            loudness_album = None
+        analysis = AudioAnalysisData(
+            loudness_integrated=loudness,
+            loudness_album=loudness_album,
+        )
+        await self.set_audio_analysis(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            aa_provider_domain=LOUDNESS_ANALYSIS_DOMAIN,
+            analysis=analysis,
+            media_type=media_type,
+        )
+
     async def get_audio_analysis_version(
         self,
         item_id: str,
@@ -244,6 +312,133 @@ class AudioAnalysisController:
         if not row:
             return None
         return int(row["analysis_version"])
+
+    async def _run_background_scan(self) -> None:
+        """
+        Run the nightly background scan across all audio analysis providers.
+
+        Iterates each available provider, queries tracks from local-filesystem
+        music providers that do not yet have analysis for that provider, and
+        hands each one to the provider's `analyze_file` hook. Results are
+        persisted via `set_audio_analysis`. The batch aborts for a given
+        provider if its storage backend goes offline.
+        """
+        providers = self.providers
+        if not providers:
+            return
+
+        for provider in providers:
+            candidates = await self._find_tracks_missing_analysis(
+                provider.domain, BACKGROUND_SCAN_BATCH_SIZE
+            )
+            if not candidates:
+                continue
+
+            self.logger.info(
+                "Background %s analysis: %d track(s) pending",
+                provider.domain,
+                len(candidates),
+            )
+            processed = 0
+            for row in candidates:
+                if not provider.available:
+                    # provider was disabled mid-run
+                    break
+                item_id = str(row["item_id"])
+                provider_instance = str(row["provider_instance"])
+                music_prov = self.mass.get_provider(provider_instance, provider_type=MusicProvider)
+                if music_prov is None or not music_prov.available:
+                    # storage may be offline right now (e.g. NAS asleep) — stop the
+                    # batch rather than churning through failures for the remaining
+                    # tracks
+                    self.logger.debug(
+                        "Background %s analysis: provider %s unavailable, aborting batch",
+                        provider.domain,
+                        provider_instance,
+                    )
+                    break
+
+                try:
+                    streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
+                except Exception as err:
+                    self.logger.debug(
+                        "Background %s analysis: skipping %s (stream details failed: %s)",
+                        provider.domain,
+                        item_id,
+                        err,
+                    )
+                    continue
+
+                if streamdetails.stream_type != StreamType.LOCAL_FILE:
+                    continue
+                if not isinstance(streamdetails.path, str) or not streamdetails.path:
+                    continue
+
+                try:
+                    result = await provider.analyze_file(streamdetails)
+                except Exception as err:
+                    self.logger.warning(
+                        "Background %s analysis failed for %s: %s",
+                        provider.domain,
+                        item_id,
+                        err,
+                    )
+                    result = None
+
+                if result is not None:
+                    await self.set_audio_analysis(
+                        item_id=item_id,
+                        provider_instance_id_or_domain=music_prov.instance_id,
+                        aa_provider_domain=provider.domain,
+                        analysis=result,
+                        analysis_version=provider.analysis_version,
+                    )
+                    processed += 1
+
+                await asyncio.sleep(BACKGROUND_SCAN_SLEEP_BETWEEN_ITEMS)
+
+            self.logger.info(
+                "Background %s analysis: analyzed %d/%d track(s)",
+                provider.domain,
+                processed,
+                len(candidates),
+            )
+
+    async def _find_tracks_missing_analysis(
+        self, aa_provider_domain: str, limit: int
+    ) -> list[dict[str, object]]:
+        """Return up to N local-filesystem tracks without analysis for the given AA provider."""
+        filesystem_domains = tuple(
+            domain
+            for domain in FILESYSTEM_PROVIDER_DOMAINS
+            if any(
+                p.domain == domain and p.available
+                for p in self.mass.get_providers(ProviderType.MUSIC)
+            )
+        )
+        if not filesystem_domains:
+            return []
+
+        domains_sql = ", ".join(f"'{d}'" for d in filesystem_domains)
+        track_media_type = MediaType.TRACK.value
+        # audio_analysis.item_id holds the provider-native item id,
+        # so join against provider_mappings.provider_item_id (not pm.item_id,
+        # which is the integer library-row id)
+        query = (
+            f"SELECT pm.provider_item_id AS item_id, "
+            f"       pm.provider_instance AS provider_instance "
+            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            f"LEFT JOIN {DB_TABLE_AUDIO_ANALYSIS} aa "
+            f"  ON aa.item_id = pm.provider_item_id "
+            f"  AND aa.provider = pm.provider_instance "
+            f"  AND aa.aa_provider_domain = '{aa_provider_domain}' "
+            f"  AND aa.media_type = '{track_media_type}' "
+            f"WHERE pm.media_type = '{track_media_type}' "
+            f"  AND pm.provider_domain IN ({domains_sql}) "
+            f"  AND aa.id IS NULL"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+        return [dict(r) for r in rows]
 
     async def _start_analysis_on_providers(
         self,

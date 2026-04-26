@@ -22,6 +22,11 @@ class MerChannel(TypedDict):
     content_type: ContentType
 
 
+# All Mother Earth Radio channels stream at the same format.
+MER_SAMPLE_RATE = 192000
+MER_BIT_DEPTH = 24
+
+
 MER_CHANNELS: dict[str, MerChannel] = {
     "motherearth": {
         "name": "Mother Earth Radio",
