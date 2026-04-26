@@ -73,5 +73,20 @@ class MPDPlayerProvider(PlayerProvider):
             await self.mass.players.register(player)
 
     async def remove_player(self, player_id: str) -> None:
-        """Remove a player and unregister it from MA."""
-        await self.mass.players.unregister(player_id)
+        """Remove a player and persist that removal in the provider config."""
+        host_port: tuple[str, int] | None = None
+        if player := self.mass.players.get_player(player_id):
+            if isinstance(player, MPDPlayer):
+                host_port = (player.host, player.port)
+        if host_port is None:
+            for entry in cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or []):
+                host, port = _parse_host_entry(entry)
+                if f"mpd_{host}_{port}" == player_id:
+                    host_port = (host, port)
+                    break
+        if host_port is not None:
+            entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
+            new_entries = [entry for entry in entries if _parse_host_entry(entry) != host_port]
+            if new_entries != entries:
+                self._update_config_value(CONF_MANUAL_IPS, new_entries)
+        await self.mass.players.unregister(player_id, True)

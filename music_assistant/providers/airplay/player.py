@@ -771,7 +771,7 @@ class AirPlayPlayer(Player):
                     if stream_session and len(stream_session.sync_clients) > 1:
                         # Other clients remain: remove only this leader client,
                         # session continues for remaining players (dynamic leader switch)
-                        await stream_session.remove_client(self)
+                        await stream_session.remove_client(self, reason="leader removed from group")
                     elif stream_session:
                         # Last client, stop the whole session
                         await stream_session.stop()
@@ -786,7 +786,9 @@ class AirPlayPlayer(Player):
                         if child_player.player_id in self._attr_group_members:
                             self._attr_group_members.remove(child_player.player_id)
                         if stream_session:
-                            await stream_session.remove_client(child_player)
+                            await stream_session.remove_client(
+                                child_player, reason="child removed from group"
+                            )
                         elif child_player.stream and child_player.stream.running:
                             # leader's stream is no longer running but child still has
                             # an active stream - stop it directly
@@ -828,7 +830,9 @@ class AirPlayPlayer(Player):
                         and child_player_to_add.stream.session
                         and child_player_to_add.stream.session != stream_session
                     ):
-                        await child_player_to_add.stream.session.remove_client(child_player_to_add)
+                        await child_player_to_add.stream.session.remove_client(
+                            child_player_to_add, reason="moving to different session"
+                        )
 
                 # add new child to the existing stream (RAOP or AirPlay2) session (if any)
                 self._attr_group_members.append(player_id)
@@ -958,7 +962,7 @@ class AirPlayPlayer(Player):
         if self.stream:
             # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
-                await self.stream.session.remove_client(self)
+                await self.stream.session.remove_client(self, reason="player unloaded")
             self.stream = None
         if self._active_pairing:
             await self._active_pairing.close()
