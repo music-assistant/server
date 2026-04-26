@@ -186,14 +186,14 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
-        """Get a list of all albums for the given artist.
+        """Get a list of all audiobooks for the given author.
 
         Only called if provider supports ProviderFeature.AUTHOR_AUDIOBOOKS.
         """
         raise NotImplementedError
 
     async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
-        """Get a list of all albums for the given artist.
+        """Get a list of all audiobooks for the given narrator.
 
         Only called if provider supports ProviderFeature.NARRATOR_AUDIOBOOKS.
         """
