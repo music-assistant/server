@@ -110,7 +110,7 @@ class NicovideoUserService(NicovideoBaseService):
         """Get user's history from nicovideo."""
         history = await self.service_manager._call_with_throttler(
             self.niconico_py_client.video.get_history,
-            limit=min(limit, 100),
+            limit=min(limit, 100),  # API max is 100
         )
         if not history or not history.items:
             return []
