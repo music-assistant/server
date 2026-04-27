@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from bandcamp_async_api import (
     BandcampAPIClient,
@@ -38,6 +38,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     RateLimited,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -61,6 +62,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
+from ._ids import make_artist_id, parse_artist_id, slugify_performer
 from .constants import (
     BROWSE_FANS,
     BROWSE_FEED,
@@ -77,7 +79,7 @@ from .constants import (
     PERSON_SUB_ROUTES,
     SUPPORTED_FEATURES,
 )
-from .converters import BandcampConverters
+from .converters import BandcampConverters, DiscographyItem
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -170,7 +172,19 @@ class BandcampProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 50
     ) -> SearchResults:
-        """Perform search on music provider."""
+        """
+        Perform search on music provider.
+
+        Bandcamp's autocomplete returns three result kinds: bands/labels (b),
+        albums (a), and tracks (t). For album/track results, ``band_id`` is
+        the page owner (could be a label) and ``band_name`` is the *performer*
+        credit — which for label-released albums differs from the page
+        owner's own name. We map performer-without-a-band-page entries onto
+        synthetic artists keyed by ``{band_id}:{slug}`` and emit them in
+        artist results too, so searching for e.g. "Mortaja" surfaces
+        Mortaja-on-audiophob even though the performer has no band page of
+        their own. See :mod:`._ids` for ID semantics.
+        """
         results = SearchResults()
         if not media_types:
             return results
@@ -186,17 +200,66 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise InvalidDataError("Unexpected error during Bandcamp search") from error
 
-        for item in search_results[:limit]:
+        capped = search_results[:limit]
+        # Map band_id -> SearchResultArtist for cross-result dedup. When an
+        # album/track's `band_name` slug matches the band's own slug, the
+        # album is by the band itself and we use the plain `{band_id}` ID;
+        # otherwise we synthesize `{band_id}:{slug}`.
+        bands_by_id: dict[int, SearchResultArtist] = {
+            item.id: item for item in capped if isinstance(item, SearchResultArtist)
+        }
+        artist_ids_seen: set[str] = set()
+        synthetic_artists: list[Artist] = []
+
+        for item in capped:
             try:
                 if isinstance(item, SearchResultTrack) and MediaType.TRACK in media_types:
-                    results.tracks = [*results.tracks, self._converters.track_from_search(item)]
+                    artist_item_id = self._resolve_search_artist_id(item, bands_by_id)
+                    results.tracks = [
+                        *results.tracks,
+                        self._converters.track_from_search(item, artist_item_id=artist_item_id),
+                    ]
                 elif isinstance(item, SearchResultAlbum) and MediaType.ALBUM in media_types:
-                    results.albums = [*results.albums, self._converters.album_from_search(item)]
+                    artist_item_id = self._resolve_search_artist_id(item, bands_by_id)
+                    results.albums = [
+                        *results.albums,
+                        self._converters.album_from_search(item, artist_item_id=artist_item_id),
+                    ]
                 elif isinstance(item, SearchResultArtist) and MediaType.ARTIST in media_types:
+                    artist_ids_seen.add(str(item.id))
                     results.artists = [*results.artists, self._converters.artist_from_search(item)]
             except BandcampAPIError as error:
                 self.logger.warning("Failed to convert search result item: %s", error)
                 continue
+
+        if MediaType.ARTIST in media_types:
+            for item in capped:
+                if not isinstance(item, (SearchResultAlbum, SearchResultTrack)):
+                    continue
+                if not item.artist_name:
+                    continue
+                artist_item_id = self._resolve_search_artist_id(item, bands_by_id)
+                if artist_item_id in artist_ids_seen:
+                    continue
+                artist_ids_seen.add(artist_item_id)
+                # Plain (non-synthetic) IDs that weren't already surfaced
+                # mean a `b` result for this band wasn't in the capped
+                # window. Skip — the user is searching by performer name,
+                # so synthetics are what they'd expect to see; a band that
+                # didn't make the cap shouldn't be reintroduced here.
+                if ":" not in artist_item_id:
+                    continue
+                synthetic_artists.append(
+                    self._converters.synthetic_artist(
+                        band_id=item.artist_id,
+                        performer_name=item.artist_name,
+                        url=item.artist_url or None,
+                        image_url=item.image_url,
+                    )
+                )
+
+        if synthetic_artists:
+            results.artists = [*results.artists, *synthetic_artists]
 
         return results
 
@@ -238,6 +301,24 @@ class BandcampProvider(MusicProvider):
         if item_id == "wishlist":
             return UniqueList(await self._browse_person_content(None, CollectionType.WISHLIST))
         return UniqueList()
+
+    def _resolve_search_artist_id(
+        self,
+        item: SearchResultAlbum | SearchResultTrack,
+        bands_by_id: dict[int, SearchResultArtist],
+    ) -> str:
+        """
+        Decide whether an album/track's artist link is real or synthetic.
+
+        Compares the per-result performer name (autocomplete's ``band_name``,
+        exposed as ``item.artist_name``) against any matching ``b`` result
+        in the same search. Same slug → real ``{band_id}``; different →
+        synthetic ``{band_id}:{slug}``.
+        """
+        band = bands_by_id.get(item.artist_id)
+        if band and slugify_performer(band.name) == slugify_performer(item.artist_name or ""):
+            return str(item.artist_id)
+        return make_artist_id(item.artist_id, item.artist_name)
 
     @throttle_with_retries
     async def _fetch_collection_page(
@@ -369,10 +450,78 @@ class BandcampProvider(MusicProvider):
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get full artist details by id."""
+        """
+        Get full artist details by id.
+
+        Accepts both forms: ``"{band_id}"`` (a real band/label page) and
+        ``"{band_id}:{slug}"`` (a synthetic per-page performer that has
+        no Bandcamp page of its own — see :mod:`._ids`).
+        """
         try:
-            api_artist = await self._client.get_artist(prov_artist_id)
+            band_id, performer_slug = parse_artist_id(prov_artist_id)
+        except ValueError as error:
+            raise InvalidDataError(f"Malformed Bandcamp artist ID: {prov_artist_id}") from error
+
+        if performer_slug is None:
+            try:
+                api_artist = await self._client.get_artist(band_id)
+                return self._converters.artist_from_api(api_artist)
+            except BandcampNotFoundError as error:
+                raise MediaNotFoundError(
+                    f"Artist {prov_artist_id} not found on Bandcamp"
+                ) from error
+            except BandcampRateLimitError as error:
+                raise ResourceTemporarilyUnavailable(
+                    "Bandcamp rate limit reached", backoff_time=error.retry_after
+                ) from error
+            except BandcampAPIError as error:
+                raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
+
+        # Synthetic: locate matching items in the band's discography and
+        # build an artist scoped to that performer. Falls back to the real
+        # band when the slug actually matches the band's own name (e.g.
+        # cached IDs constructed before disambiguation was reliable).
+        return await self._get_synthetic_artist(prov_artist_id, band_id, performer_slug)
+
+    async def _get_synthetic_artist(
+        self, prov_artist_id: str, band_id: int, performer_slug: str
+    ) -> Artist:
+        """
+        Resolve a synthetic ID to either the real band or a per-page performer.
+
+        Order matters. Bandcamp's autocomplete sometimes returns ``a``/``t``
+        rows for a band without the matching ``b`` row in the same response
+        (typical for queries that are album/track titles rather than the
+        band's name). The search-time path mints a synthetic
+        ``{band_id}:slug-of-band-own-name`` in that case because it can't
+        tell band-by-itself from label-release without the ``b`` row. We
+        collapse that drift here, on the navigation/persistence path, by
+        resolving the synthetic to the real band whenever the slug equals
+        the band's own slug — BEFORE consulting the discography. Otherwise
+        an album whose performer-name happens to match the band's own name
+        (band-by-itself items with ``artist_name=null``) would build a
+        shadow synthetic that lives parallel to the real band in MA's
+        library and produces duplicate artist entries.
+        """
+        try:
+            api_artist = await self._client.get_artist(band_id)
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
+        except BandcampRateLimitError as error:
+            raise ResourceTemporarilyUnavailable(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
+
+        if slugify_performer(api_artist.name) == performer_slug:
             return self._converters.artist_from_api(api_artist)
+
+        # Genuine label-style synthetic: the slug names a per-page performer
+        # distinct from the band itself. Find the credit in the discography
+        # and synthesize an artist scoped to that performer.
+        try:
+            api_discography = await self._fetch_discography(band_id)
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
@@ -381,6 +530,43 @@ class BandcampProvider(MusicProvider):
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
+
+        matching = [
+            item
+            for item in api_discography
+            if slugify_performer(str(item.get("artist_name") or item.get("band_name") or ""))
+            == performer_slug
+        ]
+        if not matching:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp")
+
+        first = matching[0]
+        performer_name = str(first.get("artist_name") or first.get("band_name") or "")
+        art_id = first.get("art_id")
+        image_url = f"https://f4.bcbits.com/img/a{art_id}_0.jpg" if art_id else None
+        # The performer doesn't have their own Bandcamp page; surface the
+        # hosting band's URL so the artist tile links somewhere meaningful
+        # (matching what the search-emission path passes through).
+        return self._converters.synthetic_artist(
+            band_id=band_id,
+            performer_name=performer_name,
+            url=api_artist.url,
+            image_url=image_url,
+        )
+
+    @use_cache(CACHE_METADATA)
+    @throttle_with_retries
+    async def _fetch_discography(self, band_id: int) -> list[dict[str, Any]]:
+        """
+        Fetch a band's discography keyed by band_id (cached).
+
+        Real artist (``"{band_id}"``) and synthetic performer
+        (``"{band_id}:{slug}"``) lookups both go through this so the
+        underlying ``mobile/24/band_details`` call hits once per band per
+        cache window, not once per ``prov_artist_id``.
+        """
+        result: list[dict[str, Any]] = await self._client.get_artist_discography(band_id)
+        return result
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
@@ -441,13 +627,17 @@ class BandcampProvider(MusicProvider):
                 track=api_track,
                 album_id=api_album.id,
                 album_name=api_album.title,
-                album_image_url=api_album.art_url,
+                album_image_url=api_album.art_url or "",
+                tralbum_artist=api_album.tralbum_artist,
             )
+        # Standalone tracks (album_id=0) carry the performer credit on
+        # the track itself when fetched directly from tralbum_details.
         return self._converters.track_from_api(
             track=api_track,
             album_id=api_track.album.id if api_track.album else None,
             album_name=api_track.album.title if api_track.album else "",
-            album_image_url=api_track.album.art_url if api_track.album else "",
+            album_image_url=(api_track.album.art_url if api_track.album else "") or "",
+            tralbum_artist=api_track.tralbum_artist,
         )
 
     @use_cache(CACHE_METADATA)
@@ -463,7 +653,8 @@ class BandcampProvider(MusicProvider):
                         track=track,
                         album_id=album_id,
                         album_name=api_album.title,
-                        album_image_url=api_album.art_url,
+                        album_image_url=api_album.art_url or "",
+                        tralbum_artist=api_album.tralbum_artist,
                     )
                     for track in api_album.tracks
                     if track.streaming_url  # Only include tracks with streaming URLs
@@ -485,14 +676,21 @@ class BandcampProvider(MusicProvider):
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get albums by an artist."""
+        """
+        Get albums by an artist.
+
+        For real artist IDs this returns the band's full discography (the
+        original behavior). For synthetic IDs (``{band_id}:{slug}``) this
+        filters the band's discography to only the items where the
+        performer matches.
+        """
         try:
-            api_discography = await self._client.get_artist_discography(prov_artist_id)
-            return [
-                self._converters.album_from_discography_item(item)
-                for item in api_discography
-                if item.get("item_type") == "album" and item.get("item_id")
-            ]
+            band_id, performer_slug = parse_artist_id(prov_artist_id)
+        except ValueError as error:
+            raise InvalidDataError(f"Malformed Bandcamp artist ID: {prov_artist_id}") from error
+
+        try:
+            api_discography = await self._fetch_discography(band_id)
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(
                 f"Artist {prov_artist_id} albums not found on Bandcamp"
@@ -503,6 +701,23 @@ class BandcampProvider(MusicProvider):
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get albums for artist {prov_artist_id}") from error
+
+        items = [
+            item
+            for item in api_discography
+            if item.get("item_type") == "album" and item.get("item_id")
+        ]
+        if performer_slug is not None:
+            items = [
+                item
+                for item in items
+                if slugify_performer(str(item.get("artist_name") or item.get("band_name") or ""))
+                == performer_slug
+            ]
+        return [
+            self._converters.album_from_discography_item(cast("DiscographyItem", item))
+            for item in items
+        ]
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries

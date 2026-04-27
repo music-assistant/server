@@ -27,6 +27,8 @@ if TYPE_CHECKING:
         SearchResultTrack,
     )
 
+from ._ids import make_artist_id, slugify_performer
+
 
 class DiscographyItem(TypedDict, total=False):
     """Raw discography item dict from the band_details API."""
@@ -76,9 +78,20 @@ class BandcampConverters:
             content_type = ContentType.UNKNOWN
         return streaming_url, bitrate, content_type
 
-    def track_from_search(self, item: SearchResultTrack) -> MATrack:
-        """Create a Track from new API SearchResultTrack."""
+    def track_from_search(
+        self, item: SearchResultTrack, *, artist_item_id: str | None = None
+    ) -> MATrack:
+        """
+        Create a Track from new API SearchResultTrack.
+
+        :param artist_item_id: Resolved artist item_id chosen by the provider's
+            cross-result dedup. If omitted, defaults to the synthetic form
+            ``"{artist_id}:{slug(artist_name)}"`` so callers without
+            disambiguation context still get correct labels-vs-performers
+            behavior.
+        """
         track_id = f"{item.artist_id}-{item.album_id or 0}-{item.id}"
+        artist_item_id = artist_item_id or make_artist_id(item.artist_id, item.artist_name)
         return MATrack(
             item_id=track_id,
             provider=self.instance_id,
@@ -87,7 +100,7 @@ class BandcampConverters:
                 [
                     ItemMapping(
                         media_type=MediaType.ARTIST,
-                        item_id=str(item.artist_id),
+                        item_id=artist_item_id,
                         provider=self.instance_id,
                         name=item.artist_name,
                     )
@@ -113,9 +126,18 @@ class BandcampConverters:
             },
         )
 
-    def album_from_search(self, item: SearchResultAlbum) -> MAAlbum:
-        """Create an Album from new API SearchResultAlbum."""
+    def album_from_search(
+        self, item: SearchResultAlbum, *, artist_item_id: str | None = None
+    ) -> MAAlbum:
+        """
+        Create an Album from new API SearchResultAlbum.
+
+        :param artist_item_id: Resolved artist item_id chosen by the provider's
+            cross-result dedup. If omitted, defaults to the synthetic form
+            ``"{artist_id}:{slug(artist_name)}"``.
+        """
         album_id = f"{item.artist_id}-{item.id}"
+        artist_item_id = artist_item_id or make_artist_id(item.artist_id, item.artist_name)
         output = MAAlbum(
             item_id=album_id,
             provider=self.instance_id,
@@ -125,7 +147,7 @@ class BandcampConverters:
                 [
                     ItemMapping(
                         media_type=MediaType.ARTIST,
-                        item_id=str(item.artist_id),
+                        item_id=artist_item_id,
                         provider=self.instance_id,
                         name=item.artist_name,
                         uri=item.artist_url,
@@ -186,10 +208,26 @@ class BandcampConverters:
         album_id: str | int | None = None,
         album_name: str = "",
         album_image_url: str = "",
+        *,
+        tralbum_artist: str | None = None,
     ) -> MATrack:
-        """Convert a Track object from the API to MA Track format."""
+        """
+        Convert a Track object from the API to MA Track format.
+
+        :param tralbum_artist: The per-album performer credit
+            (``BCAlbum.tralbum_artist`` for tracks within an album, or
+            ``BCTrack.tralbum_artist`` for standalone tracks). When set
+            and different from the band's own name, the artist link uses
+            a synthetic ``{band_id}:{slug}`` ID and the displayed artist
+            name is the performer rather than the band.
+        """
         album_id = album_id or 0
         _, bitrate, content_type = self.streaming_url_from_api(track.streaming_url or {})
+        band_name = track.artist.name
+        display_name = tralbum_artist or band_name
+        artist_item_id = _resolve_artist_id(
+            band_id=track.artist.id, performer=tralbum_artist, band_name=band_name
+        )
         output = MATrack(
             item_id=f"{track.artist.id}-{album_id}-{track.id}",
             provider=self.instance_id,
@@ -198,9 +236,9 @@ class BandcampConverters:
                 [
                     ItemMapping(
                         media_type=MediaType.ARTIST,
-                        item_id=str(track.artist.id),
+                        item_id=artist_item_id,
                         provider=self.instance_id,
-                        name=track.artist.name,
+                        name=display_name,
                     )
                 ]
             ),
@@ -338,7 +376,14 @@ class BandcampConverters:
         band_id = item.get("band_id", 0)
         item_id = item.get("item_id", 0)
         album_id = f"{band_id}-{item_id}"
-        artist_name = item.get("artist_name") or item.get("band_name") or ""
+        # `artist_name` (when set) is the per-album performer; `band_name`
+        # is the page owner. They differ on label-released albums.
+        performer = item.get("artist_name")
+        band_name = item.get("band_name") or ""
+        display_name = performer or band_name
+        artist_item_id = _resolve_artist_id(
+            band_id=band_id, performer=performer, band_name=band_name
+        )
 
         # Build art URL from art_id (matches _build_art_url in parsers.py)
         art_id = item.get("art_id")
@@ -360,9 +405,9 @@ class BandcampConverters:
                 [
                     ItemMapping(
                         media_type=MediaType.ARTIST,
-                        item_id=str(band_id),
+                        item_id=artist_item_id,
                         provider=self.instance_id,
-                        name=artist_name,
+                        name=display_name,
                     )
                 ]
             ),
@@ -389,6 +434,11 @@ class BandcampConverters:
     def album_from_api(self, album: APIAlbum) -> MAAlbum:
         """Convert an API Album object to MA Album format."""
         album_id = f"{album.artist.id}-{album.id}"
+        band_name = album.artist.name
+        display_name = album.tralbum_artist or band_name
+        artist_item_id = _resolve_artist_id(
+            band_id=album.artist.id, performer=album.tralbum_artist, band_name=band_name
+        )
         output = MAAlbum(
             item_id=album_id,
             provider=self.instance_id,
@@ -397,9 +447,9 @@ class BandcampConverters:
                 [
                     ItemMapping(
                         media_type=MediaType.ARTIST,
-                        item_id=str(album.artist.id),
+                        item_id=artist_item_id,
                         provider=self.instance_id,
-                        name=album.artist.name,
+                        name=display_name,
                         image=MediaItemImage(
                             path=album.art_url,
                             type=ImageType.THUMB,
@@ -431,3 +481,76 @@ class BandcampConverters:
         )
         output.metadata.description = f"{album.url}\n{album.about or ''}".strip()
         return output
+
+    def synthetic_artist(
+        self,
+        band_id: int,
+        performer_name: str,
+        *,
+        url: str | None = None,
+        image_url: str | None = None,
+    ) -> MAArtist:
+        """
+        Build an Artist for a per-album performer that has no band page.
+
+        These performers exist on Bandcamp only as a credit on a band's
+        page (typically a label), so we synthesize an Artist scoped to the
+        ``(band_id, performer)`` pair. See :mod:`._ids` for the ID format.
+
+        :param band_id: The hosting Bandcamp band's id.
+        :param performer_name: The performer credit (display name).
+        :param url: Optional URL to attach. Usually the band page; the
+            performer doesn't have their own.
+        :param image_url: Optional artwork to use as the artist's thumb,
+            typically borrowed from one of their albums.
+        """
+        item_id = make_artist_id(band_id, performer_name)
+        output = MAArtist(
+            item_id=item_id,
+            provider=self.instance_id,
+            name=performer_name,
+            uri=url,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=url,
+                )
+            },
+        )
+        if url:
+            output.metadata.description = url
+        if image_url:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
+        return output
+
+
+def _resolve_artist_id(
+    *,
+    band_id: int | str,
+    performer: str | None,
+    band_name: str | None,
+) -> str:
+    """
+    Choose between a real or synthetic artist item_id.
+
+    Returns the synthetic ``{band_id}:{slug(performer)}`` form only when
+    the performer is set AND its slug differs from the band's own slug;
+    otherwise returns the plain ``{band_id}``. Missing inputs collapse
+    to the plain form rather than fabricating a meaningless synthetic.
+    """
+    if (
+        not performer
+        or not band_name
+        or slugify_performer(performer) == slugify_performer(band_name)
+    ):
+        return str(band_id)
+    return make_artist_id(band_id, performer)

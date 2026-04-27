@@ -51,6 +51,50 @@ def test_album_from_search(converters: BandcampConverters) -> None:
     assert result.item_id == "123-456"
     assert result.name == "Test Album"
     assert result.provider == "bandcamp_test"
+    # Without disambiguation context, the converter conservatively
+    # synthesizes a `{band_id}:{slug}` artist ID — the provider's search
+    # method overrides this with a real ID when a `b` result confirms
+    # the page owner's name matches.
+    artist = next(iter(result.artists))
+    assert artist.item_id == "123:test-artist"
+
+
+def test_album_from_search_uses_provided_artist_item_id(
+    converters: BandcampConverters,
+) -> None:
+    """When the provider resolves the artist ID, the converter must honor it."""
+    search_result = Mock()
+    search_result.artist_id = 123
+    search_result.id = 456
+    search_result.name = "Test Album"
+    search_result.artist_name = "Test Artist"
+    search_result.image_url = None
+    search_result.url = "https://test.bandcamp.com/album/test-album"
+    search_result.artist_url = "https://test.bandcamp.com"
+
+    result = converters.album_from_search(search_result, artist_item_id="123")
+
+    artist = next(iter(result.artists))
+    assert artist.item_id == "123"
+
+
+def test_track_from_search_uses_provided_artist_item_id(
+    converters: BandcampConverters,
+) -> None:
+    """Same dedup path for track results."""
+    search_result = Mock()
+    search_result.artist_id = 441379041
+    search_result.album_id = 1938115920
+    search_result.id = 2114682405
+    search_result.name = "Haunted"
+    search_result.artist_name = "Mortaja"
+    search_result.album_name = "Combined Minds"
+    search_result.url = "https://audiophob.bandcamp.com/track/haunted"
+
+    result = converters.track_from_search(search_result, artist_item_id="441379041:mortaja")
+
+    artist = next(iter(result.artists))
+    assert artist.item_id == "441379041:mortaja"
 
 
 def test_artist_from_search(converters: BandcampConverters) -> None:
@@ -98,6 +142,43 @@ def test_track_from_api(converters: BandcampConverters) -> None:
     assert result.item_id == "123-456-789"
     assert result.name == "Test Track"
     assert result.provider == "bandcamp_test"
+    # Without tralbum_artist there's no separate performer credit, so the
+    # artist link is the plain band ID and the display name is the band.
+    artist = next(iter(result.artists))
+    assert artist.item_id == "123"
+    assert artist.name == "Test Artist"
+
+
+def test_track_from_api_label_release_uses_synthetic_artist_id(
+    converters: BandcampConverters,
+) -> None:
+    """tralbum_artist != band's name → synthetic artist ID + performer display."""
+    mock_artist = Mock()
+    mock_artist.id = 441379041
+    mock_artist.name = "audiophob"  # page owner — the label
+    mock_artist.url = "https://audiophob.bandcamp.com"
+
+    mock_track = Mock()
+    mock_track.id = 2114682405
+    mock_track.title = "Haunted"
+    mock_track.artist = mock_artist
+    mock_track.url = "https://audiophob.bandcamp.com/track/haunted"
+    mock_track.duration = 344
+    mock_track.lyrics = None
+    mock_track.track_number = 4
+    mock_track.streaming_url = {"mp3-128": "https://example.com/track.mp3"}
+
+    result = converters.track_from_api(
+        track=mock_track,
+        album_id=1938115920,
+        album_name="Combined Minds",
+        album_image_url="https://f4.bcbits.com/img/a2825942492_16.jpg",
+        tralbum_artist="Mortaja",
+    )
+
+    artist = next(iter(result.artists))
+    assert artist.item_id == "441379041:mortaja"
+    assert artist.name == "Mortaja"
 
 
 def test_artist_from_api(converters: BandcampConverters) -> None:
@@ -118,8 +199,7 @@ def test_artist_from_api(converters: BandcampConverters) -> None:
 
 
 def test_album_from_api(converters: BandcampConverters) -> None:
-    """Test converting API Album to MA Album."""
-    # Create mock API models
+    """Album by the band itself: real artist ID, no synthetic credit."""
     mock_artist = Mock()
     mock_artist.id = 123
     mock_artist.name = "Test Artist"
@@ -133,12 +213,47 @@ def test_album_from_api(converters: BandcampConverters) -> None:
     mock_album.art_url = "https://f4.bcbits.com/img/a1234567890_16.jpg"
     mock_album.release_date = 1609459200
     mock_album.about = "Test album description"
+    mock_album.tralbum_artist = None  # no separate performer credit
 
     result = converters.album_from_api(mock_album)
 
     assert result.item_id == "123-456"
     assert result.name == "Test Album"
     assert result.provider == "bandcamp_test"
+    artist = next(iter(result.artists))
+    assert artist.item_id == "123"
+    assert artist.name == "Test Artist"
+
+
+def test_album_from_api_label_release_uses_synthetic_artist_id(
+    converters: BandcampConverters,
+) -> None:
+    """
+    Label release: page owner != performer → synthetic ``{band_id}:{slug}``.
+
+    `artist.name` is the page owner (the label); `tralbum_artist` is the
+    performer credit. The displayed artist on the album is the performer.
+    """
+    mock_artist = Mock()
+    mock_artist.id = 441379041
+    mock_artist.name = "audiophob"  # page owner — the label
+    mock_artist.url = "https://audiophob.bandcamp.com"
+
+    mock_album = Mock()
+    mock_album.id = 1938115920
+    mock_album.title = "Combined Minds"
+    mock_album.artist = mock_artist
+    mock_album.url = "https://audiophob.bandcamp.com/album/combined-minds"
+    mock_album.art_url = "https://f4.bcbits.com/img/a2825942492_16.jpg"
+    mock_album.release_date = 1539907200
+    mock_album.about = ""
+    mock_album.tralbum_artist = "Mortaja"  # the performer
+
+    result = converters.album_from_api(mock_album)
+
+    artist = next(iter(result.artists))
+    assert artist.item_id == "441379041:mortaja"
+    assert artist.name == "Mortaja"
 
 
 def test_track_from_api_without_album_info(converters: BandcampConverters) -> None:
@@ -368,7 +483,10 @@ def test_album_from_discography_item(converters: BandcampConverters) -> None:
     artists = list(result.artists)
     assert len(artists) == 1
     assert artists[0].name == "Amanda Palmer & Friends"
-    assert artists[0].item_id == "3463798201"
+    # The collaboration credit differs from Amanda Palmer's own band
+    # name — surface it as a synthetic performer scoped to her band so
+    # users can navigate to *just* the collab releases.
+    assert artists[0].item_id == "3463798201:amanda-palmer-friends"
     assert result.metadata.images
     assert any("a3547137148_0.jpg" in img.path for img in result.metadata.images)
 
@@ -420,3 +538,47 @@ def test_album_from_discography_item_artist_name_fallback(
     result = converters.album_from_discography_item(item)
     artists = list(result.artists)
     assert artists[0].name == "Fallback Artist"
+    # Performer == band → real artist ID, not synthetic.
+    assert artists[0].item_id == "200"
+
+
+def test_album_from_discography_item_label_release_uses_synthetic_artist(
+    converters: BandcampConverters,
+) -> None:
+    """
+    Discography of a label: per-item ``artist_name`` differs from ``band_name``.
+
+    The artist link should point at a synthetic performer scoped to the
+    label's band_id.
+    """
+    item: DiscographyItem = {
+        "item_id": 1938115920,
+        "item_type": "album",
+        "artist_name": "Mortaja",
+        "band_name": "audiophob",
+        "title": "Combined Minds",
+        "band_id": 441379041,
+        "art_id": 2825942492,
+        "release_date": "18 Oct 2018 00:00:00 GMT",
+    }
+    result = converters.album_from_discography_item(item)
+    artists = list(result.artists)
+    assert artists[0].name == "Mortaja"
+    assert artists[0].item_id == "441379041:mortaja"
+
+
+def test_synthetic_artist_basics(converters: BandcampConverters) -> None:
+    """The synthetic_artist factory builds an Artist scoped to (band, performer)."""
+    artist = converters.synthetic_artist(
+        band_id=441379041,
+        performer_name="Mortaja",
+        url="https://audiophob.bandcamp.com",
+        image_url="https://f4.bcbits.com/img/a2825942492_16.jpg",
+    )
+    assert artist.item_id == "441379041:mortaja"
+    assert artist.name == "Mortaja"
+    assert artist.provider == "bandcamp_test"
+    # The provider mapping pins the same composite ID, so MA's later
+    # `get_artist(item_id)` call hits our synthetic resolution path.
+    mapping = next(iter(artist.provider_mappings))
+    assert mapping.item_id == "441379041:mortaja"
