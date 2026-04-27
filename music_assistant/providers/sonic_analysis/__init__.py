@@ -772,8 +772,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 entry["artist"] = ", ".join(
                     a.name for a in getattr(track, "artists", []) or []
                 )
-            except Exception:
-                pass
+            except Exception as err:
+                self.logger.debug("Failed to resolve track %s/%s: %s", provider, item_id, err)
             entry.update(fields)
             return entry
 

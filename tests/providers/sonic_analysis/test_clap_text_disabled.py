@@ -11,6 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from music_assistant.providers.sonic_analysis.vendored_clap.clap_wrapper import CLAPWrapper
+from music_assistant.providers.sonic_analysis.vendored_clap.models import clap
+
 # --------------------------------------------------------------------------- #
 #  TextEncoder skip_text_model flag                                            #
 # --------------------------------------------------------------------------- #
@@ -18,8 +21,6 @@ import pytest
 
 def test_text_encoder_skip_does_not_call_automodel() -> None:
     """skip_text_model=True must not invoke AutoModel.from_pretrained."""
-    from music_assistant.providers.sonic_analysis.vendored_clap.models import clap
-
     with patch.object(clap, "AutoModel") as mock_auto:
         clap.TextEncoder(
             d_out=1024,
@@ -32,8 +33,6 @@ def test_text_encoder_skip_does_not_call_automodel() -> None:
 
 def test_text_encoder_skip_sets_base_to_none() -> None:
     """skip_text_model=True leaves the text-model base attribute as None."""
-    from music_assistant.providers.sonic_analysis.vendored_clap.models import clap
-
     with patch.object(clap, "AutoModel"):
         encoder = clap.TextEncoder(
             d_out=1024,
@@ -46,8 +45,6 @@ def test_text_encoder_skip_sets_base_to_none() -> None:
 
 def test_text_encoder_default_calls_automodel() -> None:
     """Default behavior unchanged: AutoModel.from_pretrained is invoked."""
-    from music_assistant.providers.sonic_analysis.vendored_clap.models import clap
-
     with patch.object(clap, "AutoModel") as mock_auto:
         mock_auto.from_pretrained.return_value = MagicMock()
         clap.TextEncoder(d_out=1024, text_model="gpt2", transformer_embed_dim=768)
@@ -61,10 +58,6 @@ def test_text_encoder_default_calls_automodel() -> None:
 
 def test_wrapper_get_text_embeddings_raises_when_text_disabled() -> None:
     """get_text_embeddings on a text-disabled wrapper raises a clear RuntimeError."""
-    from music_assistant.providers.sonic_analysis.vendored_clap.clap_wrapper import (
-        CLAPWrapper,
-    )
-
     wrapper = CLAPWrapper.__new__(CLAPWrapper)
     wrapper.text_enabled = False
     wrapper.tokenizer = None

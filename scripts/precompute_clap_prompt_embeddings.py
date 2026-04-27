@@ -25,6 +25,7 @@ from music_assistant.providers.sonic_analysis.vendored_clap import CLAP
 
 
 def main() -> int:
+    """Load CLAP, embed SCALAR_PROMPT_PAIRS, and write the .npz artifact."""
     print("Loading CLAP model with text encoder (this triggers GPT2 download on first run)...")
     model = CLAP(version="2023", use_cuda=False)
 

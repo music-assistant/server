@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from music_assistant.providers.sonic_analysis.clap_prompts import (
     SCALAR_PROMPT_PAIRS,
@@ -96,8 +97,6 @@ def test_load_raises_when_file_missing(tmp_path: Path) -> None:
 
 def test_compute_prompt_embeddings_flattens_pos_neg_in_order() -> None:
     """The model receives prompts as [pos_0, neg_0, pos_1, neg_1, ...]."""
-    import torch
-
     captured: list[str] = []
 
     class FakeModel:
@@ -115,7 +114,6 @@ def test_compute_prompt_embeddings_flattens_pos_neg_in_order() -> None:
 
 def test_compute_prompt_embeddings_returns_float32_numpy() -> None:
     """Result is a numpy float32 array shaped (2*N_pairs, embedding_dim)."""
-    import torch
 
     class FakeModel:
         def get_text_embeddings(self, prompts: list[str]) -> torch.Tensor:

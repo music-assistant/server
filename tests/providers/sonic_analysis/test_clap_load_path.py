@@ -13,12 +13,17 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import torch
+
+from music_assistant.providers.sonic_analysis import SonicAnalysisProvider
+from music_assistant.providers.sonic_analysis.clap_prompts import (
+    PRECOMPUTED_EMBEDDINGS_PATH,
+    load_precomputed_prompt_embeddings,
+)
 
 
 def _make_stub_provider(*, text_search_enabled: bool) -> Any:
     """Build a minimal SonicAnalysisProvider instance that can call _load_clap."""
-    from music_assistant.providers.sonic_analysis import SonicAnalysisProvider
-
     provider = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
     provider.config = MagicMock()
     provider.config.get_value = MagicMock(return_value=text_search_enabled)
@@ -32,8 +37,6 @@ def _fake_clap_factory() -> tuple[MagicMock, MagicMock]:
     The model exposes get_text_embeddings returning a torch tensor so the
     live path can run without real weights.
     """
-    import torch
-
     mock_model = MagicMock()
     mock_model.get_text_embeddings = MagicMock(return_value=torch.zeros((10, 1024)))
     mock_clap_cls = MagicMock(return_value=mock_model)
@@ -59,13 +62,6 @@ def test_load_clap_uses_text_disabled_when_text_search_off() -> None:
 
 def test_load_clap_returns_cached_embeddings_as_tensor() -> None:
     """Cached path returns a torch.Tensor compatible with compute_similarity."""
-    import torch
-
-    from music_assistant.providers.sonic_analysis.clap_prompts import (
-        PRECOMPUTED_EMBEDDINGS_PATH,
-        load_precomputed_prompt_embeddings,
-    )
-
     expected_np, _ = load_precomputed_prompt_embeddings(PRECOMPUTED_EMBEDDINGS_PATH)
     mock_clap_cls, _ = _fake_clap_factory()
 
