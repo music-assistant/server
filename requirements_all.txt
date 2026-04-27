@@ -38,6 +38,7 @@ duration-parser==1.0.1
 getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.2.3
+huggingface-hub==0.36.2
 ibroadcastaio==0.6.0
 ifaddr==0.2.0
 liblistenbrainz==0.7.0
@@ -69,6 +70,7 @@ python-mpd2>=3.1.1
 python-slugify==8.0.4
 pytz==2025.2
 pywidevine==1.9.0
+PyYAML==6.0.3
 qqmusic-api-python==0.4.1
 radios==0.3.2
 rokuecp==0.19.5
@@ -83,7 +85,10 @@ torch==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
+torchlibrosa==0.1.0
+transformers==4.57.6
 unidecode==1.4.0
+usearch
 uv>=0.8.0
 websocket-client==1.9.0
 wiim==0.1.4

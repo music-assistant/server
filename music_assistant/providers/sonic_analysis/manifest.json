@@ -1,10 +1,22 @@
 {
   "type": "audio_analysis",
   "domain": "sonic_analysis",
-  "name": "Sonic Analysis",
-  "description": "Extracts audio signatures from PCM audio streams during playback.",
+  "name": "Sonic Analysis (on-device)",
+  "description": "On-device audio analysis. Extracts measurement-based features (energy, loudness, brightness, spectral characteristics, rhythmic regularity) via a torch-accelerated pipeline, and soft perceptual features (danceability, valence, arousal, instrumentalness, acousticness) via Microsoft CLAP zero-shot classification. First-time activation downloads ~800MB of model weights (CLAP + GPT2 text encoder) to the local HuggingFace cache. All components MIT or Apache 2.0.",
   "codeowners": ["@chrisuthe"],
-  "requirements": [],
+  "requirements": [
+    "transformers==4.57.6",
+    "huggingface-hub==0.36.2",
+    "PyYAML==6.0.3",
+    "torchlibrosa==0.1.0",
+    "usearch"
+  ],
+  "credits": [
+    "[Microsoft CLAP](https://github.com/microsoft/CLAP)",
+    "[librosa](https://librosa.org)"
+  ],
   "documentation": "",
-  "builtin": true
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "soundwave-outline"
 }
