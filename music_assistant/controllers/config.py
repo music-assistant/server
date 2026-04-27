@@ -1625,10 +1625,10 @@ class ConfigController:
                 type=ConfigEntryType.BOOLEAN,
                 label="Hide this player in the user interface",
                 description="Hide this player from the main players list and from selection "
-                "menus like 'Play on' and 'Transfer queue'. "                                                                                                              
+                "menus like 'Play on' and 'Transfer queue'. "
                 "The player stays controllable and still appears in any sync group "
-                "it belongs to — disable the player instead if you want to block "                                                                                                             
-                "access entirely.", 
+                "it belongs to — disable the player instead if you want to block "
+                "access entirely.",
                 default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
