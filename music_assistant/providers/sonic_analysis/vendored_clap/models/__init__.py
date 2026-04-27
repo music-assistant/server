@@ -1,5 +1,5 @@
 # ruff: noqa  # vendored code — see vendored_clap/README.md
-from . import clap 
+from . import clap
 from . import audio
 from . import htsat
 from . import config

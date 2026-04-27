@@ -3,7 +3,8 @@ import argparse
 import yaml
 import sys
 
-def read_config_as_args(config_path,args=None,is_config_str=False):
+
+def read_config_as_args(config_path, args=None, is_config_str=False):
     return_dict = {}
 
     if config_path is not None:

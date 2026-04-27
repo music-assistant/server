@@ -62,4 +62,4 @@ def test_wrapper_get_text_embeddings_raises_when_text_disabled() -> None:
     wrapper.text_enabled = False
     wrapper.tokenizer = None
     with pytest.raises(RuntimeError, match="text encoder is disabled"):
-        wrapper.get_text_embeddings(["any query"])
+        wrapper.get_text_embeddings(["any query"])  # type: ignore[no-untyped-call]

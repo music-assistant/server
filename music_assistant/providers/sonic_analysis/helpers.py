@@ -205,7 +205,7 @@ def _chroma_stft_torch(power: torch.Tensor) -> np.ndarray:
     # librosa default: norm=inf per column (max-normalize each frame)
     col_max = raw.abs().amax(dim=0, keepdim=True)
     col_max = torch.clamp(col_max, min=1e-10)
-    return (raw / col_max).numpy()
+    return np.asarray((raw / col_max).numpy())
 
 
 def _spectral_contrast_torch(mag: torch.Tensor) -> np.ndarray:
@@ -243,7 +243,7 @@ def _spectral_contrast_torch(mag: torch.Tensor) -> np.ndarray:
             torch.log10(torch.clamp(peak_mean, min=1e-10))
             - torch.log10(torch.clamp(valley_mean, min=1e-10))
         )
-    return result.numpy()
+    return np.asarray(result.numpy())
 
 
 def _onset_strength_torch(audio: torch.Tensor) -> np.ndarray:
@@ -278,7 +278,7 @@ def _onset_strength_torch(audio: torch.Tensor) -> np.ndarray:
     envelope = rectified.mean(dim=0)  # (n_frames - 1,)
     # Prepend 0 so length matches STFT n_frames (librosa does the same)
     envelope = torch.cat([envelope.new_zeros(1), envelope])
-    return envelope.numpy()
+    return np.asarray(envelope.numpy())
 
 
 def _spectral_centroid_torch(mag: torch.Tensor, sample_rate: int) -> np.ndarray:
@@ -296,7 +296,7 @@ def _spectral_centroid_torch(mag: torch.Tensor, sample_rate: int) -> np.ndarray:
     weighted = (freqs.unsqueeze(1) * mag).sum(dim=0)  # (n_frames,)
     total = mag.sum(dim=0)  # (n_frames,)
     centroid = torch.where(total > 0, weighted / total, torch.zeros_like(weighted))
-    return centroid.unsqueeze(0).numpy()  # shape (1, n_frames) to match librosa
+    return np.asarray(centroid.unsqueeze(0).numpy())  # shape (1, n_frames) to match librosa
 
 
 def _spectral_flatness_torch(mag: torch.Tensor) -> np.ndarray:
@@ -314,7 +314,7 @@ def _spectral_flatness_torch(mag: torch.Tensor) -> np.ndarray:
     geom_mean = torch.exp(log_power.mean(dim=0))  # (n_frames,)
     arith_mean = power.mean(dim=0)  # (n_frames,)
     flatness = geom_mean / arith_mean
-    return flatness.unsqueeze(0).numpy()  # shape (1, n_frames)
+    return np.asarray(flatness.unsqueeze(0).numpy())  # shape (1, n_frames)
 
 
 def _rms_torch(audio: torch.Tensor) -> np.ndarray:
@@ -332,7 +332,7 @@ def _rms_torch(audio: torch.Tensor) -> np.ndarray:
     # Unfold into (n_frames, frame_length) windows
     frames = padded.unfold(0, frame_length, hop_length)
     rms = torch.sqrt((frames**2).mean(dim=1))
-    return rms.unsqueeze(0).numpy()  # shape (1, n_frames)
+    return np.asarray(rms.unsqueeze(0).numpy())  # shape (1, n_frames)
 
 
 def merge_block_features(target: BlockFeatures, source: BlockFeatures) -> None:
@@ -489,7 +489,7 @@ def _derive_rms_energy_series(rms: np.ndarray) -> npt.NDArray[np.float32]:
         return np.zeros(_TIME_SERIES_BINS, dtype=np.float32)
     src_x = np.linspace(0.0, 1.0, num=len(rms))
     dst_x = np.linspace(0.0, 1.0, num=_TIME_SERIES_BINS)
-    result = np.interp(dst_x, src_x, rms).astype(np.float32)
+    result: npt.NDArray[np.float32] = np.interp(dst_x, src_x, rms).astype(np.float32)
     peak = result.max()
     if peak > 0:
         result = result / peak
@@ -508,6 +508,6 @@ def _derive_spectral_centroid_series(
         return np.zeros(_TIME_SERIES_BINS, dtype=np.float32)
     src_x = np.linspace(0.0, 1.0, num=len(centroid))
     dst_x = np.linspace(0.0, 1.0, num=_TIME_SERIES_BINS)
-    result = np.interp(dst_x, src_x, centroid).astype(np.float32)
+    result: npt.NDArray[np.float32] = np.interp(dst_x, src_x, centroid).astype(np.float32)
     result[rms_energy < _SILENCE_THRESHOLD] = 0.0
     return result

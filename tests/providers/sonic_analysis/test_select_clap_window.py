@@ -134,7 +134,9 @@ def test_multi_window_short_track_falls_back_to_single() -> None:
     wins = select_clap_windows(audio, SR, 5)
     assert len(wins) == 1
     # Should match the single-window middle-7s fallback exactly
-    assert np.array_equal(wins[0], select_clap_window(audio, SR))
+    fallback = select_clap_window(audio, SR)
+    assert fallback is not None
+    assert np.array_equal(wins[0], fallback)
 
 
 def test_multi_window_too_short_returns_empty() -> None:

@@ -75,7 +75,8 @@ def compute_prompt_embeddings(model: object, prompts: dict[str, tuple[str, str]]
     for pos, neg in prompts.values():
         flat.extend([pos, neg])
     embeddings_tensor = model.get_text_embeddings(flat)  # type: ignore[attr-defined]
-    return embeddings_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+    arr: np.ndarray = embeddings_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+    return arr
 
 
 def save_precomputed_prompt_embeddings(

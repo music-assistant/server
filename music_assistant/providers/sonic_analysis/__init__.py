@@ -450,9 +450,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self.mass.register_api_command(
                 "sonic_analysis/analyzed_tracks", self._handle_analyzed_tracks
             ),
-            self.mass.register_api_command(
-                "sonic_analysis/text_search", self._handle_text_search
-            ),
+            self.mass.register_api_command("sonic_analysis/text_search", self._handle_text_search),
             self.mass.register_api_command(
                 "sonic_analysis/rebuild_text_search_index",
                 self._handle_rebuild_text_search_index,
@@ -489,7 +487,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         flat_prompts: list[str] = []
         for _scalar, (pos, neg) in prompt_order:
             flat_prompts.extend([pos, neg])
-        text_embeddings = model.get_text_embeddings(flat_prompts)
+        text_embeddings = model.get_text_embeddings(flat_prompts)  # type: ignore[no-untyped-call]
         return model, text_embeddings, prompt_order
 
     def _try_load_cached_prompt_embeddings(self) -> np.ndarray | None:
@@ -567,9 +565,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             analyzed_tracks_count, analysis_version.
         """
         text_search_enabled = bool(self.config.get_value(CONF_TEXT_SEARCH, False))
-        text_search_index_size = (
-            len(self._clap_index) if self._clap_index is not None else 0
-        )
+        text_search_index_size = len(self._clap_index) if self._clap_index is not None else 0
         analyzed_tracks_count = 0
         if self.mass.music.database is not None:
             rows = await self.mass.music.database.get_rows_from_query(
@@ -599,9 +595,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param limit: Max results per page.
         :param offset: Pagination offset (ignored when search is set).
         """
-        if self.mass.music.database is None:
-            return {"total": 0, "offset": offset, "limit": limit, "items": []}
-
+        assert self.mass.music.database is not None
         rows = await self.mass.music.database.get_rows(
             "audio_analysis",
             {"aa_provider_domain": self.domain},
@@ -700,9 +694,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param random_pick: When > 0, return a random sample of this size
             instead of an offset/limit page.
         """
-        if self.mass.music.database is None:
-            return {"total": 0, "offset": offset, "limit": limit, "items": []}
-
+        assert self.mass.music.database is not None
         rows = await self.mass.music.database.get_rows(
             "audio_analysis",
             {"aa_provider_domain": self.domain},
@@ -757,9 +749,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         else:
             page_entries = all_entries[offset : offset + limit]
 
-        async def _resolve(
-            item_id: str, provider: str, fields: dict[str, Any]
-        ) -> dict[str, Any]:
+        async def _resolve(item_id: str, provider: str, fields: dict[str, Any]) -> dict[str, Any]:
             entry: dict[str, Any] = {
                 "item_id": item_id,
                 "provider": provider,
@@ -769,9 +759,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             try:
                 track = await self.mass.music.tracks.get(item_id, provider)
                 entry["name"] = track.name
-                entry["artist"] = ", ".join(
-                    a.name for a in getattr(track, "artists", []) or []
-                )
+                entry["artist"] = ", ".join(a.name for a in getattr(track, "artists", []) or [])
             except Exception as err:
                 self.logger.debug("Failed to resolve track %s/%s: %s", provider, item_id, err)
             entry.update(fields)
@@ -969,7 +957,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 merge_block_features(session.accumulated, bf)
             session.pcm_buffer.clear()
 
-        if not session.accumulated.mfcc_frames:
+        if not session.accumulated.rms_frames:
             self.logger.debug("No feature blocks for session %s, skipping", session_id)
             return
 
@@ -984,22 +972,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         else:
             analysis.true_peak = -96.0
 
-        # Build 800-bin waveform from per-block peaks
-        if session.waveform_peaks:
-            peaks = np.array(session.waveform_peaks, dtype=np.float32)
-            if len(peaks) >= 800:
-                bin_edges = np.linspace(0, len(peaks), 801, dtype=int)
-                waveform = np.array(
-                    [peaks[bin_edges[i] : bin_edges[i + 1]].max() for i in range(800)],
-                    dtype=np.float32,
-                )
-            else:
-                indices = np.linspace(0, len(peaks) - 1, 800, dtype=int)
-                waveform = peaks[indices]
-            wf_max = waveform.max()
-            if wf_max > 0:
-                waveform = waveform / wf_max
-            analysis.wave_form = waveform
+        # AudioAnalysisData has no wave_form field upstream — the per-block
+        # waveform peaks accumulated in session.waveform_peaks aren't persisted
+        # by this provider. Drop the dead computation to avoid mypy warnings
+        # and the wasted allocation.
 
         await self._run_live_clap_if_eligible(session, analysis)
 

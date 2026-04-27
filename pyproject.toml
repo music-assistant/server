@@ -78,6 +78,7 @@ ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
+music_assistant/providers/sonic_analysis/vendored_clap/**,\
 NOTICE,\
 """
 
@@ -150,6 +151,7 @@ exclude = [
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
+  '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
 extra_checks = false

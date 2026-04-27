@@ -16,7 +16,7 @@ hop_size: 320
 mel_bins: 64
 window_size: 1024
 
-# PROJECTION SPACE CONFIG 
+# PROJECTION SPACE CONFIG
 d_proj: 1024
 temperature: 0.003
 
