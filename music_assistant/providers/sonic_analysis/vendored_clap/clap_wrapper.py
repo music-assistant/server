@@ -354,8 +354,10 @@ class CLAPWrapper:
         for ttext in text_queries:
             if "gpt" in self.args.text_model:
                 ttext = ttext + " <|endoftext|>"
-            tok = self.tokenizer.encode_plus(
-                text=ttext,
+            # MA MOD: tokenizer.encode_plus() was removed in transformers 5.x;
+            # __call__ is the v5 replacement with identical kwargs/return type.
+            tok = self.tokenizer(
+                ttext,
                 add_special_tokens=True,
                 max_length=self.args.text_len,
                 padding="max_length",

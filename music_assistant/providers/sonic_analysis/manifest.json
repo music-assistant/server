@@ -5,8 +5,8 @@
   "description": "On-device audio analysis. Extracts measurement-based features (energy, loudness, brightness, spectral characteristics, rhythmic regularity) via a torch-accelerated pipeline, and soft perceptual features (danceability, valence, arousal, instrumentalness, acousticness) via Microsoft CLAP zero-shot classification. First-time activation downloads ~300MB of CLAP audio-model weights to the local HuggingFace cache; enabling text search additionally downloads ~500MB of GPT2 text-encoder weights. All components MIT or Apache 2.0.",
   "codeowners": ["@chrisuthe"],
   "requirements": [
-    "transformers==4.57.6",
-    "huggingface-hub==0.36.2",
+    "transformers==5.6.2",
+    "huggingface-hub==1.12.0",
     "PyYAML==6.0.3",
     "torchlibrosa==0.1.0",
     "usearch"
