@@ -43,14 +43,13 @@ from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
-    ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
     RepeatMode,
 )
-from music_assistant_models.media_items import Album, Artist, ItemMapping, is_track
+from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
@@ -751,7 +750,6 @@ class SendspinPlayer(SendspinBasePlayer):
     async def _send_artist_artwork(self, current_item: QueueItem) -> None:
         """Send artist artwork to the sendspin group."""
         artist_artwork_url: str | None = None
-        fetch_target: Artist | ItemMapping | None = None
 
         if current_item.media_item is not None and is_track(current_item.media_item):
             artists = current_item.media_item.artists
@@ -762,21 +760,20 @@ class SendspinPlayer(SendspinBasePlayer):
                 result = await self.mass.music.get_library_item_by_prov_id(
                     MediaType.ARTIST, primary_artist.item_id, primary_artist.provider
                 )
-                if isinstance(result, Artist):
-                    fetch_target = result
-                elif primary_artist.image is not None:
-                    fetch_target = primary_artist
-                if fetch_target is not None and fetch_target.image is not None:
-                    artist_artwork_url = self.mass.metadata.get_image_url(fetch_target.image)
+                artist_item = result if isinstance(result, Artist) else None
+                image = artist_item.image if artist_item is not None else primary_artist.image
+                if image is not None:
+                    artist_artwork_url = self.mass.metadata.get_image_url(image)
 
         if artist_artwork_url != self.last_sent_artist_artwork_url:
             self.last_sent_artist_artwork_url = artist_artwork_url
-            if artist_artwork_url is not None and fetch_target is not None:
-                artist_image_data = await self.mass.metadata.get_image_data_for_item(
-                    fetch_target,  # type: ignore[arg-type]
-                    img_type=ImageType.THUMB,
+            if artist_artwork_url is not None:
+                # Fetch bytes from the already-resolved URL to avoid the secondary
+                # provider lookup that get_image_data_for_item triggers for ItemMappings.
+                artist_image_data = await self.mass.metadata.get_thumbnail(
+                    artist_artwork_url, provider="builtin"
                 )
-                if artist_image_data is not None:
+                if isinstance(artist_image_data, bytes):
                     artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
                     if (artwork_role := self._artwork_role) is not None:
                         await artwork_role.set_artist_artwork(artist_image)
