@@ -166,6 +166,47 @@ class ClapIndex:
             self._index.remove(label)
         self._index.add(label, vec)
 
+    def get_embedding_by_item_id(self, item_id: str) -> tuple[str, np.ndarray] | None:
+        """Return (provider, embedding) for a stored track, or None if absent.
+
+        :param item_id: Provider-specific track identifier to look up. The
+            first label whose reverse-map entry matches is returned (an
+            item_id is expected to be unique across providers in practice).
+        """
+        if self._index is None:
+            return None
+        for label, (prov, iid) in self._reverse.items():
+            if iid != item_id:
+                continue
+            try:
+                vec = self._index.get(label)
+            except Exception:
+                return None
+            if vec is None:
+                return None
+            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+            if arr.shape != (CLAP_EMBEDDING_DIM,):
+                return None
+            return prov, arr
+        return None
+
+    def query_sync(self, embedding: np.ndarray, k: int) -> list[tuple[str, str, float]]:
+        """Synchronous nearest-neighbor query — sibling of search() for sync callers.
+
+        :param embedding: 1024-dim query embedding.
+        :param k: Max number of neighbors to return.
+        """
+        if self._index is None or len(self._index) == 0:
+            return []
+        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        results: list[tuple[str, str, float]] = []
+        for label, distance in self._search_sync(vec, k):
+            entry = self._reverse.get(int(label))
+            if entry is None:
+                continue
+            results.append((entry[0], entry[1], float(distance)))
+        return results
+
     async def search(self, embedding: np.ndarray, k: int) -> list[tuple[str, str, float]]:
         """Return the top-k nearest (provider, item_id, cosine_distance) tuples.
 

@@ -110,6 +110,56 @@ async def test_search_finds_exact_match_closest(tmp_path: Path, logger: logging.
 
 
 @pytest.mark.asyncio
+async def test_get_embedding_by_item_id_round_trip(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """get_embedding_by_item_id returns (provider, vector) for a stored track."""
+    idx = ClapIndex(_fake_mass(tmp_path), logger, filename_stem="test_get_emb")
+    await idx.load()
+    emb = _random_embedding(seed=7)
+    await idx.add("spotify", "track_xyz", emb)
+
+    result = idx.get_embedding_by_item_id("track_xyz")
+    assert result is not None
+    provider, vec = result
+    assert provider == "spotify"
+    assert vec.shape == (CLAP_EMBEDDING_DIM,)
+    # usearch f16 storage incurs tiny precision loss; tolerate it
+    assert np.allclose(vec, emb, atol=1e-2)
+    await idx.close()
+
+
+@pytest.mark.asyncio
+async def test_get_embedding_by_item_id_missing_returns_none(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """Missing item_id returns None rather than raising."""
+    idx = ClapIndex(_fake_mass(tmp_path), logger, filename_stem="test_get_emb_missing")
+    await idx.load()
+    assert idx.get_embedding_by_item_id("not_in_index") is None
+    await idx.close()
+
+
+@pytest.mark.asyncio
+async def test_query_sync_matches_async_search(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """query_sync returns identical results to await search() for sync callers."""
+    idx = ClapIndex(_fake_mass(tmp_path), logger, filename_stem="test_query_sync")
+    await idx.load()
+    emb_a = _random_embedding(seed=1)
+    emb_b = _random_embedding(seed=2)
+    await idx.add("spotify", "track_a", emb_a)
+    await idx.add("spotify", "track_b", emb_b)
+
+    sync_results = idx.query_sync(emb_a, k=2)
+    async_results = await idx.search(emb_a, k=2)
+    assert sync_results == async_results
+    assert sync_results[0][1] == "track_a"
+    await idx.close()
+
+
+@pytest.mark.asyncio
 async def test_save_and_reload_preserves_state(tmp_path: Path, logger: logging.Logger) -> None:
     """Saving then loading a fresh ClapIndex should restore all entries."""
     mass = _fake_mass(tmp_path)
