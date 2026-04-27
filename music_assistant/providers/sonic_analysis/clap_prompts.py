@@ -29,6 +29,16 @@ b<<0 on instrumentalness).
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
+import numpy as np
+
+PRECOMPUTED_EMBEDDINGS_PATH: Path = (
+    Path(__file__).parent / "vendored_clap" / "precomputed_prompt_embeddings.npz"
+)
+
 # (positive_prompt, negative_prompt) — the scalar represents CLAP's
 # confidence that the audio matches the positive side.
 SCALAR_PROMPT_PAIRS: dict[str, tuple[str, str]] = {
@@ -53,6 +63,63 @@ SCALAR_PROMPT_PAIRS: dict[str, tuple[str, str]] = {
         "synthesizers, drum machines, and auto-tuned vocals with heavy studio production.",
     ),
 }
+
+
+def compute_prompt_embeddings(model: object, prompts: dict[str, tuple[str, str]]) -> np.ndarray:
+    """Run a CLAP model's text encoder over a SCALAR_PROMPT_PAIRS-shaped mapping.
+
+    :param model: An object exposing ``get_text_embeddings(list[str]) -> torch.Tensor``.
+    :param prompts: Mapping of scalar name -> (positive, negative) prompt pair.
+    """
+    flat: list[str] = []
+    for _, (pos, neg) in prompts.items():
+        flat.extend([pos, neg])
+    embeddings_tensor = model.get_text_embeddings(flat)  # type: ignore[attr-defined]
+    return embeddings_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+
+
+def save_precomputed_prompt_embeddings(
+    path: Path, embeddings: np.ndarray, prompts_hash: str
+) -> None:
+    """Persist the (N, D) prompt-embedding matrix and its prompts-hash to .npz.
+
+    :param path: Destination .npz path; parent must exist.
+    :param embeddings: float32 array of shape (N_prompts, embedding_dim).
+    :param prompts_hash: SHA-256 hex digest of the SCALAR_PROMPT_PAIRS the
+        embeddings were computed from (drift detector at load time).
+    """
+    np.savez_compressed(
+        path,
+        embeddings=embeddings.astype(np.float32, copy=False),
+        prompts_hash=np.array(prompts_hash),
+    )
+
+
+def load_precomputed_prompt_embeddings(path: Path) -> tuple[np.ndarray, str]:
+    """Load (embeddings, prompts_hash) previously written by save_*.
+
+    :param path: Source .npz path.
+    """
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with np.load(path) as data:
+        embeddings = np.asarray(data["embeddings"], dtype=np.float32)
+        prompts_hash = str(data["prompts_hash"].item())
+    return embeddings, prompts_hash
+
+
+def hash_scalar_prompt_pairs(prompts: dict[str, tuple[str, str]]) -> str:
+    """Stable SHA-256 hex digest of a SCALAR_PROMPT_PAIRS-shaped mapping.
+
+    :param prompts: Mapping of scalar name -> (positive, negative) prompt pair.
+    """
+    canonical = json.dumps(
+        [[k, [p, n]] for k, (p, n) in prompts.items()],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 # Platt scaling per attribute: (a, b) such that
 # score = sigmoid(a * (pos_logit - neg_logit) + b).

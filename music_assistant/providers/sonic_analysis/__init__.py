@@ -42,7 +42,13 @@ from music_assistant.models.audio_analysis_provider import (
 )
 
 from .clap_index import ClapIndex
-from .clap_prompts import CALIBRATION, SCALAR_PROMPT_PAIRS
+from .clap_prompts import (
+    CALIBRATION,
+    PRECOMPUTED_EMBEDDINGS_PATH,
+    SCALAR_PROMPT_PAIRS,
+    hash_scalar_prompt_pairs,
+    load_precomputed_prompt_embeddings,
+)
 from .helpers import (
     BlockFeatures,
     collapse_to_analysis,
@@ -438,19 +444,53 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
         """Construct the CLAP model and pre-compute prompt text embeddings.
 
+        When CONF_TEXT_SEARCH is off, loads CLAP without the GPT2 text
+        encoder (saves ~500MB) and uses the shipped precomputed prompt
+        embeddings; falls back to a full live load if the cache is missing
+        or its prompts-hash drifts from current SCALAR_PROMPT_PAIRS.
+
         :returns: (model, text_embedding_matrix, prompt_order)
         """
-        # Local import so the heavy CLAP/transformers loads only happen
-        # when this provider is actually enabled.
         from .vendored_clap import CLAP  # noqa: PLC0415
 
-        model = CLAP(version="2023", use_cuda=False)
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
+        text_search_enabled = bool(self.config.get_value(CONF_TEXT_SEARCH, False))
+
+        if not text_search_enabled:
+            cached = self._try_load_cached_prompt_embeddings()
+            if cached is not None:
+                model = CLAP(version="2023", use_cuda=False, text_enabled=False)
+                return model, torch.from_numpy(cached), prompt_order
+
+        model = CLAP(version="2023", use_cuda=False, text_enabled=True)
         flat_prompts: list[str] = []
         for _scalar, (pos, neg) in prompt_order:
             flat_prompts.extend([pos, neg])
         text_embeddings = model.get_text_embeddings(flat_prompts)
         return model, text_embeddings, prompt_order
+
+    def _try_load_cached_prompt_embeddings(self) -> np.ndarray | None:
+        """Return shipped prompt embeddings if present and hash-current, else None."""
+        try:
+            cached_embeddings, cached_hash = load_precomputed_prompt_embeddings(
+                PRECOMPUTED_EMBEDDINGS_PATH
+            )
+        except FileNotFoundError:
+            self.logger.warning(
+                "Precomputed CLAP prompt embeddings missing at %s; loading full text encoder",
+                PRECOMPUTED_EMBEDDINGS_PATH,
+            )
+            return None
+        expected_hash = hash_scalar_prompt_pairs(SCALAR_PROMPT_PAIRS)
+        if cached_hash != expected_hash:
+            self.logger.warning(
+                "Precomputed CLAP prompt embeddings hash mismatch (%s != %s); "
+                "loading full text encoder. Re-run scripts/precompute_clap_prompt_embeddings.py.",
+                cached_hash[:12],
+                expected_hash[:12],
+            )
+            return None
+        return cached_embeddings
 
     async def unload(self, is_removed: bool = False) -> None:
         """Flush the text-search index (if any) and release the CLAP model."""

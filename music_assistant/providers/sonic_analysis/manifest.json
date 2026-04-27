@@ -2,7 +2,7 @@
   "type": "audio_analysis",
   "domain": "sonic_analysis",
   "name": "Sonic Analysis (on-device)",
-  "description": "On-device audio analysis. Extracts measurement-based features (energy, loudness, brightness, spectral characteristics, rhythmic regularity) via a torch-accelerated pipeline, and soft perceptual features (danceability, valence, arousal, instrumentalness, acousticness) via Microsoft CLAP zero-shot classification. First-time activation downloads ~800MB of model weights (CLAP + GPT2 text encoder) to the local HuggingFace cache. All components MIT or Apache 2.0.",
+  "description": "On-device audio analysis. Extracts measurement-based features (energy, loudness, brightness, spectral characteristics, rhythmic regularity) via a torch-accelerated pipeline, and soft perceptual features (danceability, valence, arousal, instrumentalness, acousticness) via Microsoft CLAP zero-shot classification. First-time activation downloads ~300MB of CLAP audio-model weights to the local HuggingFace cache; enabling text search additionally downloads ~500MB of GPT2 text-encoder weights. All components MIT or Apache 2.0.",
   "codeowners": ["@chrisuthe"],
   "requirements": [
     "transformers==4.57.6",

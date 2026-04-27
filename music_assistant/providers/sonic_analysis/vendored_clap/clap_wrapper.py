@@ -38,7 +38,17 @@ class CLAPWrapper:
         "clapcap": "clapcap_weights_2023.pth",
     }
 
-    def __init__(self, model_fp: Path | str | None = None, version: str = "2023", use_cuda=False):
+    # MA MOD: text_enabled=False skips the HF text-model + tokenizer downloads
+    # entirely (~500MB GPT2 weights). Audio embedding still works; calling
+    # get_text_embeddings on a text-disabled wrapper raises a clear RuntimeError.
+    def __init__(
+        self,
+        model_fp: Path | str | None = None,
+        version: str = "2023",
+        use_cuda=False,
+        *,
+        text_enabled: bool = True,
+    ):
         # Check if version is supported
         self.supported_versions = self.model_name.keys()
         if version not in self.supported_versions:
@@ -46,6 +56,7 @@ class CLAPWrapper:
                 f"The version {version} is not supported. The supported versions are {self.supported_versions!s}"
             )
 
+        self.text_enabled = text_enabled
         self.np_str_obj_array_pattern = re.compile(r"[SaUO]")
         self.file_path = os.path.realpath(__file__)
         self.default_collate_err_msg_format = (
@@ -110,6 +121,7 @@ class CLAPWrapper:
             text_model=args.text_model,
             transformer_embed_dim=args.transformer_embed_dim,
             d_proj=args.d_proj,
+            skip_text_encoder=not self.text_enabled,  # MA MOD
         )
 
         # Load pretrained weights for model
@@ -120,9 +132,13 @@ class CLAPWrapper:
         clap.load_state_dict(model_state_dict, strict=False)
 
         clap.eval()  # set clap in eval mode
-        tokenizer = AutoTokenizer.from_pretrained(args.text_model)
-        if "gpt" in args.text_model:
-            tokenizer.add_special_tokens({"pad_token": "!"})
+        # MA MOD: skip tokenizer download when text encoder is disabled.
+        if self.text_enabled:
+            tokenizer = AutoTokenizer.from_pretrained(args.text_model)
+            if "gpt" in args.text_model:
+                tokenizer.add_special_tokens({"pad_token": "!"})
+        else:
+            tokenizer = None
 
         if self.use_cuda and torch.cuda.is_available():
             clap = clap.cuda()
@@ -328,6 +344,12 @@ class CLAPWrapper:
 
     def preprocess_text(self, text_queries):
         r"""Load list of class labels and return tokenized text"""
+        # MA MOD: clear error when caller forgot the text encoder is disabled.
+        if not getattr(self, "text_enabled", True):
+            raise RuntimeError(
+                "CLAP text encoder is disabled (text_enabled=False); "
+                "construct CLAPWrapper(..., text_enabled=True) to enable text queries."
+            )
         tokenized_texts = []
         for ttext in text_queries:
             if "gpt" in self.args.text_model:
