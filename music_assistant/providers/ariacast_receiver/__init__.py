@@ -8,7 +8,7 @@ import time
 from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 from aiohttp import ClientTimeout
@@ -54,11 +54,16 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
+    saved_player_id = (
+        mass.config.get_raw_provider_config_value(instance_id, CONF_MASS_PLAYER_ID)
+        if instance_id
+        else None
+    )
     return (
         CONF_ENTRY_WARN_PREVIEW,
         ConfigEntry(
@@ -72,7 +77,13 @@ async def get_config_entries(
                 *(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in sorted(
-                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
+                        mass.players.all_players(
+                            False,
+                            False,
+                            exclude_hidden=True,
+                            keep_player_ids=cast("str | None", saved_player_id),
+                        ),
+                        key=lambda p: p.display_name.lower(),
                     )
                 ),
             ],

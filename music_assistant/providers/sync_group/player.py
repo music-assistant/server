@@ -226,16 +226,23 @@ class SyncGroupPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        possible_players = sorted(
-            [
-                ConfigValueOption(x.display_name, x.player_id)
-                for x in self.mass.players.all_players(True, False)
-                if x.type != PlayerType.GROUP
-                and PlayerFeature.SET_MEMBERS in x.state.supported_features
-                and x.state.can_group_with
-            ],
-            key=lambda x: x.title,
-        )
+        saved_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])) or []
+        saved_filter = cast("list[str]", self.config.get_value(CONF_MEMBERS_FILTER, [])) or []
+
+        def _options(saved_ids: list[str]) -> list[ConfigValueOption]:
+            return sorted(
+                [
+                    ConfigValueOption(x.display_name, x.player_id)
+                    for x in self.mass.players.all_players(
+                        True, False, exclude_hidden=True, keep_player_ids=saved_ids
+                    )
+                    if x.type != PlayerType.GROUP
+                    and PlayerFeature.SET_MEMBERS in x.state.supported_features
+                    and x.state.can_group_with
+                ],
+                key=lambda x: x.title,
+            )
+
         entries: list[ConfigEntry] = [
             # syncgroup specific entries
             CONF_ENTRY_SGP_NOTE,
@@ -249,7 +256,7 @@ class SyncGroupPlayer(Player):
                 "These members will always be part of the group and can never be unjoined "
                 "from the group. ",
                 required=False,  # needed for dynamic members (which allows empty members list)
-                options=possible_players,
+                options=_options(saved_members),
             ),
             ConfigEntry(
                 key=CONF_DYNAMIC_GROUP_MEMBERS,
@@ -275,7 +282,7 @@ class SyncGroupPlayer(Player):
                 "is in this list to the group will be prevented.",
                 default_value=[],
                 required=False,
-                options=possible_players,
+                options=_options(saved_filter),
                 depends_on=CONF_DYNAMIC_GROUP_MEMBERS,
             ),
         ]

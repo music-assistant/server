@@ -49,7 +49,7 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -75,6 +75,12 @@ async def get_config_entries(
         if player := mass.players.get_player(player_id):
             player_name_default = player.display_name
 
+    saved_player_id = (
+        mass.config.get_raw_provider_config_value(instance_id, CONF_MASS_PLAYER_ID)
+        if instance_id
+        else None
+    )
+
     return (
         ConfigEntry(
             key=CONF_PLEX_PROVIDER_ID,
@@ -96,7 +102,13 @@ async def get_config_entries(
             options=[
                 ConfigValueOption(x.display_name, x.player_id)
                 for x in sorted(
-                    mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
+                    mass.players.all_players(
+                        False,
+                        False,
+                        exclude_hidden=True,
+                        keep_player_ids=cast("str | None", saved_player_id),
+                    ),
+                    key=lambda p: p.display_name.lower(),
                 )
             ],
         ),

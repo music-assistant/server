@@ -141,7 +141,7 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -163,6 +163,12 @@ async def get_config_entries(
 
     guest_access_enabled = bool(values.get(CONF_ENABLE_GUEST_ACCESS, False))
 
+    saved_player_id = (
+        mass.config.get_raw_provider_config_value(instance_id, CONF_PARTY_PLAYER)
+        if instance_id
+        else None
+    )
+
     return (
         ConfigEntry(
             key=CONF_PARTY_PLAYER,
@@ -177,7 +183,12 @@ async def get_config_entries(
                 *[
                     ConfigValueOption(player.display_name, player.player_id)
                     for player in sorted(
-                        mass.players.all_players(False, False),
+                        mass.players.all_players(
+                            False,
+                            False,
+                            exclude_hidden=True,
+                            keep_player_ids=cast("str | None", saved_player_id),
+                        ),
                         key=lambda p: p.display_name.lower(),
                     )
                 ],

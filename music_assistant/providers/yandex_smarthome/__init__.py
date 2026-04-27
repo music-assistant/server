@@ -218,10 +218,16 @@ async def get_config_entries(
         direct_auth_url = f"{ma_base_url}{DIRECT_AUTH_BASE_PATH}/authorize"
         direct_token_url = f"{ma_base_url}{DIRECT_AUTH_BASE_PATH}/token"
 
-    # Build player options for exposed players filter
+    # Build player options for exposed players filter.
+    raw_saved = (
+        mass.config.get_raw_provider_config_value(instance_id, CONF_EXPOSED_PLAYERS)
+        if instance_id
+        else None
+    )
+    keep_ids = [str(v) for v in raw_saved] if isinstance(raw_saved, list) else []
     player_options: list[ConfigValueOption] = []
     try:
-        for player in mass.players.all_players():
+        for player in mass.players.all_players(exclude_hidden=True, keep_player_ids=keep_ids):
             state = player.state
             player_options.append(
                 ConfigValueOption(title=state.name or state.player_id, value=state.player_id)

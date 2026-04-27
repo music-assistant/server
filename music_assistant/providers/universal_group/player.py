@@ -132,6 +132,7 @@ class UniversalGroupPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        saved_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])) or []
         return [
             # add universal group specific entries
             CONFIG_ENTRY_UGP_NOTE,
@@ -145,7 +146,9 @@ class UniversalGroupPlayer(Player):
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
                     ConfigValueOption(x.display_name, x.player_id)
-                    for x in self.mass.players.all_players(True, False)
+                    for x in self.mass.players.all_players(
+                        True, False, exclude_hidden=True, keep_player_ids=saved_members
+                    )
                     if x.type != PlayerType.GROUP
                 ],
             ),

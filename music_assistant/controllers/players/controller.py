@@ -114,7 +114,7 @@ from .helpers import AnnounceData, handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
     from music_assistant_models.config_entries import (
         ConfigEntry,
@@ -249,6 +249,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         return_disabled: bool = False,
         provider_filter: str | None = None,
         return_protocol_players: bool = False,
+        *,
+        exclude_hidden: bool = False,
+        keep_player_ids: str | Iterable[str] | None = None,
     ) -> list[Player]:
         """
         Return all registered players.
@@ -259,6 +262,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param return_disabled [bool]: Include disabled players.
         :param provider_filter [str]: Optional filter by provider lookup key.
         :param return_protocol_players [bool]: Include protocol players (hidden by default).
+        :param exclude_hidden [bool]: When True, exclude players with hide_in_ui=True
+            from the result. Use this for UI candidate pickers.
+        :param keep_player_ids: Player id(s) that must always be returned even when
+            hidden. Accepts a single id, an iterable of ids, or None. Use this to
+            preserve already-saved selections in pickers so the dropdown can render
+            and the user can change them.
 
         :return: List of Player objects.
         """
@@ -269,6 +278,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             else None
         )
         current_sendspin_player = get_sendspin_player_id()
+        if keep_player_ids is None:
+            keep_set: set[str] = set()
+        elif isinstance(keep_player_ids, str):
+            keep_set = {keep_player_ids}
+        else:
+            keep_set = set(keep_player_ids)
         return [
             player
             for player in list(self._players.values())
@@ -282,6 +297,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 or player.player_id == current_sendspin_player
             )
             and (return_protocol_players or player.state.type != PlayerType.PROTOCOL)
+            and (not exclude_hidden or not player.hide_in_ui or player.player_id in keep_set)
         ]
 
     @api_command("players/all")

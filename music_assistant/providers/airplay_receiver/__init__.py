@@ -64,7 +64,7 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
@@ -75,6 +75,11 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    saved_player_id = (
+        mass.config.get_raw_provider_config_value(instance_id, CONF_MASS_PLAYER_ID)
+        if instance_id
+        else None
+    )
     return (
         CONF_ENTRY_WARN_PREVIEW,
         ConfigEntry(
@@ -93,7 +98,13 @@ async def get_config_entries(
                 *(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in sorted(
-                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
+                        mass.players.all_players(
+                            False,
+                            False,
+                            exclude_hidden=True,
+                            keep_player_ids=cast("str | None", saved_player_id),
+                        ),
+                        key=lambda p: p.display_name.lower(),
                     )
                 ),
             ],
