@@ -10,30 +10,10 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
 
 from aiohttp import ClientResponseError
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-)
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
-from music_assistant_models.errors import (
-    LoginFailed,
-    MediaNotFoundError,
-    ProviderPermissionDenied,
-)
-from music_assistant_models.media_items import (
-    Album,
-    Artist,
-    AudioFormat,
-    Playlist,
-    SearchResults,
-    Track,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderPermissionDenied
+from music_assistant_models.media_items import Album, Artist, Playlist, SearchResults, Track
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
@@ -48,15 +28,16 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_COLLECTION_TYPE,
     ITEM_KEY_ID,
     ITEM_KEY_MEDIA_STREAMS,
+    ITEM_KEY_RUNTIME_TICKS,
     ITEM_LIMIT,
     ITEMS,
-    SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
 )
 from music_assistant.providers.emby.parsers import (
     parse_album,
     parse_artist,
     parse_playlist,
+    parse_stream_details,
     parse_track,
 )
 
@@ -469,18 +450,34 @@ class EmbyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for given item id and media type."""
-        track = await self.get_track(item_id)
-        # build universal audio URL (include token as query param for convenience)
-        container = ",".join(SUPPORTED_CONTAINER_FORMATS)
-        url = urljoin(self._base_url, f"Audio/{track.item_id}/universal")
-        params = {"Container": container, "api_key": self._token}
+        track_data = await self._get(
+            f"Users/{self._user_id}/Items/{item_id}",
+            params={"EnableUserData": "true", "Fields": ",".join(TRACK_FIELDS)},
+        )
+
+        audio_format = parse_stream_details(track_data)
+
+        url = urljoin(self._base_url, f"Audio/{item_id}/universal")
+        params = {
+            "Container": audio_format.content_type,
+            "AudioCodec": audio_format.codec_type,
+            "AudioSampleRate": audio_format.sample_rate,
+            "AudioChannels": audio_format.channels,
+            "Static": "true",
+            "api_key": self._token,
+        }
         query = "&".join([f"{k}={v}" for k, v in params.items()])
+
+        duration = int(
+            track_data.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000
+        )  # Convert ticks to seconds
+
         return StreamDetails(
-            item_id=track.item_id,
+            item_id=item_id,
             provider=self.instance_id,
-            audio_format=AudioFormat(),
+            audio_format=audio_format,
             stream_type=StreamType.HTTP,
-            duration=int(track.duration) if getattr(track, "duration", None) else 0,
+            duration=duration,
             path=f"{url}?{query}",
             can_seek=True,
             allow_seek=True,
