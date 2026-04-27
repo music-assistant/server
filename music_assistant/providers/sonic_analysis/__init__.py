@@ -25,8 +25,10 @@ gated on analyze_file.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -409,6 +411,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     # Text-search embedding index. None unless the CONF_TEXT_SEARCH toggle
     # is enabled AND the usearch import succeeded.
     _clap_index: ClapIndex | None = None
+    # API-command unregister handles, populated by loaded_in_mass and
+    # invoked on unload so the provider doesn't leak handlers between
+    # config-driven reloads.
+    _unregister_handles: list[Callable[[], None]] = []
 
     async def loaded_in_mass(self) -> None:
         """Load the CLAP model, prompt embeddings, and optional text-search index."""
@@ -438,6 +444,23 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                     err,
                 )
                 self._clap_index = None
+
+        self._unregister_handles = [
+            self.mass.register_api_command("sonic_analysis/status", self._handle_status),
+            self.mass.register_api_command(
+                "sonic_analysis/analyzed_tracks", self._handle_analyzed_tracks
+            ),
+            self.mass.register_api_command(
+                "sonic_analysis/text_search", self._handle_text_search
+            ),
+            self.mass.register_api_command(
+                "sonic_analysis/rebuild_text_search_index",
+                self._handle_rebuild_text_search_index,
+            ),
+            self.mass.register_api_command(
+                "sonic_analysis/export_analysis", self._handle_export_analysis
+            ),
+        ]
 
     def _load_clap(
         self,
@@ -494,6 +517,12 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Flush the text-search index (if any) and release the CLAP model."""
+        for unregister in self._unregister_handles:
+            try:
+                unregister()
+            except Exception as err:
+                self.logger.debug("API command unregister failed: %s", err)
+        self._unregister_handles = []
         if self._clap_index is not None:
             try:
                 await self._clap_index.close()
@@ -529,6 +558,229 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         text_emb = await asyncio.to_thread(self._clap_model.get_text_embeddings, [query])
         emb_np = text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
         return await self._clap_index.search(emb_np, k)
+
+    async def _handle_status(self) -> dict[str, Any]:
+        """Return a snapshot of the analysis provider's runtime state.
+
+        :returns: Dict with provider_loaded, clap_model_loaded,
+            text_search_enabled, text_search_index_size,
+            analyzed_tracks_count, analysis_version.
+        """
+        text_search_enabled = bool(self.config.get_value(CONF_TEXT_SEARCH, False))
+        text_search_index_size = (
+            len(self._clap_index) if self._clap_index is not None else 0
+        )
+        analyzed_tracks_count = 0
+        if self.mass.music.database is not None:
+            rows = await self.mass.music.database.get_rows_from_query(
+                "SELECT COUNT(*) AS c FROM audio_analysis WHERE aa_provider_domain = :domain",
+                {"domain": self.domain},
+            )
+            analyzed_tracks_count = int(rows[0]["c"]) if rows else 0
+        return {
+            "provider_loaded": True,
+            "clap_model_loaded": self._clap_model is not None,
+            "text_search_enabled": text_search_enabled,
+            "text_search_index_size": text_search_index_size,
+            "analyzed_tracks_count": analyzed_tracks_count,
+            "analysis_version": self.analysis_version,
+        }
+
+    async def _handle_analyzed_tracks(
+        self,
+        search: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return paginated list of tracks analyzed by this provider.
+
+        :param search: Optional case-insensitive substring filter on
+            track name, artist, or item_id.
+        :param limit: Max results per page.
+        :param offset: Pagination offset (ignored when search is set).
+        """
+        if self.mass.music.database is None:
+            return {"total": 0, "offset": offset, "limit": limit, "items": []}
+
+        rows = await self.mass.music.database.get_rows(
+            "audio_analysis",
+            {"aa_provider_domain": self.domain},
+            limit=0,
+        )
+        seen: set[tuple[str, str]] = set()
+        entries: list[tuple[str, str]] = []
+        for row in rows:
+            key = (row["item_id"], row["provider"])
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(key)
+
+        async def _resolve(item_id: str, provider: str) -> dict[str, Any]:
+            try:
+                t = await self.mass.music.tracks.get(item_id, provider)
+                artists = ", ".join(a.name for a in getattr(t, "artists", []) or [])
+                return {"item_id": item_id, "name": t.name, "artist": artists}
+            except Exception:
+                return {"item_id": item_id, "name": "(unknown)", "artist": ""}
+
+        if search:
+            resolved = await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries])
+            q = search.lower()
+            tracks = [
+                t
+                for t in resolved
+                if q in t["name"].lower() or q in t["artist"].lower() or q in t["item_id"]
+            ]
+            total = len(tracks)
+            page = tracks[offset : offset + limit]
+        else:
+            total = len(entries)
+            page_entries = entries[offset : offset + limit]
+            page = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in page_entries]))
+
+        return {"total": total, "offset": offset, "limit": limit, "items": page}
+
+    async def _handle_text_search(self, query: str, k: int = 50) -> dict[str, Any]:
+        """Return tracks closest to a natural-language query via the CLAP text-search index.
+
+        :param query: Free-text query.
+        :param k: Max matches to return.
+        """
+        matches = await self.search_by_text(query, k)
+        if not matches:
+            reason: str | None = None
+            if self._clap_index is None:
+                reason = (
+                    "CLAP text-search index is disabled. Enable "
+                    "'compute_text_search_embedding' in the sonic_analysis "
+                    "config and re-analyze tracks."
+                )
+            return {"query": query, "k": k, "items": [], "error": reason}
+
+        async def _resolve(provider: str, item_id: str, distance: float) -> dict[str, Any]:
+            try:
+                track = await self.mass.music.tracks.get(item_id, provider)
+                artists = ", ".join(a.name for a in getattr(track, "artists", []) or [])
+                return {
+                    "provider": provider,
+                    "item_id": item_id,
+                    "name": track.name,
+                    "artist": artists,
+                    "distance": round(float(distance), 4),
+                }
+            except Exception:
+                return {
+                    "provider": provider,
+                    "item_id": item_id,
+                    "name": "(unknown)",
+                    "artist": "",
+                    "distance": round(float(distance), 4),
+                }
+
+        items = list(await asyncio.gather(*[_resolve(p, i, d) for p, i, d in matches]))
+        return {"query": query, "k": k, "items": items}
+
+    async def _handle_rebuild_text_search_index(self) -> dict[str, Any]:
+        """Clear the CLAP text-search index so the next scan repopulates it."""
+        await self.rebuild_text_search_index()
+        size = len(self._clap_index) if self._clap_index is not None else 0
+        return {"status": "rebuilt", "text_search_index_size": size}
+
+    async def _handle_export_analysis(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        random_pick: int = 0,
+    ) -> dict[str, Any]:
+        """Export analyzed tracks with their full scalar analysis data.
+
+        :param limit: Max tracks per page.
+        :param offset: Pagination offset (ignored when random_pick > 0).
+        :param random_pick: When > 0, return a random sample of this size
+            instead of an offset/limit page.
+        """
+        if self.mass.music.database is None:
+            return {"total": 0, "offset": offset, "limit": limit, "items": []}
+
+        rows = await self.mass.music.database.get_rows(
+            "audio_analysis",
+            {"aa_provider_domain": self.domain},
+            limit=0,
+        )
+
+        export_fields = [
+            "bpm",
+            "key",
+            "mode",
+            "energy",
+            "danceability",
+            "loudness_integrated",
+            "loudness_range",
+            "true_peak",
+            "brightness",
+            "harmonic_complexity",
+            "roughness",
+            "rhythmic_regularity",
+            "duration",
+            "instrumentalness",
+            "valence",
+            "arousal",
+            "acousticness",
+        ]
+
+        seen: set[tuple[str, str]] = set()
+        all_entries: list[tuple[str, str, dict[str, Any]]] = []
+        for row in rows:
+            key = (row["item_id"], row["provider"])
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                data = AudioAnalysisData.from_dict(json.loads(row["analysis_data"]))
+            except (json.JSONDecodeError, TypeError, KeyError):
+                continue
+            fields: dict[str, Any] = {}
+            for field_name in export_fields:
+                val = getattr(data, field_name, None)
+                if val is not None:
+                    fields[field_name] = round(val, 4) if isinstance(val, float) else val
+            if data.extra_data:
+                fields["extra_data"] = data.extra_data
+            all_entries.append((row["item_id"], row["provider"], fields))
+
+        total = len(all_entries)
+        if random_pick > 0:
+            import random  # noqa: PLC0415
+
+            page_entries = random.sample(all_entries, min(random_pick, total))
+        else:
+            page_entries = all_entries[offset : offset + limit]
+
+        async def _resolve(
+            item_id: str, provider: str, fields: dict[str, Any]
+        ) -> dict[str, Any]:
+            entry: dict[str, Any] = {
+                "item_id": item_id,
+                "provider": provider,
+                "name": "(unknown)",
+                "artist": "",
+            }
+            try:
+                track = await self.mass.music.tracks.get(item_id, provider)
+                entry["name"] = track.name
+                entry["artist"] = ", ".join(
+                    a.name for a in getattr(track, "artists", []) or []
+                )
+            except Exception:
+                pass
+            entry.update(fields)
+            return entry
+
+        items = list(
+            await asyncio.gather(*[_resolve(iid, prov, f) for iid, prov, f in page_entries])
+        )
+        return {"total": total, "offset": offset, "limit": limit, "items": items}
 
     async def _start_analysis(
         self,
