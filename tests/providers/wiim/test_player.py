@@ -21,10 +21,7 @@ def mock_wiim_device() -> MagicMock:
     device.is_muted = False
     device.playing_status = None
     device.play_mode = None
-    device.current_track_uri = None
     device.current_media = None
-    device.current_position = 0
-    device.current_track_duration = 0
     device.model_name = "WiiM Pro"
     device.manufacturer = "Linkplay"
     device.firmware_version = "4.8.1"
