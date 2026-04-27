@@ -126,7 +126,7 @@ class WiimPlayer(Player):
         return [
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
-                safe_max_sample_rate=192000,
+                safe_max_sample_rate=96000,
                 max_bit_depth=24,
                 safe_max_bit_depth=24,
             ),
