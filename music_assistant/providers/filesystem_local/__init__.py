@@ -714,7 +714,32 @@ class LocalFileSystemProvider(MusicProvider):
         if file_item.ext == "pls":
             playlist.is_editable = False
         playlist.owner = self.name
+        # Check for local image with the same basename
+        if local_image := await self._get_playlist_local_image(file_item):
+            playlist.metadata.images = UniqueList([local_image])
         return playlist
+
+    async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
+        """Return a local image alongside the playlist file (matching basename) if any."""
+        try:
+            folder_files = await self._scandir(file_item.relative_parent_path)
+        except (OSError, MusicAssistantError):
+            return None
+        target = file_item.name.lower()
+        for item in folder_files:
+            if item.is_dir or not item.ext:
+                continue
+            if item.ext.lower() not in IMAGE_EXTENSIONS:
+                continue
+            if item.name.lower() != target:
+                continue
+            return MediaItemImage(
+                type=ImageType.THUMB,
+                path=item.relative_path,
+                provider=self.instance_id,
+                remotely_accessible=False,
+            )
+        return None
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
