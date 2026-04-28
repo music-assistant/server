@@ -485,13 +485,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :returns: Dict with provider_loaded, clap_model_loaded,
             analyzed_tracks_count, analysis_version.
         """
-        analyzed_tracks_count = 0
-        if self.mass.music.database is not None:
-            rows = await self.mass.music.database.get_rows_from_query(
-                "SELECT COUNT(*) AS c FROM audio_analysis WHERE aa_provider_domain = :domain",
-                {"domain": self.domain},
-            )
-            analyzed_tracks_count = int(rows[0]["c"]) if rows else 0
+        analyzed_tracks_count = await self.mass.streams.audio_analysis.count_rows_by_domain(
+            self.domain
+        )
         return {
             "provider_loaded": True,
             "clap_model_loaded": self._clap_model is not None,
@@ -512,12 +508,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param limit: Max results per page.
         :param offset: Pagination offset (ignored when search is set).
         """
-        assert self.mass.music.database is not None
-        rows = await self.mass.music.database.get_rows(
-            "audio_analysis",
-            {"aa_provider_domain": self.domain},
-            limit=0,
-        )
+        rows = await self.mass.streams.audio_analysis.list_rows_by_domain(self.domain)
         seen: set[tuple[str, str]] = set()
         entries: list[tuple[str, str]] = []
         for row in rows:
@@ -565,12 +556,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param random_pick: When > 0, return a random sample of this size
             instead of an offset/limit page.
         """
-        assert self.mass.music.database is not None
-        rows = await self.mass.music.database.get_rows(
-            "audio_analysis",
-            {"aa_provider_domain": self.domain},
-            limit=0,
-        )
+        rows = await self.mass.streams.audio_analysis.list_rows_by_domain(self.domain)
 
         export_fields = [
             "bpm",
