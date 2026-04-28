@@ -81,11 +81,12 @@ CONF_ACTION_REBUILD_INDEX: str = "rebuild_text_search_index"
 # because we slice deterministically before handing it off (instead of
 # letting the vendored wrapper's random.randrange pick).
 CLAP_WINDOW_SECONDS: int = 7
-# Skip the first 30s of each track (intros, buildups, sparse openers)
+# Skip the first 45s of each track (intros, buildups, sparse openers)
 # and sample past that. For Fast (N=1) this lands the single window at
-# [30s, 37s); for multi-window modes this is where the sampled region
-# begins.
-CLAP_SKIP_SECONDS: int = 30
+# [45s, 52s); for multi-window modes this is where the sampled region
+# begins. 45s (vs the original 30s) is more conservative — empirically
+# fewer tracks slip into a window that's still in their intro region.
+CLAP_SKIP_SECONDS: int = 45
 
 # Sampling presets — one enum value in the provider config maps to a
 # window count. More windows → more representative embeddings (mean-
@@ -238,8 +239,8 @@ def select_clap_window(audio: np.ndarray, source_sr: int) -> np.ndarray | None:
         if audio is too short (< 1s) to be meaningful.
 
     Selection order:
-      1. Preferred: samples [30s, 37s) — skips typical intros.
-      2. Fallback (track shorter than 37s): the middle 7 seconds.
+      1. Preferred: samples [45s, 52s) — skips typical intros.
+      2. Fallback (track shorter than 52s): the middle 7 seconds.
       3. Short-track fallback (track shorter than 7s but >= 1s): the
          whole clip; CLAP's wrapper pads by repeat to reach its fixed
          7-second input.
@@ -268,9 +269,9 @@ def select_clap_windows(audio: np.ndarray, source_sr: int, n_windows: int) -> li
     :returns: List of window arrays (possibly shorter than n_windows if the
         track is too short). Empty list if audio is too short for CLAP at all.
 
-    For n_windows == 1, delegates to select_clap_window (the "skip 30s,
+    For n_windows == 1, delegates to select_clap_window (the "skip 45s,
     take next 7s" rule with short-track fallback). For n_windows > 1,
-    evenly spaces n_windows window-start positions from the 30s mark to
+    evenly spaces n_windows window-start positions from the 45s mark to
     the latest position that still fits a 7s window — so the first
     window starts at the same place as the single-window rule, and the
     last ends right at the track's tail. Windows may overlap slightly on

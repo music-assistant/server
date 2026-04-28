@@ -25,8 +25,8 @@ def _ramp(n: int) -> np.ndarray:
 
 
 def test_long_track_takes_skip_plus_window_offset() -> None:
-    """Audio longer than skip+window should yield samples [30s, 37s)."""
-    audio = _ramp(60 * SR)
+    """Audio longer than skip+window should yield samples [45s, 52s)."""
+    audio = _ramp(120 * SR)
     win = select_clap_window(audio, SR)
     assert win is not None
     assert len(win) == CLAP_WINDOW_SECONDS * SR
@@ -36,8 +36,8 @@ def test_long_track_takes_skip_plus_window_offset() -> None:
     assert float(win[-1]) == float((CLAP_SKIP_SECONDS + CLAP_WINDOW_SECONDS) * SR - 1)
 
 
-def test_exactly_37s_still_hits_preferred_branch() -> None:
-    """Boundary: a track exactly skip+window long should still slice [30s, 37s)."""
+def test_exactly_skip_plus_window_still_hits_preferred_branch() -> None:
+    """Boundary: a track exactly skip+window long should still slice [45s, 52s)."""
     audio = _ramp((CLAP_SKIP_SECONDS + CLAP_WINDOW_SECONDS) * SR)
     win = select_clap_window(audio, SR)
     assert win is not None
@@ -46,7 +46,7 @@ def test_exactly_37s_still_hits_preferred_branch() -> None:
 
 
 def test_short_track_falls_back_to_middle_seven_seconds() -> None:
-    """Tracks shorter than 37s fall back to the middle 7s of available audio."""
+    """Tracks shorter than 52s fall back to the middle 7s of available audio."""
     audio_len_seconds = 20
     audio = _ramp(audio_len_seconds * SR)
     win = select_clap_window(audio, SR)
@@ -97,14 +97,14 @@ def test_multi_window_n1_matches_single_window() -> None:
 
 
 def test_multi_window_n3_evenly_spans_past_intro() -> None:
-    """N=3 on a long track spaces 3 windows from the 30s mark to the track tail."""
+    """N=3 on a long track spaces 3 windows from the 45s mark to the track tail."""
     track_seconds = 180
     audio = _ramp(track_seconds * SR)
     wins = select_clap_windows(audio, SR, 3)
     assert len(wins) == 3
     for w in wins:
         assert len(w) == CLAP_WINDOW_SECONDS * SR
-    # First window starts at the 30s mark
+    # First window starts at the 45s mark
     assert float(wins[0][0]) == float(CLAP_SKIP_SECONDS * SR)
     # Last window ends right at the track tail
     assert float(wins[-1][-1]) == float(track_seconds * SR - 1)
