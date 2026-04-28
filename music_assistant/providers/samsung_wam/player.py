@@ -131,7 +131,7 @@ class WamPlayer(Player):
     async def on_config_updated(self) -> None:
         """Handle logic when the player config changes."""
         if new_name := self.config.name:
-            if self.connected:
+            if self.connected and new_name != self._attr_name:
                 self.mass.create_task(self.device_config.set_name(new_name))
 
     # --- Player Controls ---
