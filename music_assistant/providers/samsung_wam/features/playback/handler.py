@@ -117,11 +117,16 @@ class PlaybackHandler(WamPlayerFeatureBase):
                 f"'{source}' is not a valid source for: {self.player.log_name}"
             ) from err
 
-        if self.player.active_source == str(target_source):
-            return
-
         if target_source != WamSource.WIFI:
             self.player.stream_active = False
+            # The player will briefly be IDLE during the source switch; setting the active
+            # source here prevents the UI from momentarily falling back to the queue name.
+            self.player.set_active_mass_source(str(target_source))
+
+        if self.player.active_source == str(target_source):
+            # Already on the target source; refresh to push current state through.
+            self.player.state_sync.refresh_state(notify_provider=True)
+            return
 
         await self.speaker.select_source(str(target_source))
 
@@ -129,3 +134,6 @@ class PlaybackHandler(WamPlayerFeatureBase):
             return self.player.active_source == str(target_source)
 
         await self.player.await_state_change(check_source, SOURCE_CHANGE_TIMEOUT)
+
+        # Push final state regardless of whether the source change was confirmed.
+        self.player.state_sync.refresh_state(notify_provider=True)
