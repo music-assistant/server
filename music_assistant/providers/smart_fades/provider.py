@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import platform
 import time
 from dataclasses import dataclass, field
@@ -85,7 +84,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     def _initialize_models(self) -> tuple[Any, ...]:
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
-        torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
         is_arm = platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
