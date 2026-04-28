@@ -13,8 +13,8 @@ from defusedxml import ElementTree as DefusedET
 from pywam.speaker import Speaker
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
-from music_assistant.providers.samsung_wam.exceptions import PlayerDisabledError
 from music_assistant.providers.samsung_wam.features.base import WamProviderFeatureBase
+from music_assistant.providers.samsung_wam.features.playback.models import WamSource
 from music_assistant.providers.samsung_wam.features.state_sync.mapper import StateSyncMapper
 from music_assistant.providers.samsung_wam.player import WamPlayer
 
@@ -161,23 +161,31 @@ class DiscoveryHandler(WamProviderFeatureBase):
 
         try:
             await temp_speaker.update()
-
             attrs = StateSyncMapper.create_speaker_attributes(temp_speaker)
             if not attrs.mac:
                 raise ConnectionError("Failed to get MAC address during pre-flight.")
+        except Exception as err:
+            self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
+            await temp_speaker.disconnect()
+            return
 
-            if not self.mass.config.get_raw_player_config_value(attrs.mac, "enabled", True):
-                raise PlayerDisabledError("Player disabled in configuration.")
+        if not self.mass.config.get_raw_player_config_value(attrs.mac, "enabled", True):
+            self.logger.debug("Player at %s is disabled in configuration.", ip_address)
+            await temp_speaker.disconnect()
+            return
 
+        try:
             player = WamPlayer(self.provider, ip_address, udn, attrs.mac, temp_speaker)
             player.state_sync.apply_initial_state(attrs)
 
             await self.mass.players.register_or_update(player)
+            player.state_sync.subscribe_speaker_events()
             self.provider.groups.register_player(player)
 
-        except PlayerDisabledError:
-            self.logger.debug("Player at %s is disabled in configuration.", ip_address)
-            await temp_speaker.disconnect()
+            if attrs.source and attrs.source not in (WamSource.WIFI, "Unknown"):
+                # Set immediately if the speaker is already on an external input,
+                # so the UI is correct on first register.
+                player.set_active_mass_source(attrs.source)
         except Exception as err:
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()

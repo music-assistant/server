@@ -52,9 +52,14 @@ class StateSyncHandler(WamPlayerFeatureBase):
             software_version=attrs.software_version,
             identifiers=self.player._attr_device_info.identifiers,
         )
+        self.player._attr_name = attrs.name
         self.suppress_speaker_status_events(self.speaker)
-        self._subscribe_speaker_events()
         self.player._attr_available = True
+
+    def subscribe_speaker_events(self) -> None:
+        """Register the event subscriber for the current speaker instance."""
+        if self.speaker:
+            self.speaker.events.register_subscriber(partial(self.on_speaker_event), info_level=0)
 
     async def poll(self) -> None:
         """Poll the player for state updates and handle connection recovery."""
@@ -207,7 +212,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
             self.suppress_speaker_status_events(new_speaker)
             self.player.speaker = new_speaker
-            self._subscribe_speaker_events()
+            self.subscribe_speaker_events()
 
         except Exception:
             await new_speaker.disconnect()
@@ -222,8 +227,3 @@ class StateSyncHandler(WamPlayerFeatureBase):
         """Safely disconnect the underlying pywam speaker."""
         if self.speaker and self.player.connected:
             await self.speaker.disconnect()
-
-    def _subscribe_speaker_events(self) -> None:
-        """Register the event subscriber for the current speaker instance."""
-        if self.speaker:
-            self.speaker.events.register_subscriber(partial(self.on_speaker_event), info_level=0)
