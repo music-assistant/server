@@ -88,7 +88,6 @@ torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
 transformers==5.6.2
 unidecode==1.4.0
-usearch
 uv>=0.8.0
 websocket-client==1.9.0
 wiim==0.1.4

@@ -2,14 +2,13 @@
   "type": "audio_analysis",
   "domain": "sonic_analysis",
   "name": "Sonic Analysis (on-device)",
-  "description": "On-device audio analysis. Extracts measurement-based features (energy, loudness, brightness, spectral characteristics, rhythmic regularity) via a torch-accelerated pipeline, and soft perceptual features (danceability, valence, arousal, instrumentalness, acousticness) via Microsoft CLAP zero-shot classification. First-time activation downloads ~300MB of CLAP audio-model weights to the local HuggingFace cache; enabling text search additionally downloads ~500MB of GPT2 text-encoder weights. All components MIT or Apache 2.0.",
+  "description": "On-device audio analysis. Extracts measurement-based features (energy, loudness, brightness, spectral characteristics, rhythmic regularity) via a torch-accelerated pipeline, and soft perceptual features (danceability, valence, arousal, instrumentalness, acousticness) via Microsoft CLAP zero-shot classification. The 1024-dim CLAP audio embedding is also persisted per track so downstream plugins (e.g. sonic_clap) can build search indexes without re-running inference. First-time activation downloads ~300MB of CLAP audio-model weights to the local HuggingFace cache. All components MIT or Apache 2.0.",
   "codeowners": ["@music-assistant"],
   "requirements": [
     "transformers==5.6.2",
     "huggingface-hub==1.12.0",
     "PyYAML==6.0.3",
-    "torchlibrosa==0.1.0",
-    "usearch"
+    "torchlibrosa==0.1.0"
   ],
   "credits": [
     "[Microsoft CLAP](https://github.com/microsoft/CLAP)",

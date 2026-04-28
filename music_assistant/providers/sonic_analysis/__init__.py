@@ -10,7 +10,9 @@ audio load per track:
 
 - Microsoft CLAP zero-shot inference (vendored msclap) producing
   Platt-calibrated danceability, valence, arousal, instrumentalness,
-  acousticness.
+  acousticness, plus the raw 1024-dim audio embedding which is persisted
+  under audio_analysis.extra_data["clap_embedding"] for downstream
+  plugins (e.g. sonic_clap) to consume.
 
 This provider previously lived as two separate providers (sonic_analysis
 and clap_analysis). They were merged because each was loading the audio
@@ -18,8 +20,10 @@ file independently — wasteful double I/O for network-attached libraries.
 The merged analyze_file loads once and feeds both feature engines.
 
 Live-playback path (process_pcm_chunk / _finalize via AudioAnalysisController)
-produces only the librosa-based outputs — CLAP inference is file-based only,
-gated on analyze_file.
+produces librosa outputs and — for non-filesystem providers — runs CLAP
+on a deterministic 7-second window, so streaming providers (Tidal,
+Spotify, Qobuz, etc.) also get the 5 soft scalars and the persisted
+1024-dim embedding.
 """
 
 from __future__ import annotations
@@ -43,7 +47,6 @@ from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
 )
 
-from .clap_index import ClapIndex
 from .clap_prompts import (
     CALIBRATION,
     PRECOMPUTED_EMBEDDINGS_PATH,
@@ -72,8 +75,10 @@ ANALYZE_FILE_SAMPLE_RATE: int = 22050
 BLOCK_SECONDS: int = 10
 OVERLAP_SAMPLES: int = 2048
 
-CONF_TEXT_SEARCH: str = "compute_text_search_embedding"
-CONF_ACTION_REBUILD_INDEX: str = "rebuild_text_search_index"
+# Key under audio_analysis.extra_data where the 1024-dim CLAP audio
+# embedding is persisted. Downstream plugins (sonic_clap) read this to
+# build search indexes; sonic_analysis does not own any usearch index.
+EXTRA_DATA_CLAP_EMBEDDING: str = "clap_embedding"
 
 # CLAP's HTSAT audio encoder has a fixed 7-second input at 44.1 kHz —
 # not a knob, architecturally load-bearing. We always feed it exactly
@@ -110,10 +115,10 @@ CONF_CLAP_SAMPLING: str = "clap_sampling"
 
 # Upstream's AudioAnalysisController runs analyze_file for tracks from
 # these provider domains only. For those, the background scan fills in
-# CLAP scalars and the text-search embedding — running CLAP again in
-# the live path would be redundant. Streaming providers (Tidal,
-# Spotify, Qobuz, etc.) never hit analyze_file, so live CLAP is the
-# only way they get the 5 soft scalars + text-search participation.
+# CLAP scalars and the persisted embedding — running CLAP again in the
+# live path would be redundant. Streaming providers (Tidal, Spotify,
+# Qobuz, etc.) never hit analyze_file, so live CLAP is the only way
+# they get the 5 soft scalars + the 1024-dim embedding in extra_data.
 FILESYSTEM_PROVIDER_DOMAINS: frozenset[str] = frozenset(
     {"filesystem_local", "filesystem_smb", "filesystem_nfs"}
 )
@@ -146,9 +151,9 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
+    mass: MusicAssistant,  # noqa: ARG001
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider.
@@ -158,43 +163,7 @@ async def get_config_entries(
     :param action: action key called from config entries UI.
     :param values: the (intermediate) raw values for config entries sent with the action.
     """
-    if action == CONF_ACTION_REBUILD_INDEX and instance_id:
-        provider = mass.get_provider(instance_id)
-        if isinstance(provider, SonicAnalysisProvider):
-            await provider.rebuild_text_search_index()
-
     return (
-        ConfigEntry(
-            key=CONF_TEXT_SEARCH,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable text search (Explore by text)",
-            description=(
-                "Store a CLAP audio embedding per track in a dedicated "
-                "usearch index, enabling natural-language queries over "
-                "your library (e.g. 'super dancy disco track'). "
-                "Reuses the CLAP inference already performed for the "
-                "danceability/valence/etc. scalars, so no extra model "
-                "cost per track. Disk usage grows ~2 GB per million "
-                "tracks. Only tracks analyzed while this is enabled are "
-                "added to the index; re-analyze older tracks to include "
-                "them."
-            ),
-            default_value=False,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_REBUILD_INDEX,
-            type=ConfigEntryType.ACTION,
-            label="Rebuild text search index",
-            description=(
-                "Delete the current CLAP text-search index. It will "
-                "repopulate as tracks are re-analyzed (via the "
-                "background scan or by clearing analysis for this "
-                "provider). Use this only if you suspect the index is "
-                "corrupted or want a clean slate."
-            ),
-            action=CONF_ACTION_REBUILD_INDEX,
-        ),
         ConfigEntry(
             key=CONF_CLAP_SAMPLING,
             type=ConfigEntryType.STRING,
@@ -321,10 +290,10 @@ def run_clap_inference(
     clap-spike eval harness can call the same code. Windows are sliced
     deterministically via select_clap_windows, fed as one batch to the
     CLAP audio encoder, and the resulting per-window embeddings are
-    mean-pooled + L2-renormalized for the text-search index. Per-window
-    similarity logits are also mean-pooled before Platt calibration, so
-    the scalars reflect the whole sampled region rather than any single
-    window.
+    mean-pooled + L2-renormalized so cosine similarity in downstream
+    indexes (sonic_clap) is well-defined. Per-window similarity logits
+    are also mean-pooled before Platt calibration, so the scalars
+    reflect the whole sampled region rather than any single window.
     """
     windows = select_clap_windows(audio, source_sr, n_windows)
     if not windows:
@@ -349,6 +318,13 @@ def run_clap_inference(
     mean_emb = mean_emb / torch.norm(mean_emb)
     emb_np = mean_emb.detach().cpu().numpy().astype(np.float32).reshape(-1)
     return scalars, emb_np
+
+
+def _store_clap_embedding(analysis: AudioAnalysisData, embedding: np.ndarray) -> None:
+    """Persist the 1024-dim CLAP audio embedding under analysis.extra_data."""
+    if analysis.extra_data is None:
+        analysis.extra_data = {}
+    analysis.extra_data[EXTRA_DATA_CLAP_EMBEDDING] = embedding.astype(np.float32).tolist()
 
 
 def _pcm_bytes_to_audio(
@@ -409,16 +385,13 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     _clap_model: Any = None
     _clap_text_embeddings: Any = None
     _clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
-    # Text-search embedding index. None unless the CONF_TEXT_SEARCH toggle
-    # is enabled AND the usearch import succeeded.
-    _clap_index: ClapIndex | None = None
     # API-command unregister handles, populated by loaded_in_mass and
     # invoked on unload so the provider doesn't leak handlers between
     # config-driven reloads.
     _unregister_handles: list[Callable[[], None]] = []
 
     async def loaded_in_mass(self) -> None:
-        """Load the CLAP model, prompt embeddings, and optional text-search index."""
+        """Load the CLAP model and prompt embeddings."""
         try:
             (
                 self._clap_model,
@@ -433,28 +406,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self.logger.warning("CLAP model load failed (librosa-only mode): %s", err)
             self._clap_model = None
 
-        if self._clap_model is not None and bool(self.config.get_value(CONF_TEXT_SEARCH, False)):
-            try:
-                index = ClapIndex(self.mass, self.logger)
-                await index.load()
-                self._clap_index = index
-                self.logger.info("CLAP text-search index ready (%d vectors)", len(index))
-            except Exception as err:
-                self.logger.warning(
-                    "CLAP text-search index load failed, text search disabled: %s",
-                    err,
-                )
-                self._clap_index = None
-
         self._unregister_handles = [
             self.mass.register_api_command("sonic_analysis/status", self._handle_status),
             self.mass.register_api_command(
                 "sonic_analysis/analyzed_tracks", self._handle_analyzed_tracks
-            ),
-            self.mass.register_api_command("sonic_analysis/text_search", self._handle_text_search),
-            self.mass.register_api_command(
-                "sonic_analysis/rebuild_text_search_index",
-                self._handle_rebuild_text_search_index,
             ),
             self.mass.register_api_command(
                 "sonic_analysis/export_analysis", self._handle_export_analysis
@@ -464,25 +419,23 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     def _load_clap(
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
-        """Construct the CLAP model and pre-compute prompt text embeddings.
+        """Construct the CLAP audio encoder and load prompt text embeddings.
 
-        When CONF_TEXT_SEARCH is off, loads CLAP without the GPT2 text
-        encoder (saves ~500MB) and uses the shipped precomputed prompt
-        embeddings; falls back to a full live load if the cache is missing
-        or its prompts-hash drifts from current SCALAR_PROMPT_PAIRS.
+        Always prefers the shipped precomputed prompt embeddings (skips
+        the ~500MB GPT2 text encoder download). Falls back to a full live
+        load if the cache is missing or its prompts-hash drifts from the
+        current SCALAR_PROMPT_PAIRS.
 
         :returns: (model, text_embedding_matrix, prompt_order)
         """
         from .vendored_clap import CLAP  # noqa: PLC0415
 
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
-        text_search_enabled = bool(self.config.get_value(CONF_TEXT_SEARCH, False))
 
-        if not text_search_enabled:
-            cached = self._try_load_cached_prompt_embeddings()
-            if cached is not None:
-                model = CLAP(version="2023", use_cuda=False, text_enabled=False)
-                return model, torch.from_numpy(cached), prompt_order
+        cached = self._try_load_cached_prompt_embeddings()
+        if cached is not None:
+            model = CLAP(version="2023", use_cuda=False, text_enabled=False)
+            return model, torch.from_numpy(cached), prompt_order
 
         model = CLAP(version="2023", use_cuda=False, text_enabled=True)
         flat_prompts: list[str] = []
@@ -515,58 +468,23 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         return cached_embeddings
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Flush the text-search index (if any) and release the CLAP model."""
+        """Release the CLAP model and unregister API handlers."""
         for unregister in self._unregister_handles:
             try:
                 unregister()
             except Exception as err:
                 self.logger.debug("API command unregister failed: %s", err)
         self._unregister_handles = []
-        if self._clap_index is not None:
-            try:
-                await self._clap_index.close()
-            except Exception as err:
-                self.logger.warning("CLAP text-search index close failed: %s", err)
-            self._clap_index = None
         self._clap_model = None
         self._clap_text_embeddings = None
         await super().unload(is_removed)
-
-    async def rebuild_text_search_index(self) -> None:
-        """Delete the text-search index files so the next scan repopulates."""
-        if self._clap_index is not None:
-            await self._clap_index.reset()
-            self.logger.info("CLAP text-search index cleared (awaiting re-analysis)")
-        else:
-            # Config action arriving while the index is disabled / failed to
-            # load: still honor the intent by removing the files directly.
-            tmp = ClapIndex(self.mass, self.logger)
-            await tmp.reset()
-            self.logger.info("CLAP text-search index files deleted")
-
-    async def search_by_text(self, query: str, k: int = 50) -> list[tuple[str, str, float]]:
-        """Return the top-k tracks closest to a natural-language query.
-
-        :param query: Free-text query (e.g. "super dancy disco track").
-        :param k: Max number of matches to return.
-        :returns: List of (provider, item_id, cosine_distance) tuples,
-            or empty list if CLAP or the text-search index is unavailable.
-        """
-        if self._clap_model is None or self._clap_index is None:
-            return []
-        text_emb = await asyncio.to_thread(self._clap_model.get_text_embeddings, [query])
-        emb_np = text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
-        return await self._clap_index.search(emb_np, k)
 
     async def _handle_status(self) -> dict[str, Any]:
         """Return a snapshot of the analysis provider's runtime state.
 
         :returns: Dict with provider_loaded, clap_model_loaded,
-            text_search_enabled, text_search_index_size,
             analyzed_tracks_count, analysis_version.
         """
-        text_search_enabled = bool(self.config.get_value(CONF_TEXT_SEARCH, False))
-        text_search_index_size = len(self._clap_index) if self._clap_index is not None else 0
         analyzed_tracks_count = 0
         if self.mass.music.database is not None:
             rows = await self.mass.music.database.get_rows_from_query(
@@ -577,8 +495,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         return {
             "provider_loaded": True,
             "clap_model_loaded": self._clap_model is not None,
-            "text_search_enabled": text_search_enabled,
-            "text_search_index_size": text_search_index_size,
             "analyzed_tracks_count": analyzed_tracks_count,
             "analysis_version": self.analysis_version,
         }
@@ -635,52 +551,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             page = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in page_entries]))
 
         return {"total": total, "offset": offset, "limit": limit, "items": page}
-
-    async def _handle_text_search(self, query: str, k: int = 50) -> dict[str, Any]:
-        """Return tracks closest to a natural-language query via the CLAP text-search index.
-
-        :param query: Free-text query.
-        :param k: Max matches to return.
-        """
-        matches = await self.search_by_text(query, k)
-        if not matches:
-            reason: str | None = None
-            if self._clap_index is None:
-                reason = (
-                    "CLAP text-search index is disabled. Enable "
-                    "'compute_text_search_embedding' in the sonic_analysis "
-                    "config and re-analyze tracks."
-                )
-            return {"query": query, "k": k, "items": [], "error": reason}
-
-        async def _resolve(provider: str, item_id: str, distance: float) -> dict[str, Any]:
-            try:
-                track = await self.mass.music.tracks.get(item_id, provider)
-                artists = ", ".join(a.name for a in getattr(track, "artists", []) or [])
-                return {
-                    "provider": provider,
-                    "item_id": item_id,
-                    "name": track.name,
-                    "artist": artists,
-                    "distance": round(float(distance), 4),
-                }
-            except Exception:
-                return {
-                    "provider": provider,
-                    "item_id": item_id,
-                    "name": "(unknown)",
-                    "artist": "",
-                    "distance": round(float(distance), 4),
-                }
-
-        items = list(await asyncio.gather(*[_resolve(p, i, d) for p, i, d in matches]))
-        return {"query": query, "k": k, "items": items}
-
-    async def _handle_rebuild_text_search_index(self) -> dict[str, Any]:
-        """Clear the CLAP text-search index so the next scan repopulates it."""
-        await self.rebuild_text_search_index()
-        size = len(self._clap_index) if self._clap_index is not None else 0
-        return {"status": "rebuilt", "text_search_index_size": size}
 
     async def _handle_export_analysis(
         self,
@@ -864,13 +734,13 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     async def _run_live_clap_if_eligible(
         self, session: SonicSessionData, analysis: AudioAnalysisData
     ) -> None:
-        """Run CLAP on buffered live audio and populate scalars + embedding index.
+        """Run CLAP on buffered live audio and populate scalars + extra_data embedding.
 
         Gated on: CLAP model loaded, source is a non-filesystem provider
         (filesystem tracks get CLAP via analyze_file instead), and at
         least 1 second of audio was buffered. Populates the 5 CLAP
-        scalars directly on analysis, and adds the embedding to the
-        text-search index if one is loaded. Always clears the buffer
+        scalars directly on analysis and stores the 1024-dim embedding
+        under extra_data["clap_embedding"]. Always clears the buffer
         before returning so memory is released regardless of outcome.
         """
         sd = session.streamdetails
@@ -909,6 +779,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         else:
             for field_name, value in clap_scalars.items():
                 setattr(analysis, field_name, value)
+            _store_clap_embedding(analysis, clap_emb)
             self.logger.debug(
                 "_finalize: live CLAP for %s/%s (%.1fs buffered, %.2fs inference)",
                 sd.provider,
@@ -916,16 +787,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 session.clap_audio_samples / af.sample_rate,
                 clap_elapsed,
             )
-            if self._clap_index is not None:
-                try:
-                    await self._clap_index.add(sd.provider, sd.item_id, clap_emb)
-                except Exception as err:
-                    self.logger.debug(
-                        "_finalize: CLAP index add failed for %s/%s: %s",
-                        sd.provider,
-                        sd.item_id,
-                        err,
-                    )
         session.clap_audio.clear()
         session.clap_audio_samples = 0
 
@@ -995,6 +856,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             sd.item_id,
             elapsed,
         )
+
 
     def _run_clap_inference(
         self,
