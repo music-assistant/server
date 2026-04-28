@@ -69,7 +69,7 @@ python-fullykiosk==0.0.15
 python-mpd2>=3.1.1
 python-slugify==8.0.4
 pytz==2025.2
-pywam==0.1.0rc6
+pywam==0.2.0
 pywidevine==1.9.0
 PyYAML==6.0.3
 qqmusic-api-python==0.4.1
