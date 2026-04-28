@@ -482,6 +482,8 @@ class LocalAudioBridgeManager:
                 await self.mass.players.register_or_update(player)
                 # Restore cached volume/mute state from previous session
                 await player.restore_state()
+                # Set PA sink hardware volume to 100% on init
+                await player.apply_hardware_ceiling()
 
                 bridge = SendspinLocalAudioBridge(
                     self.provider, player, device, sendspin_server
