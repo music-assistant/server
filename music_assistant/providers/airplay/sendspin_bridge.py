@@ -285,8 +285,11 @@ class SendspinAirPlayBridge:
 
             # Derive start_ntp from _drop_until_us (set on first chunk arrival)
             # to give the CLI enough lead time to connect and fill the output buffer.
-            future_s = self._drop_until_us / 1_000_000 - time.monotonic()
-            start_ntp = unix_time_to_ntp(time.time() + future_s)
+            # _drop_until_us may use a different clock, convert to NTP
+            sendspin_clock_now_us = self.sendspin_server.clock.now_us()
+            unix_clock_now = time.time()
+            future_s = (self._drop_until_us - sendspin_clock_now_us) / 1_000_000
+            start_ntp = unix_time_to_ntp(unix_clock_now + future_s)
 
             # Always use RAOP for the bridge — AP2 (cliap2) doesn't respect
             # NTP start times correctly, breaking multi-device sync.
@@ -435,8 +438,8 @@ class SendspinAirPlayBridge:
         if self._airplay_stream_start_task is None:
             # Set the target start time (wait_start) in the future so the CLI
             # has enough time to connect and fill the device's output buffer.
-            wait_start_s = self.airplay_player.wait_start / 1000
-            self._drop_until_us = int((time.monotonic() + wait_start_s) * 1_000_000)
+            wait_start_us = int(self.airplay_player.wait_start * 1_000)
+            self._drop_until_us = self.sendspin_server.clock.now_us() + wait_start_us
             self._start_aligned = False
             self._airplay_stream_start_task = self.mass.create_task(
                 self._start_protocol_from_chunk()
