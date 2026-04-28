@@ -1,10 +1,9 @@
 {
   "items": [
     {
-      "frontendId": 6,
+      "itemId": "h#20250101#sm00000000",
       "isMaybeLikeUserItem": false,
-      "lastViewedAt": "2025-01-01T00:00:00+09:00",
-      "playbackPosition": 0.0,
+      "viewedAt": "2025-01-01T00:00:00+09:00",
       "video": {
         "type": "essential",
         "id": "sm45285955",
@@ -40,10 +39,8 @@
         "requireSensitiveMasking": false,
         "videoLive": null,
         "isMuted": false
-      },
-      "views": 1,
-      "watchId": "sm45285955"
+      }
     }
   ],
-  "totalCount": 1
+  "nextCursor": null
 }

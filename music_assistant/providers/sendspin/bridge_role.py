@@ -80,7 +80,10 @@ class BridgePlayerRole(Role):
         self._on_mute_change_cb = on_mute_change
         self._on_stream_start_cb = on_stream_start
         self._on_stream_end_cb = on_stream_end
+        volume_changed = self._volume != initial_volume
         self._volume = initial_volume
+        if volume_changed:
+            self._emit_volume_changed()
 
     @property
     def role_id(self) -> str:
