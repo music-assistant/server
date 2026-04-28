@@ -117,27 +117,26 @@ class LocalAudioPlayer(Player):
         self.update_state()
 
     async def apply_hardware_ceiling(self) -> None:
-        """Set PA sink volume to hardware ceiling via pulsectl (Linux only).
+        """Set PA sink hardware volume to 100% via pulsectl (Linux only).
 
-        For physical ALSA sinks: sets volume to the configured ceiling
-        percentage to cap the maximum hardware output level.
-        For remap/filter sinks: sets volume to 100% since the parent
-        ALSA sink already holds the ceiling.
+        Ensures the PA sink is at full hardware volume so that software
+        volume scaling in the bridge has full dynamic range to work with.
         No-op on non-Linux or if no PA sink.
         """
         if sys.platform != "linux" or not self._pa_sink_name:
             return
-        target = 100 if self._is_remap else 85
         loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(
-            None, self._set_pulse_volume, self._pa_sink_name, target
+            None, self._set_pulse_volume, self._pa_sink_name, 100
         )
         if ok:
             self.logger.debug(
-                "Volume set to %d%% for sink %s", target, self._pa_sink_name
+                "PA sink %s set to 100%% hardware volume", self._pa_sink_name
             )
         else:
-            self.logger.warning("Failed to set volume for sink %s", self._pa_sink_name)
+            self.logger.warning(
+                "Failed to set hardware volume for sink %s", self._pa_sink_name
+            )
 
     def _set_pulse_volume(self, pa_sink_name: str, volume: int) -> bool:
         """Set PulseAudio sink volume. Returns True on success.
