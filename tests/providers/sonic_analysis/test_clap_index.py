@@ -110,9 +110,7 @@ async def test_search_finds_exact_match_closest(tmp_path: Path, logger: logging.
 
 
 @pytest.mark.asyncio
-async def test_get_embedding_by_item_id_round_trip(
-    tmp_path: Path, logger: logging.Logger
-) -> None:
+async def test_get_embedding_by_item_id_round_trip(tmp_path: Path, logger: logging.Logger) -> None:
     """get_embedding_by_item_id returns (provider, vector) for a stored track."""
     idx = ClapIndex(_fake_mass(tmp_path), logger, filename_stem="test_get_emb")
     await idx.load()
@@ -141,9 +139,7 @@ async def test_get_embedding_by_item_id_missing_returns_none(
 
 
 @pytest.mark.asyncio
-async def test_query_sync_matches_async_search(
-    tmp_path: Path, logger: logging.Logger
-) -> None:
+async def test_query_sync_matches_async_search(tmp_path: Path, logger: logging.Logger) -> None:
     """query_sync returns identical results to await search() for sync callers."""
     idx = ClapIndex(_fake_mass(tmp_path), logger, filename_stem="test_query_sync")
     await idx.load()

@@ -191,7 +191,7 @@ class ClapIndex:
         return None
 
     def query_sync(self, embedding: np.ndarray, k: int) -> list[tuple[str, str, float]]:
-        """Synchronous nearest-neighbor query — sibling of search() for sync callers.
+        """Return the top-k nearest tracks synchronously (sibling of search() for sync callers).
 
         :param embedding: 1024-dim query embedding.
         :param k: Max number of neighbors to return.
