@@ -27,6 +27,8 @@ PLAYER_FEATURES_BASE = {
 CONF_ENTRY_SAMPLE_RATES_WAM = create_sample_rates_config_entry(
     supported_sample_rates=[44100, 48000, 88200, 96000, 176400, 192000],
     supported_bit_depths=[16, 24],
+    safe_max_sample_rate=192000,
+    safe_max_bit_depth=24,
 )
 
 CONF_ENTRY_HTTP_PROFILE_WAM = ConfigEntry.from_dict(
