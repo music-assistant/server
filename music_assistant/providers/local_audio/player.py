@@ -14,18 +14,11 @@ from music_assistant.models.player import Player
 
 from .constants import (
     CACHE_CATEGORY_PREV_STATE,
-    CONF_HARDWARE_VOLUME_CEILING,
-    CONF_VOLUME_CONTROL,
-    DEFAULT_HARDWARE_VOLUME_CEILING,
     DEFAULT_PLAYER_VOLUME,
     DEVICE_UUID_NAMESPACE,
-    VOLUME_CONTROL_HARDWARE,
-    VOLUME_CONTROL_SOFTWARE,
 )
 
-if sys.platform == "darwin":
-    from .coreaudio_volume import set_device_mute, set_device_volume
-elif sys.platform == "linux":
+if sys.platform == "linux":
     try:
         import pulsectl
 
@@ -59,8 +52,7 @@ class LocalAudioPlayer(Player):
         pa_sink_name: str | None = None,
         is_remap: bool = False,
     ) -> None:
-        """
-        Initialize the Local Audio player.
+        """Initialize the Local Audio player.
 
         :param provider: The Local Audio provider instance.
         :param player_id: Stable player ID derived from device UUID.
@@ -89,20 +81,6 @@ class LocalAudioPlayer(Player):
         self._device_index = device_index
         self._pa_sink_name = pa_sink_name
         self._is_remap = is_remap
-        # Set when hardware volume fails, causes automatic fallback to software
-        self._hardware_volume_fallback = False
-
-    @property
-    def volume_control_mode(self) -> str:
-        """Return the effective volume control mode for this player."""
-        if self._hardware_volume_fallback:
-            return VOLUME_CONTROL_SOFTWARE
-        # On Linux with a PA sink, use software volume — hardware ceiling
-        # is set once at startup via apply_hardware_ceiling()
-        if sys.platform == "linux" and self._pa_sink_name:
-            return VOLUME_CONTROL_SOFTWARE
-        # On other platforms, volume control mode is configured at provider level
-        return str(self._provider.config.get_value(CONF_VOLUME_CONTROL) or VOLUME_CONTROL_HARDWARE)
 
     async def restore_state(self) -> None:
         """Restore cached volume/mute state from a previous session."""
@@ -129,117 +107,35 @@ class LocalAudioPlayer(Player):
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command."""
         self._attr_volume_level = volume_level
-        if self.volume_control_mode == VOLUME_CONTROL_HARDWARE:
-            await self._set_hardware_volume(volume_level)
         await self._save_state()
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME_MUTE command."""
         self._attr_volume_muted = muted
-        mode = self.volume_control_mode
-        if mode == VOLUME_CONTROL_HARDWARE:
-            await self._set_hardware_mute(muted)
         await self._save_state()
         self.update_state()
 
-    async def _set_hardware_volume(self, volume: int) -> None:
-        """Set the OS-level volume for this device.
-
-        :param volume: Volume level 0-100.
-        """
-        try:
-            if sys.platform == "darwin":
-                loop = asyncio.get_running_loop()
-                ok = await loop.run_in_executor(None, set_device_volume, self.name, volume)
-                if not ok:
-                    self.logger.warning("CoreAudio volume control failed for %s", self.name)
-                    self._hardware_volume_fallback = True
-            elif sys.platform == "linux":
-                if _PULSECTL_AVAILABLE and self._pa_sink_name:
-                    loop = asyncio.get_running_loop()
-                    ok = await loop.run_in_executor(
-                        None, self._set_pulse_volume, self._pa_sink_name, volume
-                    )
-                    if not ok:
-                        self.logger.warning(
-                            "PulseAudio volume control failed for %s, falling back to software",
-                            self._pa_sink_name,
-                        )
-                        self._hardware_volume_fallback = True
-                else:
-                    self.logger.warning(
-                        "No PulseAudio sink available for %s, falling back to software",
-                        self.name,
-                    )
-                    self._hardware_volume_fallback = True
-            else:
-                self.logger.warning(
-                    "Hardware volume not supported on %s, falling back to software",
-                    sys.platform,
-                )
-                self._hardware_volume_fallback = True
-        except FileNotFoundError:
-            self.logger.warning("Volume control command not found, falling back to software")
-            self._hardware_volume_fallback = True
-
-    async def _set_hardware_mute(self, muted: bool) -> None:
-        """Set the OS-level mute state for this device.
-
-        :param muted: Whether to mute or unmute.
-        """
-        try:
-            if sys.platform == "darwin":
-                loop = asyncio.get_running_loop()
-                ok = await loop.run_in_executor(None, set_device_mute, self.name, muted)
-                if not ok:
-                    self.logger.warning("CoreAudio mute control failed for %s", self.name)
-                    self._hardware_volume_fallback = True
-            elif sys.platform == "linux":
-                if _PULSECTL_AVAILABLE and self._pa_sink_name:
-                    loop = asyncio.get_running_loop()
-                    ok = await loop.run_in_executor(
-                        None, self._set_pulse_mute, self._pa_sink_name, muted
-                    )
-                    if not ok:
-                        self.logger.warning(
-                            "PulseAudio mute control failed for %s, falling back to software",
-                            self._pa_sink_name,
-                        )
-                        self._hardware_volume_fallback = True
-                else:
-                    self._hardware_volume_fallback = True
-            else:
-                self._hardware_volume_fallback = True
-        except FileNotFoundError:
-            self.logger.warning("Mute control command not found, falling back to software")
-            self._hardware_volume_fallback = True
-
     async def apply_hardware_ceiling(self) -> None:
-        """Set PA sink hardware volume via pulsectl (Linux only).
+        """Set PA sink volume to hardware ceiling via pulsectl (Linux only).
 
         For physical ALSA sinks: sets volume to the configured ceiling
         percentage to cap the maximum hardware output level.
         For remap/filter sinks: sets volume to 100% since the parent
-        ALSA sink already holds the ceiling — applying a ceiling here
-        would double-attenuate the output.
+        ALSA sink already holds the ceiling.
         No-op on non-Linux or if no PA sink.
         """
-        if not self._pa_sink_name:
+        if sys.platform != "linux" or not self._pa_sink_name:
             return
-        if self._is_remap:
-            target = 100
-        else:
-            raw = self._provider.config.get_value(
-                CONF_HARDWARE_VOLUME_CEILING, DEFAULT_HARDWARE_VOLUME_CEILING
-            )
-            target = (
-                int(raw) if isinstance(raw, (int, float, str)) else DEFAULT_HARDWARE_VOLUME_CEILING
-            )
+        target = 100 if self._is_remap else 85
         loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(None, self._set_pulse_volume, self._pa_sink_name, target)
+        ok = await loop.run_in_executor(
+            None, self._set_pulse_volume, self._pa_sink_name, target
+        )
         if ok:
-            self.logger.debug("Volume set to %d%% for sink %s", target, self._pa_sink_name)
+            self.logger.debug(
+                "Volume set to %d%% for sink %s", target, self._pa_sink_name
+            )
         else:
             self.logger.warning("Failed to set volume for sink %s", self._pa_sink_name)
 
@@ -251,6 +147,8 @@ class LocalAudioPlayer(Player):
         :param pa_sink_name: The PulseAudio sink name.
         :param volume: Volume level 0-100.
         """
+        if not _PULSECTL_AVAILABLE:
+            return False
         try:
             with pulsectl.Pulse("ma-local-audio") as pulse:
                 for sink in pulse.sink_list():
@@ -261,24 +159,4 @@ class LocalAudioPlayer(Player):
             return False
         except Exception as err:
             self.logger.warning("pulsectl volume error for %s: %s", pa_sink_name, err)
-            return False
-
-    def _set_pulse_mute(self, pa_sink_name: str, muted: bool) -> bool:
-        """Set PulseAudio sink mute state. Returns True on success.
-
-        Intended to be called via run_in_executor.
-
-        :param pa_sink_name: The PulseAudio sink name.
-        :param muted: Whether to mute or unmute.
-        """
-        try:
-            with pulsectl.Pulse("ma-local-audio") as pulse:
-                for sink in pulse.sink_list():
-                    if sink.name == pa_sink_name:
-                        pulse.mute(sink, muted)
-                        return True
-            self.logger.warning("PA sink %s not found for mute control", pa_sink_name)
-            return False
-        except Exception as err:
-            self.logger.warning("pulsectl mute error for %s: %s", pa_sink_name, err)
             return False
