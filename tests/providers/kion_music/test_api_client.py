@@ -252,11 +252,15 @@ async def test_get_track_file_info_builds_signed_params(
     # Recompute expected sign from the emitted ts to verify the formula.
     ts = params["ts"]
     expected_sign_input = f"{ts}42losslessflac-mp4flacencraw".encode()
-    expected_sign = base64.b64encode(
-        hmac.new(DEFAULT_SIGN_KEY.encode(), expected_sign_input, hashlib.sha256).digest()
-    ).decode()[:-1]
+    expected_sign = (
+        base64.b64encode(
+            hmac.new(DEFAULT_SIGN_KEY.encode(), expected_sign_input, hashlib.sha256).digest()
+        )
+        .decode()
+        .rstrip("=")
+    )
     assert params["sign"] == expected_sign
-    # Kion API expects 43 chars (one trailing '=' stripped from b64 of SHA-256).
+    # Kion API expects 43 chars (base64 of SHA-256 with trailing '=' padding stripped).
     assert len(params["sign"]) == 43
 
 
