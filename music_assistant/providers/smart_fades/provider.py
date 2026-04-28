@@ -216,10 +216,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
             all_vqt = torch.cat(data.musical_key_feature_blocks, dim=-1)  # (1, 1, 84, T_total)
             data.musical_key_feature_blocks.clear()
 
-        # Run beat and key inference concurrently in separate threads
-        beat_task = asyncio.to_thread(self._infer_beat_timings, feats)
-        key_task = asyncio.to_thread(self._infer_musical_key, all_vqt)
-        (beats, downbeats), (key, mode) = await asyncio.gather(beat_task, key_task)
+        # Run beat and key inference sequentially to keep peak CPU bounded.
+        key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
+        beats, downbeats = await asyncio.to_thread(self._infer_beat_timings, feats)
 
         if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
