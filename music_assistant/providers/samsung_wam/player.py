@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
+from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 
@@ -161,6 +163,60 @@ class WamPlayer(Player):
         :param media: The media item to play.
         """
         await self.playback.play_media(media)
+
+    async def play_announcement(
+        self, announcement: PlayerMedia, volume_level: int | None = None
+    ) -> None:
+        """Play an announcement on the player.
+
+        :param announcement: The announcement media item to play.
+        :param volume_level: The volume level to play the announcement at (0..100).
+        """
+        prev_state = self.playback_state
+        prev_volume = self.volume_level
+
+        if prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            await self.playback.stop()
+            await self.await_state_change(
+                lambda: self.playback_state == PlaybackState.IDLE,
+                timeout=5.0,
+            )
+
+        if volume_level is not None and prev_volume is not None and volume_level != prev_volume:
+            await self.volume.set_volume(volume_level)
+
+        # Determine announcement duration. Samsung speakers auto-resume after a URL stream
+        # ends rather than going idle, so we need to know when the announcement should be
+        # done in order to stop the speaker ourselves before the auto-resume kicks in.
+        duration: float | None = None
+        with contextlib.suppress(Exception):
+            media_info = await async_parse_tags(announcement.uri, require_duration=True)
+            if media_info.duration:
+                duration = float(media_info.duration)
+
+        await self.playback.play_media(announcement)
+        await self.await_state_change(
+            lambda: self.playback_state == PlaybackState.PLAYING,
+            timeout=10.0,
+        )
+
+        if duration is not None:
+            await asyncio.sleep(duration + 1.0)
+        else:
+            # Unknown duration — fall back to waiting for idle
+            await self.await_state_change(
+                lambda: self.playback_state == PlaybackState.IDLE,
+                timeout=30.0,
+            )
+
+        # Explicitly stop to cancel any auto-resume before restoring state
+        await self.playback.stop()
+
+        if volume_level is not None and prev_volume is not None and volume_level != prev_volume:
+            await self.volume.set_volume(prev_volume)
+
+        if prev_state == PlaybackState.PLAYING:
+            await self.mass.player_queues.resume(self.player_id)
 
     async def select_source(self, source: str) -> None:
         """Select source.

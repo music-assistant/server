@@ -20,6 +20,7 @@ PLAYER_FEATURES_BASE = {
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.SELECT_SOURCE,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
 }
 
 # --- Configuration Entries ---
