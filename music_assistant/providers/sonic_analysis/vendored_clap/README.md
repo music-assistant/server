@@ -39,4 +39,6 @@ modifications above.
 
 ## License
 
-MIT. See `LICENSE` in this directory — copy of the upstream license file.
+MIT-licensed by Microsoft. The full license text is consolidated into the
+repository root `NOTICE` file alongside other vendored third-party code.
+See "Modifications from upstream" above for the MA-side changes.
