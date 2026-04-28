@@ -286,20 +286,27 @@ async def test_own_mode_with_only_x_token_marks_token_optional() -> None:
     assert token.required is False
 
 
-async def test_stale_ym_selection_clamps_default_to_own() -> None:
-    """A saved selection pointing at a removed YM instance clamps to OWN.
+async def test_stale_ym_selection_normalizes_to_own() -> None:
+    """A saved selection pointing at a removed YM instance is normalized to OWN.
 
-    Guards against the dropdown rendering with a default_value that is not
-    in its options (which would show as an invalid/empty selection).
+    Guards against the dropdown rendering with a default_value that is not in
+    its options, AND ensures the in-memory `values` dict is rewritten so a
+    no-touch Save persists the correction (otherwise the stored config stays
+    stale and the provider keeps trying borrow-mode against a missing instance
+    until the user manually re-saves).
     """
     mass = _make_mock_mass({"ym-b": {"domain": "yandex_music", "name": "B"}})
-    entries = await get_config_entries(mass, values={CONF_YM_INSTANCE: "ym-removed"})
+    values: dict[str, object] = {CONF_YM_INSTANCE: "ym-removed"}
+    entries = await get_config_entries(mass, values=values)  # type: ignore[arg-type]
     by_key = _entries_by_key(entries)
 
     ym_source = by_key[CONF_YM_INSTANCE]
     option_values = {opt.value for opt in ym_source.options}
     assert ym_source.default_value == YM_INSTANCE_OWN
     assert ym_source.default_value in option_values
+    # The stale id must be rewritten in `values` so a Save without touching the
+    # dropdown persists the corrected selection.
+    assert values[CONF_YM_INSTANCE] == YM_INSTANCE_OWN
 
     token = by_key[CONF_TOKEN]
     assert token.hidden is False

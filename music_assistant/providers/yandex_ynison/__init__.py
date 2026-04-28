@@ -79,7 +79,13 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
             selected = YM_INSTANCE_OWN
         else:
             selected = ym_instances[0][0] if len(ym_instances) == 1 else YM_INSTANCE_OWN
-    borrowing = selected != YM_INSTANCE_OWN and selected in ym_instance_ids
+    # Normalize a stale selection (referenced YM instance was removed) up front
+    # so borrowing/label/default downstream read consistent values, and a Save
+    # without touching the dropdown persists the corrected id.
+    if selected != YM_INSTANCE_OWN and selected not in ym_instance_ids:
+        selected = YM_INSTANCE_OWN
+        values[CONF_YM_INSTANCE] = YM_INSTANCE_OWN
+    borrowing = selected != YM_INSTANCE_OWN
 
     # ------------------------------------------------------------------
     # Own-mode action handling: QR login / reset auth
@@ -120,12 +126,6 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
     if borrowing:
         ym_name = next((name for inst_id, name in ym_instances if inst_id == selected), selected)
         label_text = f"Borrowing credentials from Yandex Music instance '{ym_name}'."
-    elif selected != YM_INSTANCE_OWN:
-        # Referenced YM instance is not currently configured
-        label_text = (
-            "Selected Yandex Music instance is not available. "
-            "Re-select below or fall back to manual token."
-        )
     elif action == CONF_ACTION_AUTH_QR:
         who = f" as {account_login}" if account_login else ""
         label_text = f"Authenticated to Yandex Music{who}. Don't forget to save to complete setup."
@@ -144,9 +144,9 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
     ]
     source_options.append(ConfigValueOption("Use own credentials (QR or token)", YM_INSTANCE_OWN))
 
-    # Guard against a stale selection pointing at a removed YM instance — the
-    # UI would otherwise render with a default that isn't in `options`.
-    dropdown_default = selected if borrowing or selected == YM_INSTANCE_OWN else YM_INSTANCE_OWN
+    # `selected` is normalized above, so it is always either a known instance
+    # id (borrowing) or YM_INSTANCE_OWN — safe to use directly as the default.
+    dropdown_default = selected
 
     # Own-mode-only entries are hidden when borrowing.
     own_hidden = borrowing
