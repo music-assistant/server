@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
-from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream
+from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
@@ -746,7 +746,12 @@ class SendspinPlaybackSession:
                         _SENDSPIN_PCM_FORMAT,
                         channel_id=pipeline.channel_id,
                     )
-                commit_start_us = await push_stream.commit_audio()
+                try:
+                    commit_start_us = await push_stream.commit_audio()
+                except StreamStoppedError:
+                    # Stream stopped since it was replaced by another stream
+                    self.player.logger.debug("Stopping commit loop due to stopped push stream")
+                    break
                 await push_stream.sleep_to_limit_buffer(_PRODUCER_BUFFER_LIMIT_US)
                 commit_now_us = int(time.monotonic_ns() / 1000)
                 committed_history_chunk = _HistoryChunk(
