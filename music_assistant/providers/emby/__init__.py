@@ -13,7 +13,14 @@ from aiohttp import ClientResponseError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderPermissionDenied
-from music_assistant_models.media_items import Album, Artist, Playlist, SearchResults, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    MediaItemType,
+    Playlist,
+    SearchResults,
+    Track,
+)
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
@@ -174,6 +181,20 @@ class EmbyProvider(MusicProvider):
             async with self._session.get(url, headers=self._headers, params=params) as resp:
                 resp.raise_for_status()
                 return await resp.json()  # type: ignore[no-any-return]
+        except ClientResponseError as err:
+            if err.status == 401:
+                raise LoginFailed("Unauthorized: invalid credentials") from err
+            if err.status == 403:
+                raise ProviderPermissionDenied("Forbidden: insufficient permissions") from err
+            if err.status == 404:
+                raise MediaNotFoundError(f"Item {path} not found") from err
+            raise
+
+    async def _post(self, path: str, json: dict[str, Any] | None = None) -> None:
+        url = urljoin(self._base_url, path.lstrip("/"))
+        try:
+            async with self._session.post(url, headers=self._headers, json=json) as resp:
+                resp.raise_for_status()
         except ClientResponseError as err:
             if err.status == 401:
                 raise LoginFailed("Unauthorized: invalid credentials") from err
@@ -503,3 +524,23 @@ class EmbyProvider(MusicProvider):
                 if collection_type == "music":
                     result.append(library)
         return result
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Handle media item played event."""
+        if fully_played:
+            await self._post(f"Users/{self._user_id}/PlayedItems/{prov_item_id}")
+        if is_playing:
+            await self._post(
+                f"/Users/{self._user_id}/Items/{prov_item_id}/UserData",
+                json={"PlaybackPositionTicks": position * 10000000},
+            )
+        if not fully_played and position == 0:
+            await self._post(f"/Users/{self._user_id}/PlayedItems/{prov_item_id}/Delete")
