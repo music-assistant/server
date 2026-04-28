@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pywam.lib.exceptions import FeatureNotSupportedError
+
 from music_assistant.providers.samsung_wam.features.base import (
     WamPlayerFeatureBase,
     handle_pywam_errors,
@@ -19,4 +21,8 @@ class DeviceConfigHandler(WamPlayerFeatureBase):
 
         :param name: The desired friendly name.
         """
-        await self.speaker.set_name(name)
+        try:
+            await self.speaker.set_name(name)
+        except FeatureNotSupportedError:
+            # pywam raises this when the speaker is grouped or not yet fully initialised.
+            self.logger.debug("Cannot rename %s in its current mode.", self.player.log_name)
