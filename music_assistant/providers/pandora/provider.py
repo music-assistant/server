@@ -98,6 +98,7 @@ class PandoraProvider(MusicProvider):
     _sessions: dict[str, PandoraStationSession]
     _socks_proxy: bool = False
     _high_quality_available: bool = False
+    _audio_cache: dict[str, bytes] = {}  # musicId → raw audio bytes
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -359,11 +360,9 @@ class PandoraProvider(MusicProvider):
         self.logger.warning(
             f"getting tracks for {station_id} -- {len(session.fragments)} {session.last_track_started}"
         )
-        if len(session.fragments) == 0 or session.last_track_started:
-            await self._get_fragment_data(session, len(session.fragments))
-            if tracks := session.fragments[-1]:
-                return [self._parse_track(track) for track in tracks]
-        return []
+
+        tracks = await self._get_fragment_data(session, len(session.fragments))
+        return [self._parse_track(track) for track in tracks]
 
     def _parse_station(self, station: dict[str, Any]) -> Playlist:
         playlist = Playlist(
@@ -493,31 +492,35 @@ class PandoraProvider(MusicProvider):
         """Get streamdetails for a radio station."""
         station_id, track_id = prov_item_id.split("_")
         session = self._get_or_create_session(station_id)
-        url = None
-        if session.fragments:
-            if tracks := session.fragments[-1]:
-                for i, track in enumerate(tracks):
-                    if track.get("musicId") == track_id:
-                        url = track.get("audioURL")
-                        break
-            # we have started streaming the last song in the fragment.
-            session.last_track_started = i >= 3
-            self.logger.warning(f"Playing {track.get('songTitle')} {session.last_track_started}")
-        if url is None:
-            raise MediaNotFoundError("No stream URL found for song.")
 
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=prov_item_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.MP3 if self._use_high_quality() else ContentType.AAC,
-            ),
-            media_type=MediaType.TRACK,
-            stream_type=StreamType.HTTP,
-            path=url,
-            can_seek=True,
-            allow_seek=True,
+        if session.fragments:
+            if track_id in self._audio_cache:
+                return StreamDetails(
+                    provider=self.instance_id,
+                    item_id=prov_item_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.MP3
+                        if self._use_high_quality()
+                        else ContentType.AAC,
+                    ),
+                    media_type=MediaType.TRACK,
+                    stream_type=StreamType.CUSTOM,
+                    can_seek=True,
+                    allow_seek=True,
+                )
+        raise MediaNotFoundError("No stream URL found for song.")
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return bytes of track from local _audio_cache."""
+        track_id = streamdetails.item_id.split("_")[-1]
+        self.logger.warning(
+            f"getting audio for {track_id} -- {len(self._audio_cache)} {track_id in self._audio_cache}"
         )
+        audio = self._audio_cache.pop(track_id, b"")
+        for i in range(0, len(audio), 65536):
+            yield audio[i : i + 65536]
 
     async def _get_fragment_data(
         self, session: PandoraStationSession, fragment_index: int
@@ -555,13 +558,15 @@ class PandoraProvider(MusicProvider):
             tracks = []
             for track in result.get("tracks", []):
                 if "curator message" not in track.get("songTitle", "").lower():
-                    tracks.append(track)
+                    if url := track.get("audioURL"):
+                        async with self.mass.http_session.get(url) as resp:
+                            self._audio_cache[track["musicId"]] = await resp.read()
+                        tracks.append(track)
 
             # Store in session cache
             while len(session.fragments) <= fragment_index:
                 session.fragments.append([])
             session.fragments[fragment_index] = tracks
-            session.last_track_started = False
             return tracks
 
         except MediaNotFoundError:
