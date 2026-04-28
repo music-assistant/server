@@ -21,7 +21,6 @@ from huggingface_hub.file_download import hf_hub_download
 from transformers import AutoTokenizer, logging
 
 from .models.clap import CLAP
-from .models.mapper import get_clapcap
 
 logging.set_verbosity_error()
 
@@ -31,11 +30,14 @@ class CLAPWrapper:
     A class for interfacing CLAP model.
     """
 
+    # MA MOD: dropped "2022" and "clapcap" entries — Music Assistant only uses
+    # the 2023 audio model. The captioning ("clapcap") variant required a
+    # ~200-line mapper.py + caption-generation methods that would otherwise be
+    # dead weight. Re-add from upstream's microsoft/CLAP if a future use case
+    # needs them.
     model_repo = "microsoft/msclap"
     model_name = {
-        "2022": "CLAP_weights_2022.pth",
         "2023": "CLAP_weights_2023.pth",
-        "clapcap": "clapcap_weights_2023.pth",
     }
 
     # MA MOD: text_enabled=False skips the HF text-model + tokenizer downloads
@@ -71,10 +73,8 @@ class CLAPWrapper:
 
         self.model_fp = model_fp
         self.use_cuda = use_cuda
-        if "clapcap" in version:
-            self.clapcap, self.tokenizer, self.args = self.load_clapcap()
-        else:
-            self.clap, self.tokenizer, self.args = self.load_clap()
+        # MA MOD: removed clapcap branch — only the 2023 audio model is supported.
+        self.clap, self.tokenizer, self.args = self.load_clap()
 
     def read_config_as_args(self, config_path, args=None, is_config_str=False):
         return_dict = {}
@@ -145,59 +145,8 @@ class CLAPWrapper:
 
         return clap, tokenizer, args
 
-    def load_clapcap(self):
-        r"""Load CLAP model with args from config file"""
-        args = self.read_config_as_args(self.config_as_str, is_config_str=True)
-        args.prefix_dim = args.d_proj
-        text_model = args.text_model
-        args.text_model = args.text_decoder
-        args.cross_attention = True if "cross" in args.clapcap_model.lower() else False
-
-        if "roberta" in args.text_model or "clip" in args.text_model or "gpt" in args.text_model:
-            self.token_keys = ["input_ids", "attention_mask"]
-        elif "bert" in args.text_model:
-            self.token_keys = ["input_ids", "token_type_ids", "attention_mask"]
-
-        clap = CLAP(
-            audioenc_name=args.audioenc_name,
-            sample_rate=args.sampling_rate,
-            window_size=args.window_size,
-            hop_size=args.hop_size,
-            mel_bins=args.mel_bins,
-            fmin=args.fmin,
-            fmax=args.fmax,
-            classes_num=args.num_classes,
-            out_emb=args.out_emb,
-            text_model=text_model,
-            transformer_embed_dim=args.transformer_embed_dim,
-            d_proj=args.d_proj,
-        )
-
-        clapcap = get_clapcap(args.clapcap_model)(
-            clap,
-            args.text_decoder,
-            args.prefix_length,
-            args.prefix_length_clip,
-            args.prefix_dim,
-            args.num_layers,
-            args.normalize_prefix,
-            args.mapping_type,
-            True,
-            True,
-        )
-
-        model_state_dict = torch.load(self.model_fp, map_location=torch.device("cpu"))["model"]
-        clapcap.load_state_dict(model_state_dict, strict=False)
-
-        clapcap.eval()  # set clap in eval mode
-        tokenizer = AutoTokenizer.from_pretrained(args.text_model)
-        if "gpt" in args.text_model:
-            tokenizer.add_special_tokens({"pad_token": "!"})
-
-        if self.use_cuda and torch.cuda.is_available():
-            clapcap = clapcap.cuda()
-
-        return clapcap, tokenizer, args
+    # MA MOD: load_clapcap method removed — CLAP captioning model isn't used by MA.
+    # Required get_clapcap from .models.mapper which is also removed in this drop.
 
     def default_collate(self, batch):
         r"""Puts each data field into a tensor with outer dimension batch size"""
@@ -442,100 +391,8 @@ class CLAPWrapper:
             self.classify_audio_files, audio_files, class_labels, batch_size
         )
 
-    def generate_caption(
-        self, audio_files, resample=True, beam_size: int = 5, entry_length=67, temperature=1.0
-    ):
-        r"""Generate audio captions for each audio recording in a batch"""
-        captions = []
-        audio_tensors = self.preprocess_audio(audio_files, resample)
-
-        with torch.no_grad():
-            prefix = self.clapcap.clap(audio_tensors.squeeze(1))[0]
-            if self.args.normalize_prefix:
-                prefix = prefix / prefix.norm(2, -1).reshape(-1, 1)
-            prefix_embed = self.clapcap.clap_project(prefix).view(
-                -1, self.args.prefix_length, self.clapcap.gpt.transformer.wte.weight.shape[1]
-            )
-
-            for i in range(len(audio_tensors)):
-                gen_caption = self._generate_beam(
-                    embed=prefix_embed[i].unsqueeze(0),
-                    beam_size=beam_size,
-                    entry_length=entry_length,
-                    temperature=temperature,
-                )[0]
-                captions.append(gen_caption.capitalize())
-        return captions
-
-    def _generate_beam(
-        self,
-        beam_size: int = 5,
-        prompt=None,
-        embed=None,
-        entry_length=67,
-        temperature=1.0,
-        stop_token: str = " <|endoftext|>",
-    ):
-        r"""Generate captions by beam search decoding"""
-        self.clapcap.eval()
-        stop_token_index = self.tokenizer.encode(stop_token)[0]
-        tokens = None
-        scores = None
-        device = next(self.clapcap.parameters()).device
-        seq_lengths = torch.ones(beam_size, device=device)
-        is_stopped = torch.zeros(beam_size, device=device, dtype=torch.bool)
-        with torch.no_grad():
-            if embed is not None:
-                generated = embed
-            elif tokens is None:
-                tokens = torch.tensor(self.tokenizer.encode(prompt))
-                tokens = tokens.unsqueeze(0).to(device)
-                generated = self.clapcap.gpt.transformer.wte(tokens)
-            for i in range(entry_length):
-                outputs = self.clapcap.gpt(inputs_embeds=generated)
-                logits = outputs.logits
-                logits = logits[:, -1, :] / (temperature if temperature > 0 else 1.0)
-                logits = logits.softmax(-1).log()
-                if scores is None:
-                    scores, next_tokens = logits.topk(beam_size, -1)
-                    generated = generated.expand(beam_size, *generated.shape[1:])
-                    next_tokens, scores = next_tokens.permute(1, 0), scores.squeeze(0)
-                    if tokens is None:
-                        tokens = next_tokens
-                    else:
-                        tokens = tokens.expand(beam_size, *tokens.shape[1:])
-                        tokens = torch.cat((tokens, next_tokens), dim=1)
-                else:
-                    logits[is_stopped] = -float(np.inf)
-                    logits[is_stopped, 0] = 0
-                    scores_sum = scores[:, None] + logits
-                    seq_lengths[~is_stopped] += 1
-                    scores_sum_average = scores_sum / seq_lengths[:, None]
-                    scores_sum_average, next_tokens = scores_sum_average.view(-1).topk(
-                        beam_size, -1
-                    )
-                    next_tokens_source = next_tokens // scores_sum.shape[1]
-                    seq_lengths = seq_lengths[next_tokens_source]
-                    next_tokens = next_tokens % scores_sum.shape[1]
-                    next_tokens = next_tokens.unsqueeze(1)
-                    tokens = tokens[next_tokens_source]
-                    tokens = torch.cat((tokens, next_tokens), dim=1)
-                    generated = generated[next_tokens_source]
-                    scores = scores_sum_average * seq_lengths
-                    is_stopped = is_stopped[next_tokens_source]
-                next_token_embed = self.clapcap.gpt.transformer.wte(next_tokens.squeeze()).view(
-                    generated.shape[0], 1, -1
-                )
-                generated = torch.cat((generated, next_token_embed), dim=1)
-                is_stopped = is_stopped + next_tokens.eq(stop_token_index).squeeze()
-                if is_stopped.all():
-                    break
-        scores = scores / seq_lengths
-        output_list = tokens.cpu().numpy()
-        output_texts = [
-            self.tokenizer.decode(output[: int(length)])
-            for output, length in zip(output_list, seq_lengths)
-        ]
-        order = scores.argsort(descending=True)
-        output_texts = [output_texts[i] for i in order]
-        return output_texts
+    # MA MOD: generate_caption() and _generate_beam() removed — Music Assistant
+    # uses the audio embeddings only, never the captioning model. Beam-search
+    # caption generation depended on self.clapcap which is no longer
+    # constructed. Re-add from upstream's microsoft/CLAP if a future use case
+    # needs caption generation.
