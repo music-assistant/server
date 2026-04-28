@@ -269,8 +269,10 @@ class WamPlayer(Player):
         """
         try:
             async with asyncio.timeout(timeout):
-                while not check():
+                while True:
                     self._state_update_event.clear()
+                    if check():
+                        return
                     await self._state_update_event.wait()
         except TimeoutError:
             pass
