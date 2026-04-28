@@ -69,7 +69,6 @@ class StateSyncMapper:
         speaker_attrs: WamSpeakerAttributes,
         group_children: set[str],
         stream_active: bool,
-        queue_id: str | None,
     ) -> None:
         """Apply a full state update from the validated attributes to the player.
 
@@ -77,7 +76,6 @@ class StateSyncMapper:
         :param speaker_attrs: The current attributes from the speaker.
         :param group_children: Known group children for this player.
         :param stream_active: Flag indicating if the stream is active.
-        :param queue_id: The queue identifier if active.
         """
         player._attr_available = True
         player._attr_name = speaker_attrs.name
@@ -88,12 +86,14 @@ class StateSyncMapper:
             player._attr_volume_muted = speaker_attrs.muted
 
         play_status_str = speaker_attrs.play_status or "stop"
-        play_status = WamPlaybackState(play_status_str)
-
-        player._attr_playback_state = PLAYBACK_STATE_MAP.get(play_status, PlaybackState.IDLE)
+        try:
+            play_status = WamPlaybackState(play_status_str)
+            player._attr_playback_state = PLAYBACK_STATE_MAP.get(play_status, PlaybackState.IDLE)
+        except ValueError:
+            player._attr_playback_state = PlaybackState.IDLE
 
         if stream_active:
-            player._attr_active_source = queue_id
+            player._attr_active_source = player.player_id
         else:
             player._attr_active_source = speaker_attrs.source
 
@@ -113,6 +113,6 @@ class StateSyncMapper:
         else:
             player.synced_to_internal = None
             if group_children:
-                player._attr_group_members = [player.player_id, *group_children]
+                player._attr_group_members = [player.player_id, *sorted(group_children)]
             else:
                 player._attr_group_members = []
