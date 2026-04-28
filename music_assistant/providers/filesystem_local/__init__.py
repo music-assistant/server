@@ -721,11 +721,21 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""
+        cache_key = f"playlist_image.{file_item.relative_path}"
+        cached = await self.cache.get(
+            key=cache_key,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FOLDER_IMAGES,
+            base_class=MediaItemImage,
+        )
+        if cached is not None:
+            return cached[0] if cached else None
         try:
             folder_files = await self._scandir(file_item.relative_parent_path)
         except (OSError, MusicAssistantError):
             return None
         target = file_item.name.lower()
+        result: MediaItemImage | None = None
         for item in folder_files:
             if item.is_dir or not item.ext:
                 continue
@@ -733,13 +743,21 @@ class LocalFileSystemProvider(MusicProvider):
                 continue
             if item.name.lower() != target:
                 continue
-            return MediaItemImage(
+            result = MediaItemImage(
                 type=ImageType.THUMB,
                 path=item.relative_path,
                 provider=self.instance_id,
                 remotely_accessible=False,
             )
-        return None
+            break
+        await self.cache.set(
+            key=cache_key,
+            data=[result.to_dict()] if result is not None else [],
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FOLDER_IMAGES,
+            expiration=120,
+        )
+        return result
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
