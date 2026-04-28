@@ -291,9 +291,6 @@ def parse_stream_details(
     """Parse Emby media stream details into an AudioFormat."""
     media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
     audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
-    bit_rate = audio_stream.get(AUDIO_STREAM_BIT_RATE, None)
-    if bit_rate is not None:
-        bit_rate = int(bit_rate / 1000)
 
     return AudioFormat(
         content_type=ContentType.try_parse(str(item.get(ITEM_KEY_CONTAINER))),
@@ -301,5 +298,5 @@ def parse_stream_details(
         sample_rate=int(audio_stream.get(AUDIO_STREAM_SAMPLE_RATE, 44100)),
         bit_depth=int(audio_stream.get(AUDIO_STREAM_BIT_DEPTH, 16)),
         channels=int(audio_stream.get(AUDIO_STREAM_CHANNELS, 2)),
-        bit_rate=bit_rate,
+        bit_rate=audio_stream.get(AUDIO_STREAM_BIT_RATE),
     )
