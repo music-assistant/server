@@ -29,18 +29,18 @@ Mean-pooled at finalize.
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ContentType
 
+from music_assistant.helpers.json import json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -342,43 +342,41 @@ def _dispatch_clap_chunk(
     return completed
 
 
-def _pcm_bytes_to_audio(
-    pcm_data: bytes,
-    sample_rate: int,
-    bit_depth: int,
-    channels: int,
-) -> np.ndarray:
-    """Convert raw PCM bytes to a mono float32 numpy array.
+def _pcm_bytes_to_audio(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarray:
+    """Decode a raw PCM chunk to a mono float32 numpy array.
 
-    :param pcm_data: Raw PCM audio bytes.
-    :param sample_rate: Sample rate in Hz (unused in conversion, kept for API symmetry).
-    :param bit_depth: Bits per sample (16, 24, or 32).
-    :param channels: Number of audio channels.
+    :param audio_format: The audio format describing the PCM data.
+    :param pcm_chunk: Raw PCM audio data.
     """
-    _ = sample_rate
-    if bit_depth == 16:
-        samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
-        samples /= 32768.0
-    elif bit_depth == 24:
-        num_samples = len(pcm_data) // 3
-        raw = np.frombuffer(pcm_data[: num_samples * 3], dtype=np.uint8).reshape(-1, 3)
-        i32 = (
-            raw[:, 0].astype(np.int32)
-            | (raw[:, 1].astype(np.int32) << 8)
-            | (raw[:, 2].astype(np.int32) << 16)
-        )
-        i32[i32 >= 0x800000] -= 0x1000000
-        samples = i32.astype(np.float32) / 8388608.0
-    elif bit_depth == 32:
-        samples = np.frombuffer(pcm_data, dtype=np.int32).astype(np.float32)
-        samples /= 2147483648.0
-    else:
-        msg = f"Unsupported bit depth: {bit_depth}"
-        raise ValueError(msg)
+    # Copied from smart_fades.helpers.decode_pcm_chunk_to_mono pending a
+    # shared helper. content_type is the canonical dispatch field —
+    # bit_depth alone collapses int32 vs float32 incorrectly.
+    content_type = audio_format.content_type
+    writable = bytearray(pcm_chunk)
 
+    if content_type == ContentType.PCM_F32LE:
+        audio = torch.frombuffer(writable, dtype=torch.float32).clone()
+    elif content_type == ContentType.PCM_F64LE:
+        audio = torch.frombuffer(writable, dtype=torch.float64).clone().to(torch.float32)
+    elif content_type == ContentType.PCM_S32LE:
+        audio = (
+            torch.frombuffer(writable, dtype=torch.int32).clone().to(torch.float32) / 2147483648.0
+        )
+    elif content_type == ContentType.PCM_S24LE:
+        raw = torch.frombuffer(writable, dtype=torch.uint8).clone()
+        raw = raw[: (raw.numel() // 3) * 3].reshape(-1, 3).to(torch.int32)
+        audio = raw[:, 0] | (raw[:, 1] << 8) | (raw[:, 2] << 16)
+        audio = torch.where(audio & 0x800000 != 0, audio - 0x1000000, audio)
+        audio = audio.to(torch.float32) / 8388608.0
+    else:
+        audio = torch.frombuffer(writable, dtype=torch.int16).clone().to(torch.float32) / 32768.0
+
+    channels = audio_format.channels
     if channels > 1:
-        samples = samples.reshape(-1, channels).mean(axis=1)
-    return samples
+        frame_samples = (audio.numel() // channels) * channels
+        audio = audio[:frame_samples].reshape(-1, channels).mean(dim=1)
+
+    return cast("np.ndarray", audio.numpy())
 
 
 class SonicAnalysisProvider(AudioAnalysisProvider):
@@ -394,7 +392,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     analysis_version: int = 1
 
-    # CLAP state — loaded in loaded_in_mass when the provider is enabled.
+    # CLAP state — loaded in handle_async_init when the provider is enabled.
     # Graceful degradation: if load fails, librosa-only mode is still
     # fully functional.
     _clap_model: Any = None
@@ -412,8 +410,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
         self._unregister_handles: list[Callable[[], None]] = []
 
-    async def loaded_in_mass(self) -> None:
-        """Load the CLAP model and prompt embeddings."""
+    async def handle_async_init(self) -> None:
+        """Load the CLAP model and prompt embeddings before the provider goes live."""
         try:
             (
                 self._clap_model,
@@ -428,6 +426,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self.logger.warning("CLAP model load failed (librosa-only mode): %s", err)
             self._clap_model = None
 
+    async def loaded_in_mass(self) -> None:
+        """Register API commands once the provider is live."""
         self._unregister_handles = [
             self.mass.register_api_command("sonic_analysis/status", self._handle_status),
             self.mass.register_api_command(
@@ -608,8 +608,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 continue
             seen.add(key)
             try:
-                data = AudioAnalysisData.from_dict(json.loads(row["analysis_data"]))
-            except (json.JSONDecodeError, TypeError, KeyError):
+                data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+            except (ValueError, TypeError, KeyError):
                 continue
             fields: dict[str, Any] = {}
             for field_name in export_fields:
@@ -730,7 +730,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         while len(session.pcm_buffer) >= session.block_samples:
             block_bytes = bytes(session.pcm_buffer[: session.block_samples])
             del session.pcm_buffer[: session.block_samples]
-            audio = _pcm_bytes_to_audio(block_bytes, af.sample_rate, af.bit_depth, af.channels)
+            audio = _pcm_bytes_to_audio(af, block_bytes)
             session.total_samples += len(audio)
             block_peak = float(np.max(np.abs(audio)))
             session.peak_absolute = max(session.peak_absolute, block_peak)
@@ -811,9 +811,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
         # Flush any remaining PCM as a final partial block
         if session.pcm_buffer:
-            audio = _pcm_bytes_to_audio(
-                bytes(session.pcm_buffer), af.sample_rate, af.bit_depth, af.channels
-            )
+            audio = _pcm_bytes_to_audio(af, bytes(session.pcm_buffer))
             session.total_samples += len(audio)
             block_peak = float(np.max(np.abs(audio)))
             session.peak_absolute = max(session.peak_absolute, block_peak)
