@@ -331,7 +331,9 @@ class SendspinLocalAudioBridge:
                     await asyncio.shield(write_future)
             if stream is not None:
                 with suppress(Exception):
-                    await self.mass.loop.run_in_executor(None, stream.close)
+                    await asyncio.shield(
+                        self.mass.loop.run_in_executor(None, stream.close)
+                    )
             if self._writer_task is asyncio.current_task():
                 self._writer_task = None
 
