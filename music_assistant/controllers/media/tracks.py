@@ -36,7 +36,9 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .base import MediaControllerBase
 
@@ -372,9 +374,10 @@ class TracksController(MediaControllerBase[Track]):
             ProviderFeature.SIMILAR_TRACKS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
+            if not isinstance(prov, (MetadataProvider, PluginProvider)):
+                continue
             try:
-                # Helper restricts to METADATA/PLUGIN; their get_similar_tracks takes a Track.
-                if result := await prov.get_similar_tracks(ref_item, limit=limit):  # type: ignore[union-attr,arg-type]
+                if result := await prov.get_similar_tracks(ref_item, limit=limit):
                     return result
             except NotImplementedError:
                 continue

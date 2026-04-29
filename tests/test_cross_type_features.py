@@ -11,7 +11,9 @@ from music_assistant.controllers.media.artists import ArtistsController
 from music_assistant.controllers.media.tracks import TracksController
 from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 
 def _make_prov(
@@ -82,7 +84,12 @@ def test_get_providers_supporting_feature_respects_custom_priority() -> None:
 async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     """When the music provider doesn't support SIMILAR_TRACKS, try metadata providers."""
     mass = Mock()
-    metadata_prov = _make_prov("meta_a", ProviderType.METADATA, {ProviderFeature.SIMILAR_TRACKS})
+    metadata_prov = Mock(spec=MetadataProvider)
+    metadata_prov.instance_id = "meta_a"
+    metadata_prov.type = ProviderType.METADATA
+    metadata_prov.available = True
+    metadata_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    metadata_prov.priority = 50
     metadata_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
     music_prov = _make_prov("m_a", ProviderType.MUSIC, set())
 
@@ -154,7 +161,12 @@ async def test_similar_artists_falls_back_to_plugin() -> None:
     music_prov.type = ProviderType.MUSIC
     music_prov.available = True
     music_prov.supported_features = set()
-    plugin_prov = _make_prov("p_a", ProviderType.PLUGIN, {ProviderFeature.SIMILAR_ARTISTS})
+    plugin_prov = Mock(spec=PluginProvider)
+    plugin_prov.instance_id = "p_a"
+    plugin_prov.type = ProviderType.PLUGIN
+    plugin_prov.available = True
+    plugin_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
+    plugin_prov.priority = 50
     plugin_prov.get_similar_artists = AsyncMock(return_value=["a2"])
     mass.get_provider.return_value = music_prov
     mass.get_providers_supporting_feature.return_value = [plugin_prov]

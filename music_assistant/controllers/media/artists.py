@@ -25,7 +25,9 @@ from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.helpers.compare import compare_artist, compare_strings, create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -81,9 +83,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             ProviderFeature.SIMILAR_ARTISTS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
+            if not isinstance(prov, (MetadataProvider, PluginProvider)):
+                continue
             try:
-                # Helper restricts to METADATA/PLUGIN; their get_similar_artists takes an Artist.
-                if result := await prov.get_similar_artists(ref_item, limit=limit):  # type: ignore[union-attr,arg-type]
+                if result := await prov.get_similar_artists(ref_item, limit=limit):
                     return result
             except NotImplementedError:
                 continue
