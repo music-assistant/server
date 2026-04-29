@@ -557,4 +557,4 @@ class AudioAnalysisController:
 
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
-        return max(1, (os.cpu_count() or 4) // 4)
+        return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
