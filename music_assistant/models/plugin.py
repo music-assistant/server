@@ -210,69 +210,67 @@ class PluginProvider(Provider):
         raise NotImplementedError
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """Retrieve a list of similar tracks for the given track.
+        """
+        Retrieve a list of similar tracks for the given track.
 
-        Only called if plugin declares ProviderFeature.SIMILAR_TRACKS.
+        Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
+
+        :param track: The reference track.
+        :param limit: Maximum number of similar tracks to return.
         """
         if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
             raise NotImplementedError
         return []
 
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
-        """Retrieve a list of similar artists for the given artist.
+        """
+        Retrieve a list of similar artists for the given artist.
 
-        Only called if plugin declares ProviderFeature.SIMILAR_ARTISTS.
+        Will only be called if ProviderFeature.SIMILAR_ARTISTS is declared.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of similar artists to return.
         """
         if ProviderFeature.SIMILAR_ARTISTS in self.supported_features:
             raise NotImplementedError
         return []
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Retrieve a list of recommendation folders from this plugin.
+        """
+        Retrieve a list of recommendation folders from this plugin.
 
-        Only called if plugin declares ProviderFeature.RECOMMENDATIONS.
-
-        RecommendationFolders may contain Playlist items that point back to this
-        plugin via their provider_mappings. The user can add such a Playlist to
-        their MA library through the standard add-to-library flow.
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
         return []
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this plugin's contents.
+        """
+        Browse this plugin's contents.
 
-        Only called if plugin declares ProviderFeature.BROWSE.
+        Will only be called if ProviderFeature.BROWSE is declared.
 
         :param path: The path to browse, in the form ``<instance_id>://<sub_path>``.
-
-        Plugins that surface playlists should yield Playlist items here. Each
-        Playlist MUST have at least one ProviderMapping pointing to this
-        plugin's instance_id/domain so MA can resolve get_playlist /
-        get_playlist_tracks against the correct provider when the user adds
-        it to their library.
         """
         if ProviderFeature.BROWSE in self.supported_features:
             raise NotImplementedError
         return []
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Return details of a single playlist owned by this plugin.
+        """
+        Return details of a single playlist owned by this plugin.
 
-        Called by MA when a plugin-owned Playlist is in the user's library and
-        MA needs to refresh its metadata. Plugins surfacing playlists via
-        ``browse`` or ``recommendations`` SHOULD implement this.
+        :param prov_playlist_id: Provider-scoped playlist id.
         """
         raise NotImplementedError
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Return a page of tracks for a playlist owned by this plugin.
+        """
+        Return a page of tracks for a playlist owned by this plugin.
 
-        Called by MA when the user plays or expands a plugin-owned Playlist.
-        Tracks SHOULD carry ProviderMappings pointing to real music providers
-        so MA's playback path resolves normally. Plugins surfacing playlists
-        via ``browse`` or ``recommendations`` SHOULD implement this.
+        :param prov_playlist_id: Provider-scoped playlist id.
+        :param page: Zero-based page index for paginated results.
         """
         raise NotImplementedError
 
