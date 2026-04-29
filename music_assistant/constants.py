@@ -13,13 +13,7 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ContentType,
-    MediaType,
-    PlayerFeature,
-    ProviderFeature,
-)
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
 APPLICATION_NAME: Final = "Music Assistant"
@@ -1080,15 +1074,3 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     # external (hass_players)
     "external",
 }
-
-# Features that may be declared by providers outside their primary provider type.
-# Controllers consult providers in tier order Music -> Metadata -> Plugin for these.
-# Features outside this set stay tied to their primary provider type.
-CROSS_TYPE_FEATURES: frozenset[ProviderFeature] = frozenset(
-    {
-        ProviderFeature.SIMILAR_TRACKS,
-        ProviderFeature.SIMILAR_ARTISTS,
-        ProviderFeature.RECOMMENDATIONS,
-        ProviderFeature.BROWSE,
-    }
-)
