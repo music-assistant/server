@@ -58,7 +58,6 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -465,13 +464,6 @@ class MusicAssistant:
         for ptype in priority:
             result.extend(sorted(by_tier[ptype], key=lambda p: getattr(p, "priority", 50)))
         return result
-
-    def get_plugins_by_feature(self, feature: ProviderFeature) -> list[PluginProvider]:
-        """Return all available PluginProvider instances that support the given feature."""
-        return cast(
-            "list[PluginProvider]",
-            self.get_providers_supporting_feature(feature, priority=(ProviderType.PLUGIN,)),
-        )
 
     def signal_event(
         self,
