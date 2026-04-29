@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from math import inf
 from typing import TYPE_CHECKING
 
+import torch
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderType, StreamType
 
@@ -56,7 +58,8 @@ class AudioAnalysisController:
         self._workers: dict[str, asyncio.Task[None]] = {}
 
     def setup(self) -> None:
-        """Register the nightly background scan task."""
+        """Register the nightly background scan task and apply CPU caps."""
+        self._configure_thread_caps()
         utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
         self.mass.tasks.register_scheduled_task(
             task_id=BACKGROUND_SCAN_TASK_ID,
@@ -64,6 +67,19 @@ class AudioAnalysisController:
             handler=self._run_background_scan,
             schedule=TaskSchedule.daily(hour=utc_hour, minute=utc_minute),
             metadata={"task_domain": "audio_analysis"},
+        )
+
+    def _configure_thread_caps(self) -> None:
+        """Cap PyTorch threading so Audio Analysis inference stays around a quarter of cpu_count."""
+        budget = self._aa_thread_budget()
+        torch.set_num_threads(budget)
+        with contextlib.suppress(RuntimeError):
+            # set_num_interop_threads can only be called before the first torch op
+            torch.set_num_interop_threads(1)
+        self.logger.info(
+            "AudioAnalysis thread caps: torch intra=%d, torch interop=%d",
+            torch.get_num_threads(),
+            torch.get_num_interop_threads(),
         )
 
     @property
@@ -538,3 +554,7 @@ class AudioAnalysisController:
                     self._active_sessions.pop(session_key, None)
                     self._workers.pop(session_key, None)
                     break
+
+    def _aa_thread_budget(self) -> int:
+        """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
+        return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)

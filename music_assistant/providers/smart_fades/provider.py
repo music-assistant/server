@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import platform
 import time
 from dataclasses import dataclass, field
@@ -85,7 +84,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     def _initialize_models(self) -> tuple[Any, ...]:
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
-        torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
         is_arm = platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
@@ -218,14 +216,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
             all_vqt = torch.cat(data.musical_key_feature_blocks, dim=-1)  # (1, 1, 84, T_total)
             data.musical_key_feature_blocks.clear()
 
-        # Run beat and key inference concurrently in separate threads
-        beat_task = asyncio.to_thread(self._infer_beat_timings, feats)
-        key_task = asyncio.to_thread(self._infer_musical_key, all_vqt)
-        (beats, downbeats), (key, mode) = await asyncio.gather(beat_task, key_task)
-
+        # Run beat and key inference sequentially to keep peak CPU bounded.
+        beats, downbeats = await asyncio.to_thread(self._infer_beat_timings, feats)
         if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
             return
+        key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
 
