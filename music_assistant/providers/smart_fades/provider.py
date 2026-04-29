@@ -217,12 +217,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
 
         # Run beat and key inference sequentially to keep peak CPU bounded.
-        key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
         beats, downbeats = await asyncio.to_thread(self._infer_beat_timings, feats)
-
         if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
             return
+        key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
 
