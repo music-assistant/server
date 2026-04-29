@@ -142,6 +142,12 @@ class SonicSessionData(AnalysisSessionData):
     # when the CLAP model loaded successfully; otherwise left empty.
     clap_audio: list[np.ndarray] = field(default_factory=list)
     clap_audio_samples: int = 0
+    # Per-window selective buffer for live CLAP. Populated by the
+    # dispatch state machine; populated and consumed in upcoming steps.
+    clap_target_starts: list[int] = field(default_factory=list)
+    clap_target_buffers: list[list[np.ndarray]] = field(default_factory=list)
+    clap_target_complete: list[bool] = field(default_factory=list)
+    clap_position_samples: int = 0
 
 
 async def setup(
@@ -363,6 +369,49 @@ def _store_clap_embedding(analysis: AudioAnalysisData, embedding: np.ndarray) ->
     if analysis.extra_data is None:
         analysis.extra_data = {}
     analysis.extra_data[EXTRA_DATA_CLAP_EMBEDDING] = embedding.astype(np.float32).tolist()
+
+
+def _dispatch_clap_chunk(
+    session: SonicSessionData,
+    decoded_audio: np.ndarray,
+    source_sr: int,
+) -> list[np.ndarray]:
+    """Append a PCM chunk to active CLAP target windows; return any windows completed.
+
+    :param session: Active analysis session whose target buffers are mutated in place.
+    :param decoded_audio: Mono float32 PCM chunk at source_sr.
+    :param source_sr: Sample rate of decoded_audio.
+    :returns: Audio arrays for windows that completed during this call, in
+        target-list order. Caller is responsible for spawning inference.
+    """
+    if not session.clap_target_starts:
+        return []
+
+    chunk_start = session.clap_position_samples
+    chunk_end = chunk_start + len(decoded_audio)
+    session.clap_position_samples = chunk_end
+
+    window_samples = CLAP_WINDOW_SECONDS * source_sr
+    completed: list[np.ndarray] = []
+
+    for i, target_start in enumerate(session.clap_target_starts):
+        if session.clap_target_complete[i]:
+            continue
+        target_end = target_start + window_samples
+        if chunk_end <= target_start or chunk_start >= target_end:
+            continue
+        slice_start = max(0, target_start - chunk_start)
+        slice_end = min(len(decoded_audio), target_end - chunk_start)
+        session.clap_target_buffers[i].append(decoded_audio[slice_start:slice_end])
+
+        accumulated = sum(len(arr) for arr in session.clap_target_buffers[i])
+        if accumulated >= window_samples:
+            window_audio = np.concatenate(session.clap_target_buffers[i])[:window_samples]
+            session.clap_target_buffers[i] = []
+            session.clap_target_complete[i] = True
+            completed.append(window_audio)
+
+    return completed
 
 
 def _pcm_bytes_to_audio(
