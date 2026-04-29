@@ -3,7 +3,7 @@
 These cover the guard rails and shape of the responses returned by
 _handle_status / _handle_analyzed_tracks / _handle_export_analysis,
 and verify each one routes through the AudioAnalysisController helpers
-(count_rows_by_domain / list_rows_by_domain) rather than touching the
+(get_audio_analysis_count / get_audio_analysis_rows) rather than touching the
 database directly. The handlers are unit-tested via ``object.__new__``
 to bypass the heavy provider __init__.
 """
@@ -40,8 +40,8 @@ def _stub_provider(
     p.manifest = MagicMock(domain="sonic_analysis")
 
     aa_controller = MagicMock()
-    aa_controller.count_rows_by_domain = AsyncMock(return_value=count)
-    aa_controller.list_rows_by_domain = AsyncMock(return_value=rows or [])
+    aa_controller.get_audio_analysis_count = AsyncMock(return_value=count)
+    aa_controller.get_audio_analysis_rows = AsyncMock(return_value=rows or [])
 
     fake_track = MagicMock()
     fake_track.name = "name"
@@ -74,7 +74,7 @@ async def test_status_routes_count_through_controller() -> None:
     result = await p._handle_status()
     assert result["clap_model_loaded"] is True
     assert result["analyzed_tracks_count"] == 42
-    aa.count_rows_by_domain.assert_awaited_once_with("sonic_analysis")
+    aa.get_audio_analysis_count.assert_awaited_once_with("sonic_analysis")
 
 
 @pytest.mark.asyncio
@@ -91,7 +91,7 @@ async def test_analyzed_tracks_dedupes_and_paginates() -> None:
     result = await p._handle_analyzed_tracks(limit=2, offset=0)
     assert result["total"] == 3  # deduped
     assert len(result["items"]) == 2  # limited
-    aa.list_rows_by_domain.assert_awaited_once_with("sonic_analysis")
+    aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis")
 
 
 @pytest.mark.asyncio
@@ -118,7 +118,7 @@ async def test_export_analysis_extracts_fields_and_extra_data() -> None:
     assert item["bpm"] == 120.5
     assert item["danceability"] == 0.7
     assert item["extra_data"]["clap_embedding"] == [0.0] * 1024
-    aa.list_rows_by_domain.assert_awaited_once_with("sonic_analysis")
+    aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis")
 
 
 @pytest.mark.asyncio

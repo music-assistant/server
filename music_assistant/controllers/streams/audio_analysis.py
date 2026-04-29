@@ -340,10 +340,9 @@ class AudioAnalysisController:
             return None
         return int(row["analysis_version"])
 
-    async def count_rows_by_domain(
+    async def get_audio_analysis_count(
         self,
         aa_provider_domain: str,
-        *,
         media_type: MediaType = MediaType.TRACK,
     ) -> int:
         """
@@ -352,29 +351,21 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider whose rows to count.
         :param media_type: The media type to count rows for.
         """
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT COUNT(*) AS c FROM {DB_TABLE_AUDIO_ANALYSIS} "
+        return await self.mass.music.database.get_count_from_query(
+            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
             f"WHERE aa_provider_domain = :domain AND media_type = :media_type",
             {"domain": aa_provider_domain, "media_type": media_type.value},
         )
-        return int(rows[0]["c"]) if rows else 0
 
-    async def list_rows_by_domain(
+    async def get_audio_analysis_rows(
         self,
         aa_provider_domain: str,
-        *,
         media_type: MediaType = MediaType.TRACK,
     ) -> list[Mapping[str, Any]]:
         """
-        List all audio_analysis rows for a given aa_provider_domain.
+        Return all audio_analysis rows for a given aa_provider_domain.
 
-        Returns raw row dicts so callers can extract whichever columns they
-        need (e.g. item_id+provider for inventory listings, analysis_data
-        for re-parsing into AudioAnalysisData, extra_data subkeys for
-        downstream index rebuilds). Callers handle their own pagination,
-        ordering, and beyond-axis filtering.
-
-        :param aa_provider_domain: Domain of the AA provider whose rows to list.
+        :param aa_provider_domain: Domain of the AA provider whose rows to return.
         :param media_type: The media type to filter rows by.
         """
         return await self.mass.music.database.get_rows(

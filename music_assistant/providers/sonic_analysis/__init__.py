@@ -507,7 +507,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :returns: Dict with provider_loaded, clap_model_loaded,
             analyzed_tracks_count, analysis_version.
         """
-        analyzed_tracks_count = await self.mass.streams.audio_analysis.count_rows_by_domain(
+        analyzed_tracks_count = await self.mass.streams.audio_analysis.get_audio_analysis_count(
             self.domain
         )
         return {
@@ -530,7 +530,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param limit: Max results per page.
         :param offset: Pagination offset (ignored when search is set).
         """
-        rows = await self.mass.streams.audio_analysis.list_rows_by_domain(self.domain)
+        rows = await self.mass.streams.audio_analysis.get_audio_analysis_rows(self.domain)
         seen: set[tuple[str, str]] = set()
         entries: list[tuple[str, str]] = []
         for row in rows:
@@ -578,7 +578,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param random_pick: When > 0, return a random sample of this size
             instead of an offset/limit page.
         """
-        rows = await self.mass.streams.audio_analysis.list_rows_by_domain(self.domain)
+        rows = await self.mass.streams.audio_analysis.get_audio_analysis_rows(self.domain)
 
         export_fields = [
             "bpm",
