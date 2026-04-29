@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import urllib.parse
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
@@ -36,14 +36,14 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.plugin import PluginProvider
 
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.models.metadata_provider import MetadataProvider
+    from music_assistant.models.plugin import PluginProvider
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -374,10 +374,9 @@ class TracksController(MediaControllerBase[Track]):
             ProviderFeature.SIMILAR_TRACKS,
             priority=(ProviderType.METADATA, ProviderType.PLUGIN),
         ):
-            if not isinstance(prov, (MetadataProvider, PluginProvider)):
-                continue
             try:
-                if result := await prov.get_similar_tracks(ref_item, limit=limit):
+                cross_prov = cast("MetadataProvider | PluginProvider", prov)
+                if result := await cross_prov.get_similar_tracks(ref_item, limit=limit):
                     return result
             except NotImplementedError:
                 continue
