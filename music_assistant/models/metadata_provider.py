@@ -58,10 +58,9 @@ class MetadataProvider(Provider):
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """
-        Get this provider's recommendations.
+        Retrieve a list of recommendation folders from this metadata provider.
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
