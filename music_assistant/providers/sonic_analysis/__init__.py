@@ -20,10 +20,10 @@ file independently — wasteful double I/O for network-attached libraries.
 The merged analyze_file loads once and feeds both feature engines.
 
 Live-playback path (process_pcm_chunk / _finalize via AudioAnalysisController)
-produces librosa outputs and — for non-filesystem providers — runs CLAP
-on a deterministic 7-second window, so streaming providers (Tidal,
-Spotify, Qobuz, etc.) also get the 5 soft scalars and the persisted
-1024-dim embedding.
+plans target window positions from the track duration at session start,
+selectively buffers only those 7-second slices as PCM streams in, and
+fires per-window CLAP inference off-thread as each window completes.
+Mean-pooled at finalize.
 """
 
 from __future__ import annotations
@@ -71,8 +71,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-ANALYZE_FILE_SAMPLE_RATE: int = 22050
-
 BLOCK_SECONDS: int = 10
 OVERLAP_SAMPLES: int = 2048
 
@@ -106,23 +104,7 @@ CLAP_WINDOW_COUNTS: dict[str, int] = {
     CLAP_SAMPLING_THOROUGH: 8,
 }
 
-# Live-path PCM buffer cap in seconds (at session sample rate). Sized to
-# cover the Thorough preset's spread (~8 windows + intro skip ~= 86s);
-# smaller presets just ignore the extra. At 48 kHz stereo this is ~17 MB
-# per session — bounded so podcasts don't pin memory indefinitely.
-CLAP_LIVE_BUFFER_SECONDS: float = 90.0
-
 CONF_CLAP_SAMPLING: str = "clap_sampling"
-
-# Upstream's AudioAnalysisController runs analyze_file for tracks from
-# these provider domains only. For those, the background scan fills in
-# CLAP scalars and the persisted embedding — running CLAP again in the
-# live path would be redundant. Streaming providers (Tidal, Spotify,
-# Qobuz, etc.) never hit analyze_file, so live CLAP is the only way
-# they get the 5 soft scalars + the 1024-dim embedding in extra_data.
-FILESYSTEM_PROVIDER_DOMAINS: frozenset[str] = frozenset(
-    {"filesystem_local", "filesystem_smb", "filesystem_nfs"}
-)
 
 
 @dataclass
@@ -137,13 +119,9 @@ class SonicSessionData(AnalysisSessionData):
     start_time: float = 0.0
     peak_absolute: float = 0.0
     waveform_peaks: list[float] = field(default_factory=list)
-    # Accumulated raw PCM for live CLAP inference in _finalize, capped
-    # at CLAP_LIVE_MAX_SECONDS of source-SR mono audio. Only populated
-    # when the CLAP model loaded successfully; otherwise left empty.
-    clap_audio: list[np.ndarray] = field(default_factory=list)
-    clap_audio_samples: int = 0
-    # Per-window selective buffer for live CLAP. Populated by the
-    # dispatch state machine; populated and consumed in upcoming steps.
+    # Per-window selective buffer for live CLAP. clap_target_starts is
+    # planned at session start from streamdetails.duration + preset; the
+    # buffers fill via _dispatch_clap_chunk and free on completion.
     clap_target_starts: list[int] = field(default_factory=list)
     clap_target_buffers: list[list[np.ndarray]] = field(default_factory=list)
     clap_target_complete: list[bool] = field(default_factory=list)
@@ -312,61 +290,6 @@ def compute_clap_target_starts(
 
     positions = np.linspace(usable_start, usable_end, effective_n)
     return [int(p * source_sr) for p in positions]
-
-
-def run_clap_inference(
-    model: Any,
-    text_embeddings: Any,
-    prompt_order: list[tuple[str, tuple[str, str]]],
-    audio: np.ndarray,
-    source_sr: int,
-    n_windows: int = 1,
-) -> tuple[dict[str, float], np.ndarray]:
-    """Run a CLAP forward pass with deterministic multi-window mean pooling.
-
-    :param model: A loaded CLAP wrapper (msclap CLAPWrapper instance).
-    :param text_embeddings: Pre-computed prompt text embeddings (shape
-        [2*len(prompt_order), d_proj]), ordered pos/neg/pos/neg/... per
-        prompt pair.
-    :param prompt_order: List of (scalar_name, (pos_prompt, neg_prompt))
-        tuples in the same order the text_embeddings were computed.
-    :param audio: Mono float32 audio at source_sr.
-    :param source_sr: Sample rate of audio in Hz.
-    :param n_windows: Number of 7s windows to sample and mean-pool.
-    :returns: Tuple of (scalar_dict, 1024-dim mean-pooled audio embedding).
-
-    Module-level so both the provider's live/analyze_file paths and the
-    clap-spike eval harness can call the same code. Windows are sliced
-    deterministically via select_clap_windows, fed as one batch to the
-    CLAP audio encoder, and the resulting per-window embeddings are
-    mean-pooled + L2-renormalized so cosine similarity in downstream
-    indexes (sonic_clap) is well-defined. Per-window similarity logits
-    are also mean-pooled before Platt calibration, so the scalars
-    reflect the whole sampled region rather than any single window.
-    """
-    windows = select_clap_windows(audio, source_sr, n_windows)
-    if not windows:
-        msg = "audio too short for CLAP inference"
-        raise ValueError(msg)
-
-    window_tensors = [torch.from_numpy(w).to(dtype=torch.float32) for w in windows]
-    audio_embs = model.get_audio_embeddings_from_tensor(window_tensors, source_sr)
-    similarities = model.compute_similarity(audio_embs, text_embeddings)
-    # audio_embs shape (N, d_proj); similarities shape (N, 2 * len(prompt_order))
-
-    mean_sim = similarities.mean(dim=0).detach().cpu()
-    scalars: dict[str, float] = {}
-    for idx, (scalar_name, _) in enumerate(prompt_order):
-        pos_logit = float(mean_sim[idx * 2])
-        neg_logit = float(mean_sim[idx * 2 + 1])
-        a, b = CALIBRATION[scalar_name]
-        margin = pos_logit - neg_logit
-        scalars[scalar_name] = 1.0 / (1.0 + math.exp(-(a * margin + b)))
-
-    mean_emb = audio_embs.mean(dim=0)
-    mean_emb = mean_emb / torch.norm(mean_emb)
-    emb_np = mean_emb.detach().cpu().numpy().astype(np.float32).reshape(-1)
-    return scalars, emb_np
 
 
 def _store_clap_embedding(analysis: AudioAnalysisData, embedding: np.ndarray) -> None:
@@ -752,17 +675,41 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 audio_format.channels,
             )
             return False
+        target_starts: list[int] = []
+        if self._clap_model is not None and streamdetails.duration:
+            preset = str(self.config.get_value(CONF_CLAP_SAMPLING, CLAP_SAMPLING_FAST))
+            preset_n = CLAP_WINDOW_COUNTS.get(preset, 1)
+            target_starts = compute_clap_target_starts(
+                streamdetails.duration, preset_n, audio_format.sample_rate
+            )
+
         base = self._sessions[session_id]
         self._sessions[session_id] = SonicSessionData(
             streamdetails=base.streamdetails,
             audio_format=base.audio_format,
             block_samples=block_bytes,
             start_time=time.monotonic(),
+            clap_target_starts=target_starts,
+            clap_target_buffers=[[] for _ in target_starts],
+            clap_target_complete=[False] * len(target_starts),
         )
         self.logger.debug(
-            "Started sonic analysis for %s/%s", streamdetails.provider, streamdetails.item_id
+            "Started sonic analysis for %s/%s (%d CLAP target windows)",
+            streamdetails.provider,
+            streamdetails.item_id,
+            len(target_starts),
         )
         return True
+
+    async def cancel(self, session_id: str) -> None:
+        """Cancel pending CLAP inferences and free per-window buffers."""
+        session = self._sessions.get(session_id)
+        if isinstance(session, SonicSessionData):
+            for task in session.clap_inference_tasks:
+                if not task.done():
+                    task.cancel()
+            session.clap_target_buffers.clear()
+        await super().cancel(session_id)
 
     async def process_pcm_chunk(
         self,
@@ -788,7 +735,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             block_peak = float(np.max(np.abs(audio)))
             session.peak_absolute = max(session.peak_absolute, block_peak)
             session.waveform_peaks.append(block_peak)
-            self._maybe_buffer_clap_audio(session, audio, af.sample_rate)
+            self._dispatch_clap_to_targets(session, audio, af.sample_rate)
             if session.overlap is not None:
                 audio = np.concatenate([session.overlap, audio])
             session.overlap = audio[-OVERLAP_SAMPLES:].copy()
@@ -796,84 +743,59 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
 
-    def _maybe_buffer_clap_audio(
+    def _dispatch_clap_to_targets(
         self, session: SonicSessionData, audio: np.ndarray, source_sr: int
     ) -> None:
-        """Append up to CLAP_LIVE_BUFFER_SECONDS of audio to the session buffer.
-
-        No-op when the CLAP model didn't load. Buffer is capped so long
-        tracks/podcasts don't pin memory. We buffer from time-zero of the
-        session (not from the 30s mark) because select_clap_window needs
-        the earlier samples for its short-track fallback.
-        """
-        if self._clap_model is None:
+        """Route a decoded block to active CLAP target windows; spawn inference per completion."""
+        if not session.clap_target_starts:
             return
-        limit = int(CLAP_LIVE_BUFFER_SECONDS * source_sr)
-        remaining = limit - session.clap_audio_samples
-        if remaining <= 0:
-            return
-        take = audio[:remaining] if len(audio) > remaining else audio
-        session.clap_audio.append(np.asarray(take, dtype=np.float32))
-        session.clap_audio_samples += len(take)
+        completed = _dispatch_clap_chunk(session, audio, source_sr)
+        for window_audio in completed:
+            task = self.mass.create_task(
+                self._run_single_clap_window(session, window_audio, source_sr)
+            )
+            session.clap_inference_tasks.append(task)
 
     async def _run_live_clap_if_eligible(
         self, session: SonicSessionData, analysis: AudioAnalysisData
     ) -> None:
-        """Run CLAP on buffered live audio and populate scalars + extra_data embedding.
-
-        Gated on: CLAP model loaded, source is a non-filesystem provider
-        (filesystem tracks get CLAP via analyze_file instead), and at
-        least 1 second of audio was buffered. Populates the 5 CLAP
-        scalars directly on analysis and stores the 1024-dim embedding
-        under extra_data["clap_embedding"]. Always clears the buffer
-        before returning so memory is released regardless of outcome.
-        """
+        """Await per-window inferences, mean-pool, populate scalars + extra_data embedding."""
+        if not session.clap_target_starts:
+            return
+        if session.clap_inference_tasks:
+            await asyncio.gather(*session.clap_inference_tasks, return_exceptions=True)
+        n = session.clap_completed_count
         sd = session.streamdetails
-        af = session.audio_format
-        if (
-            self._clap_model is None
-            or sd.provider in FILESYSTEM_PROVIDER_DOMAINS
-            or session.clap_audio_samples < af.sample_rate
-        ):
-            session.clap_audio.clear()
-            session.clap_audio_samples = 0
+        if n == 0 or session.clap_sum_embedding is None or session.clap_sum_similarities is None:
+            self.logger.warning(
+                "Live CLAP for %s/%s: no windows completed (planned %d)",
+                sd.provider,
+                sd.item_id,
+                len(session.clap_target_starts),
+            )
             return
-        buffered = (
-            np.concatenate(session.clap_audio)
-            if len(session.clap_audio) > 1
-            else session.clap_audio[0]
+
+        mean_emb = session.clap_sum_embedding / n
+        norm = float(np.linalg.norm(mean_emb))
+        if norm > 0:
+            mean_emb = mean_emb / norm
+        mean_sim = session.clap_sum_similarities / n
+
+        for idx, (scalar_name, _) in enumerate(self._clap_prompt_order):
+            pos_logit = float(mean_sim[idx * 2])
+            neg_logit = float(mean_sim[idx * 2 + 1])
+            a, b = CALIBRATION[scalar_name]
+            margin = pos_logit - neg_logit
+            setattr(analysis, scalar_name, 1.0 / (1.0 + math.exp(-(a * margin + b))))
+
+        _store_clap_embedding(analysis, mean_emb)
+        self.logger.debug(
+            "Live CLAP for %s/%s: %d/%d windows completed",
+            sd.provider,
+            sd.item_id,
+            n,
+            len(session.clap_target_starts),
         )
-        window = select_clap_window(buffered, af.sample_rate)
-        if window is None:
-            session.clap_audio.clear()
-            session.clap_audio_samples = 0
-            return
-        try:
-            clap_start = time.monotonic()
-            clap_scalars, clap_emb = await asyncio.to_thread(
-                self._run_clap_inference, window, af.sample_rate
-            )
-            clap_elapsed = time.monotonic() - clap_start
-        except Exception as err:
-            self.logger.debug(
-                "_finalize: live CLAP failed for %s/%s: %s",
-                sd.provider,
-                sd.item_id,
-                err,
-            )
-        else:
-            for field_name, value in clap_scalars.items():
-                setattr(analysis, field_name, value)
-            _store_clap_embedding(analysis, clap_emb)
-            self.logger.debug(
-                "_finalize: live CLAP for %s/%s (%.1fs buffered, %.2fs inference)",
-                sd.provider,
-                sd.item_id,
-                session.clap_audio_samples / af.sample_rate,
-                clap_elapsed,
-            )
-        session.clap_audio.clear()
-        session.clap_audio_samples = 0
 
     async def _finalize(self, session_id: str) -> None:
         """Process remaining PCM, collapse features, and store analysis data.
@@ -896,7 +818,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             block_peak = float(np.max(np.abs(audio)))
             session.peak_absolute = max(session.peak_absolute, block_peak)
             session.waveform_peaks.append(block_peak)
-            self._maybe_buffer_clap_audio(session, audio, af.sample_rate)
+            self._dispatch_clap_to_targets(session, audio, af.sample_rate)
             if session.overlap is not None:
                 audio = np.concatenate([session.overlap, audio])
             bf = await asyncio.to_thread(extract_block_features, audio, af.sample_rate)
@@ -919,11 +841,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         else:
             analysis.true_peak = -96.0
 
-        # AudioAnalysisData has no wave_form field upstream — the per-block
-        # waveform peaks accumulated in session.waveform_peaks aren't persisted
-        # by this provider. Drop the dead computation to avoid mypy warnings
-        # and the wasted allocation.
-
         await self._run_live_clap_if_eligible(session, analysis)
 
         await self.mass.streams.audio_analysis.set_audio_analysis(
@@ -942,29 +859,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             elapsed,
         )
 
-
-    def _run_clap_inference(
-        self,
-        audio_np: np.ndarray,
-        source_sr: int = ANALYZE_FILE_SAMPLE_RATE,
-    ) -> tuple[dict[str, float], np.ndarray]:
-        """Run CLAP inference on pre-loaded audio using the configured preset.
-
-        :param audio_np: Mono float32 audio at source_sr.
-        :param source_sr: Sample rate of audio_np.
-        :returns: Tuple of (scalar dict, 1024-dim mean-pooled audio embedding).
-        """
-        preset = str(self.config.get_value(CONF_CLAP_SAMPLING, CLAP_SAMPLING_FAST))
-        n_windows = CLAP_WINDOW_COUNTS.get(preset, 1)
-        return run_clap_inference(
-            self._clap_model,
-            self._clap_text_embeddings,
-            self._clap_prompt_order,
-            audio_np,
-            source_sr,
-            n_windows,
-        )
-
     def _single_window_inference_sync(
         self,
         window_audio: np.ndarray,
@@ -972,12 +866,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Run CLAP on one 7s window. Returns (1024-dim embedding, similarity logit row)."""
         window_tensor = torch.from_numpy(window_audio).to(dtype=torch.float32)
-        audio_embs = self._clap_model.get_audio_embeddings_from_tensor(
-            [window_tensor], source_sr
-        )
-        similarities = self._clap_model.compute_similarity(
-            audio_embs, self._clap_text_embeddings
-        )
+        audio_embs = self._clap_model.get_audio_embeddings_from_tensor([window_tensor], source_sr)
+        similarities = self._clap_model.compute_similarity(audio_embs, self._clap_text_embeddings)
         embedding = audio_embs[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
         similarity_row = similarities[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
         return embedding, similarity_row
