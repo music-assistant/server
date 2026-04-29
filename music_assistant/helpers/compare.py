@@ -330,16 +330,26 @@ def compare_audiobook(
         and not compare_strings(base_item.publisher, compare_item.publisher, strict=True)
     ):
         return False
+
+    def _audiobook_artist_name(value: str | Artist) -> str:
+        return value.name if isinstance(value, Artist) else value
+
     # compare narrator(s) — different narrators indicate different recordings and must not be merged
     if base_item.narrators and compare_item.narrators:
-        base_narrators = {create_safe_string(n) for n in base_item.narrators}
-        compare_narrators = {create_safe_string(n) for n in compare_item.narrators}
+        base_narrators = {
+            create_safe_string(_audiobook_artist_name(n)) for n in base_item.narrators
+        }
+        compare_narrators = {
+            create_safe_string(_audiobook_artist_name(n)) for n in compare_item.narrators
+        }
         if base_narrators.isdisjoint(compare_narrators):
             return False
     # compare author(s)
     for author in base_item.authors:
-        author_safe = create_safe_string(author)
-        if author_safe in [create_safe_string(x) for x in compare_item.authors]:
+        author_safe = create_safe_string(_audiobook_artist_name(author))
+        if author_safe in [
+            create_safe_string(_audiobook_artist_name(x)) for x in compare_item.authors
+        ]:
             return True
     return False
 
