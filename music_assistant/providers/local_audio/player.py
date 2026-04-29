@@ -126,17 +126,11 @@ class LocalAudioPlayer(Player):
         if sys.platform != "linux" or not self._pa_sink_name:
             return
         loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(
-            None, self._set_pulse_volume, self._pa_sink_name, 100
-        )
+        ok = await loop.run_in_executor(None, self._set_pulse_volume, self._pa_sink_name, 100)
         if ok:
-            self.logger.debug(
-                "PA sink %s set to 100%% hardware volume", self._pa_sink_name
-            )
+            self.logger.debug("PA sink %s set to 100%% hardware volume", self._pa_sink_name)
         else:
-            self.logger.warning(
-                "Failed to set hardware volume for sink %s", self._pa_sink_name
-            )
+            self.logger.warning("Failed to set hardware volume for sink %s", self._pa_sink_name)
 
     def _set_pulse_volume(self, pa_sink_name: str, volume: int) -> bool:
         """Set PulseAudio sink volume. Returns True on success.
