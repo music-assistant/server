@@ -180,3 +180,56 @@ class MyDemoPluginprovider(PluginProvider):
         # you should replace this with your actual implementation.
         for _ in range(100):
             yield b"dummy audio data"
+
+    # -----------------------------------------------------------------------------
+    # Cross-type feature stubs.
+    # Uncomment + declare the matching ProviderFeature to opt in.
+    # -----------------------------------------------------------------------------
+
+    # async def get_similar_tracks(self, track, limit: int = 25):
+    #     """Return similar tracks for the given reference track.
+    #
+    #     Declare ProviderFeature.SIMILAR_TRACKS to opt in.
+    #     Results should be Track objects with provider_mappings pointing to
+    #     existing music providers so playback resolves normally.
+    #     """
+    #     raise NotImplementedError
+    #
+    # async def get_similar_artists(self, artist, limit: int = 25):
+    #     """Return similar artists. Declare ProviderFeature.SIMILAR_ARTISTS."""
+    #     raise NotImplementedError
+    #
+    # async def recommendations(self):
+    #     """Return RecommendationFolder list. Declare ProviderFeature.RECOMMENDATIONS.
+    #
+    #     Folders may contain Playlist items pointing back to this plugin via
+    #     provider_mappings. Users can add such a Playlist to their library
+    #     through the standard add-to-library flow.
+    #     """
+    #     raise NotImplementedError
+    #
+    # async def browse(self, path: str):
+    #     """Return a list of MediaItem / BrowseFolder entries for a path.
+    #
+    #     Declare ProviderFeature.BROWSE to opt in. Plugins surfacing playlists
+    #     should yield Playlist items here. Each Playlist MUST have at least
+    #     one ProviderMapping pointing back to this plugin's instance_id/domain.
+    #     """
+    #     raise NotImplementedError
+    #
+    # async def get_playlist(self, prov_playlist_id: str):
+    #     """Return a single Playlist by id.
+    #
+    #     Implement when surfacing playlists via browse / recommendations so MA
+    #     can refresh metadata once a user adds it to their library.
+    #     """
+    #     raise NotImplementedError
+    #
+    # async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0):
+    #     """Return a page of Track objects for the playlist.
+    #
+    #     Implement when surfacing playlists. Tracks SHOULD carry
+    #     ProviderMappings pointing to real music providers so MA's playback
+    #     path resolves normally.
+    #     """
+    #     raise NotImplementedError
