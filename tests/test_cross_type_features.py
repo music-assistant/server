@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, Mock
 from music_assistant_models.enums import ProviderFeature, ProviderType
 from music_assistant_models.media_items import ProviderMapping
 
+from music_assistant.controllers.media.artists import ArtistsController
 from music_assistant.controllers.media.tracks import TracksController
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 
 
 def _make_prov(
@@ -109,3 +111,68 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     metadata_prov.get_similar_tracks.assert_awaited_once()
     call_kwargs = metadata_prov.get_similar_tracks.await_args.kwargs
     assert call_kwargs.get("limit") == 5
+
+
+async def test_similar_artists_uses_music_provider_first() -> None:
+    """Similar artists should prefer a music provider mapped to the artist."""
+    mass = Mock()
+    music_prov = Mock(spec=MusicProvider)
+    music_prov.instance_id = "m_a"
+    music_prov.type = ProviderType.MUSIC
+    music_prov.available = True
+    music_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
+    music_prov.get_similar_artists = AsyncMock(return_value=["a1"])
+    mass.get_provider.return_value = music_prov
+    mass.get_providers_supporting_feature.return_value = []
+
+    ref_item = Mock()
+    ref_item.provider_mappings = [
+        ProviderMapping(
+            item_id="artist_123",
+            provider_domain="m_a",
+            provider_instance="m_a",
+            available=True,
+        )
+    ]
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = mass
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    result = await controller.similar_artists("artist_123", "m_a", limit=5)
+
+    assert result == ["a1"]
+    music_prov.get_similar_artists.assert_awaited_once_with(prov_artist_id="artist_123", limit=5)
+
+
+async def test_similar_artists_falls_back_to_plugin() -> None:
+    """Falls through to plugin-tier provider when music provider doesn't support it."""
+    mass = Mock()
+    music_prov = Mock(spec=MusicProvider)
+    music_prov.instance_id = "m_a"
+    music_prov.type = ProviderType.MUSIC
+    music_prov.available = True
+    music_prov.supported_features = set()
+    plugin_prov = _make_prov("p_a", ProviderType.PLUGIN, {ProviderFeature.SIMILAR_ARTISTS})
+    plugin_prov.get_similar_artists = AsyncMock(return_value=["a2"])
+    mass.get_provider.return_value = music_prov
+    mass.get_providers_supporting_feature.return_value = [plugin_prov]
+
+    ref_item = Mock()
+    ref_item.provider_mappings = [
+        ProviderMapping(
+            item_id="artist_123",
+            provider_domain="m_a",
+            provider_instance="m_a",
+            available=True,
+        )
+    ]
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = mass
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    result = await controller.similar_artists("artist_123", "m_a", limit=5)
+
+    assert result == ["a2"]
+    plugin_prov.get_similar_artists.assert_awaited_once_with(ref_item, limit=5)
