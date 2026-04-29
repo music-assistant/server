@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -485,26 +486,32 @@ async def test_close_drains_sessions_and_workers() -> None:
 
 
 def _stub_controller(
-    count_query_result: list[dict[str, object]] | None = None,
-    list_result: list[dict[str, object]] | None = None,
-) -> AudioAnalysisController:
-    """Build a bare AudioAnalysisController whose database is mocked."""
+    count_query_result: list[dict[str, Any]] | None = None,
+    list_result: list[dict[str, Any]] | None = None,
+) -> tuple[AudioAnalysisController, MagicMock]:
+    """Build a bare AudioAnalysisController whose database is mocked.
+
+    :returns: (controller, database_mock) — exposing the mock directly so tests
+        can call ``await_args`` without mypy fighting AsyncMock substitution
+        on attributes whose real type is a coroutine method.
+    """
     c = AudioAnalysisController.__new__(AudioAnalysisController)
     c.logger = MagicMock()
-    c.mass = MagicMock()
-    c.mass.music = MagicMock()
-    c.mass.music.database = MagicMock()
-    c.mass.music.database.get_rows_from_query = AsyncMock(
+    db = MagicMock()
+    db.get_rows_from_query = AsyncMock(
         return_value=count_query_result if count_query_result is not None else [{"c": 0}]
     )
-    c.mass.music.database.get_rows = AsyncMock(return_value=list_result or [])
-    return c
+    db.get_rows = AsyncMock(return_value=list_result or [])
+    c.mass = MagicMock()
+    c.mass.music = MagicMock()
+    c.mass.music.database = db
+    return c, db
 
 
 @pytest.mark.asyncio
 async def test_count_rows_by_domain_returns_count() -> None:
     """count_rows_by_domain parses the c column out of the count-query result."""
-    c = _stub_controller(count_query_result=[{"c": 42}])
+    c, _ = _stub_controller(count_query_result=[{"c": 42}])
     result = await c.count_rows_by_domain("sonic_analysis")
     assert result == 42
 
@@ -512,7 +519,7 @@ async def test_count_rows_by_domain_returns_count() -> None:
 @pytest.mark.asyncio
 async def test_count_rows_by_domain_returns_zero_when_empty() -> None:
     """An empty result set is treated as zero (defensive — sqlite always returns one row though)."""
-    c = _stub_controller(count_query_result=[])
+    c, _ = _stub_controller(count_query_result=[])
     result = await c.count_rows_by_domain("sonic_analysis")
     assert result == 0
 
@@ -520,10 +527,9 @@ async def test_count_rows_by_domain_returns_zero_when_empty() -> None:
 @pytest.mark.asyncio
 async def test_count_rows_by_domain_filters_by_domain_and_track_media_type() -> None:
     """Default count filters on aa_provider_domain AND media_type=track."""
-    c = _stub_controller(count_query_result=[{"c": 0}])
+    c, db = _stub_controller(count_query_result=[{"c": 0}])
     await c.count_rows_by_domain("sonic_analysis")
-    call_args = c.mass.music.database.get_rows_from_query.await_args
-    sql, params = call_args.args
+    sql, params = db.get_rows_from_query.await_args.args
     assert "aa_provider_domain = :domain" in sql
     assert "media_type = :media_type" in sql
     assert params == {"domain": "sonic_analysis", "media_type": MediaType.TRACK.value}
@@ -532,21 +538,21 @@ async def test_count_rows_by_domain_filters_by_domain_and_track_media_type() -> 
 @pytest.mark.asyncio
 async def test_count_rows_by_domain_respects_media_type_override() -> None:
     """Caller can count rows for a non-track media type."""
-    c = _stub_controller(count_query_result=[{"c": 7}])
+    c, db = _stub_controller(count_query_result=[{"c": 7}])
     result = await c.count_rows_by_domain("sonic_analysis", media_type=MediaType.PODCAST_EPISODE)
     assert result == 7
-    params = c.mass.music.database.get_rows_from_query.await_args.args[1]
+    params = db.get_rows_from_query.await_args.args[1]
     assert params["media_type"] == MediaType.PODCAST_EPISODE.value
 
 
 @pytest.mark.asyncio
 async def test_list_rows_by_domain_returns_full_rows() -> None:
     """list_rows_by_domain forwards what the DB returns; no filtering or parsing."""
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"item_id": "a", "provider": "filesystem_local", "analysis_data": "{}"},
         {"item_id": "b", "provider": "filesystem_local", "analysis_data": "{}"},
     ]
-    c = _stub_controller(list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     result = await c.list_rows_by_domain("sonic_analysis")
     assert result == rows
 
@@ -554,13 +560,11 @@ async def test_list_rows_by_domain_returns_full_rows() -> None:
 @pytest.mark.asyncio
 async def test_list_rows_by_domain_filters_by_domain_and_track_media_type() -> None:
     """Default list filters on aa_provider_domain + media_type=track and no row limit."""
-    c = _stub_controller(list_result=[])
+    c, db = _stub_controller(list_result=[])
     await c.list_rows_by_domain("sonic_analysis")
-    call = c.mass.music.database.get_rows.await_args
-    table = call.args[0]
-    filters = call.args[1]
-    assert table == "audio_analysis"
-    assert filters == {
+    call = db.get_rows.await_args
+    assert call.args[0] == "audio_analysis"
+    assert call.args[1] == {
         "aa_provider_domain": "sonic_analysis",
         "media_type": MediaType.TRACK.value,
     }
@@ -570,7 +574,7 @@ async def test_list_rows_by_domain_filters_by_domain_and_track_media_type() -> N
 @pytest.mark.asyncio
 async def test_list_rows_by_domain_respects_media_type_override() -> None:
     """Caller can list rows for a non-track media type."""
-    c = _stub_controller(list_result=[])
+    c, db = _stub_controller(list_result=[])
     await c.list_rows_by_domain("sonic_analysis", media_type=MediaType.PODCAST_EPISODE)
-    filters = c.mass.music.database.get_rows.await_args.args[1]
+    filters = db.get_rows.await_args.args[1]
     assert filters["media_type"] == MediaType.PODCAST_EPISODE.value
