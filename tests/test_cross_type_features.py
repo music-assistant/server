@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import ProviderFeature, ProviderType
+from music_assistant_models.media_items import ProviderMapping
 
+from music_assistant.controllers.media.tracks import TracksController
 from music_assistant.mass import MusicAssistant
 
 
@@ -72,3 +74,38 @@ def test_get_providers_supporting_feature_respects_custom_priority() -> None:
     )
 
     assert [p.instance_id for p in result] == ["p"]
+
+
+async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
+    """When the music provider doesn't support SIMILAR_TRACKS, try metadata providers."""
+    mass = Mock()
+    metadata_prov = _make_prov("meta_a", ProviderType.METADATA, {ProviderFeature.SIMILAR_TRACKS})
+    metadata_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    music_prov = _make_prov("m_a", ProviderType.MUSIC, set())
+
+    def get_provider(instance_id: str, **_: object) -> Mock | None:
+        return {"m_a": music_prov, "meta_a": metadata_prov}.get(instance_id)
+
+    mass.get_provider.side_effect = get_provider
+    mass.get_providers_supporting_feature.return_value = [metadata_prov]
+
+    ref_item = Mock()
+    ref_item.provider_mappings = [
+        ProviderMapping(
+            item_id="abc",
+            provider_domain="m_a",
+            provider_instance="m_a",
+            available=True,
+        )
+    ]
+
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    result = await controller.similar_tracks("abc", "m_a", limit=5)
+
+    assert result == ["t1", "t2"]
+    metadata_prov.get_similar_tracks.assert_awaited_once()
+    call_kwargs = metadata_prov.get_similar_tracks.await_args.kwargs
+    assert call_kwargs.get("limit") == 5
