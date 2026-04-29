@@ -148,6 +148,11 @@ class SonicSessionData(AnalysisSessionData):
     clap_target_buffers: list[list[np.ndarray]] = field(default_factory=list)
     clap_target_complete: list[bool] = field(default_factory=list)
     clap_position_samples: int = 0
+    # Inference task handles + running sums for mean-pooling at finalize.
+    clap_inference_tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    clap_sum_embedding: np.ndarray | None = None
+    clap_sum_similarities: np.ndarray | None = None
+    clap_completed_count: int = 0
 
 
 async def setup(
@@ -959,3 +964,44 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             source_sr,
             n_windows,
         )
+
+    def _single_window_inference_sync(
+        self,
+        window_audio: np.ndarray,
+        source_sr: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Run CLAP on one 7s window. Returns (1024-dim embedding, similarity logit row)."""
+        window_tensor = torch.from_numpy(window_audio).to(dtype=torch.float32)
+        audio_embs = self._clap_model.get_audio_embeddings_from_tensor(
+            [window_tensor], source_sr
+        )
+        similarities = self._clap_model.compute_similarity(
+            audio_embs, self._clap_text_embeddings
+        )
+        embedding = audio_embs[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
+        similarity_row = similarities[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
+        return embedding, similarity_row
+
+    async def _run_single_clap_window(
+        self,
+        session: SonicSessionData,
+        window_audio: np.ndarray,
+        source_sr: int,
+    ) -> None:
+        """Run CLAP on a single window off-thread and accumulate running sums."""
+        if self._clap_model is None:
+            return
+        try:
+            embedding, similarity_row = await asyncio.to_thread(
+                self._single_window_inference_sync, window_audio, source_sr
+            )
+        except Exception as err:
+            self.logger.debug("CLAP single-window inference failed: %s", err)
+            return
+        if session.clap_sum_embedding is None:
+            session.clap_sum_embedding = np.zeros_like(embedding)
+            session.clap_sum_similarities = np.zeros_like(similarity_row)
+        assert session.clap_sum_similarities is not None  # narrowed by line above
+        session.clap_sum_embedding += embedding
+        session.clap_sum_similarities += similarity_row
+        session.clap_completed_count += 1
