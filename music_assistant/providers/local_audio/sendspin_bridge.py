@@ -31,7 +31,6 @@ if sys.platform == "linux":
 
 if TYPE_CHECKING:
     import sounddevice as sd  # noqa: F401
-
     from aiosendspin.server import (
         ExternalStreamStartRequest,
         SendspinClient,
@@ -145,9 +144,7 @@ class SendspinLocalAudioBridge:
         )
 
         for role in self._sendspin_client.roles_by_family("player"):
-            self.logger.debug(
-                "Found player role: %s type=%s", role.role_id, type(role).__name__
-            )
+            self.logger.debug("Found player role: %s type=%s", role.role_id, type(role).__name__)
             if isinstance(role, BridgePlayerRole):
                 self._bridge_role = role
                 break
@@ -253,9 +250,7 @@ class SendspinLocalAudioBridge:
             if scale is None:
                 return pcm_data
             samples = np.frombuffer(pcm_data, dtype=np.int32).copy()
-            scaled = np.clip(
-                samples.astype(np.float64) * scale, -2147483648, 2147483647
-            )
+            scaled = np.clip(samples.astype(np.float64) * scale, -2147483648, 2147483647)
             return scaled.astype(np.int32).tobytes()
 
         if self.bit_depth == 24:
@@ -295,9 +290,7 @@ class SendspinLocalAudioBridge:
                 self.bit_depth,
             )
             assert self.pa_sink_name is not None  # guarded by Linux-only call path
-            pa_sink_name = (
-                self.pa_sink_name
-            )  # capture for lambda — assert doesn't narrow closures
+            pa_sink_name = self.pa_sink_name  # capture for lambda — assert doesn't narrow closures
             stream = await self.mass.loop.run_in_executor(
                 None,
                 lambda: PASimpleStream(
@@ -331,9 +324,7 @@ class SendspinLocalAudioBridge:
                     await asyncio.shield(write_future)
             if stream is not None:
                 with suppress(Exception):
-                    await asyncio.shield(
-                        self.mass.loop.run_in_executor(None, stream.close)
-                    )
+                    await asyncio.shield(self.mass.loop.run_in_executor(None, stream.close))
             if self._writer_task is asyncio.current_task():
                 self._writer_task = None
 
@@ -358,18 +349,12 @@ class SendspinLocalAudioBridge:
                     break
                 data = self._apply_software_volume(data)
                 try:
-                    await self.mass.loop.run_in_executor(
-                        None, self._output_stream.write, data
-                    )
+                    await self.mass.loop.run_in_executor(None, self._output_stream.write, data)
                 except _sd.PortAudioError as err:
-                    self.logger.error(
-                        "PortAudio error for %s: %s", self.device_name, err
-                    )
+                    self.logger.error("PortAudio error for %s: %s", self.device_name, err)
                     break
         except _sd.PortAudioError as err:
-            self.logger.error(
-                "Failed to open sounddevice stream for %s: %s", self.device_name, err
-            )
+            self.logger.error("Failed to open sounddevice stream for %s: %s", self.device_name, err)
         finally:
             self._is_streaming = False
             if self._output_stream is not None:
@@ -432,9 +417,7 @@ class LocalAudioBridgeManager:
     @property
     def sendspin_server(self) -> SendspinServer | None:
         """Get the Sendspin server if available."""
-        if provider := cast(
-            "SendspinProvider | None", self.mass.get_provider("sendspin")
-        ):
+        if provider := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
             return provider.server_api
         return None
 
@@ -442,9 +425,7 @@ class LocalAudioBridgeManager:
         """Enumerate output devices, register players and Sendspin bridges."""
         sendspin_server = self.sendspin_server
         if not sendspin_server:
-            self.logger.debug(
-                "Sendspin provider not available, skipping device enumeration"
-            )
+            self.logger.debug("Sendspin provider not available, skipping device enumeration")
             return
 
         try:
@@ -487,9 +468,7 @@ class LocalAudioBridgeManager:
                 # Set PA sink hardware volume to 100% on init
                 await player.apply_hardware_ceiling()
 
-                bridge = SendspinLocalAudioBridge(
-                    self.provider, player, device, sendspin_server
-                )
+                bridge = SendspinLocalAudioBridge(self.provider, player, device, sendspin_server)
                 try:
                     await bridge.start()
                 except Exception:
