@@ -63,6 +63,7 @@ from .helpers import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -384,11 +385,18 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     # fully functional.
     _clap_model: Any = None
     _clap_text_embeddings: Any = None
-    _clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
-    # API-command unregister handles, populated by loaded_in_mass and
-    # invoked on unload so the provider doesn't leak handlers between
-    # config-driven reloads.
-    _unregister_handles: list[Callable[[], None]] = []
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
+        self._unregister_handles: list[Callable[[], None]] = []
 
     async def loaded_in_mass(self) -> None:
         """Load the CLAP model and prompt embeddings."""
