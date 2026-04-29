@@ -76,7 +76,7 @@ class AudioAnalysisController:
         with contextlib.suppress(RuntimeError):
             # set_num_interop_threads can only be called before the first torch op
             torch.set_num_interop_threads(1)
-        self.logger.debug(
+        self.logger.info(
             "AudioAnalysis thread caps: torch intra=%d, torch interop=%d",
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
@@ -557,4 +557,4 @@ class AudioAnalysisController:
 
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
-        return max(1, (os.cpu_count() or 4) // 2)
+        return max(1, (os.cpu_count() or 4) // 4)
