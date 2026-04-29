@@ -70,7 +70,7 @@ class AudioAnalysisController:
         )
 
     def _configure_thread_caps(self) -> None:
-        """Cap PyTorch threading so Audio Analysis inference stays around half of cpu_count."""
+        """Cap PyTorch threading so Audio Analysis inference stays around a quarter of cpu_count."""
         budget = self._aa_thread_budget()
         torch.set_num_threads(budget)
         with contextlib.suppress(RuntimeError):
