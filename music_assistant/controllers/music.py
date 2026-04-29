@@ -86,7 +86,9 @@ from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -799,9 +801,9 @@ class MusicController(CoreController):
     @api_command("music/recommendations")
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
-        recommendation_providers = [
-            x for x in self.providers if ProviderFeature.RECOMMENDATIONS in x.supported_features
-        ]
+        recommendation_providers = self.mass.get_providers_supporting_feature(
+            ProviderFeature.RECOMMENDATIONS,
+        )
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
@@ -1816,7 +1818,7 @@ class MusicController(CoreController):
         ]
 
     async def _get_provider_recommendations(
-        self, provider: MusicProvider
+        self, provider: MusicProvider | MetadataProvider | PluginProvider
     ) -> list[RecommendationFolder]:
         """Return recommendations from a provider."""
         try:
