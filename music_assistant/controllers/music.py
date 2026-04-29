@@ -551,11 +551,9 @@ class MusicController(CoreController):
     async def browse(self, path: str | None = None) -> Sequence[MediaItemType | BrowseFolder]:
         """Browse Music providers."""
         if not path or path == "root":
-            # root level; folder per provider
+            # root level; folder per provider that declares BROWSE
             root_items: list[BrowseFolder] = []
-            for prov in self.providers:
-                if ProviderFeature.BROWSE not in prov.supported_features:
-                    continue
+            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.BROWSE):
                 root_items.append(
                     BrowseFolder(
                         item_id="root",

@@ -9,6 +9,7 @@ from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.controllers.media.artists import ArtistsController
 from music_assistant.controllers.media.tracks import TracksController
+from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -176,3 +177,25 @@ async def test_similar_artists_falls_back_to_plugin() -> None:
 
     assert result == ["a2"]
     plugin_prov.get_similar_artists.assert_awaited_once_with(ref_item, limit=5)
+
+
+async def test_browse_root_includes_non_music_providers() -> None:
+    """Root browse should list every provider declaring BROWSE, regardless of type."""
+    mass = Mock()
+    music_prov = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.BROWSE})
+    music_prov.domain = "music_a"
+    music_prov.name = "Music A"
+    plugin_prov = _make_prov("p_a", ProviderType.PLUGIN, {ProviderFeature.BROWSE})
+    plugin_prov.domain = "plugin_a"
+    plugin_prov.name = "Plugin A"
+    mass.get_providers_supporting_feature.return_value = [music_prov, plugin_prov]
+
+    controller = MusicController.__new__(MusicController)
+    controller.mass = mass
+
+    result = await controller.browse(path=None)
+
+    assert [folder.path for folder in result] == ["m_a://", "p_a://"]  # type: ignore[union-attr]
+    mass.get_providers_supporting_feature.assert_called_once()
+    args, kwargs = mass.get_providers_supporting_feature.call_args
+    assert (args[0] if args else kwargs["feature"]) == ProviderFeature.BROWSE
