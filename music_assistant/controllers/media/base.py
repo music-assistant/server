@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.models.plugin import PluginProvider
 
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -583,7 +584,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            provider = cast("MusicProvider", provider)
+            provider = cast("MusicProvider | PluginProvider", provider)
             with suppress(MediaNotFoundError):
                 async with self.mass.cache.handle_refresh(force_refresh):
                     return cast("ItemCls", await provider.get_item(self.media_type, item_id))
