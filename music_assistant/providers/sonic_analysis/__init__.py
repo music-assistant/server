@@ -266,6 +266,43 @@ def select_clap_windows(audio: np.ndarray, source_sr: int, n_windows: int) -> li
     return [audio[p : p + window_n] for p in positions]
 
 
+def compute_clap_target_starts(
+    track_duration_s: float,
+    preset_n: int,
+    source_sr: int,
+) -> list[int]:
+    """Compute deterministic 7-second window start offsets for live CLAP analysis.
+
+    :param track_duration_s: Total track duration in seconds.
+    :param preset_n: Configured number of windows from the CLAP_SAMPLING preset.
+    :param source_sr: Sample rate the live PCM stream is delivered at.
+    :returns: Sample-position offsets at source_sr where each target window
+        begins. Length is the effective N — capped so the requested preset
+        never forces near-duplicate inferences on a short track.
+    """
+    if track_duration_s < 1.0:
+        return []
+    if track_duration_s < CLAP_WINDOW_SECONDS:
+        return [0]
+    if track_duration_s < CLAP_SKIP_SECONDS + CLAP_WINDOW_SECONDS:
+        start_seconds = (track_duration_s - CLAP_WINDOW_SECONDS) / 2.0
+        return [int(start_seconds * source_sr)]
+
+    usable_start = float(CLAP_SKIP_SECONDS)
+    usable_end = track_duration_s - CLAP_WINDOW_SECONDS
+    if preset_n <= 1:
+        return [int(usable_start * source_sr)]
+
+    usable_seconds = usable_end - usable_start
+    max_non_overlap = int(usable_seconds // CLAP_WINDOW_SECONDS) + 1
+    effective_n = max(1, min(preset_n, max_non_overlap))
+    if effective_n == 1:
+        return [int(usable_start * source_sr)]
+
+    positions = np.linspace(usable_start, usable_end, effective_n)
+    return [int(p * source_sr) for p in positions]
+
+
 def run_clap_inference(
     model: Any,
     text_embeddings: Any,
