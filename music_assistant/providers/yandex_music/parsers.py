@@ -627,7 +627,7 @@ def parse_audiobook(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Au
         if label_name:
             publisher = label_name
 
-    authors: UniqueList[str] = UniqueList()
+    authors: UniqueList[str | Artist] = UniqueList()
     if album_obj.artists:
         for artist in album_obj.artists:
             if artist.name:

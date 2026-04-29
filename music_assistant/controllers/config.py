@@ -1624,13 +1624,10 @@ class ConfigController:
                 key=CONF_HIDE_IN_UI,
                 type=ConfigEntryType.BOOLEAN,
                 label="Hide this player in the user interface",
-                description="Hide this player from the main players list and from selection "
-                "menus like 'Play on' and 'Transfer queue'. "
-                "The player remains fully controllable and continues to appear as a "
-                "current member of any sync group it belongs to (including in that "
-                "group's volume control). It will not, however, be offered as a "
-                "candidate when adding new members to a group. "
-                "Disable the player to block access entirely.",
+                description="Hide this player from the main players list and dashboard selection "
+                "menus.  The player remains fully controllable and still appears in any sync group "
+                "it currently belongs to and in the settings. Disable the player to exclude "
+                "it everywhere.",
                 default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
