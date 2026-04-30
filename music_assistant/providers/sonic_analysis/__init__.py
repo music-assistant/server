@@ -77,7 +77,6 @@ class SonicSessionData(AnalysisSessionData):
     overlap: np.ndarray | None = None
     start_time: float = 0.0
     peak_absolute: float = 0.0
-    waveform_peaks: list[float] = field(default_factory=list)
     # Per-window selective buffer for live CLAP. clap_target_starts is
     # planned at session start from streamdetails.duration + preset; the
     # buffers fill via _dispatch_clap_chunk and free on completion.
@@ -220,7 +219,7 @@ def _store_clap_embedding(analysis: AudioAnalysisData, embedding: np.ndarray) ->
     """Persist the 1024-dim CLAP audio embedding under analysis.extra_data."""
     if analysis.extra_data is None:
         analysis.extra_data = {}
-    analysis.extra_data[EXTRA_DATA_CLAP_EMBEDDING] = embedding.astype(np.float32).tolist()
+    analysis.extra_data[EXTRA_DATA_CLAP_EMBEDDING] = embedding.tolist()
 
 
 def _dispatch_clap_chunk(
@@ -396,7 +395,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 unregister()
             except Exception as err:
                 self.logger.debug("API command unregister failed: %s", err)
-        self._unregister_handles = []
+        self._unregister_handles.clear()
         self._clap_model = None
         self._clap_text_embeddings = None
         await super().unload(is_removed)
@@ -614,9 +613,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             del session.pcm_buffer[: session.block_samples]
             audio = _pcm_bytes_to_audio(af, block_bytes)
             session.total_samples += len(audio)
-            block_peak = float(np.max(np.abs(audio)))
-            session.peak_absolute = max(session.peak_absolute, block_peak)
-            session.waveform_peaks.append(block_peak)
+            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(audio))))
             self._dispatch_clap_to_targets(session, audio, af.sample_rate)
             if session.overlap is not None:
                 audio = np.concatenate([session.overlap, audio])
@@ -694,9 +691,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if session.pcm_buffer:
             audio = _pcm_bytes_to_audio(af, bytes(session.pcm_buffer))
             session.total_samples += len(audio)
-            block_peak = float(np.max(np.abs(audio)))
-            session.peak_absolute = max(session.peak_absolute, block_peak)
-            session.waveform_peaks.append(block_peak)
+            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(audio))))
             self._dispatch_clap_to_targets(session, audio, af.sample_rate)
             if session.overlap is not None:
                 audio = np.concatenate([session.overlap, audio])
@@ -743,7 +738,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         source_sr: int,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Run CLAP on one 7s window. Returns (1024-dim embedding, similarity logit row)."""
-        window_tensor = torch.from_numpy(window_audio).to(dtype=torch.float32)
+        window_tensor = torch.from_numpy(window_audio)
         audio_embs = self._clap_model.get_audio_embeddings_from_tensor([window_tensor], source_sr)
         similarities = self._clap_model.compute_similarity(audio_embs, self._clap_text_embeddings)
         embedding = audio_embs[0].detach().cpu().numpy().astype(np.float32).reshape(-1)

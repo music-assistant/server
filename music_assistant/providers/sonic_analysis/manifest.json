@@ -14,7 +14,6 @@
     "[Microsoft CLAP](https://github.com/microsoft/CLAP)",
     "[librosa](https://librosa.org)"
   ],
-  "documentation": "",
   "multi_instance": false,
   "builtin": false,
   "icon": "pulse"
