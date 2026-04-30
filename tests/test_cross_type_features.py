@@ -40,13 +40,7 @@ def test_get_providers_supporting_feature_orders_by_type_then_priority() -> None
     meta_a = _make_prov("meta_a", ProviderType.METADATA, {ProviderFeature.SIMILAR_TRACKS})
     plugin_a = _make_prov("plug_a", ProviderType.PLUGIN, {ProviderFeature.SIMILAR_TRACKS})
     unrelated = _make_prov("u", ProviderType.MUSIC, {ProviderFeature.SEARCH})
-    mass._providers = {
-        "m_a": music_a,
-        "m_b": music_b,
-        "meta_a": meta_a,
-        "plug_a": plugin_a,
-        "u": unrelated,
-    }
+    mass.get_providers.return_value = [music_a, music_b, meta_a, plugin_a, unrelated]
 
     result = MusicAssistant.get_providers_supporting_feature(mass, ProviderFeature.SIMILAR_TRACKS)
 
@@ -58,7 +52,7 @@ def test_get_providers_supporting_feature_skips_unavailable() -> None:
     mass = Mock(spec=MusicAssistant)
     alive = _make_prov("a", ProviderType.MUSIC, {ProviderFeature.SIMILAR_TRACKS})
     dead = _make_prov("d", ProviderType.MUSIC, {ProviderFeature.SIMILAR_TRACKS}, available=False)
-    mass._providers = {"a": alive, "d": dead}
+    mass.get_providers.return_value = [alive, dead]
 
     result = MusicAssistant.get_providers_supporting_feature(mass, ProviderFeature.SIMILAR_TRACKS)
 
@@ -70,7 +64,7 @@ def test_get_providers_supporting_feature_respects_custom_priority() -> None:
     mass = Mock(spec=MusicAssistant)
     music = _make_prov("m", ProviderType.MUSIC, {ProviderFeature.SIMILAR_TRACKS})
     plugin = _make_prov("p", ProviderType.PLUGIN, {ProviderFeature.SIMILAR_TRACKS})
-    mass._providers = {"m": music, "p": plugin}
+    mass.get_providers.return_value = [music, plugin]
 
     result = MusicAssistant.get_providers_supporting_feature(
         mass,

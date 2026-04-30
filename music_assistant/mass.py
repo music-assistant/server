@@ -452,7 +452,7 @@ class MusicAssistant:
             Types omitted from this tuple are excluded from the results.
         """
         by_tier: dict[ProviderType, list[ProviderInstanceType]] = {ptype: [] for ptype in priority}
-        for prov in list(self._providers.values()):
+        for prov in self.get_providers():
             if not prov.available:
                 continue
             if prov.type not in by_tier:

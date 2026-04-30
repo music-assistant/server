@@ -38,6 +38,10 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, EventType, ProviderFeature
+from music_assistant_models.media_items import (
+    Playlist,
+    ProviderMapping,
+)
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.plugin import PluginProvider, PluginSource
@@ -50,7 +54,6 @@ if TYPE_CHECKING:
         BrowseFolder,
         ItemMapping,
         MediaItemType,
-        Playlist,
         RecommendationFolder,
         Track,
     )
@@ -229,11 +232,23 @@ class MyDemoPluginprovider(PluginProvider):
         # it to their library.
         return []
 
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:  # type: ignore[empty-body]
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Return details of a single playlist owned by this plugin."""
         # OPTIONAL
         # Implement when surfacing playlists via browse / recommendations so
         # MA can refresh metadata once a user adds it to their library.
+        return Playlist(
+            item_id=prov_playlist_id,
+            provider=self.instance_id,
+            name="Example Playlist",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_playlist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return a page of tracks for a playlist owned by this plugin."""
