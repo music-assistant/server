@@ -714,7 +714,7 @@ class YoutubeMusicProvider(MusicProvider):
                     headers=self._headers,
                     language=self.language,
                     user=self._yt_user,
-                    limit=5,  # only grab a few tracks for the mix preview
+                    limit=5,  # limit fetched tracks here to reduce payload size
                 )
                 mixed_for_you_folder.items.append(self._parse_playlist(playlist_obj))
             except MediaNotFoundError:
