@@ -18,6 +18,7 @@ from music_assistant.constants import (
     LOUDNESS_MEASUREMENT_MIN_LUFS,
 )
 from music_assistant.helpers.datetime import local_clock_time_to_utc
+from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
@@ -422,6 +423,90 @@ class AudioAnalysisController:
                 processed,
                 len(candidates),
             )
+
+    async def _run_background_streaming_for_track(
+        self,
+        streamdetails: StreamDetails,
+        providers: list[AudioAnalysisProvider],
+    ) -> None:
+        """Run a single track through the streaming pipeline using ffmpeg as the source.
+
+        Wraps the entire body in a per-track wall-clock budget. On timeout, ffmpeg
+        failure, or any exception, all providers are cancelled and the session is
+        cleaned up. On clean EOF, finalize is dispatched per provider (which fires
+        post_analysis via the base class wrapper).
+
+        :param streamdetails: Stream details for the track to analyze.
+        :param providers: AA providers that need this track. Caller computes the set.
+        """
+        session_key = streamdetails.uri
+        if session_key in self._active_sessions:
+            self.logger.debug(
+                "Background streaming: session already active for %s, skipping", session_key
+            )
+            return
+
+        try:
+            await asyncio.wait_for(
+                self._run_background_streaming_inner(session_key, streamdetails, providers),
+                timeout=BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            self.logger.warning(
+                "Background analysis exceeded %ds budget for %s, skipping",
+                BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+                session_key,
+            )
+            self._cancel_providers(session_key)
+        except Exception as err:
+            self.logger.warning("Background analysis failed for %s: %s", session_key, err)
+            self._cancel_providers(session_key)
+
+    async def _run_background_streaming_inner(
+        self,
+        session_key: str,
+        streamdetails: StreamDetails,
+        providers: list[AudioAnalysisProvider],
+    ) -> None:
+        """Inner body of _run_background_streaming_for_track, wrapped by wait_for.
+
+        :param session_key: The session key (streamdetails.uri).
+        :param streamdetails: Stream details for the track to analyze.
+        :param providers: AA providers that need this track.
+        """
+        if not isinstance(streamdetails.path, str) or not streamdetails.path:
+            self.logger.debug("Background streaming: no local path for %s, skipping", session_key)
+            return
+
+        accepted = await self._start_analysis_on_providers(
+            session_key, streamdetails, streamdetails.audio_format, providers
+        )
+        if not accepted:
+            self.logger.debug("No providers accepted background analysis for %s", session_key)
+            return
+        self._active_sessions[session_key] = accepted
+
+        # 1 second of source-native PCM per chunk
+        chunk_size = (
+            streamdetails.audio_format.sample_rate
+            * (streamdetails.audio_format.bit_depth // 8)
+            * streamdetails.audio_format.channels
+        )
+
+        async with FFMpeg(
+            audio_input=streamdetails.path,
+            input_format=streamdetails.audio_format,
+            output_format=streamdetails.audio_format,
+            collect_log_history=True,
+        ) as ffmpeg_proc:
+            async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
+                if session_key not in self._active_sessions:
+                    # all providers evicted — bail early
+                    break
+                await self._distribute_chunk(session_key, chunk)
+            # Clean EOF: finalize the providers still in the session
+            if session_key in self._active_sessions:
+                self._finalize_providers(session_key)
 
     async def _find_tracks_missing_analysis(
         self, aa_provider_domain: str, limit: int
