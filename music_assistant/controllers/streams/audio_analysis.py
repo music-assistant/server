@@ -499,61 +499,68 @@ class AudioAnalysisController:
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
                 self.mass.create_task(provider.cancel(session_key))
 
+    async def _distribute_chunk(self, session_key: str, pcm_data: bytes) -> None:
+        """Fan a single PCM chunk to every provider in the session.
+
+        Times out and evicts providers per CHUNK_PROCESS_TIMEOUT. Also evicts
+        providers that raise an exception (a provider that errors mid-session
+        cannot keep processing). Pops the session from _active_sessions if all
+        providers get evicted.
+
+        :param session_key: The active session key.
+        :param pcm_data: PCM bytes to process.
+        """
+        provider_ids = self._active_sessions.get(session_key)
+        if not provider_ids:
+            return
+
+        async def _process(prov_id: str) -> str | None:
+            try:
+                provider = self.mass.get_provider(prov_id)
+                if not (
+                    provider and isinstance(provider, AudioAnalysisProvider) and provider.available
+                ):
+                    return None
+                await asyncio.wait_for(
+                    provider.process_pcm_chunk(session_key, pcm_data),
+                    timeout=CHUNK_PROCESS_TIMEOUT,
+                )
+            except TimeoutError:
+                self.logger.warning(
+                    "Provider %s timed out processing chunk for %s, removing from session",
+                    prov_id,
+                    session_key,
+                )
+                return prov_id
+            except Exception as err:
+                self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
+                return prov_id
+            return None
+
+        results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
+        evicted = {prov_id for prov_id in results if prov_id is not None}
+        if evicted:
+            for prov_id in evicted:
+                provider = self.mass.get_provider(prov_id)
+                if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
+                    self.mass.create_task(provider.cancel(session_key))
+            provider_ids -= evicted
+            if not provider_ids:
+                self._active_sessions.pop(session_key, None)
+
     async def _chunk_worker(self, session_key: str, queue: asyncio.Queue[bytes | None]) -> None:
-        """Background worker that processes queued PCM chunks concurrently across providers."""
+        """Background worker that processes queued PCM chunks via _distribute_chunk."""
         while True:
             chunk = await queue.get()
             if chunk is None:
                 break
-
-            provider_ids = self._active_sessions.get(session_key)
-            if not provider_ids:
+            if session_key not in self._active_sessions:
                 break
-
-            pcm_data = chunk  # bind for closure (chunk is narrowed to bytes here)
-
-            async def _process(prov_id: str, pcm_data: bytes = pcm_data) -> str | None:
-                try:
-                    provider = self.mass.get_provider(prov_id)
-                    if not (
-                        provider
-                        and isinstance(provider, AudioAnalysisProvider)
-                        and provider.available
-                    ):
-                        return None
-                    await asyncio.wait_for(
-                        provider.process_pcm_chunk(session_key, pcm_data),
-                        timeout=CHUNK_PROCESS_TIMEOUT,
-                    )
-                except TimeoutError:
-                    self.logger.warning(
-                        "Provider %s timed out processing chunk for %s, removing from session",
-                        prov_id,
-                        session_key,
-                    )
-                    return prov_id
-                except Exception as err:
-                    self.logger.warning(
-                        "Error processing PCM chunk on provider %s: %s", prov_id, err
-                    )
-                return None
-
-            results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
-            timed_out = {prov_id for prov_id in results if prov_id is not None}
-            if timed_out:
-                for prov_id in timed_out:
-                    provider = self.mass.get_provider(prov_id)
-                    if (
-                        provider
-                        and isinstance(provider, AudioAnalysisProvider)
-                        and provider.available
-                    ):
-                        self.mass.create_task(provider.cancel(session_key))
-                provider_ids -= timed_out
-                if not provider_ids:
-                    self._active_sessions.pop(session_key, None)
-                    self._workers.pop(session_key, None)
-                    break
+            await self._distribute_chunk(session_key, chunk)
+            if session_key not in self._active_sessions:
+                # all providers evicted by _distribute_chunk
+                self._workers.pop(session_key, None)
+                break
 
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
