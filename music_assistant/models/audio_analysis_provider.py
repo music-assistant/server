@@ -186,23 +186,6 @@ class AudioAnalysisProvider(Provider):
                 )
         self._sessions.pop(session_id, None)
 
-    async def analyze_file(
-        self,
-        streamdetails: StreamDetails,
-    ) -> AudioAnalysisData | None:
-        """
-        Run analysis directly on a local audio file.
-
-        Used by the AudioAnalysisController's background scan. Providers that can
-        analyze a file without going through live PCM streaming (e.g. by handing
-        the path to FFmpeg/librosa/etc.) should override this. Default returns
-        None, meaning the provider does not support file-based analysis.
-
-        :param streamdetails: StreamDetails for the item being analyzed.
-            Contains the local file path and audio format.
-        """
-        return None
-
     async def post_analysis(
         self,
         streamdetails: StreamDetails,
