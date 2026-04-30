@@ -83,30 +83,6 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 await data.ffmpeg.close()
         await super().cancel(session_id)
 
-    async def analyze_file(self, streamdetails: StreamDetails) -> AudioAnalysisData | None:
-        """Run ebur128 directly on a local audio file and return the measurement."""
-        if not isinstance(streamdetails.path, str) or not streamdetails.path:
-            return None
-        metrics = await _run_ebur128_on_file(streamdetails.path, streamdetails.audio_format)
-        if metrics is None:
-            return None
-        loudness, loudness_range, true_peak = metrics
-        if loudness is None or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
-            return None
-        if self.config.get_value(CONF_WRITE_REPLAYGAIN_TAGS):
-            # ReplayGain 2.0: track_gain_db = -18 - loudness_lufs
-            track_gain_db = -18.0 - loudness
-            ok = await write_replaygain_track_gain(streamdetails.path, track_gain_db)
-            if ok:
-                self.logger.debug(
-                    "Background loudness: wrote ReplayGain tag to %s", streamdetails.path
-                )
-        return AudioAnalysisData(
-            loudness_integrated=round(loudness, 2),
-            loudness_range=round(loudness_range, 2) if loudness_range is not None else None,
-            true_peak=round(true_peak, 2) if true_peak is not None else None,
-        )
-
     async def _start_analysis(
         self,
         session_id: str,
@@ -260,24 +236,4 @@ def _match_float(pattern: re.Pattern[str], text: str) -> float | None:
     try:
         return float(match.group(1))
     except ValueError:
-        return None
-
-
-async def _run_ebur128_on_file(
-    file_path: str, audio_format: AudioFormat
-) -> tuple[float | None, float | None, float | None] | None:
-    """Run ebur128 on a local audio file and return the (I, LRA, TP) tuple."""
-    try:
-        async with FFMpeg(
-            audio_input=file_path,
-            input_format=audio_format,
-            output_format=audio_format,
-            audio_output="NULL",
-            filter_params=["ebur128=framelog=verbose"],
-            collect_log_history=True,
-            loglevel="info",
-        ) as ffmpeg:
-            await ffmpeg.wait()
-            return _parse_ebur128_metrics(ffmpeg.log_history)
-    except Exception:
         return None

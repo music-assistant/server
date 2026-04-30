@@ -551,42 +551,6 @@ class AudioAnalysisController:
                 )
         return results
 
-    async def _find_tracks_missing_analysis(
-        self, aa_provider_domain: str, limit: int
-    ) -> list[dict[str, object]]:
-        """Return up to N local-filesystem tracks without analysis for the given AA provider."""
-        filesystem_domains = tuple(
-            domain
-            for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
-        )
-        if not filesystem_domains:
-            return []
-
-        domains_sql = ", ".join(f"'{d}'" for d in filesystem_domains)
-        track_media_type = MediaType.TRACK.value
-        # audio_analysis.item_id holds the provider-native item id,
-        # so join against provider_mappings.provider_item_id (not pm.item_id,
-        # which is the integer library-row id)
-        query = (
-            f"SELECT pm.provider_item_id AS item_id, "
-            f"       pm.provider_instance AS provider_instance "
-            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
-            f"LEFT JOIN {DB_TABLE_AUDIO_ANALYSIS} aa "
-            f"  ON aa.item_id = pm.provider_item_id "
-            f"  AND aa.provider = pm.provider_instance "
-            f"  AND aa.aa_provider_domain = '{aa_provider_domain}' "
-            f"  AND aa.media_type = '{track_media_type}' "
-            f"WHERE pm.media_type = '{track_media_type}' "
-            f"  AND pm.provider_domain IN ({domains_sql}) "
-            f"  AND aa.id IS NULL"
-        )
-        rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
-        return [dict(r) for r in rows]
-
     async def _start_analysis_on_providers(
         self,
         session_key: str,
