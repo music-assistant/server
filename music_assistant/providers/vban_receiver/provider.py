@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from aiovban.asyncio.util import BackPressureStrategy
-from music_assistant_models.enums import ContentType, ProviderFeature, StreamType
+from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
@@ -18,41 +16,29 @@ from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.models.plugin import PluginProvider, PluginSource
 
+from .constants import (
+    CONF_AUDIO_CHANNELS,
+    CONF_LOG_VBAN_STREAM_STATS,
+    CONF_PCM_AUDIO_FORMAT,
+    CONF_PCM_SAMPLE_RATE,
+    CONF_SENDER_HOST,
+    CONF_VBAN_QUEUE_SIZE,
+    CONF_VBAN_QUEUE_STRATEGY,
+    CONF_VBAN_STREAM_NAME,
+    SUPPORTED_FEATURES,
+    VBAN_QUEUE_STRATEGIES,
+)
+from .helpers import get_supported_pcm_formats
 from .stats import VBANStatsReporter
 from .vban import AsyncVBANClientMod
 
 if TYPE_CHECKING:
     from aiovban.asyncio.streams import VBANIncomingStream
+    from aiovban.asyncio.util import BackPressureStrategy
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
-
-
-CONF_VBAN_STREAM_NAME = "vban_stream_name"
-CONF_SENDER_HOST = "sender_host"
-CONF_PCM_AUDIO_FORMAT = "audio_format"
-CONF_PCM_SAMPLE_RATE = "sample_rate"
-CONF_AUDIO_CHANNELS = "audio_channels"
-CONF_VBAN_QUEUE_STRATEGY = "vban_queue_strategy"
-CONF_VBAN_QUEUE_SIZE = "vban_queue_size"
-
-VBAN_QUEUE_STRATEGIES = {
-    "Clear entire queue": BackPressureStrategy.DROP,
-    "Clear the oldest half of the queue": BackPressureStrategy.DRAIN_OLDEST,
-    "Remove single oldest queue entry": BackPressureStrategy.POP,
-}
-
-SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
-
-
-def _get_supported_pcm_formats() -> dict[str, int]:
-    """Return supported PCM formats."""
-    pcm_formats = {}
-    for content_type in ContentType.__members__:
-        if match := re.match(r"PCM_([SF](\d{2})LE)", content_type):
-            pcm_formats[match.group(1)] = int(match.group(2))
-    return pcm_formats
 
 
 class VBANReceiverProvider(PluginProvider):
@@ -74,6 +60,7 @@ class VBANReceiverProvider(PluginProvider):
             cast("str", self.config.get_value(CONF_VBAN_QUEUE_STRATEGY))
         ]
         self._vban_queue_size: int = cast("int", self.config.get_value(CONF_VBAN_QUEUE_SIZE))
+        self._log_stats: bool = cast("bool", self.config.get_value(CONF_LOG_VBAN_STREAM_STATS))
 
         self._vban_receiver: AsyncVBANClientMod | None = None
         self._vban_stream: VBANIncomingStream | None = None
@@ -92,7 +79,7 @@ class VBANReceiverProvider(PluginProvider):
                 content_type=ContentType(self._pcm_audio_format.lower()),
                 codec_type=ContentType(self._pcm_audio_format.lower()),
                 sample_rate=self._pcm_sample_rate,
-                bit_depth=_get_supported_pcm_formats()[self._pcm_audio_format],
+                bit_depth=get_supported_pcm_formats()[self._pcm_audio_format],
                 channels=self._audio_channels,
             ),
             metadata=StreamMetadata(
@@ -115,7 +102,9 @@ class VBANReceiverProvider(PluginProvider):
         else:
             logging.getLogger("aiovban").setLevel(logging.INFO)
 
-        if self.logger.isEnabledFor(logging.DEBUG) or self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        if self._log_stats and (
+            self.logger.isEnabledFor(logging.DEBUG) or self.logger.isEnabledFor(VERBOSE_LOG_LEVEL)
+        ):
             self._stats_reporter = VBANStatsReporter(
                 pcm_sample_size=self._source_details.audio_format.pcm_sample_size
             )

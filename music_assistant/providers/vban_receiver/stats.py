@@ -10,7 +10,7 @@ from time import monotonic
 class VBANStatsReporter:
     """VBAN stream stats reporter."""
 
-    def __init__(self, pcm_sample_size: int, report_interval: int = 60) -> None:
+    def __init__(self, pcm_sample_size: int, report_interval: int = 30) -> None:
         """Initialize stats reporter."""
         self._pcm_sample_size = pcm_sample_size
         self._report_interval = report_interval

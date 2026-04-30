@@ -11,18 +11,23 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.util import get_ip_addresses
 
-from .provider import (
+from .constants import (
     CONF_AUDIO_CHANNELS,
+    CONF_LOG_VBAN_STREAM_STATS,
     CONF_PCM_AUDIO_FORMAT,
     CONF_PCM_SAMPLE_RATE,
     CONF_SENDER_HOST,
     CONF_VBAN_QUEUE_SIZE,
     CONF_VBAN_QUEUE_STRATEGY,
     CONF_VBAN_STREAM_NAME,
+    DEFAULT_AUDIO_CHANNELS,
+    DEFAULT_PCM_AUDIO_FORMAT,
+    DEFAULT_PCM_SAMPLE_RATE,
+    DEFAULT_UDP_PORT,
     VBAN_QUEUE_STRATEGIES,
-    VBANReceiverProvider,
-    _get_supported_pcm_formats,
 )
+from .helpers import get_supported_pcm_formats
+from .provider import VBANReceiverProvider
 from .vban import AsyncVBANClientMod
 
 if TYPE_CHECKING:
@@ -31,11 +36,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-DEFAULT_UDP_PORT = 6980
-DEFAULT_PCM_AUDIO_FORMAT = "S16LE"
-DEFAULT_PCM_SAMPLE_RATE = 44100
-DEFAULT_AUDIO_CHANNELS = 2
 
 
 def _get_vban_sample_rates() -> list[int]:
@@ -108,7 +108,7 @@ async def get_config_entries(
             key=CONF_PCM_AUDIO_FORMAT,
             type=ConfigEntryType.STRING,
             default_value=DEFAULT_PCM_AUDIO_FORMAT,
-            options=[ConfigValueOption(x, x) for x in _get_supported_pcm_formats()],
+            options=[ConfigValueOption(x, x) for x in get_supported_pcm_formats()],
             label="PCM audio format",
             description="The VBAN PCM audio format to expect from the remote VBAN sender. "
             "This MUST match what the remote VBAN sender has set otherwise audio streaming "
@@ -165,6 +165,17 @@ async def get_config_entries(
             label="Receiver: VBAN packets queue size",
             description="This can be increased if MA is running on a very low power device, "
             "otherwise this should not need to be changed.",
+            advanced=True,
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_LOG_VBAN_STREAM_STATS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Log VBAN stream statistics",
+            description="Log VBAN stream statistics when DEBUG/VERBOSE logging is enabled. "
+            "Target numbers not being hit will result in audio glitches/dropouts and is "
+            "indicative of a low power device unable to keep up with the incoming stream rate.",
             advanced=True,
             required=True,
         ),
