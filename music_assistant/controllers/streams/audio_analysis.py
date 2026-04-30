@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import os
+import time
 from math import inf
 from typing import TYPE_CHECKING, Any
 
@@ -28,11 +30,14 @@ from music_assistant.models.music_provider import MusicProvider
 CHUNK_PROCESS_TIMEOUT = 1.0
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
-BACKGROUND_SCAN_BATCH_SIZE = 250
 BACKGROUND_SCAN_SLEEP_BETWEEN_ITEMS = 2.0
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 CONF_BACKGROUND_SCAN_CONCURRENCY = "background_scan_concurrency"
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY = 1
+CONF_BACKGROUND_SCAN_START_HOUR = "background_scan_start_hour"
+DEFAULT_BACKGROUND_SCAN_START_HOUR = 0
+CONF_BACKGROUND_SCAN_END_HOUR = "background_scan_end_hour"
+DEFAULT_BACKGROUND_SCAN_END_HOUR = 6
 # providers whose tracks can be analyzed from their local filesystem path
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
@@ -64,7 +69,8 @@ class AudioAnalysisController:
     def setup(self) -> None:
         """Register the nightly background scan task and apply CPU caps."""
         self._configure_thread_caps()
-        utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
+        start_hour = self._get_scan_start_hour()
+        utc_hour, utc_minute = local_clock_time_to_utc(start_hour, 0)
         self.mass.tasks.register_scheduled_task(
             task_id=BACKGROUND_SCAN_TASK_ID,
             name="Audio analysis — background scan of local files",
@@ -72,6 +78,12 @@ class AudioAnalysisController:
             schedule=TaskSchedule.daily(hour=utc_hour, minute=utc_minute),
             metadata={"task_domain": "audio_analysis"},
         )
+        # Catch-up: if MA boots inside the scan window, run a scan now with the
+        # remaining time in the window. The deadline computed inside
+        # _run_background_scan ensures the scan still ends at end_hour.
+        if self._is_in_scan_window():
+            self.logger.info("Booted inside scan window — running immediate catch-up scan")
+            self.mass.create_task(self._run_background_scan())
 
     def _configure_thread_caps(self) -> None:
         """Cap PyTorch threading so Audio Analysis inference stays around a quarter of cpu_count."""
@@ -334,35 +346,40 @@ class AudioAnalysisController:
         return int(row["analysis_version"])
 
     async def _run_background_scan(self) -> None:
-        """Run the nightly background scan as decode-once-fan-out streaming.
-
-        For every filesystem track that lacks analysis from at least one available
-        AA provider, decodes the file once via ffmpeg and fans the PCM to all
-        providers that need it. Concurrency is gated by CONF_BACKGROUND_SCAN_CONCURRENCY.
-        """
+        """Run the scan as decode-once-fan-out streaming, bounded by the configured window."""
         providers = self.providers
         if not providers:
             return
 
         domains = [p.domain for p in providers]
-        candidates = await self._find_candidates_missing_analysis(
-            domains, BACKGROUND_SCAN_BATCH_SIZE
-        )
+        candidates = await self._find_candidates_missing_analysis(domains, limit=0)
         if not candidates:
             return
 
+        deadline_monotonic = self._compute_scan_deadline_monotonic()
+        scan_started = time.monotonic()
         self.logger.info(
-            "Background analysis (streaming): %d track(s) pending across %d provider(s)",
+            "Background analysis (streaming): %d track(s) pending across %d provider(s); "
+            "deadline in %.1f hours",
             len(candidates),
             len(providers),
+            (deadline_monotonic - scan_started) / 3600,
         )
 
         concurrency = self._get_scan_concurrency()
         semaphore = asyncio.Semaphore(concurrency)
         provider_by_domain = {p.domain: p for p in providers}
 
+        processed = 0
+        skipped_past_deadline = 0
+
         async def _run_one(candidate: dict[str, Any]) -> None:
+            nonlocal processed, skipped_past_deadline
             async with semaphore:
+                if time.monotonic() >= deadline_monotonic:
+                    skipped_past_deadline += 1
+                    return
+
                 item_id = candidate["item_id"]
                 provider_instance = candidate["provider_instance"]
                 missing = candidate["missing_domains"]
@@ -394,13 +411,24 @@ class AudioAnalysisController:
                     return
 
                 await self._run_background_streaming_for_track(streamdetails, providers_for_track)
+                processed += 1
 
         await asyncio.gather(*(_run_one(c) for c in candidates))
 
-        self.logger.info(
-            "Background analysis (streaming): batch complete (%d candidate(s))",
-            len(candidates),
-        )
+        elapsed = time.monotonic() - scan_started
+        if skipped_past_deadline > 0:
+            self.logger.info(
+                "Background analysis: end-of-window reached (%d processed, %d deferred to next scan, %.1fs elapsed)",
+                processed,
+                skipped_past_deadline,
+                elapsed,
+            )
+        else:
+            self.logger.info(
+                "Background analysis: complete (%d candidates processed in %.1fs)",
+                processed,
+                elapsed,
+            )
 
     async def _run_background_streaming_for_track(
         self,
@@ -687,3 +715,75 @@ class AudioAnalysisController:
         except Exception:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 8))
+
+    def _get_scan_start_hour(self) -> int:
+        """Read scan start hour from config, clamped to [0, 23].
+
+        :returns: Configured start hour, or DEFAULT_BACKGROUND_SCAN_START_HOUR on any read error.
+        """
+        try:
+            value = int(
+                self.mass.config.get_raw_core_config_value(
+                    "streams",
+                    CONF_BACKGROUND_SCAN_START_HOUR,
+                    DEFAULT_BACKGROUND_SCAN_START_HOUR,
+                )
+            )
+        except Exception:
+            value = DEFAULT_BACKGROUND_SCAN_START_HOUR
+        return max(0, min(value, 23))
+
+    def _get_scan_end_hour(self) -> int:
+        """Read scan end hour from config, clamped to [0, 23].
+
+        :returns: Configured end hour, or DEFAULT_BACKGROUND_SCAN_END_HOUR on any read error.
+        """
+        try:
+            value = int(
+                self.mass.config.get_raw_core_config_value(
+                    "streams",
+                    CONF_BACKGROUND_SCAN_END_HOUR,
+                    DEFAULT_BACKGROUND_SCAN_END_HOUR,
+                )
+            )
+        except Exception:
+            value = DEFAULT_BACKGROUND_SCAN_END_HOUR
+        return max(0, min(value, 23))
+
+    def _compute_scan_deadline_monotonic(self) -> float:
+        """Return monotonic deadline for the next occurrence of end_hour in local time.
+
+        If end_hour is still in the future today, use today's end_hour.
+        Otherwise (already past end_hour, or wrap-around window), use tomorrow's.
+        When start_hour == end_hour the window is treated as 24 hours (deadline = now + 24h).
+
+        :returns: Monotonic timestamp of the scan deadline.
+        """
+        start_hour = self._get_scan_start_hour()
+        end_hour = self._get_scan_end_hour()
+        if start_hour == end_hour:
+            return time.monotonic() + 24 * 3600
+        now = datetime.datetime.now()
+        end_today = now.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+        if end_today <= now:
+            end_today += datetime.timedelta(days=1)
+        seconds_until_deadline = (end_today - now).total_seconds()
+        return time.monotonic() + seconds_until_deadline
+
+    def _is_in_scan_window(self) -> bool:
+        """Return True if the current local hour falls within the configured scan window.
+
+        Same-day window (start_hour < end_hour): in-window iff start_hour <= now_hour < end_hour.
+        Wrap-around window (start_hour >= end_hour): in-window iff now_hour >= start_hour
+        or now_hour < end_hour. When start_hour == end_hour, always returns True (24-hour window).
+
+        :returns: True if the current time is within the scan window.
+        """
+        start_hour = self._get_scan_start_hour()
+        end_hour = self._get_scan_end_hour()
+        if start_hour == end_hour:
+            return True
+        now_hour = datetime.datetime.now().hour
+        if start_hour < end_hour:
+            return start_hour <= now_hour < end_hour
+        return now_hour >= start_hour or now_hour < end_hour
