@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import MediaType, ProviderType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
@@ -40,7 +41,6 @@ FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -456,25 +456,33 @@ class AudioAnalysisController:
             self.logger.debug("Background streaming: no local path for %s, skipping", session_key)
             return
 
+        # ffmpeg must DECODE the source to PCM. Build a PCM format that preserves
+        # the source's sample rate and channel count but uses PCM_S16LE as the
+        # content type. All current AA providers expect 16-bit PCM; standardising
+        # here avoids a per-source bit-depth permutation that nothing downstream
+        # would benefit from.
+        pcm_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            sample_rate=streamdetails.audio_format.sample_rate,
+            bit_depth=16,
+            channels=streamdetails.audio_format.channels,
+        )
+
         accepted = await self._start_analysis_on_providers(
-            session_key, streamdetails, streamdetails.audio_format, providers
+            session_key, streamdetails, pcm_format, providers
         )
         if not accepted:
             self.logger.debug("No providers accepted background analysis for %s", session_key)
             return
         self._active_sessions[session_key] = accepted
 
-        # 1 second of source-native PCM per chunk
-        chunk_size = (
-            streamdetails.audio_format.sample_rate
-            * (streamdetails.audio_format.bit_depth // 8)
-            * streamdetails.audio_format.channels
-        )
+        # 1 second of PCM per chunk
+        chunk_size = pcm_format.sample_rate * (pcm_format.bit_depth // 8) * pcm_format.channels
 
         async with FFMpeg(
             audio_input=streamdetails.path,
-            input_format=streamdetails.audio_format,
-            output_format=streamdetails.audio_format,
+            input_format=streamdetails.audio_format,  # source format — input
+            output_format=pcm_format,  # PCM_S16LE — output
             collect_log_history=True,
         ) as ffmpeg_proc:
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):

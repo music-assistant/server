@@ -18,10 +18,10 @@ from music_assistant.providers.loudness_analysis.provider import (
     LoudnessAnalysisProvider,
 )
 
-FIXTURE_WAV = Path(__file__).parent.parent / "fixtures" / "audio" / "short_test.wav"
+FIXTURE_AUDIO = Path(__file__).parent.parent / "fixtures" / "audio" / "short_test.flac"
 
 
-@pytest.mark.skipif(not FIXTURE_WAV.exists(), reason="fixture WAV missing")
+@pytest.mark.skipif(not FIXTURE_AUDIO.exists(), reason="fixture FLAC missing")
 async def test_streaming_background_scan_loudness_end_to_end() -> None:
     """Drive a real LoudnessAnalysisProvider through _run_background_streaming_for_track.
 
@@ -81,10 +81,10 @@ async def test_streaming_background_scan_loudness_end_to_end() -> None:
     controller = AudioAnalysisController(streams)
 
     streamdetails = MagicMock()
-    streamdetails.path = str(FIXTURE_WAV)
-    streamdetails.uri = f"track://test/{FIXTURE_WAV.name}"
+    streamdetails.path = str(FIXTURE_AUDIO)
+    streamdetails.uri = f"track://test/{FIXTURE_AUDIO.name}"
     streamdetails.audio_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE,
+        content_type=ContentType.FLAC,
         sample_rate=44100,
         bit_depth=16,
         channels=1,
