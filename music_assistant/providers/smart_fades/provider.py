@@ -189,11 +189,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
         self.logger.debug("Started beat tracking session %s", session_id)
         return True
 
-    async def _finalize(self, session_id: str) -> None:
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
         """Finalize beat tracking and store results."""
         data = self._data.pop(session_id, None)
         if not data:
-            return
+            return None
 
         # Flush remaining buffered PCM
         if data.pcm_samples:
@@ -205,7 +205,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.beats_feature_blocks.append(final_feats)
 
         if not data.beats_feature_blocks:
-            return
+            return None
 
         feats = np.concatenate(data.beats_feature_blocks, axis=0)
         duration = data.total_pcm_samples / ANALYSIS_SAMPLE_RATE
@@ -220,7 +220,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         beats, downbeats = await asyncio.to_thread(self._infer_beat_timings, feats)
         if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
-            return
+            return None
         key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
@@ -276,6 +276,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             len(downbeats),
             f"{key} {mode}" if key else "unknown",
         )
+        return analysis
 
     async def _process_block(self, data: SmartFadesData, *, last: bool = False) -> None:
         """Resample accumulated PCM buffer and extract features."""
