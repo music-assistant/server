@@ -121,27 +121,40 @@ class AudioAnalysisProvider(Provider):
         """
 
     @abstractmethod
-    async def _finalize(self, session_id: str) -> None:
-        """Finalize analysis and store results.
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        """Finalize analysis and return the persisted analysis (or None to skip).
 
         Called when the track has finished streaming. Providers are responsible
         for storing their results via mass.streams.audio_analysis.set_audio_analysis().
+        Return the AudioAnalysisData that was persisted, or None if the provider
+        chose not to store a result (e.g. insufficient audio data). The base
+        class uses the returned value to drive the post_analysis hook.
 
         :param session_id: The analysis session ID.
         """
 
     async def finalize(self, session_id: str) -> None:
-        """Finalize analysis and clean up session state.
+        """Finalize analysis, optionally fire post_analysis, and clean up state.
 
-        Calls _finalize, then removes the session from _sessions.
-        The controller calls this method — providers override _finalize.
+        Calls _finalize, then post_analysis (when _finalize returned a non-None
+        analysis), then removes the session from _sessions. Both _finalize and
+        post_analysis exceptions are caught and logged — neither is allowed to
+        leave session state behind or to propagate to the controller.
 
         :param session_id: The analysis session ID.
         """
+        analysis: AudioAnalysisData | None = None
         try:
-            await self._finalize(session_id)
-        finally:
-            self._sessions.pop(session_id, None)
+            analysis = await self._finalize(session_id)
+        except Exception as err:
+            self.logger.error("_finalize raised for session %s: %s", session_id, err, exc_info=err)
+        session = self._sessions.get(session_id)
+        if analysis is not None and session is not None:
+            try:
+                await self.post_analysis(session.streamdetails, analysis)
+            except Exception as err:
+                self.logger.warning("post_analysis raised for %s: %s", self.domain, err)
+        self._sessions.pop(session_id, None)
 
     async def analyze_file(
         self,
