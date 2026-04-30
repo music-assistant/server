@@ -207,6 +207,32 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         )
         return analysis
 
+    async def post_analysis(
+        self,
+        streamdetails: StreamDetails,
+        analysis: AudioAnalysisData,
+    ) -> None:
+        """Write the ReplayGain track-gain tag back to the source file when configured.
+
+        :param streamdetails: Stream context for the analyzed track.
+        :param analysis: The persisted analysis result produced by ``_finalize``.
+        """
+        if not isinstance(streamdetails.path, str) or not streamdetails.path:
+            return
+        if not self.config.get_value(CONF_WRITE_REPLAYGAIN_TAGS):
+            return
+        if analysis.loudness_integrated is None:
+            return
+        # ReplayGain 2.0: track_gain_db = -18 - loudness_lufs
+        track_gain_db = -18.0 - analysis.loudness_integrated
+        ok = await write_replaygain_track_gain(streamdetails.path, track_gain_db)
+        if ok:
+            self.logger.debug(
+                "Wrote ReplayGain tag to %s (gain=%.2f dB)",
+                streamdetails.path,
+                track_gain_db,
+            )
+
     async def _send_eof(self, data: LoudnessSessionData) -> None:
         """Signal end-of-input to the session's ffmpeg process (idempotent)."""
         if data.eof_sent:

@@ -7,9 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import MediaType
 
+from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.loudness_analysis.provider import (
+    CONF_WRITE_REPLAYGAIN_TAGS,
     MIN_DURATION_SECONDS,
     LoudnessAnalysisProvider,
     LoudnessSessionData,
@@ -104,3 +106,110 @@ async def test_finalize_returns_none_when_insufficient_duration() -> None:
 
     assert result is None
     set_aa_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# post_analysis tests
+# ---------------------------------------------------------------------------
+
+
+def _make_loudness_provider(*, write_replaygain_tags: bool) -> LoudnessAnalysisProvider:
+    """Construct a LoudnessAnalysisProvider with a config gated on write_replaygain_tags."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "loudness_analysis"
+    config = MagicMock()
+    config.instance_id = "loudness_analysis_test"
+    config.values = {}
+    config.get_value = MagicMock(
+        side_effect=lambda key: {
+            CONF_LOG_LEVEL: "GLOBAL",
+            CONF_WRITE_REPLAYGAIN_TAGS: write_replaygain_tags,
+        }.get(key, "GLOBAL")
+    )
+    return LoudnessAnalysisProvider(mass, manifest, config, supported_features=set())
+
+
+@pytest.mark.asyncio
+async def test_post_analysis_writes_tag_when_path_writable_and_config_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """post_analysis writes ReplayGain tag when path is filesystem-writable AND config is on."""
+    provider = _make_loudness_provider(write_replaygain_tags=True)
+    streamdetails = MagicMock()
+    streamdetails.path = "/music/test.flac"
+    analysis = AudioAnalysisData(loudness_integrated=-14.0)
+
+    write_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider.write_replaygain_track_gain",
+        write_mock,
+    )
+
+    await provider.post_analysis(streamdetails, analysis)
+
+    # ReplayGain 2.0: track_gain_db = -18 - loudness_lufs = -18 - (-14) = -4
+    write_mock.assert_awaited_once_with("/music/test.flac", -4.0)
+
+
+@pytest.mark.asyncio
+async def test_post_analysis_skips_when_path_not_writable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """post_analysis is a no-op when streamdetails.path is None or non-string."""
+    provider = _make_loudness_provider(write_replaygain_tags=True)
+    streamdetails = MagicMock()
+    streamdetails.path = None
+    analysis = AudioAnalysisData(loudness_integrated=-14.0)
+
+    write_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider.write_replaygain_track_gain",
+        write_mock,
+    )
+
+    await provider.post_analysis(streamdetails, analysis)
+
+    write_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_analysis_skips_when_config_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """post_analysis is a no-op when write_replaygain_tags config is False."""
+    provider = _make_loudness_provider(write_replaygain_tags=False)
+    streamdetails = MagicMock()
+    streamdetails.path = "/music/test.flac"
+    analysis = AudioAnalysisData(loudness_integrated=-14.0)
+
+    write_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider.write_replaygain_track_gain",
+        write_mock,
+    )
+
+    await provider.post_analysis(streamdetails, analysis)
+
+    write_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_analysis_skips_when_loudness_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """post_analysis is a no-op when analysis.loudness_integrated is None."""
+    provider = _make_loudness_provider(write_replaygain_tags=True)
+    streamdetails = MagicMock()
+    streamdetails.path = "/music/test.flac"
+    analysis = AudioAnalysisData(loudness_integrated=None)
+
+    write_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider.write_replaygain_track_gain",
+        write_mock,
+    )
+
+    await provider.post_analysis(streamdetails, analysis)
+
+    write_mock.assert_not_awaited()
