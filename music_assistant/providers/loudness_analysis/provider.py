@@ -131,11 +131,11 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         self._data[session_id] = LoudnessSessionData(ffmpeg=ffmpeg)
         return True
 
-    async def _finalize(self, session_id: str) -> None:
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
         """Persist the final loudness measurement for the session."""
         data = self._data.pop(session_id, None)
         if not data:
-            return
+            return None
 
         await self._send_eof(data)
         try:
@@ -143,14 +143,14 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         except Exception as err:
             self.logger.debug("Loudness analysis ffmpeg failed: %s", err)
             await data.ffmpeg.close()
-            return
+            return None
 
         metrics = _parse_ebur128_metrics(data.ffmpeg.log_history)
         await data.ffmpeg.close()
 
         session = self._sessions.get(session_id)
         if session is None:
-            return
+            return None
 
         if data.chunks_received < MIN_DURATION_SECONDS:
             self.logger.debug(
@@ -160,7 +160,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 data.chunks_received,
                 MIN_DURATION_SECONDS,
             )
-            return
+            return None
 
         loudness, loudness_range, true_peak = metrics
         if loudness is None:
@@ -168,7 +168,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 "Could not determine loudness of %s from buffer analysis",
                 session.streamdetails.uri,
             )
-            return
+            return None
 
         if loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
             # ebur128 reports ~-70 LUFS on near-silence / cancelled streams,
@@ -180,7 +180,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 loudness,
                 LOUDNESS_MEASUREMENT_MIN_LUFS,
             )
-            return
+            return None
 
         analysis = AudioAnalysisData(
             loudness_integrated=round(loudness, 2),
@@ -205,6 +205,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             loudness_range,
             true_peak,
         )
+        return analysis
 
     async def _send_eof(self, data: LoudnessSessionData) -> None:
         """Signal end-of-input to the session's ffmpeg process (idempotent)."""
