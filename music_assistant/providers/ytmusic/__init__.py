@@ -680,6 +680,7 @@ class YoutubeMusicProvider(MusicProvider):
                         folder.items.append(track)
                     except InvalidDataError:
                         self.logger.debug("Invalid track in recommendations: %s", recommended_item)
+                        continue
                 elif recommended_item.get("playlistId"):
                     # Probably a playlist
                     recommended_item["id"] = recommended_item["playlistId"]
@@ -697,6 +698,30 @@ class YoutubeMusicProvider(MusicProvider):
                     )
                     continue
             folders.append(folder)
+        # Also add personalized mixes if available
+        mixed_for_you_folder = RecommendationFolder(
+            name="Mixed for you",
+            item_id=f"{self.instance_id}_mixed_for_you",
+            provider=self.instance_id,
+            icon="mdi:shuffle-variant",
+        )
+        for playlist_id in YT_PERSONAL_PLAYLISTS:
+            if playlist_id == YT_LIKED_SONGS_PLAYLIST_ID:
+                continue
+            try:
+                playlist_obj = await get_playlist(
+                    prov_playlist_id=playlist_id,
+                    headers=self._headers,
+                    language=self.language,
+                    user=self._yt_user,
+                    limit=5,  # only grab a few tracks for the mix preview
+                )
+                mixed_for_you_folder.items.append(self._parse_playlist(playlist_obj))
+            except MediaNotFoundError:
+                continue  # personal playlist might not be available for all users, ignore if not found
+        if mixed_for_you_folder.items:
+            folders.append(mixed_for_you_folder)
+
         return folders
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):
