@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.enums import StreamType
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
@@ -191,7 +192,7 @@ class _FakeFFMpeg:
             yield chunk
 
 
-def _make_streamdetails(*, path: str) -> MagicMock:
+def _make_streamdetails(*, path: str, item_id: str = "test-item") -> MagicMock:
     sd = MagicMock()
     sd.path = path
     sd.uri = f"track://test/{path}"
@@ -199,7 +200,7 @@ def _make_streamdetails(*, path: str) -> MagicMock:
     sd.audio_format.sample_rate = 44100
     sd.audio_format.bit_depth = 16
     sd.audio_format.channels = 2
-    sd.item_id = "test-item"
+    sd.item_id = item_id
     sd.provider = "test-provider"
     sd.media_type = MagicMock()
     return sd
@@ -224,3 +225,108 @@ def _make_aa_provider(
     provider.process_pcm_chunk = process_pcm_chunk or AsyncMock(return_value=None)
     provider.cancel = AsyncMock(return_value=None)
     return provider
+
+
+@pytest.mark.asyncio
+async def test_run_background_scan_uses_union_candidate_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The new scan loop drives _run_background_streaming_for_track per candidate."""
+    controller = _make_controller()
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "p1"
+    p1.start_analysis = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    candidates = [
+        {"item_id": "track-1", "provider_instance": "filesystem_local", "missing_domains": ["p1"]},
+        {"item_id": "track-2", "provider_instance": "filesystem_local", "missing_domains": ["p1"]},
+    ]
+    monkeypatch.setattr(
+        controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
+    )
+
+    streamdetails_list = [
+        _make_streamdetails(path=f"/music/{c['item_id']}.flac", item_id=str(c["item_id"]))
+        for c in candidates
+    ]
+    for sd in streamdetails_list:
+        sd.stream_type = StreamType.LOCAL_FILE
+
+    music_prov = MagicMock()
+    music_prov.available = True
+    music_prov.get_stream_details = AsyncMock(side_effect=streamdetails_list)
+    music_prov.instance_id = "filesystem_local"
+    controller.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+
+    streaming_calls: list[str] = []
+
+    async def _track_streaming(streamdetails: MagicMock, _providers: object) -> None:
+        streaming_calls.append(streamdetails.item_id)
+
+    monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
+
+    await controller._run_background_scan()
+
+    assert sorted(streaming_calls) == ["track-1", "track-2"]
+
+
+@pytest.mark.asyncio
+async def test_run_background_scan_concurrency_semaphore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At most CONF_BACKGROUND_SCAN_CONCURRENCY tracks run concurrently."""
+    controller = _make_controller()
+    monkeypatch.setattr(controller, "_get_scan_concurrency", lambda: 2)
+
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "p1"
+    p1.start_analysis = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    candidates = [
+        {
+            "item_id": f"track-{i}",
+            "provider_instance": "filesystem_local",
+            "missing_domains": ["p1"],
+        }
+        for i in range(5)
+    ]
+    monkeypatch.setattr(
+        controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
+    )
+
+    streamdetails_list = [
+        _make_streamdetails(path=f"/music/{c['item_id']}.flac") for c in candidates
+    ]
+    for sd in streamdetails_list:
+        sd.stream_type = StreamType.LOCAL_FILE
+    music_prov = MagicMock()
+    music_prov.available = True
+    music_prov.get_stream_details = AsyncMock(side_effect=streamdetails_list)
+    music_prov.instance_id = "filesystem_local"
+    controller.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _track_streaming(_streamdetails: MagicMock, _providers: object) -> None:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+
+    monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
+
+    await controller._run_background_scan()
+
+    assert max_in_flight == 2

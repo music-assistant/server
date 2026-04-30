@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import os
 from math import inf
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 from music_assistant_models.background_task import TaskSchedule
@@ -334,95 +334,73 @@ class AudioAnalysisController:
         return int(row["analysis_version"])
 
     async def _run_background_scan(self) -> None:
-        """
-        Run the nightly background scan across all audio analysis providers.
+        """Run the nightly background scan as decode-once-fan-out streaming.
 
-        Iterates each available provider, queries tracks from local-filesystem
-        music providers that do not yet have analysis for that provider, and
-        hands each one to the provider's `analyze_file` hook. Results are
-        persisted via `set_audio_analysis`. The batch aborts for a given
-        provider if its storage backend goes offline.
+        For every filesystem track that lacks analysis from at least one available
+        AA provider, decodes the file once via ffmpeg and fans the PCM to all
+        providers that need it. Concurrency is gated by CONF_BACKGROUND_SCAN_CONCURRENCY.
         """
         providers = self.providers
         if not providers:
             return
 
-        for provider in providers:
-            candidates = await self._find_tracks_missing_analysis(
-                provider.domain, BACKGROUND_SCAN_BATCH_SIZE
-            )
-            if not candidates:
-                continue
+        domains = [p.domain for p in providers]
+        candidates = await self._find_candidates_missing_analysis(
+            domains, BACKGROUND_SCAN_BATCH_SIZE
+        )
+        if not candidates:
+            return
 
-            self.logger.info(
-                "Background %s analysis: %d track(s) pending",
-                provider.domain,
-                len(candidates),
-            )
-            processed = 0
-            for row in candidates:
-                if not provider.available:
-                    # provider was disabled mid-run
-                    break
-                item_id = str(row["item_id"])
-                provider_instance = str(row["provider_instance"])
+        self.logger.info(
+            "Background analysis (streaming): %d track(s) pending across %d provider(s)",
+            len(candidates),
+            len(providers),
+        )
+
+        concurrency = self._get_scan_concurrency()
+        semaphore = asyncio.Semaphore(concurrency)
+        provider_by_domain = {p.domain: p for p in providers}
+
+        async def _run_one(candidate: dict[str, Any]) -> None:
+            async with semaphore:
+                item_id = candidate["item_id"]
+                provider_instance = candidate["provider_instance"]
+                missing = candidate["missing_domains"]
+
                 music_prov = self.mass.get_provider(provider_instance, provider_type=MusicProvider)
                 if music_prov is None or not music_prov.available:
-                    # storage may be offline right now (e.g. NAS asleep) — stop the
-                    # batch rather than churning through failures for the remaining
-                    # tracks
                     self.logger.debug(
-                        "Background %s analysis: provider %s unavailable, aborting batch",
-                        provider.domain,
-                        provider_instance,
+                        "Skipping %s: music provider %s unavailable", item_id, provider_instance
                     )
-                    break
+                    return
 
                 try:
                     streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
                 except Exception as err:
-                    self.logger.debug(
-                        "Background %s analysis: skipping %s (stream details failed: %s)",
-                        provider.domain,
-                        item_id,
-                        err,
-                    )
-                    continue
+                    self.logger.debug("Skipping %s: stream details failed: %s", item_id, err)
+                    return
 
                 if streamdetails.stream_type != StreamType.LOCAL_FILE:
-                    continue
+                    return
                 if not isinstance(streamdetails.path, str) or not streamdetails.path:
-                    continue
+                    return
 
-                try:
-                    result = await provider.analyze_file(streamdetails)
-                except Exception as err:
-                    self.logger.warning(
-                        "Background %s analysis failed for %s: %s",
-                        provider.domain,
-                        item_id,
-                        err,
-                    )
-                    result = None
+                providers_for_track = [
+                    p
+                    for p in (provider_by_domain.get(d) for d in missing)
+                    if p is not None and p.available
+                ]
+                if not providers_for_track:
+                    return
 
-                if result is not None:
-                    await self.set_audio_analysis(
-                        item_id=item_id,
-                        provider_instance_id_or_domain=music_prov.instance_id,
-                        aa_provider_domain=provider.domain,
-                        analysis=result,
-                        analysis_version=provider.analysis_version,
-                    )
-                    processed += 1
+                await self._run_background_streaming_for_track(streamdetails, providers_for_track)
 
-                await asyncio.sleep(BACKGROUND_SCAN_SLEEP_BETWEEN_ITEMS)
+        await asyncio.gather(*(_run_one(c) for c in candidates))
 
-            self.logger.info(
-                "Background %s analysis: analyzed %d/%d track(s)",
-                provider.domain,
-                processed,
-                len(candidates),
-            )
+        self.logger.info(
+            "Background analysis (streaming): batch complete (%d candidate(s))",
+            len(candidates),
+        )
 
     async def _run_background_streaming_for_track(
         self,
@@ -507,6 +485,71 @@ class AudioAnalysisController:
             # Clean EOF: finalize the providers still in the session
             if session_key in self._active_sessions:
                 self._finalize_providers(session_key)
+
+    async def _find_candidates_missing_analysis(
+        self,
+        aa_provider_domains: list[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return tracks where any of the given AA provider domains lacks analysis.
+
+        Returns rows with shape: {item_id, provider_instance, missing_domains}.
+        Order: arbitrary but stable within one call.
+
+        :param aa_provider_domains: List of AA provider domains to consider.
+        :param limit: Maximum number of candidates to return.
+        :returns: List of dicts with item_id, provider_instance, missing_domains.
+        """
+        if not aa_provider_domains:
+            return []
+
+        filesystem_domains = tuple(
+            domain
+            for domain in FILESYSTEM_PROVIDER_DOMAINS
+            if any(
+                p.domain == domain and p.available
+                for p in self.mass.get_providers(ProviderType.MUSIC)
+            )
+        )
+        if not filesystem_domains:
+            return []
+
+        domains_sql = ", ".join(f"'{d}'" for d in filesystem_domains)
+        track_media_type = MediaType.TRACK.value
+        aa_domains_in = ", ".join(f"'{d}'" for d in aa_provider_domains)
+
+        # Find every (item_id, provider_instance) for filesystem tracks, then
+        # left-join the existing analysis rows to figure out which AA domains
+        # are already covered. The resulting "missing_domains" is the diff.
+        query = (
+            f"SELECT pm.provider_item_id AS item_id, "
+            f"       pm.provider_instance AS provider_instance, "
+            f"       GROUP_CONCAT(aa.aa_provider_domain) AS covered_domains "
+            f"FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            f"LEFT JOIN {DB_TABLE_AUDIO_ANALYSIS} aa "
+            f"  ON aa.item_id = pm.provider_item_id "
+            f"  AND aa.provider = pm.provider_instance "
+            f"  AND aa.aa_provider_domain IN ({aa_domains_in}) "
+            f"  AND aa.media_type = '{track_media_type}' "
+            f"WHERE pm.media_type = '{track_media_type}' "
+            f"  AND pm.provider_domain IN ({domains_sql}) "
+            f"GROUP BY pm.provider_item_id, pm.provider_instance"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+        results: list[dict[str, Any]] = []
+        all_domains = set(aa_provider_domains)
+        for r in rows:
+            covered = set((r.get("covered_domains") or "").split(",")) - {""}
+            missing = sorted(all_domains - covered)
+            if missing:
+                results.append(
+                    {
+                        "item_id": str(r["item_id"]),
+                        "provider_instance": str(r["provider_instance"]),
+                        "missing_domains": missing,
+                    }
+                )
+        return results
 
     async def _find_tracks_missing_analysis(
         self, aa_provider_domain: str, limit: int
