@@ -28,6 +28,9 @@ LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_SCAN_BATCH_SIZE = 250
 BACKGROUND_SCAN_SLEEP_BETWEEN_ITEMS = 2.0
+BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
+CONF_BACKGROUND_SCAN_CONCURRENCY = "background_scan_concurrency"
+DEFAULT_BACKGROUND_SCAN_CONCURRENCY = 1
 # providers whose tracks can be analyzed from their local filesystem path
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
@@ -565,3 +568,21 @@ class AudioAnalysisController:
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
         return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
+
+    def _get_scan_concurrency(self) -> int:
+        """Read background scan concurrency from config, clamped to [1, 8].
+
+        :returns: Configured concurrency, or DEFAULT_BACKGROUND_SCAN_CONCURRENCY on any read error.
+        """
+        try:
+            value = int(
+                self.mass.config.get_raw_core_config_value(
+                    "streams",
+                    CONF_BACKGROUND_SCAN_CONCURRENCY,
+                    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+                )
+                or DEFAULT_BACKGROUND_SCAN_CONCURRENCY
+            )
+        except Exception:
+            value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
+        return max(1, min(value, 8))

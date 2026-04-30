@@ -74,6 +74,30 @@ async def test_distribute_chunk_evicts_provider_on_exception() -> None:
     assert "ok" in controller._active_sessions[session_key]
 
 
+@pytest.mark.asyncio
+async def test_get_scan_concurrency_returns_default_on_unset() -> None:
+    """When the config value is unset/None, fall back to DEFAULT_BACKGROUND_SCAN_CONCURRENCY."""
+    controller = _make_controller()
+    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=None)  # type: ignore[method-assign]
+    assert controller._get_scan_concurrency() == 1
+
+
+@pytest.mark.asyncio
+async def test_get_scan_concurrency_clamps_to_max() -> None:
+    """Values above 8 are clamped to 8."""
+    controller = _make_controller()
+    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
+    assert controller._get_scan_concurrency() == 8
+
+
+@pytest.mark.asyncio
+async def test_get_scan_concurrency_clamps_to_min() -> None:
+    """Values below 1 are clamped to 1."""
+    controller = _make_controller()
+    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=0)  # type: ignore[method-assign]
+    assert controller._get_scan_concurrency() == 1
+
+
 def _make_controller() -> AudioAnalysisController:
     streams = MagicMock()
     streams.mass = MagicMock()

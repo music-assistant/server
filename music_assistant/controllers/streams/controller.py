@@ -52,7 +52,11 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio
-from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.audio_analysis import (
+    CONF_BACKGROUND_SCAN_CONCURRENCY,
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    AudioAnalysisController,
+)
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     CONF_BUFFER_SIZE,
@@ -251,6 +255,17 @@ class StreamsController(CoreController):
                 default_value="GLOBAL",
                 category="generic",
                 advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_BACKGROUND_SCAN_CONCURRENCY,
+                type=ConfigEntryType.INTEGER,
+                range=(1, 8),
+                default_value=DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+                label="Background analysis concurrency",
+                description="Maximum number of tracks analyzed concurrently during the nightly "
+                "background scan. Default 1 (serial). Increase only if your hardware can handle "
+                "concurrent torch/ffmpeg work.",
+                category="audio_analysis",
             ),
         )
 
