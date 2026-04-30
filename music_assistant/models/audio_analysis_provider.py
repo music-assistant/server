@@ -153,7 +153,9 @@ class AudioAnalysisProvider(Provider):
             try:
                 await self.post_analysis(session.streamdetails, analysis)
             except Exception as err:
-                self.logger.warning("post_analysis raised for %s: %s", self.domain, err)
+                self.logger.warning(
+                    "post_analysis raised for %s: %s", self.domain, err, exc_info=err
+                )
         self._sessions.pop(session_id, None)
 
     async def analyze_file(

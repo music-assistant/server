@@ -64,6 +64,7 @@ async def test_finalize_calls_post_analysis_when_finalize_returns_analysis() -> 
     await provider.finalize("session-1")
 
     provider.post_analysis.assert_awaited_once_with(streamdetails, analysis)
+    assert "session-1" not in provider._sessions
 
 
 @pytest.mark.asyncio
@@ -80,6 +81,7 @@ async def test_finalize_skips_post_analysis_when_finalize_returns_none() -> None
     await provider.finalize("session-2")
 
     provider.post_analysis.assert_not_awaited()
+    assert "session-2" not in provider._sessions
 
 
 @pytest.mark.asyncio
