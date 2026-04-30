@@ -34,9 +34,37 @@ class AudioAnalysisProvider(Provider):
     These providers receive PCM audio chunks during streaming and produce analysis
     results such as beat tracking, key detection, phrase boundaries, etc.
 
-    The AudioAnalysisController creates session IDs and passes them to all methods.
-    Providers implement _start_analysis and _finalize as hooks — the base class
-    manages session lifecycle, version gating, and cleanup.
+    Providers implement four hooks (`_start_analysis`, `process_pcm_chunk`,
+    `_finalize`, optionally `post_analysis`) and the base class manages session
+    lifecycle, version gating, and cleanup. The same hooks drive both live
+    playback (PCM from `AudioBuffer`) and background scans (PCM from ffmpeg
+    decoding a local file). Providers do not need to know which context they
+    are running in.
+
+    Provider contract (binding):
+
+    1. `process_pcm_chunk` MUST `await` all work that processes the chunk.
+       The controller serializes chunks across providers and uses this to
+       backpressure the audio source. Fire-and-forget per-chunk work breaks
+       backpressure and can pile up unboundedly at flat-out background rates.
+
+    2. Providers MAY spawn background tasks during `process_pcm_chunk` only
+       when the total task count is bounded by per-track properties (e.g. a
+       fixed number of CLAP target windows configured per track). All such
+       tasks MUST be tracked and awaited in `_finalize`.
+
+    3. Providers MUST NOT begin work for session N+1 while session N is
+       still active. Per-session state should be keyed on `session_id`.
+
+    4. `_finalize` MUST return the AudioAnalysisData it persisted, or None
+       if it chose not to persist (e.g. insufficient audio). The base class
+       uses the return value to drive `post_analysis`.
+
+    5. `post_analysis` is optional and called by the base class after
+       `_finalize` returns a non-None analysis. It is the place for filesystem
+       side effects such as tag-writing. Implementations MUST self-gate on
+       whether `streamdetails.path` is a writable filesystem path, because
+       this hook fires for both live and background scans.
     """
 
     # Version of the analysis algorithm. Providers should increment this when
