@@ -603,8 +603,15 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 val = getattr(data, field_name, None)
                 if val is not None:
                     fields[field_name] = round(val, 4) if isinstance(val, float) else val
-            if data.extra_data:
-                fields["extra_data"] = data.extra_data
+            extra_data = data.extra_data or {}
+            fields["has_clap_embedding"] = isinstance(
+                extra_data.get(EXTRA_DATA_CLAP_EMBEDDING), list
+            )
+            stripped = {
+                k: v for k, v in extra_data.items() if k != EXTRA_DATA_CLAP_EMBEDDING
+            }
+            if stripped:
+                fields["extra_data"] = stripped
             page_entries.append((row["item_id"], row["provider"], fields))
 
         async def _resolve(item_id: str, provider: str, fields: dict[str, Any]) -> dict[str, Any]:

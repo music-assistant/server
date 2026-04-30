@@ -114,8 +114,8 @@ async def test_analyzed_tracks_search_filters_on_item_id_before_resolve() -> Non
 
 
 @pytest.mark.asyncio
-async def test_export_analysis_extracts_fields_and_extra_data() -> None:
-    """_handle_export_analysis reads rows via the controller and returns scalars + extra_data."""
+async def test_export_analysis_strips_embedding_and_surfaces_presence_flag() -> None:
+    """The 1024-dim CLAP embedding is never shipped over the wire; presence is a boolean."""
     rows = [
         {
             "item_id": "track1",
@@ -124,7 +124,7 @@ async def test_export_analysis_extracts_fields_and_extra_data() -> None:
                 {
                     "bpm": 120.5,
                     "danceability": 0.7,
-                    "extra_data": {"clap_embedding": [0.0] * 1024},
+                    "extra_data": {"clap_embedding": [0.0] * 1024, "other_key": "kept"},
                 }
             ),
         }
@@ -136,9 +136,30 @@ async def test_export_analysis_extracts_fields_and_extra_data() -> None:
     item = result["items"][0]
     assert item["bpm"] == 120.5
     assert item["danceability"] == 0.7
-    assert item["extra_data"]["clap_embedding"] == [0.0] * 1024
+    assert item["has_clap_embedding"] is True
+    # Embedding stripped; other extra_data keys survive
+    assert "clap_embedding" not in item.get("extra_data", {})
+    assert item["extra_data"] == {"other_key": "kept"}
     aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis", limit=10, offset=0)
     aa.get_audio_analysis_count.assert_awaited_once_with("sonic_analysis")
+
+
+@pytest.mark.asyncio
+async def test_export_analysis_has_clap_embedding_false_when_absent() -> None:
+    """Rows without an embedding report has_clap_embedding=False."""
+    rows = [
+        {
+            "item_id": "track1",
+            "provider": "filesystem_local",
+            "analysis_data": json.dumps({"bpm": 100.0}),
+        }
+    ]
+    p, _, _ = _stub_provider(rows=rows, count=1)
+
+    result = await p._handle_export_analysis(limit=10, offset=0)
+    item = result["items"][0]
+    assert item["has_clap_embedding"] is False
+    assert "extra_data" not in item
 
 
 @pytest.mark.asyncio
