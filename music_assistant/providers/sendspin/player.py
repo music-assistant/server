@@ -202,6 +202,15 @@ class SendspinBasePlayer(Player):
         """
         client_info = hello_payload or sendspin_client.info
         preserved_identifiers = dict(self._attr_device_info.identifiers)
+        # ``connections`` is a forward-compat field added in
+        # music-assistant/models#215 / aiosendspin Sendspin/aiosendspin#226.
+        # Use ``getattr`` so this provider keeps working with the older
+        # pinned releases until both companion PRs land + ship; once
+        # ma-server bumps the pins the helper calls below become direct
+        # attribute access (the ``getattr`` returns the real value).
+        preserved_connections: set[tuple[str, str]] = set(
+            getattr(self._attr_device_info, "connections", set()) or set()
+        )
         self._attr_name = client_info.name
         if device_info := client_info.device_info:
             self._attr_device_info = DeviceInfo(
@@ -209,10 +218,24 @@ class SendspinBasePlayer(Player):
                 manufacturer=device_info.manufacturer or "Unknown Manufacturer",
                 software_version=device_info.software_version,
             )
+            # Forward client_hello.device_info.connections verbatim into the
+            # player's HA-mirroring connections set, plus opportunistic mirror
+            # into MAC_ADDRESS identifier so universal_player's cross-protocol
+            # matching benefits from the MAC for free.
+            add_connection = getattr(self._attr_device_info, "add_connection", None)
+            for conn_type, conn_value in getattr(device_info, "connections", None) or []:
+                if add_connection is not None:
+                    add_connection(conn_type, conn_value)
+                if conn_type in {"mac", "bluetooth"}:
+                    self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, conn_value)
         else:
             self._attr_device_info = DeviceInfo()
         for id_type, id_value in preserved_identifiers.items():
             self._attr_device_info.add_identifier(id_type, id_value)
+        add_connection = getattr(self._attr_device_info, "add_connection", None)
+        if add_connection is not None:
+            for conn_type, conn_value in preserved_connections:
+                add_connection(conn_type, conn_value)
         # Add player_id as MAC identifier for protocol linking (if it's a valid MAC)
         # This enables linking with bridged players (e.g., AirPlay via Sendspin bridge)
         if IdentifierType.MAC_ADDRESS not in self._attr_device_info.identifiers:
