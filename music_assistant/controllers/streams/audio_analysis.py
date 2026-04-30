@@ -539,7 +539,8 @@ class AudioAnalysisController:
         results: list[dict[str, Any]] = []
         all_domains = set(aa_provider_domains)
         for r in rows:
-            covered = set((r.get("covered_domains") or "").split(",")) - {""}
+            covered_raw = r["covered_domains"]
+            covered = set((covered_raw or "").split(",")) - {""}
             missing = sorted(all_domains - covered)
             if missing:
                 results.append(

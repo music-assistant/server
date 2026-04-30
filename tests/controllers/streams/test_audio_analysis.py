@@ -276,6 +276,67 @@ async def test_run_background_scan_uses_union_candidate_query(
 
 
 @pytest.mark.asyncio
+async def test_find_candidates_handles_sqlite_row_without_get(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_find_candidates_missing_analysis must use __getitem__ not .get() on rows.
+
+    sqlite3.Row supports only __getitem__, not .get(). This regression test
+    uses a row class that lacks .get() to ensure we never reintroduce the bug.
+    """
+    controller = _make_controller()
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "loudness_analysis"
+    p1.available = True
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    # Make the filesystem-providers gate succeed
+    fs_prov = MagicMock()
+    fs_prov.domain = "filesystem_local"
+    fs_prov.available = True
+    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+
+    class _RowNoGet:
+        """Mimics sqlite3.Row: __getitem__ only, no .get()."""
+
+        def __init__(self, data: dict[str, object]) -> None:
+            self._d = data
+
+        def __getitem__(self, key: str) -> object:
+            return self._d[key]
+
+    rows = [
+        _RowNoGet(
+            {
+                "item_id": "track-1",
+                "provider_instance": "filesystem_local",
+                "covered_domains": None,  # no analysis yet
+            }
+        ),
+        _RowNoGet(
+            {
+                "item_id": "track-2",
+                "provider_instance": "filesystem_local",
+                "covered_domains": "loudness_analysis",  # already covered
+            }
+        ),
+    ]
+    controller.mass.music.database.get_rows_from_query = AsyncMock(return_value=rows)  # type: ignore[method-assign]
+
+    result = await controller._find_candidates_missing_analysis(["loudness_analysis"], 100)
+
+    # track-1 is missing loudness_analysis → included
+    # track-2 is already covered → excluded
+    assert len(result) == 1
+    assert result[0]["item_id"] == "track-1"
+    assert result[0]["missing_domains"] == ["loudness_analysis"]
+
+
+@pytest.mark.asyncio
 async def test_run_background_scan_concurrency_semaphore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
