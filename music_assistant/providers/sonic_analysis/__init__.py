@@ -555,25 +555,22 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 self.logger.debug("Failed to resolve track %s/%s: %s", provider, item_id, err)
                 return {"item_id": item_id, "name": "(unknown)", "artist": ""}
 
-        items = list(
-            await asyncio.gather(*[_resolve(iid, prov) for iid, prov in page_entries])
-        )
+        items = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in page_entries]))
         return {"total": total, "offset": offset, "limit": limit, "items": items}
 
     async def _handle_export_analysis(
         self,
         limit: int = 100,
         offset: int = 0,
-        random_pick: int = 0,
     ) -> dict[str, Any]:
         """Export analyzed tracks with their full scalar analysis data.
 
         :param limit: Max tracks per page.
-        :param offset: Pagination offset (ignored when random_pick > 0).
-        :param random_pick: When > 0, return a random sample of this size
-            instead of an offset/limit page.
+        :param offset: Pagination offset.
         """
-        rows = await self.mass.streams.audio_analysis.get_audio_analysis_rows(self.domain)
+        aa = self.mass.streams.audio_analysis
+        total = await aa.get_audio_analysis_count(self.domain)
+        rows = await aa.get_audio_analysis_rows(self.domain, limit=limit, offset=offset)
 
         export_fields = [
             "bpm",
@@ -595,13 +592,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             "acousticness",
         ]
 
-        seen: set[tuple[str, str]] = set()
-        all_entries: list[tuple[str, str, dict[str, Any]]] = []
+        page_entries: list[tuple[str, str, dict[str, Any]]] = []
         for row in rows:
-            key = (row["item_id"], row["provider"])
-            if key in seen:
-                continue
-            seen.add(key)
             try:
                 data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
             except (ValueError, TypeError, KeyError):
@@ -613,15 +605,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                     fields[field_name] = round(val, 4) if isinstance(val, float) else val
             if data.extra_data:
                 fields["extra_data"] = data.extra_data
-            all_entries.append((row["item_id"], row["provider"], fields))
-
-        total = len(all_entries)
-        if random_pick > 0:
-            import random  # noqa: PLC0415
-
-            page_entries = random.sample(all_entries, min(random_pick, total))
-        else:
-            page_entries = all_entries[offset : offset + limit]
+            page_entries.append((row["item_id"], row["provider"], fields))
 
         async def _resolve(item_id: str, provider: str, fields: dict[str, Any]) -> dict[str, Any]:
             entry: dict[str, Any] = {

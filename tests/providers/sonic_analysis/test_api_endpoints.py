@@ -129,7 +129,7 @@ async def test_export_analysis_extracts_fields_and_extra_data() -> None:
             ),
         }
     ]
-    p, aa, _ = _stub_provider(rows=rows)
+    p, aa, _ = _stub_provider(rows=rows, count=1)
 
     result = await p._handle_export_analysis(limit=10, offset=0)
     assert result["total"] == 1
@@ -137,12 +137,13 @@ async def test_export_analysis_extracts_fields_and_extra_data() -> None:
     assert item["bpm"] == 120.5
     assert item["danceability"] == 0.7
     assert item["extra_data"]["clap_embedding"] == [0.0] * 1024
-    aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis")
+    aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis", limit=10, offset=0)
+    aa.get_audio_analysis_count.assert_awaited_once_with("sonic_analysis")
 
 
 @pytest.mark.asyncio
 async def test_export_analysis_skips_unparseable_rows() -> None:
-    """Rows with corrupt JSON are silently skipped (defensive against legacy data)."""
+    """Rows with corrupt JSON are silently skipped from items but still counted in total."""
     rows = [
         {"item_id": "a", "provider": "filesystem_local", "analysis_data": "not json"},
         {
@@ -151,8 +152,10 @@ async def test_export_analysis_skips_unparseable_rows() -> None:
             "analysis_data": json.dumps({"bpm": 100.0}),
         },
     ]
-    p, _, _ = _stub_provider(rows=rows)
+    # total reflects the DB row count for the domain — independent of JSON validity
+    p, _, _ = _stub_provider(rows=rows, count=2)
 
     result = await p._handle_export_analysis(limit=10, offset=0)
-    assert result["total"] == 1
+    assert result["total"] == 2  # both rows exist in the DB
+    assert len(result["items"]) == 1  # but only one parsed successfully
     assert result["items"][0]["bpm"] == 100.0

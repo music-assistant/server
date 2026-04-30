@@ -564,8 +564,16 @@ async def test_get_audio_analysis_rows_filters_by_domain_and_track_media_type() 
 async def test_get_audio_analysis_rows_respects_media_type_override() -> None:
     """Caller can list rows for a non-track media type."""
     c, db = _stub_controller(list_result=[])
-    await c.get_audio_analysis_rows(
-        "sonic_analysis", media_type=MediaType.PODCAST_EPISODE
-    )
+    await c.get_audio_analysis_rows("sonic_analysis", media_type=MediaType.PODCAST_EPISODE)
     filters = db.get_rows.await_args.args[1]
     assert filters["media_type"] == MediaType.PODCAST_EPISODE.value
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_rows_passes_limit_and_offset() -> None:
+    """Caller-supplied limit/offset are forwarded to the DB layer for paginated reads."""
+    c, db = _stub_controller(list_result=[])
+    await c.get_audio_analysis_rows("sonic_analysis", limit=50, offset=100)
+    call = db.get_rows.await_args
+    assert call.kwargs["limit"] == 50
+    assert call.kwargs["offset"] == 100

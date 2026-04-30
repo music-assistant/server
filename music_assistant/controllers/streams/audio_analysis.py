@@ -361,12 +361,16 @@ class AudioAnalysisController:
         self,
         aa_provider_domain: str,
         media_type: MediaType = MediaType.TRACK,
+        limit: int = 0,
+        offset: int = 0,
     ) -> list[Mapping[str, Any]]:
         """
-        Return all audio_analysis rows for a given aa_provider_domain.
+        Return audio_analysis rows for a given aa_provider_domain.
 
         :param aa_provider_domain: Domain of the AA provider whose rows to return.
         :param media_type: The media type to filter rows by.
+        :param limit: Max rows to return. 0 (default) means unbounded.
+        :param offset: Pagination offset.
         """
         return await self.mass.music.database.get_rows(
             DB_TABLE_AUDIO_ANALYSIS,
@@ -374,7 +378,8 @@ class AudioAnalysisController:
                 "aa_provider_domain": aa_provider_domain,
                 "media_type": media_type.value,
             },
-            limit=0,
+            limit=limit,
+            offset=offset,
         )
 
     async def _run_background_scan(self) -> None:
