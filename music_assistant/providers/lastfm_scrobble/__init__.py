@@ -26,6 +26,7 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.scrobbler import (
     ScrobblerConfig,
     ScrobblerHelper,
+    create_scrobble_players_config_entry,
     create_scrobble_users_config_entry,
 )
 from music_assistant.mass import MusicAssistant
@@ -267,8 +268,9 @@ async def get_config_entries(
             value=values.get(CONF_API_SECRET) if values else None,
             advanced=True,
         ),
-        # add user selection entry
+        # add scrobble filter options
         await create_scrobble_users_config_entry(mass),
+        await create_scrobble_players_config_entry(mass),
     ]
 
     # early return so we can assume values are present

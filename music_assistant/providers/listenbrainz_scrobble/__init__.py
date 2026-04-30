@@ -20,6 +20,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant.helpers.scrobbler import (
     ScrobblerConfig,
     ScrobblerHelper,
+    create_scrobble_players_config_entry,
     create_scrobble_users_config_entry,
 )
 from music_assistant.mass import MusicAssistant
@@ -169,6 +170,7 @@ async def get_config_entries(
             "to the public listenbrainz API.",
             advanced=True,
         ),
-        # add user selection entry
+        # add scrobble filter options
         await create_scrobble_users_config_entry(mass),
+        await create_scrobble_players_config_entry(mass),
     )
