@@ -525,10 +525,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     ) -> dict[str, Any]:
         """Return paginated list of tracks analyzed by this provider.
 
-        :param search: Optional case-insensitive substring filter on
-            track name, artist, or item_id.
+        :param search: Optional case-insensitive substring filter on item_id.
         :param limit: Max results per page.
-        :param offset: Pagination offset (ignored when search is set).
+        :param offset: Pagination offset.
         """
         rows = await self.mass.streams.audio_analysis.get_audio_analysis_rows(self.domain)
         seen: set[tuple[str, str]] = set()
@@ -540,30 +539,26 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             seen.add(key)
             entries.append(key)
 
+        if search:
+            q = search.lower()
+            entries = [(iid, prov) for iid, prov in entries if q in iid.lower()]
+
+        total = len(entries)
+        page_entries = entries[offset : offset + limit]
+
         async def _resolve(item_id: str, provider: str) -> dict[str, Any]:
             try:
                 t = await self.mass.music.tracks.get(item_id, provider)
                 artists = ", ".join(a.name for a in getattr(t, "artists", []) or [])
                 return {"item_id": item_id, "name": t.name, "artist": artists}
-            except Exception:
+            except Exception as err:
+                self.logger.debug("Failed to resolve track %s/%s: %s", provider, item_id, err)
                 return {"item_id": item_id, "name": "(unknown)", "artist": ""}
 
-        if search:
-            resolved = await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries])
-            q = search.lower()
-            tracks = [
-                t
-                for t in resolved
-                if q in t["name"].lower() or q in t["artist"].lower() or q in t["item_id"]
-            ]
-            total = len(tracks)
-            page = tracks[offset : offset + limit]
-        else:
-            total = len(entries)
-            page_entries = entries[offset : offset + limit]
-            page = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in page_entries]))
-
-        return {"total": total, "offset": offset, "limit": limit, "items": page}
+        items = list(
+            await asyncio.gather(*[_resolve(iid, prov) for iid, prov in page_entries])
+        )
+        return {"total": total, "offset": offset, "limit": limit, "items": items}
 
     async def _handle_export_analysis(
         self,

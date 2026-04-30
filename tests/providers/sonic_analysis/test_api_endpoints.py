@@ -95,6 +95,25 @@ async def test_analyzed_tracks_dedupes_and_paginates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_analyzed_tracks_search_filters_on_item_id_before_resolve() -> None:
+    """Search filters on item_id substring at the row level — only the page is resolved."""
+    rows = [
+        {"item_id": "rock_track_1", "provider": "filesystem_local"},
+        {"item_id": "jazz_track_2", "provider": "filesystem_local"},
+        {"item_id": "rock_track_3", "provider": "filesystem_local"},
+        {"item_id": "pop_track_4", "provider": "filesystem_local"},
+    ]
+    p, _, tracks = _stub_provider(rows=rows)
+
+    result = await p._handle_analyzed_tracks(search="rock", limit=10, offset=0)
+    assert result["total"] == 2
+    item_ids = {item["item_id"] for item in result["items"]}
+    assert item_ids == {"rock_track_1", "rock_track_3"}
+    # Only the matching rows were resolved — not all 4
+    assert tracks.get.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_export_analysis_extracts_fields_and_extra_data() -> None:
     """_handle_export_analysis reads rows via the controller and returns scalars + extra_data."""
     rows = [
