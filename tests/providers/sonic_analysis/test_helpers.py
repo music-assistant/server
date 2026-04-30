@@ -27,8 +27,6 @@ def _make_noise(duration: float = 5.0, sr: int = 22050) -> np.ndarray:
     return rng.standard_normal(int(sr * duration)).astype(np.float32)
 
 
-
-
 def test_extract_block_features_returns_block_features() -> None:
     """Verify extract_block_features returns a BlockFeatures with correct shapes."""
     audio = _make_sine(440.0, 10.0, 22050)
@@ -56,8 +54,6 @@ def test_extract_block_features_too_short_returns_none() -> None:
     assert result is None
 
 
-
-
 def test_merge_block_features() -> None:
     """Verify merging two BlockFeatures doubles all frame lists."""
     audio_a = _make_sine(440.0, 5.0, 22050)
@@ -75,8 +71,6 @@ def test_merge_block_features() -> None:
     assert len(target.flatness_frames) == 2
     assert len(target.rms_frames) == 2
     assert len(target.onset_env_frames) == 2
-
-
 
 
 def _make_analysis(

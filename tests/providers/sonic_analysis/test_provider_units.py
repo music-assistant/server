@@ -79,5 +79,3 @@ def test_pcm_24bit_mono() -> None:
     assert abs(audio[0]) < 1e-6
     assert abs(audio[1] - 1.0) < 0.001
     assert abs(audio[2] + (1.0 / 8388608.0)) < 0.001
-
-

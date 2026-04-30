@@ -114,9 +114,7 @@ async def test_awaits_pending_tasks() -> None:
     task = asyncio.create_task(slow_inference())
     session.clap_inference_tasks.append(task)
 
-    finalize_task = asyncio.create_task(
-        p._run_live_clap_if_eligible(session, AudioAnalysisData())
-    )
+    finalize_task = asyncio.create_task(p._run_live_clap_if_eligible(session, AudioAnalysisData()))
     # Yield once: finalize should be blocked on the gather
     await asyncio.sleep(0)
     assert not finalize_task.done()

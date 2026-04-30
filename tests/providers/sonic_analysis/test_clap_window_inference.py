@@ -31,9 +31,7 @@ def _make_provider(
     fake_model.get_audio_embeddings_from_tensor = MagicMock(
         return_value=torch.full((1, 1024), embedding_value, dtype=torch.float32)
     )
-    fake_model.compute_similarity = MagicMock(
-        return_value=torch.tensor([sim], dtype=torch.float32)
-    )
+    fake_model.compute_similarity = MagicMock(return_value=torch.tensor([sim], dtype=torch.float32))
 
     p._clap_model = fake_model
     p._clap_text_embeddings = MagicMock()

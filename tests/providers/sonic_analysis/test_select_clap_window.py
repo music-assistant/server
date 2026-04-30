@@ -77,8 +77,6 @@ def test_deterministic_across_calls() -> None:
     assert np.array_equal(w1, w2)
 
 
-
-
 def test_multi_window_n1_matches_single_window() -> None:
     """N=1 must delegate to the single-window selector so Fast preset is unchanged."""
     audio = _ramp(60 * SR)
@@ -146,8 +144,6 @@ def test_multi_window_deterministic() -> None:
     assert len(a) == len(b) == 5
     for wa, wb in zip(a, b, strict=True):
         assert np.array_equal(wa, wb)
-
-
 
 
 def test_target_starts_below_one_second_returns_empty() -> None:

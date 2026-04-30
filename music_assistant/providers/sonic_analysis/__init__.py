@@ -7,7 +7,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -294,7 +294,7 @@ def _pcm_bytes_to_audio(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarr
         frame_samples = (audio.numel() // channels) * channels
         audio = audio[:frame_samples].reshape(-1, channels).mean(dim=1)
 
-    return cast("np.ndarray", audio.numpy())
+    return np.asarray(audio.numpy(), dtype=np.float32)
 
 
 class SonicAnalysisProvider(AudioAnalysisProvider):
@@ -502,9 +502,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             fields["has_clap_embedding"] = isinstance(
                 extra_data.get(EXTRA_DATA_CLAP_EMBEDDING), list
             )
-            stripped = {
-                k: v for k, v in extra_data.items() if k != EXTRA_DATA_CLAP_EMBEDDING
-            }
+            stripped = {k: v for k, v in extra_data.items() if k != EXTRA_DATA_CLAP_EMBEDDING}
             if stripped:
                 fields["extra_data"] = stripped
             page_entries.append((row["item_id"], row["provider"], fields))
