@@ -367,21 +367,33 @@ class AirPlayProvider(PlayerProvider):
                 else:
                     player.stream.prevent_playback = True
                     if player.stream.session:
-                        self.logger.debug(
-                            "Prevent playback command detected for player %s",
-                            player.name,
-                        )
-                        if player.synced_to or parent_player.state.active_group:
-                            self.mass.create_task(
-                                self.mass.players.cmd_ungroup(parent_player.player_id)
+                        # Some devices (e.g. Denon AVR) emit a transient
+                        # prevent-playback=1/=0 pair during RAOP connection setup;
+                        # debounce so a quick =0 cancels the action.
+                        def _act_on_prevent_playback() -> None:
+                            self.logger.debug(
+                                "Prevent playback command detected for player %s",
+                                player.name,
                             )
-                        else:
-                            self.mass.create_task(player.stream.stop())
+                            if player.synced_to or parent_player.state.active_group:
+                                self.mass.create_task(
+                                    self.mass.players.cmd_ungroup(parent_player.player_id)
+                                )
+                            elif player.stream:
+                                self.mass.create_task(player.stream.stop())
+
+                        self.mass.call_later(
+                            1.0,
+                            _act_on_prevent_playback,
+                            task_id=f"prevent_playback_{player_id}",
+                        )
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 # use a debounced reset to avoid race conditions where a quick
                 # prevent-playback=0 between duplicate prevent-playback=1 messages
                 # would reset the flag and allow the second message to act
+                # Cancel any pending prevent-playback action (transient =1/=0 pair).
+                self.mass.cancel_timer(f"prevent_playback_{player_id}")
                 if (stream := player.stream) and stream.prevent_playback:
                     self.mass.call_later(
                         5,
