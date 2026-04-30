@@ -658,7 +658,7 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.audio_format.sample_rate = int(stream_format.get("asr"))
         return stream_details
 
-    @use_cache(3600)
+    # @use_cache(3600)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         recommendations = await get_home(self._headers, self.language, user=self._yt_user)
@@ -705,9 +705,10 @@ class YoutubeMusicProvider(MusicProvider):
             provider=self.instance_id,
             icon="mdi:shuffle-variant",
         )
-        for playlist_id in YT_PERSONAL_PLAYLISTS:
+
+        async def _get_personal_playlist_preview(playlist_id: str) -> Playlist | None:
             if playlist_id == YT_LIKED_SONGS_PLAYLIST_ID:
-                continue
+                return None
             try:
                 playlist_obj = await get_playlist(
                     prov_playlist_id=playlist_id,
@@ -716,9 +717,17 @@ class YoutubeMusicProvider(MusicProvider):
                     user=self._yt_user,
                     limit=5,  # limit fetched tracks here to reduce payload size
                 )
-                mixed_for_you_folder.items.append(self._parse_playlist(playlist_obj))
+                return self._parse_playlist(playlist_obj)
             except MediaNotFoundError:
-                continue  # personal playlist might not be available for all users, ignore if not found
+                # personal playlist might not be available for all users, ignore if not found
+                return None
+
+        playlist_previews = await asyncio.gather(
+            *(_get_personal_playlist_preview(playlist_id) for playlist_id in YT_PERSONAL_PLAYLISTS)
+        )
+        mixed_for_you_folder.items.extend(
+            preview for preview in playlist_previews if preview is not None
+        )
         if mixed_for_you_folder.items:
             folders.append(mixed_for_you_folder)
 
@@ -873,7 +882,8 @@ class YoutubeMusicProvider(MusicProvider):
 
     def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        playlist_id = playlist_obj["id"]
+        raw_playlist_id = playlist_obj["id"]
+        playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
         is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
@@ -890,7 +900,7 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/playlist?list={playlist_id}",
+                    url=f"{YTM_DOMAIN}/playlist?list={raw_playlist_id}",
                     is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
