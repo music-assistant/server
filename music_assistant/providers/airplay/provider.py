@@ -370,7 +370,16 @@ class AirPlayProvider(PlayerProvider):
                         # Some devices (e.g. Denon AVR) emit a transient
                         # prevent-playback=1/=0 pair during RAOP connection setup;
                         # debounce so a quick =0 cancels the action.
+                        scheduled_stream = player.stream
+
                         def _act_on_prevent_playback() -> None:
+                            # bail out if the stream was swapped out during the debounce
+                            # window or its prevent_playback flag was already cleared
+                            if (
+                                player.stream is not scheduled_stream
+                                or not scheduled_stream.prevent_playback
+                            ):
+                                return
                             self.logger.debug(
                                 "Prevent playback command detected for player %s",
                                 player.name,
@@ -379,8 +388,8 @@ class AirPlayProvider(PlayerProvider):
                                 self.mass.create_task(
                                     self.mass.players.cmd_ungroup(parent_player.player_id)
                                 )
-                            elif player.stream:
-                                self.mass.create_task(player.stream.stop())
+                            else:
+                                self.mass.create_task(scheduled_stream.stop())
 
                         self.mass.call_later(
                             1.0,
