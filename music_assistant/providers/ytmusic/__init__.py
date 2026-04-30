@@ -658,7 +658,7 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.audio_format.sample_rate = int(stream_format.get("asr"))
         return stream_details
 
-    # @use_cache(3600)
+    @use_cache(3600)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         recommendations = await get_home(self._headers, self.language, user=self._yt_user)
@@ -720,6 +720,9 @@ class YoutubeMusicProvider(MusicProvider):
                 return self._parse_playlist(playlist_obj)
             except MediaNotFoundError:
                 # personal playlist might not be available for all users, ignore if not found
+                return None
+            except Exception as err:
+                self.logger.debug("Failed to fetch personal mix %s: %s", playlist_id, err)
                 return None
 
         playlist_previews = await asyncio.gather(
