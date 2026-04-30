@@ -160,6 +160,28 @@ class AudioAnalysisProvider(Provider):
         """
         return None
 
+    async def post_analysis(
+        self,
+        streamdetails: StreamDetails,
+        analysis: AudioAnalysisData,
+    ) -> None:
+        """Run side effects after analysis is finalized and persisted.
+
+        Called by the base class `finalize` wrapper after `_finalize` returns
+        a non-None analysis. Default is a no-op. Providers override this to
+        perform filesystem side effects such as writing tags back to the
+        source file. Failures are caught by the base class and logged — they
+        must not undo the analysis row.
+
+        Implementations must self-gate on whether `streamdetails.path` is a
+        writable filesystem path, since this hook fires for both live and
+        background-scan analyses.
+
+        :param streamdetails: The stream details for the analyzed item.
+        :param analysis: The analysis data that was persisted by `_finalize`.
+        """
+        return
+
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""
         self._sessions.pop(session_id, None)
