@@ -95,14 +95,14 @@ class ScrobblerHelper:
                 # TODO: try to make this a more specific exception instead of a generic one
                 self.logger.exception(err)
 
-        # # update now playing if needed
-        # if report.is_playing and (
-        #     self.currently_playing is None or self.currently_playing != report.uri
-        # ):
-        #     await update_now_playing()
+        # update now playing if needed
+        if report.is_playing and (
+            self.currently_playing is None or self.currently_playing != report.uri
+        ):
+            await update_now_playing()
 
-        # if self.should_scrobble(report):
-        # await scrobble()
+        if self.should_scrobble(report):
+            await scrobble()
 
     def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
         """Determine if a track should be scrobbled, to be extended later."""
