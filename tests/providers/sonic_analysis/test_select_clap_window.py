@@ -1,9 +1,4 @@
-"""Unit tests for the deterministic CLAP window selector.
-
-select_clap_window is the single source of truth for which 7-second slice
-of a track CLAP sees. Pinning its behavior so callers can rely on it being
-repeatable across both analyze_file and the live-playback path.
-"""
+"""Unit tests for the deterministic CLAP window selector + target-start planner."""
 
 from __future__ import annotations
 
@@ -82,9 +77,6 @@ def test_deterministic_across_calls() -> None:
     assert np.array_equal(w1, w2)
 
 
-# --------------------------------------------------------------------------- #
-#  select_clap_windows (multi-window)                                          #
-# --------------------------------------------------------------------------- #
 
 
 def test_multi_window_n1_matches_single_window() -> None:
@@ -156,9 +148,6 @@ def test_multi_window_deterministic() -> None:
         assert np.array_equal(wa, wb)
 
 
-# --------------------------------------------------------------------------- #
-#  compute_clap_target_starts (live-path target window planner)               #
-# --------------------------------------------------------------------------- #
 
 
 def test_target_starts_below_one_second_returns_empty() -> None:

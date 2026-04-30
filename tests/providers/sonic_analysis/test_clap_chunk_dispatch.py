@@ -1,9 +1,4 @@
-"""Unit tests for the CLAP chunk dispatch state machine.
-
-_dispatch_clap_chunk routes incoming PCM chunks to the active CLAP target
-windows planned at session start, returns any windows that completed
-during the call, and frees per-window buffers immediately on completion.
-"""
+"""Unit tests for the CLAP chunk dispatch state machine."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Unit tests for sonic analysis provider functions that don't require a running MA instance."""
+"""Unit tests for the _pcm_bytes_to_audio decoder."""
 
 import struct
 
@@ -7,10 +7,6 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.sonic_analysis import _pcm_bytes_to_audio
-
-# --------------------------------------------------------------------------- #
-#  _pcm_bytes_to_audio                                                         #
-# --------------------------------------------------------------------------- #
 
 
 def _af(content_type: ContentType, channels: int = 1) -> AudioFormat:

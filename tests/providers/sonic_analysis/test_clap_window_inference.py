@@ -1,10 +1,4 @@
-"""Tests for the per-window CLAP inference + session accumulator logic.
-
-_run_single_clap_window dispatches a single completed 7s window to CLAP
-off the asyncio event loop (via asyncio.to_thread) and accumulates the
-resulting embedding and similarity row into the session for later
-mean-pooling at finalize.
-"""
+"""Tests for the per-window CLAP inference + session accumulator logic."""
 
 from __future__ import annotations
 

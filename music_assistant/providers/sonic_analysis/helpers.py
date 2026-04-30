@@ -1,23 +1,4 @@
-"""Sonic analysis helper — feature extraction and semantic audio analysis.
-
-Extracts per-block spectral/timbral features from raw PCM audio using librosa,
-then collapses accumulated blocks into a populated AudioAnalysisData with
-semantic descriptors.
-
-Fields NOT computed here are left as None and expected to be supplied by
-overlay providers (see `sonic_similarity.OVERLAY_SOURCES`):
-
-- `bpm`                       ← smart_fades (beat_this CNN)
-- `key`, `mode`               ← smart_fades (S-KEY neural classifier)
-- `danceability`              ← clap_analysis (zero-shot, Platt-calibrated)
-- `valence`, `arousal`,
-  `instrumentalness`,
-  `acousticness`              ← clap_analysis (zero-shot, Platt-calibrated)
-- `loudness_integrated`,
-  `loudness_range`,
-  `true_peak`                 ← loudness_analysis (ebur128) when enabled;
-                                 fallback approximations populated here
-"""
+"""Per-block spectral/timbral feature extraction and AudioAnalysisData collapse."""
 
 from __future__ import annotations
 
@@ -31,42 +12,24 @@ import torchaudio.transforms as torchaudio_transforms
 
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
-# Fixed resolution for time-series fields (rms_energy, spectral_centroid) on
-# AudioAnalysisData — matches the upstream contract shared with other analysis
-# providers. Produces a consistent x-axis resolution regardless of track length.
 _TIME_SERIES_BINS = 1800
-
-# Energy threshold below which spectral centroid becomes noise-dominated; centroid
-# bins with RMS below this are zeroed to keep the signal musically meaningful.
 _SILENCE_THRESHOLD = 0.01
 
-# STFT parameters. These match librosa's defaults so the shared STFT is
-# numerically equivalent to what each of the downstream feature functions
-# would compute internally if called with `y=audio`.
 _STFT_N_FFT = 2048
 _STFT_HOP = 512
 
-# Cached Hann window — torch.stft requires an explicit window; caching
-# avoids rebuilding it on every block. periodic=False gives the SYMMETRIC
-# hann that scipy/librosa use by default; torch's default is periodic=True
-# (periodic=True would produce ~1e-3 per-sample drift in the STFT output,
-# causing material differences in downstream features).
+# periodic=False matches scipy/librosa's symmetric Hann; torch's periodic=True
+# default produces ~1e-3 per-sample STFT drift that propagates into features.
 _HANN_WINDOW = torch.hann_window(_STFT_N_FFT, periodic=False, dtype=torch.float32)
 
-# Chroma + spectral-contrast filterbank / band masks, computed once at
-# module import via librosa. Runtime computation is then pure torch:
-# - chroma: single matmul + per-column max-norm
-# - contrast: per-band top/bottom-quantile log-ratio
-# The one-time librosa calls are cheap (~milliseconds) and bake librosa's
-# well-calibrated filter shapes into our torch pipeline.
-_CHROMA_SR = 22050  # sample rate baked into filterbank — must match audio SR
+_CHROMA_SR = 22050  # filterbank-baked sample rate — must match audio SR
 _CONTRAST_N_BANDS = 6
 _CONTRAST_FMIN = 200.0
 _CONTRAST_QUANTILE = 0.02
 
 _CHROMA_FILTERBANK = torch.from_numpy(
     librosa.filters.chroma(sr=_CHROMA_SR, n_fft=_STFT_N_FFT, n_chroma=12)
-).to(dtype=torch.float32)  # shape (12, n_freqs)
+).to(dtype=torch.float32)
 
 
 def _compute_contrast_band_masks(
@@ -96,9 +59,9 @@ _CONTRAST_BAND_MASKS = _compute_contrast_band_masks(
     _CHROMA_SR, _STFT_N_FFT, _CONTRAST_N_BANDS, _CONTRAST_FMIN
 )
 
-# Onset strength uses a mel spectrogram at the same time resolution as the
-# linear STFT, with 128 mel bands (librosa.onset.onset_strength default).
 _MEL_N_MELS = 128
+# pad_mode="constant" matches librosa.feature.melspectrogram; "reflect" drifts
+# the onset envelope ~8% in downstream rhythmic_regularity.
 _MEL_TRANSFORM = torchaudio_transforms.MelSpectrogram(
     sample_rate=_CHROMA_SR,
     n_fft=_STFT_N_FFT,
@@ -108,11 +71,6 @@ _MEL_TRANSFORM = torchaudio_transforms.MelSpectrogram(
     f_max=_CHROMA_SR / 2.0,
     power=2.0,
     center=True,
-    # librosa.feature.melspectrogram's underlying STFT uses pad_mode="constant"
-    # (zero-pad) by default. Matching that here is load-bearing: reflect-pad
-    # would cause the first ~2 frames of the onset envelope to shift relative
-    # to librosa, producing a near-zero correlation on the envelope and ~8%
-    # drift in downstream rhythmic_regularity.
     pad_mode="constant",
     norm="slaney",
     mel_scale="slaney",
@@ -121,15 +79,7 @@ _MEL_TRANSFORM = torchaudio_transforms.MelSpectrogram(
 
 @dataclass
 class BlockFeatures:
-    """Per-block feature arrays accumulated across 10-second blocks.
-
-    After all blocks are processed, collapse_to_analysis() aggregates these
-    into a populated AudioAnalysisData.
-
-    Only features actually consumed by the current collapse pipeline are
-    extracted. (MFCC, tonnetz, rolloff, and ZCR were previously extracted
-    but never read; removed to save ~100ms per 10s block.)
-    """
+    """Per-block feature arrays accumulated across 10-second blocks."""
 
     chroma_frames: list[np.ndarray] = field(default_factory=list)
     contrast_frames: list[np.ndarray] = field(default_factory=list)
@@ -143,19 +93,7 @@ MIN_BLOCK_SAMPLES: int = 4096
 
 
 def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures | None:
-    """Extract per-frame features from a single audio block (~10 seconds).
-
-    Returns None if the audio is too short for STFT processing.
-
-    Phase 4A architecture:
-    - Compute STFT once via torch (faster than numpy FFT, SIMD-accelerated,
-      plus paves the way for batched processing in Phase 4C).
-    - Spectral features that need binning/band logic (chroma, contrast)
-      stay on librosa and are fed the torch-computed STFT via the `S=` kwarg.
-    - Simple reductions (centroid, flatness, RMS) run directly on the torch
-      tensor as native ops — no librosa call at all.
-    - onset_strength stays on librosa for now (uses a mel spectrogram with
-      different parameters; moved to torch in Phase 4C).
+    """Extract per-frame features from a single audio block, or None if too short.
 
     :param audio: Mono float32 audio samples for this block.
     :param sample_rate: Sample rate in Hz.
@@ -166,7 +104,6 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
 
     audio_t = torch.from_numpy(audio).to(dtype=torch.float32)
 
-    # One torch STFT, shared across all spectral features.
     stft_complex = torch.stft(
         audio_t,
         n_fft=_STFT_N_FFT,
@@ -180,8 +117,6 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
     stft_mag_t = stft_complex.abs()
     stft_power_t = stft_mag_t**2
 
-    # All spectral features run natively in torch. librosa is no longer
-    # called in the per-block hot path.
     bf.chroma_frames.append(_chroma_stft_torch(stft_power_t))
     bf.contrast_frames.append(_spectral_contrast_torch(stft_mag_t))
     bf.centroid_frames.append(_spectral_centroid_torch(stft_mag_t, sample_rate))
@@ -195,26 +130,16 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
 def _chroma_stft_torch(power: torch.Tensor) -> np.ndarray:
     """Torch-native chroma_stft equivalent to librosa.feature.chroma_stft(S=power).
 
-    Uses librosa's precomputed chroma filterbank (baked at module load) for
-    frequency-to-pitch-class mapping, then runs the matmul + per-column
-    max-normalization in torch.
-
     :param power: Power spectrogram (magnitude**2), shape (n_freqs, n_frames).
     """
-    raw = _CHROMA_FILTERBANK @ power  # (12, n_frames)
-    # librosa default: norm=inf per column (max-normalize each frame)
+    raw = _CHROMA_FILTERBANK @ power
     col_max = raw.abs().amax(dim=0, keepdim=True)
     col_max = torch.clamp(col_max, min=1e-10)
     return np.asarray((raw / col_max).numpy())
 
 
 def _spectral_contrast_torch(mag: torch.Tensor) -> np.ndarray:
-    """Torch-native spectral_contrast.
-
-    Matches librosa.feature.spectral_contrast(S=mag, n_bands=6, quantile=0.02,
-    linear=False) — default behavior. For each of n_bands+1 frequency bands,
-    compute log(peak_mean) - log(valley_mean) where peak/valley are the top
-    and bottom `quantile` fractions of magnitudes in that band.
+    """Torch-native spectral_contrast matching librosa defaults (n_bands=6, quantile=0.02).
 
     :param mag: Magnitude spectrogram, shape (n_freqs, n_frames).
     """
@@ -223,22 +148,16 @@ def _spectral_contrast_torch(mag: torch.Tensor) -> np.ndarray:
     result = torch.zeros((n_bands + 1, n_frames), dtype=mag.dtype)
 
     for band_idx, mask in enumerate(_CONTRAST_BAND_MASKS):
-        band = mag[mask]  # (n_band_bins, n_frames)
+        band = mag[mask]
         n = band.shape[0]
         if n == 0:
             continue
-        # Top and bottom `quantile` fraction — at least 1 bin each
         k = max(1, int(np.ceil(_CONTRAST_QUANTILE * n)))
-        # topk is O(n) per output bin; sort would be O(n log n). For k much
-        # smaller than n (quantile=0.02) this is substantially faster and
-        # produces identical peak/valley means.
         peak_vals, _ = torch.topk(band, k, dim=0, largest=True, sorted=False)
         valley_vals, _ = torch.topk(band, k, dim=0, largest=False, sorted=False)
         peak_mean = peak_vals.mean(dim=0)
         valley_mean = valley_vals.mean(dim=0)
-        # Contrast in dB (10 * log10). librosa returns values in dB scale
-        # when linear=False (its default) — verified empirically: natural-log
-        # output is scaled by exactly 10/ln(10) ≈ 4.343 in librosa's output.
+        # 10*log10 to match librosa's default linear=False dB output.
         result[band_idx] = 10.0 * (
             torch.log10(torch.clamp(peak_mean, min=1e-10))
             - torch.log10(torch.clamp(valley_mean, min=1e-10))
@@ -247,81 +166,55 @@ def _spectral_contrast_torch(mag: torch.Tensor) -> np.ndarray:
 
 
 def _onset_strength_torch(audio: torch.Tensor) -> np.ndarray:
-    """Torch-native onset strength envelope.
-
-    Mirrors librosa.onset.onset_strength's default pipeline:
-    1. Mel spectrogram (n_mels=128) with same hop/fft as main STFT.
-    2. Convert to dB via power_to_db with ref=np.max semantics — values
-       are 10*log10(S/max), floored at max_db - top_db (80dB dynamic
-       range). This is what makes "silent" regions of the mel spectrum
-       clip to a common floor so diffs there are exactly zero.
-    3. First-order time difference, half-wave rectify.
-    4. Mean across mel bins (librosa's default aggregate=np.mean).
-    5. Prepend zero to restore (n_frames,) length.
-
-    The dB conversion was load-bearing: without it (or with plain ln),
-    silent regions produce small non-zero diffs that leak into
-    rhythmic_regularity and shift downstream scalars by ~8%.
+    """Torch-native onset strength envelope matching librosa.onset.onset_strength defaults.
 
     :param audio: 1D time-domain audio tensor.
     """
-    mel = _MEL_TRANSFORM(audio)  # (n_mels, n_frames), power spectrogram
-    # power_to_db(S, ref=np.max, amin=1e-10, top_db=80) equivalent:
+    # The dB conversion (vs plain log) is load-bearing: it clips silent
+    # regions to a common floor, otherwise tiny diffs leak into
+    # rhythmic_regularity and shift downstream scalars by ~8%.
+    mel = _MEL_TRANSFORM(audio)
     ref = mel.max().clamp(min=1e-10)
-    # dB with relative ref; amin clipping prevents log(0)
     mel_db = 10.0 * torch.log10(torch.clamp(mel, min=1e-10 * ref) / ref)
-    # Clamp dynamic range to 80dB so silent regions all share a common floor
     mel_db = torch.clamp(mel_db, min=mel_db.max() - 80.0)
 
-    diff = torch.diff(mel_db, dim=-1)  # (n_mels, n_frames - 1)
+    diff = torch.diff(mel_db, dim=-1)
     rectified = torch.clamp(diff, min=0.0)
-    envelope = rectified.mean(dim=0)  # (n_frames - 1,)
-    # Prepend 0 so length matches STFT n_frames (librosa does the same)
+    envelope = rectified.mean(dim=0)
     envelope = torch.cat([envelope.new_zeros(1), envelope])
     return np.asarray(envelope.numpy())
 
 
 def _spectral_centroid_torch(mag: torch.Tensor, sample_rate: int) -> np.ndarray:
-    """Compute per-frame spectral centroid in Hz from a magnitude spectrogram.
-
-    Matches librosa.feature.spectral_centroid output shape (1, n_frames).
+    """Per-frame spectral centroid (Hz), shape (1, n_frames) matching librosa.
 
     :param mag: Magnitude spectrogram, shape (n_freqs, n_frames).
     :param sample_rate: Sample rate in Hz.
     """
     n_freqs = mag.shape[0]
-    # Frequencies of each bin: linspace(0, sr/2, n_freqs)
     freqs = torch.linspace(0.0, sample_rate / 2.0, n_freqs, dtype=mag.dtype)
-    # Weighted sum / total per frame
-    weighted = (freqs.unsqueeze(1) * mag).sum(dim=0)  # (n_frames,)
-    total = mag.sum(dim=0)  # (n_frames,)
+    weighted = (freqs.unsqueeze(1) * mag).sum(dim=0)
+    total = mag.sum(dim=0)
     centroid = torch.where(total > 0, weighted / total, torch.zeros_like(weighted))
-    return np.asarray(centroid.unsqueeze(0).numpy())  # shape (1, n_frames) to match librosa
+    return np.asarray(centroid.unsqueeze(0).numpy())
 
 
 def _spectral_flatness_torch(mag: torch.Tensor) -> np.ndarray:
-    """Compute per-frame spectral flatness = geometric_mean / arithmetic_mean.
-
-    Matches librosa.feature.spectral_flatness output shape (1, n_frames).
+    """Per-frame spectral flatness (geom/arith mean), shape (1, n_frames).
 
     :param mag: Magnitude spectrogram, shape (n_freqs, n_frames).
     """
-    # librosa computes flatness on amplitude**2 (power) with amin=1e-10 clipping
     power = mag**2
     power = torch.clamp(power, min=1e-10)
-    # Geometric mean via log-sum-exp: exp(mean(log(x)))
     log_power = torch.log(power)
-    geom_mean = torch.exp(log_power.mean(dim=0))  # (n_frames,)
-    arith_mean = power.mean(dim=0)  # (n_frames,)
+    geom_mean = torch.exp(log_power.mean(dim=0))
+    arith_mean = power.mean(dim=0)
     flatness = geom_mean / arith_mean
-    return np.asarray(flatness.unsqueeze(0).numpy())  # shape (1, n_frames)
+    return np.asarray(flatness.unsqueeze(0).numpy())
 
 
 def _rms_torch(audio: torch.Tensor) -> np.ndarray:
-    """Compute per-frame RMS from time-domain audio, matching librosa.feature.rms.
-
-    librosa.feature.rms(y=audio) defaults: frame_length=2048, hop_length=512,
-    center=True, pad_mode="constant" (zero-pad). Matches those exactly.
+    """Per-frame RMS, shape (1, n_frames), matching librosa.feature.rms defaults.
 
     :param audio: 1D time-domain audio tensor.
     """
@@ -329,10 +222,9 @@ def _rms_torch(audio: torch.Tensor) -> np.ndarray:
     hop_length = _STFT_HOP
     pad = frame_length // 2
     padded = torch.nn.functional.pad(audio, (pad, pad), mode="constant", value=0.0)
-    # Unfold into (n_frames, frame_length) windows
     frames = padded.unfold(0, frame_length, hop_length)
     rms = torch.sqrt((frames**2).mean(dim=1))
-    return np.asarray(rms.unsqueeze(0).numpy())  # shape (1, n_frames)
+    return np.asarray(rms.unsqueeze(0).numpy())
 
 
 def merge_block_features(target: BlockFeatures, source: BlockFeatures) -> None:
@@ -351,12 +243,6 @@ def merge_block_features(target: BlockFeatures, source: BlockFeatures) -> None:
 
 def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioAnalysisData:
     """Collapse accumulated per-block features into a populated AudioAnalysisData.
-
-    Populates measurement-based scalar and time-series fields that librosa is
-    well-suited to compute. Fields owned by overlay providers (bpm/key/mode via
-    smart_fades, soft scalars via clap_analysis, real LUFS via loudness_analysis)
-    are left as None and filled in at vector-assembly time by the similarity
-    plugin's overlay system.
 
     :param accumulated: All block features accumulated during streaming.
     :param sample_rate: Sample rate used during extraction.
@@ -400,17 +286,11 @@ def _derive_energy(rms: np.ndarray) -> float:
 
     :param rms: Per-frame RMS values (1D after squeeze).
     """
-    # RMS values are typically in [0, 1] for float32 audio; take mean and clamp
     return _clamp(float(rms.mean()))
 
 
 def _derive_loudness(rms: np.ndarray) -> tuple[float, float]:
     """Compute RMS-derived dB approximations for integrated loudness and loudness range.
-
-    Fallback only — real EBU R128 values come from the loudness_analysis
-    provider when enabled; the similarity plugin does not currently overlay
-    those onto primary rows, so these approximations remain the source of
-    truth for loudness fields in the vector until that overlay exists.
 
     :param rms: Per-frame RMS values (1D after squeeze).
     """
@@ -437,15 +317,13 @@ def _derive_harmonic_complexity(chroma: np.ndarray) -> float:
     :param chroma: Concatenated chroma feature matrix (12 x N_frames).
     """
     mean_chroma = chroma.mean(axis=1).astype(np.float64)
-    # Normalize to a probability distribution
     chroma_sum = mean_chroma.sum()
     if chroma_sum <= 0:
         return 0.0
     p = mean_chroma / chroma_sum
     p = np.clip(p, 1e-10, None)
     entropy = float(-np.sum(p * np.log(p)))
-    # Max entropy for 12 bins is ln(12)
-    max_entropy = float(np.log(12))
+    max_entropy = float(np.log(12))  # max entropy for 12 bins is ln(12)
     return _clamp(entropy / max_entropy)
 
 
@@ -455,14 +333,9 @@ def _derive_roughness(contrast: np.ndarray, flatness: np.ndarray) -> float:
     :param contrast: Spectral contrast matrix (7 x N_frames).
     :param flatness: Per-frame spectral flatness values (1D after squeeze).
     """
-    # High contrast range → more tonal variation → rougher texture
     contrast_range = float(contrast.max() - contrast.min())
-    # Normalize against a reasonable max contrast range (~80 dB)
     contrast_score = _clamp(contrast_range / 80.0)
-
-    # High flatness (noise-like) → rougher; low flatness (tonal) → smoother
     flatness_score = _clamp(float(flatness.mean()))
-
     return _clamp(0.6 * contrast_score + 0.4 * flatness_score)
 
 

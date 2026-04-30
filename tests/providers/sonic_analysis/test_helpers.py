@@ -1,9 +1,4 @@
-"""Unit tests for sonic analysis helper functions.
-
-sonic_analysis produces only measurement-based scalars and time-series data.
-Fields owned by overlay providers (bpm, key, mode, danceability, valence,
-arousal, instrumentalness, acousticness) are intentionally left None here.
-"""
+"""Unit tests for sonic_analysis helpers (feature extraction + collapse)."""
 
 import math
 
@@ -32,7 +27,6 @@ def _make_noise(duration: float = 5.0, sr: int = 22050) -> np.ndarray:
     return rng.standard_normal(int(sr * duration)).astype(np.float32)
 
 
-# --- extract_block_features ---
 
 
 def test_extract_block_features_returns_block_features() -> None:
@@ -62,7 +56,6 @@ def test_extract_block_features_too_short_returns_none() -> None:
     assert result is None
 
 
-# --- merge_block_features ---
 
 
 def test_merge_block_features() -> None:
@@ -84,7 +77,6 @@ def test_merge_block_features() -> None:
     assert len(target.onset_env_frames) == 2
 
 
-# --- collapse_to_analysis ---
 
 
 def _make_analysis(
@@ -188,15 +180,7 @@ def test_collapse_to_analysis_noise_vs_sine_differ() -> None:
 
 
 def test_collapse_to_analysis_overlay_owned_fields_are_none() -> None:
-    """Fields owned by overlay providers must be left None by sonic_analysis.
-
-    Overlay providers fill these in at vector-assembly time:
-      - bpm, key, mode           ← smart_fades
-      - danceability, valence,
-        arousal, instrumentalness,
-        acousticness             ← clap_analysis
-    Plus external-only fields (speechiness) that nothing in our stack computes.
-    """
+    """Fields owned by overlay providers must be left None by sonic_analysis."""
     result = _make_analysis()
     assert result.bpm is None
     assert result.key is None
@@ -209,5 +193,4 @@ def test_collapse_to_analysis_overlay_owned_fields_are_none() -> None:
     assert result.speechiness is None
 
 
-# Ensure pytest doesn't complain about unused import if no test uses it directly
 _ = pytest

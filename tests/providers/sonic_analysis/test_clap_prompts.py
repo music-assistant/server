@@ -56,11 +56,6 @@ def test_hash_changes_when_pair_order_swaps() -> None:
     assert hash_scalar_prompt_pairs(original) != hash_scalar_prompt_pairs(edited)
 
 
-# --------------------------------------------------------------------------- #
-#  Precomputed prompt embedding cache: save / load round-trip                 #
-# --------------------------------------------------------------------------- #
-
-
 def test_save_load_round_trips_embeddings(tmp_path: Path) -> None:
     """Bit-exact round-trip of embeddings and hash through the .npz cache."""
     embeddings = np.random.RandomState(42).randn(10, 1024).astype(np.float32)
@@ -88,11 +83,6 @@ def test_load_raises_when_file_missing(tmp_path: Path) -> None:
     """Missing cache file must surface as FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
         load_precomputed_prompt_embeddings(tmp_path / "does-not-exist.npz")
-
-
-# --------------------------------------------------------------------------- #
-#  compute_prompt_embeddings: flatten SCALAR_PROMPT_PAIRS in [pos, neg] order #
-# --------------------------------------------------------------------------- #
 
 
 def test_compute_prompt_embeddings_flattens_pos_neg_in_order() -> None:

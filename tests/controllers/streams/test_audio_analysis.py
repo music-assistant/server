@@ -489,10 +489,7 @@ def _stub_controller(
     count_result: int = 0,
     list_result: list[dict[str, Any]] | None = None,
 ) -> tuple[AudioAnalysisController, MagicMock]:
-    """Build a bare AudioAnalysisController whose database is mocked.
-
-    :returns: (controller, database_mock).
-    """
+    """Build a bare AudioAnalysisController whose database is mocked."""
     c = AudioAnalysisController.__new__(AudioAnalysisController)
     c.logger = MagicMock()
     db = MagicMock()

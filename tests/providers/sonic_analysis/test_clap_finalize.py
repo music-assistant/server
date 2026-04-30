@@ -1,10 +1,4 @@
-"""Tests for the live-CLAP finalize + cancel paths.
-
-_run_live_clap_if_eligible awaits any pending per-window inference
-tasks, mean-pools the running sums, applies Platt calibration, and
-populates the analysis dataclass. cancel cancels pending tasks and
-clears per-window buffers.
-"""
+"""Tests for the live-CLAP finalize + cancel paths."""
 
 from __future__ import annotations
 
@@ -96,8 +90,7 @@ async def test_mean_pools_and_calibrates_scalars() -> None:
     expected_value = 0.5 / expected_norm
     np.testing.assert_array_almost_equal(emb, np.full(1024, expected_value), decimal=5)
 
-    # Each scalar from sigmoid(a * 1.0 + b) — verify against the calibration
-    for scalar_name, _ in SCALAR_PROMPT_PAIRS.items():
+    for scalar_name in SCALAR_PROMPT_PAIRS:
         a, b = CALIBRATION[scalar_name]
         expected = 1.0 / (1.0 + math.exp(-(a * 1.0 + b)))
         assert getattr(analysis, scalar_name) == pytest.approx(expected)
@@ -136,7 +129,7 @@ async def test_awaits_pending_tasks() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_aborts_pending_tasks_and_clears_buffers() -> None:
-    """cancel cancels in-flight inferences and resets per-window buffers."""
+    """Cancel cancels in-flight inferences and resets per-window buffers."""
     p = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
     p.logger = MagicMock()
     p._sessions = {}

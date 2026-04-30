@@ -1,12 +1,4 @@
-"""Tests for sonic_analysis public API command handlers.
-
-These cover the guard rails and shape of the responses returned by
-_handle_status / _handle_analyzed_tracks / _handle_export_analysis,
-and verify each one routes through the AudioAnalysisController helpers
-(get_audio_analysis_count / get_audio_analysis_rows) rather than touching the
-database directly. The handlers are unit-tested via ``object.__new__``
-to bypass the heavy provider __init__.
-"""
+"""Tests for sonic_analysis public API command handlers."""
 
 from __future__ import annotations
 
@@ -28,9 +20,7 @@ def _stub_provider(
 ) -> tuple[SonicAnalysisProvider, MagicMock, MagicMock]:
     """Build a SonicAnalysisProvider plus the mocks the tests assert against.
 
-    :returns: (provider, aa_controller_mock, tracks_mock) — using mocks
-        directly avoids mypy fighting AsyncMock substitution on attributes
-        whose real type is a coroutine method.
+    :returns: (provider, aa_controller_mock, tracks_mock).
     """
     p = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
     p.logger = MagicMock()
