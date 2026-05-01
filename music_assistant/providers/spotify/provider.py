@@ -619,14 +619,14 @@ class SpotifyProvider(MusicProvider):
         spotify_result = await self._get_data_with_caching(
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
         )
-        page_total = spotify_result.get("total", total)
+        total = spotify_result.get("total", total)
         items = spotify_result.get("items", [])
         # playlists/{id}/items is transitioning from item["track"] to item["item"]
         # during Spotify's Feb 2026 rollout, so accept either shape.
         for index, item in enumerate(items, 1):
             # Spotify wraps/recycles items for offsets beyond the playlist size,
             # so we need to break when we've reached the total.
-            if page_total and (offset + index) > page_total:
+            if (offset + index) > total:
                 break
             track_data = item and (item.get("item") or item.get("track"))
             if not (track_data and track_data.get("id")):
