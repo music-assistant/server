@@ -10,17 +10,22 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamMetadata
 
-from .constants import RADIO_PARADISE_CHANNELS, STATION_ICONS_BASE_URL
+from .constants import COVER_BASE_URL, RADIO_PARADISE_CHANNELS, STATION_ICONS_BASE_URL
 
 
 def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radio:
-    """Create a Radio object from cached channel information."""
-    channel_info = RADIO_PARADISE_CHANNELS.get(channel_id, {})
+    """Create a Radio object from cached channel information.
+
+    :param channel_id: A known Radio Paradise channel id; callers must validate.
+    :param instance_id: The provider instance id.
+    :param provider_domain: The provider domain string.
+    """
+    channel_info = RADIO_PARADISE_CHANNELS[channel_id]
 
     radio = Radio(
         provider=instance_id,
         item_id=channel_id,
-        name=channel_info.get("name", "Unknown Radio"),
+        name=channel_info["name"],
         provider_mappings={
             ProviderMapping(
                 provider_domain=provider_domain,
@@ -31,18 +36,15 @@ def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radi
         },
     )
 
-    # Add static station icon
-    station_icon = channel_info.get("station_icon")
-    if station_icon:
-        icon_url = f"{STATION_ICONS_BASE_URL}/{station_icon}"
-        radio.metadata.add_image(
-            MediaItemImage(
-                provider=instance_id,
-                type=ImageType.THUMB,
-                path=icon_url,
-                remotely_accessible=True,
-            )
+    icon_url = f"{STATION_ICONS_BASE_URL}/{channel_info['station_icon']}"
+    radio.metadata.add_image(
+        MediaItemImage(
+            provider=instance_id,
+            type=ImageType.THUMB,
+            path=icon_url,
+            remotely_accessible=True,
         )
+    )
 
     return radio
 
@@ -130,13 +132,12 @@ def build_stream_metadata(
         if upcoming:
             artist_display = upcoming
 
-    # Get cover image URL
-    # Play API returns relative path (e.g., "covers/l/19806.jpg")
-    # Now playing API returns full URL (e.g., "https://img.radioparadise.com/covers/l/19806.jpg")
+    # Play API returns a relative path (e.g. "covers/l/19806.jpg") while now_playing
+    # returns an absolute URL — normalise to a single absolute URL form.
     cover = current_song.get("cover")
-    image_url = None
+    image_url: str | None = None
     if cover:
-        image_url = cover if cover.startswith("http") else f"https://img.radioparadise.com/{cover}"
+        image_url = cover if cover.startswith("http") else f"{COVER_BASE_URL}/{cover}"
 
     # Get track duration (API returns milliseconds, convert to seconds)
     duration = current_song.get("duration")
