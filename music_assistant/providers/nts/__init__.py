@@ -151,7 +151,7 @@ class NTSProvider(MusicProvider):
         details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=AudioFormat(content_type=ContentType.AAC),
+            audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
             media_type=MediaType.RADIO,
             stream_type=StreamType.HTTP,
             path=stream_url,
