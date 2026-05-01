@@ -298,10 +298,18 @@ class NTSProvider(MusicProvider):
             now = channel.get("now", {})
             details = now.get("embeds", {}).get("details", {})
             media = details.get("media", {})
+            location = details.get("location_long", "")
+            description = details.get("description", "")
+
+            desc_parts = []
+            if location:
+                desc_parts.append(f"Broadcasting from {location}")
+            if description:
+                desc_parts.append(description)
 
             stream_details.stream_metadata = StreamMetadata(
                 title=html.unescape(now.get("broadcast_title", f"NTS {channel_name}")),
-                description=details.get("description", ""),
+                description="\n".join(desc_parts),
                 image_url=media.get("picture_large") or media.get("background_large"),
             )
             break
