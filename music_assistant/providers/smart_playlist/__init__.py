@@ -1,4 +1,4 @@
-"""Smart Playlist Music Provider for Music Assistant.
+"""Smart Playlist Plugin Provider for Music Assistant.
 
 Allows creating rule-based playlists (dynamic or fixed) from library tracks,
 filtered by genres, artists, albums, favorites, popularity and similar tracks.
@@ -10,18 +10,21 @@ import asyncio
 import os
 import random
 import uuid as _uuid
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
+from music_assistant_models.enums import EventType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     Track,
     UniqueList,
 )
@@ -29,7 +32,7 @@ from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist.helpers import (
     LOGIC_AND,
     MAX_SIMILAR_TRACKS,
@@ -41,15 +44,18 @@ from music_assistant.providers.smart_playlist.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -70,19 +76,14 @@ async def get_config_entries(
     return ()
 
 
-class SmartPlaylistProvider(MusicProvider):
-    """Smart Playlist music provider for Music Assistant."""
+class SmartPlaylistProvider(PluginProvider):
+    """Smart Playlist plugin provider for Music Assistant."""
 
     _rules_dir: str
     _rules_store: dict[str, SmartPlaylistRules]
     _names_store: dict[str, str]
     _unregister_handles: list[Callable[[], None]]
     _flush_lock: asyncio.Lock
-
-    @property
-    def is_streaming_provider(self) -> bool:
-        """Return False: library and catalog are identical (local rules)."""
-        return False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization."""
@@ -122,6 +123,13 @@ class SmartPlaylistProvider(MusicProvider):
         self._unregister_handles.append(
             self.mass.register_api_command("smart_playlists/count_tracks", self.count_tracks)
         )
+        # Subscribe to library events to handle playlist deletion and renaming.
+        self._unregister_handles.append(
+            self.mass.subscribe(self._on_media_item_deleted, EventType.media_item_deleted)
+        )
+        self._unregister_handles.append(
+            self.mass.subscribe(self._on_media_item_updated, EventType.media_item_updated)
+        )
         self.logger.info(
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
         )
@@ -154,12 +162,23 @@ class SmartPlaylistProvider(MusicProvider):
                 filepath = os.path.join(self._rules_dir, filename)
                 await asyncio.to_thread(os.remove, filepath)
 
-    # --- MusicProvider interface ---
+    # --- PluginProvider interface ---
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
-        """Yield all smart playlists."""
-        for playlist_id, rules in self._rules_store.items():
-            yield self._build_playlist(playlist_id, rules)
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse smart playlists."""
+        return [self._build_playlist(pid, rules) for pid, rules in self._rules_store.items()]
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Return smart playlists as a recommendation folder."""
+        playlists = [self._build_playlist(pid, r) for pid, r in self._rules_store.items()]
+        if not playlists:
+            return []
+        return [
+            RecommendationFolder(
+                name="Smart Playlists",
+                items=playlists,  # type: ignore[arg-type]
+            )
+        ]
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by provider id."""
@@ -182,20 +201,22 @@ class SmartPlaylistProvider(MusicProvider):
             return []
         return await self._evaluate_rules(rules)
 
-    async def library_add(self, item: Playlist) -> bool:  # type: ignore[override]
-        """Mark the playlist as added to the library (no-op)."""
-        return True
+    async def _on_media_item_deleted(self, event: MassEvent) -> None:
+        """Remove the rules for a deleted smart playlist."""
+        item = event.data
+        if not isinstance(item, Playlist):
+            return
+        for mapping in item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                prov_id = mapping.item_id
+                self._rules_store.pop(prov_id, None)
+                self._names_store.pop(prov_id, None)
+                await self._flush_rules_to_disk()
+                break
 
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove a smart playlist."""
-        if prov_item_id in self._rules_store:
-            del self._rules_store[prov_item_id]
-            self._names_store.pop(prov_item_id, None)
-            await self._flush_rules_to_disk()
-        return True
-
-    async def on_item_updated(self, item: MediaItemType) -> None:
+    async def _on_media_item_updated(self, event: MassEvent) -> None:
         """Sync library playlist name changes back to the in-memory/disk store."""
+        item = event.data
         if not isinstance(item, Playlist):
             return
         for mapping in item.provider_mappings:

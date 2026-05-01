@@ -1,5 +1,5 @@
 {
-  "type": "music",
+  "type": "plugin",
   "stage": "experimental",
   "domain": "smart_playlist",
   "name": "Smart Playlists",
