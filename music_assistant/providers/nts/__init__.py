@@ -18,7 +18,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -95,9 +99,8 @@ class NTSProvider(MusicProvider):
         try:
             await self._fetch_live_data()
             await self._get_mixtapes()
-        except (aiohttp.ClientError, TimeoutError) as err:
-            msg = f"NTS API unavailable: {err}"
-            raise SetupFailedError(msg) from err
+        except ProviderUnavailableError as err:
+            raise SetupFailedError(str(err)) from err
 
     async def browse(self, path: str) -> Sequence[MediaItemType | BrowseFolder]:
         """Browse NTS radio stations."""
@@ -237,9 +240,13 @@ class NTSProvider(MusicProvider):
     @use_cache(3600)
     async def _fetch_mixtapes_data(self) -> dict[str, Any]:
         """Fetch raw Infinite Mixtapes data from the NTS API (cached 1h)."""
-        async with self.mass.http_session.get(NTS_API_MIXTAPES, timeout=HTTP_TIMEOUT) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+        try:
+            async with self.mass.http_session.get(NTS_API_MIXTAPES, timeout=HTTP_TIMEOUT) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            msg = f"NTS API unavailable: {err}"
+            raise ProviderUnavailableError(msg) from err
 
     def _build_radio(
         self,
@@ -286,7 +293,7 @@ class NTSProvider(MusicProvider):
         """Refresh stream metadata during playback (invoked by MA)."""
         try:
             live_data = await self._fetch_live_data()
-        except (aiohttp.ClientError, TimeoutError) as err:
+        except ProviderUnavailableError as err:
             self.logger.debug("NTS live data fetch failed during playback: %s", err)
             return
 
@@ -317,6 +324,10 @@ class NTSProvider(MusicProvider):
     @use_cache(METADATA_REFRESH_INTERVAL)
     async def _fetch_live_data(self) -> dict[str, Any]:
         """Fetch current live broadcast data from the NTS API."""
-        async with self.mass.http_session.get(NTS_API_LIVE, timeout=HTTP_TIMEOUT) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+        try:
+            async with self.mass.http_session.get(NTS_API_LIVE, timeout=HTTP_TIMEOUT) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            msg = f"NTS API unavailable: {err}"
+            raise ProviderUnavailableError(msg) from err
