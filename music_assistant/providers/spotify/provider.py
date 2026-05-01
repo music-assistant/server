@@ -606,7 +606,7 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
 
-        meta = await self._get_paginated_meta(uri, limit=1, offset=0, use_global_session=use_global)
+        meta = await self._get_etag(uri, limit=1, offset=0, use_global_session=use_global)
         cache_checksum = meta["etag"]
         total = meta["total"]
 
@@ -1134,7 +1134,7 @@ class SpotifyProvider(MusicProvider):
         limit = 50
         offset = 0
         # single request to fetch the etag (used as cache checksum) and total
-        meta = await self._get_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
+        meta = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
         cache_checksum = meta["etag"]
         total = meta["total"]
         while True:
@@ -1172,7 +1172,7 @@ class SpotifyProvider(MusicProvider):
         return result
 
     @use_cache(120, allow_bypass=False)  # short cache: subsequent calls reuse cached data
-    async def _get_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+    async def _get_etag(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """Get etag and total item count for a paginated api endpoint."""
         _res = await self._get_data(endpoint, **kwargs)
         return {"etag": _res.get("etag"), "total": _res.get("total", 0)}
