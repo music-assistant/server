@@ -295,6 +295,9 @@ class SmartPlaylistProvider(PluginProvider):
         if tracks:
             uris = [t.uri for t in tracks if t.uri]
             if uris:
+                # Use the internal method directly: the public add_playlist_tracks() schedules
+                # a background task and returns immediately, but we need the tracks present
+                # before returning the final playlist to the caller.
                 await self.mass.music.playlists._handle_add_playlist_tracks(db_playlist_id, uris)
 
         final_playlist = await self.mass.music.playlists.get_library_item(db_playlist_id)
