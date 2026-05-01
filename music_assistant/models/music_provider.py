@@ -752,17 +752,25 @@ class MusicProvider(Provider):
                             for x in library_item.provider_mappings
                             if x.provider_instance != self.instance_id and x.in_library
                         }
-                        if not remaining_providers_in_library and library_item.favorite:
-                            # unmark as favorite since no providers have it in library anymore
-                            await controller.set_favorite(db_id, False)
-                        # unmark this provider mapping as in_library = False
-                        # we keep it in the library database so we can keep the metadata
-                        for prov_map in library_item.provider_mappings:
-                            if prov_map.provider_instance == self.instance_id:
-                                prov_map.in_library = False
-                        await controller.set_provider_mappings(
-                            db_id, library_item.provider_mappings
-                        )
+                        if not remaining_providers_in_library and not self.is_streaming_provider:
+                            # for non-streaming providers (local files, library-middlemen
+                            # like subsonic/jellyfin/plex) an item removed from the provider
+                            # is actually gone; fully remove it to avoid dangling records
+                            # that stay visible in artist/album views where in_library is
+                            # not filtered on
+                            await controller.remove_item_from_library(db_id)
+                        else:
+                            if not remaining_providers_in_library and library_item.favorite:
+                                # unmark as favorite since no providers have it in library
+                                await controller.set_favorite(db_id, False)
+                            # unmark this provider mapping as in_library = False
+                            # we keep it in the library database so we can keep the metadata
+                            for prov_map in library_item.provider_mappings:
+                                if prov_map.provider_instance == self.instance_id:
+                                    prov_map.in_library = False
+                            await controller.set_provider_mappings(
+                                db_id, library_item.provider_mappings
+                            )
                         await asyncio.sleep(0)  # yield to eventloop
         # store current list of id's in cache so we can track changes
         await self.mass.cache.set(

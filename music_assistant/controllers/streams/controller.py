@@ -258,6 +258,7 @@ class StreamsController(CoreController):
         """Async initialize of module."""
         # initialize the audio sub-controller (needs mass.streams to be set)
         self.audio.setup()
+        self._audio_analysis.setup()
         # copy log level to audio/ffmpeg loggers
         self.audio.logger.setLevel(self.logger.level)
         FFMPEG_LOGGER.setLevel(self.logger.level)

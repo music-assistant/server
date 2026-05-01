@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import platform
 import time
 from dataclasses import dataclass, field
@@ -85,7 +84,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     def _initialize_models(self) -> tuple[Any, ...]:
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
-        torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
         is_arm = platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
@@ -218,14 +216,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
             all_vqt = torch.cat(data.musical_key_feature_blocks, dim=-1)  # (1, 1, 84, T_total)
             data.musical_key_feature_blocks.clear()
 
-        # Run beat and key inference concurrently in separate threads
-        beat_task = asyncio.to_thread(self._infer_beat_timings, feats)
-        key_task = asyncio.to_thread(self._infer_musical_key, all_vqt)
-        (beats, downbeats), (key, mode) = await asyncio.gather(beat_task, key_task)
-
+        # Run beat and key inference sequentially to keep peak CPU bounded.
+        beats, downbeats = await asyncio.to_thread(self._infer_beat_timings, feats)
         if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
             return
+        key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
 
@@ -283,9 +279,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def _process_block(self, data: SmartFadesData, *, last: bool = False) -> None:
         """Resample accumulated PCM buffer and extract features."""
+        start_time = time.perf_counter()
         pcm_raw = np.concatenate(data.pcm_buffer)
         data.pcm_buffer.clear()
         data.pcm_samples = 0
+        num_samples = len(pcm_raw)
 
         if data.resampler is not None:
             pcm_22k = await asyncio.to_thread(data.resampler.resample_chunk, pcm_raw, last)
@@ -294,17 +292,22 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         data.total_pcm_samples += len(pcm_22k)
 
-        start_time = time.perf_counter()
         feats, _ = await asyncio.gather(
             data.features.process_pcm(pcm_22k),
             asyncio.to_thread(self._compute_energy_and_spectral_centroids, pcm_22k, data),
         )
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         if feats.size:
             data.beats_feature_blocks.append(feats)
 
-        self.logger.log(VERBOSE_LOG_LEVEL, "Processed 10s of PCM chunks in %.1fms", elapsed_ms)
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        self.logger.debug(
+            "_process_block took %.1f ms (%d samples at %d Hz, resampled to %d samples)",
+            elapsed_ms,
+            num_samples,
+            data.input_audio_format.sample_rate,
+            len(pcm_22k),
+        )
 
     def _compute_energy_and_spectral_centroids(
         self, pcm_22k: np.ndarray, data: SmartFadesData

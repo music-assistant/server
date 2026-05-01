@@ -680,6 +680,7 @@ class YoutubeMusicProvider(MusicProvider):
                         folder.items.append(track)
                     except InvalidDataError:
                         self.logger.debug("Invalid track in recommendations: %s", recommended_item)
+                        continue
                 elif recommended_item.get("playlistId"):
                     # Probably a playlist
                     recommended_item["id"] = recommended_item["playlistId"]
@@ -697,6 +698,42 @@ class YoutubeMusicProvider(MusicProvider):
                     )
                     continue
             folders.append(folder)
+        # Also add personalized mixes if available
+        mixed_for_you_folder = RecommendationFolder(
+            name="Mixed for you",
+            item_id=f"{self.instance_id}_mixed_for_you",
+            provider=self.instance_id,
+            icon="mdi:shuffle-variant",
+        )
+
+        async def _get_personal_playlist_preview(playlist_id: str) -> Playlist | None:
+            if playlist_id == YT_LIKED_SONGS_PLAYLIST_ID:
+                return None
+            try:
+                playlist_obj = await get_playlist(
+                    prov_playlist_id=playlist_id,
+                    headers=self._headers,
+                    language=self.language,
+                    user=self._yt_user,
+                    limit=5,  # limit fetched tracks here to reduce payload size
+                )
+                return self._parse_playlist(playlist_obj)
+            except MediaNotFoundError:
+                # personal playlist might not be available for all users, ignore if not found
+                return None
+            except Exception as err:
+                self.logger.debug("Failed to fetch personal mix %s: %s", playlist_id, err)
+                return None
+
+        playlist_previews = await asyncio.gather(
+            *(_get_personal_playlist_preview(playlist_id) for playlist_id in YT_PERSONAL_PLAYLISTS)
+        )
+        mixed_for_you_folder.items.extend(
+            preview for preview in playlist_previews if preview is not None
+        )
+        if mixed_for_you_folder.items:
+            folders.append(mixed_for_you_folder)
+
         return folders
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):
@@ -848,7 +885,8 @@ class YoutubeMusicProvider(MusicProvider):
 
     def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        playlist_id = playlist_obj["id"]
+        raw_playlist_id = playlist_obj["id"]
+        playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
         is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
@@ -865,7 +903,7 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/playlist?list={playlist_id}",
+                    url=f"{YTM_DOMAIN}/playlist?list={raw_playlist_id}",
                     is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
@@ -1036,7 +1074,8 @@ class YoutubeMusicProvider(MusicProvider):
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
-                if not (stream_format := next(format_selector({"formats": info["formats"]})), None):
+                stream_format = next(format_selector({"formats": info["formats"]}), None)
+                if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
                 return stream_format
 
