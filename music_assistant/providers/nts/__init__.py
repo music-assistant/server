@@ -212,8 +212,7 @@ class NTSProvider(MusicProvider):
         """Build Radio objects for all Infinite Mixtapes."""
         mixtapes_data = await self._fetch_mixtapes_data()
         radios: list[Radio] = []
-        # Rebuild from scratch so aliases removed/renamed upstream don't linger
-        self._mixtapes.clear()
+        mixtape_streams: dict[str, str] = {}
 
         for mixtape in mixtapes_data.get("results", []):
             alias = mixtape.get("mixtape_alias", "")
@@ -224,7 +223,7 @@ class NTSProvider(MusicProvider):
             subtitle = mixtape.get("subtitle", "")
             description = mixtape.get("description", "")
 
-            self._mixtapes[alias] = stream_endpoint
+            mixtape_streams[alias] = stream_endpoint
 
             radios.append(
                 self._build_radio(
@@ -235,6 +234,7 @@ class NTSProvider(MusicProvider):
                 )
             )
 
+        self._mixtapes = mixtape_streams
         return radios
 
     @use_cache(3600)
