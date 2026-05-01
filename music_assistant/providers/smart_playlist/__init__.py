@@ -125,10 +125,10 @@ class SmartPlaylistProvider(PluginProvider):
         )
         # Subscribe to library events to handle playlist deletion and renaming.
         self._unregister_handles.append(
-            self.mass.subscribe(self._on_media_item_deleted, EventType.media_item_deleted)
+            self.mass.subscribe(self._on_media_item_deleted, EventType.MEDIA_ITEM_DELETED)
         )
         self._unregister_handles.append(
-            self.mass.subscribe(self._on_media_item_updated, EventType.media_item_updated)
+            self.mass.subscribe(self._on_media_item_updated, EventType.MEDIA_ITEM_UPDATED)
         )
         self.logger.info(
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
@@ -175,6 +175,8 @@ class SmartPlaylistProvider(PluginProvider):
             return []
         return [
             RecommendationFolder(
+                item_id="smart_playlists",
+                provider=self.domain,
                 name="Smart Playlists",
                 items=playlists,  # type: ignore[arg-type]
             )
