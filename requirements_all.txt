@@ -33,7 +33,7 @@ colorlog==6.10.1
 cryptography==46.0.7
 deezer-python-async==0.3.0
 defusedxml==0.7.1
-deno==2.7.4
+deno==2.7.12
 duration-parser==1.0.1
 getmac==0.9.5
 gql[all]==4.0.0
@@ -44,10 +44,10 @@ liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.11.0
 mashumaro==3.20
-music-assistant-frontend==2.17.151
+music-assistant-frontend==2.17.154
 music-assistant-models==1.1.116
 mutagen==1.47.0
-niconico.py-ma==2.1.0.post1
+niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
 numpy==2.3.5
 orjson==3.11.6
@@ -86,10 +86,10 @@ torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0
-wiim==0.1.1
+wiim==0.1.4
 xmltodict==1.0.4
-ya-passport-auth==1.2.3
-yandex-music==2.2.0
+ya-passport-auth==1.3.0
+yandex-music==3.0.0
 ytmusicapi==1.11.5
 zeroconf==0.148.0
 zvuk-music[async]==0.6.1

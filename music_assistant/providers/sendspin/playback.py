@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
-from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream
+from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
@@ -297,6 +297,7 @@ class SendspinPlaybackSession:
         self._pipeline_config_cache: dict[str, _PipelineConfig] = {}
         self._preassigned_channels: dict[str, UUID] = {}
         self._mapping_dirty = True
+        self._cancel_requested = False
 
     # -- Helpers ---------------------------------------------------------------
 
@@ -376,6 +377,7 @@ class SendspinPlaybackSession:
                 self.playback_task = None
             return
         self.player.logger.debug("Cancelling playback task (%s)", reason)
+        self._cancel_requested = True
         task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await task
@@ -389,6 +391,7 @@ class SendspinPlaybackSession:
             if not restart:
                 raise RuntimeError("playback already active")
             await self.cancel("restart requested")
+        self._cancel_requested = False
         self.playback_task = asyncio.create_task(self._run_playback(media))
 
     async def close(self) -> None:
@@ -769,7 +772,12 @@ class SendspinPlaybackSession:
                         _SENDSPIN_PCM_FORMAT,
                         channel_id=pipeline.channel_id,
                     )
-                commit_start_us = await push_stream.commit_audio()
+                try:
+                    commit_start_us = await push_stream.commit_audio()
+                except StreamStoppedError:
+                    # Stream stopped since it was replaced by another stream
+                    self.player.logger.debug("Stopping commit loop due to stopped push stream")
+                    break
                 await push_stream.sleep_to_limit_buffer(_PRODUCER_BUFFER_LIMIT_US)
                 commit_now_us = push_stream.now_us()
                 committed_history_chunk = _HistoryChunk(
@@ -801,7 +809,7 @@ class SendspinPlaybackSession:
             await _produce_pending_chunks()
             producer_stopped_cleanly = True
         finally:
-            if producer_stopped_cleanly and not commit_task.done():
+            if producer_stopped_cleanly and not self._cancel_requested and not commit_task.done():
                 # Mark EOF so that catchup processors promoted after this
                 # point also get flushed (see _promote_join_catchup_processor).
                 self._producer_eof_sent = True
@@ -838,8 +846,9 @@ class SendspinPlaybackSession:
                     await commit_task
             # On clean EOF, wait for clients to finish playing their
             # buffered audio before sending stream/end (which clears
-            # client buffers per the SendSpin spec).
-            if producer_stopped_cleanly:
+            # client buffers per the Sendspin spec). Skip this when a
+            # new playback is superseding this one, so skipping tracks is still fast.
+            if producer_stopped_cleanly and not self._cancel_requested:
                 try:
                     await self._wait_for_buffer_drain()
                 except asyncio.CancelledError:
@@ -862,7 +871,7 @@ class SendspinPlaybackSession:
                 self._pipeline_config_cache.clear()
             # Only emit a group STOP when MA stream playback reached natural EOF.
             # Skip this on cancellation/error paths to avoid stop-event races with transitions.
-            if producer_stopped_cleanly:
+            if producer_stopped_cleanly and not self._cancel_requested:
                 with suppress(Exception):
                     await self.player.api.group.stop()
 
