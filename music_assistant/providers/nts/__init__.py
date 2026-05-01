@@ -209,6 +209,8 @@ class NTSProvider(MusicProvider):
         """Build Radio objects for all Infinite Mixtapes."""
         mixtapes_data = await self._fetch_mixtapes_data()
         radios: list[Radio] = []
+        # Rebuild from scratch so aliases removed/renamed upstream don't linger
+        self._mixtapes.clear()
 
         for mixtape in mixtapes_data.get("results", []):
             alias = mixtape.get("mixtape_alias", "")
@@ -219,8 +221,6 @@ class NTSProvider(MusicProvider):
             subtitle = mixtape.get("subtitle", "")
             description = mixtape.get("description", "")
 
-            # Repopulate stream URL map each call — use_cache is on the fetch
-            # below, so this function always runs and the dict stays in sync.
             self._mixtapes[alias] = stream_endpoint
 
             radios.append(
