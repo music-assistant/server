@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "stage": "experimental",
+  "domain": "recently_played",
+  "name": "Recently Played",
+  "description": "Surfaces recommendations based on your listening history: tracks heard on radio streams (via ICY metadata), forgotten library tracks and forgotten albums.",
+  "codeowners": ["@dmoo500"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "history"
+}
