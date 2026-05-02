@@ -114,7 +114,8 @@ class RadioParadiseProvider(MusicProvider):
         return parsers.parse_radio(channel_id, self.instance_id, self.domain)
 
     async def _fetch_json(self, url: str, channel_id: str) -> dict[str, Any] | None:
-        """Fetch JSON from a Radio Paradise endpoint, returning None on any failure.
+        """
+        Fetch JSON from a Radio Paradise endpoint, returning None on any failure.
 
         :param url: Fully-qualified API URL to GET.
         :param channel_id: Channel id, used for log context.
@@ -142,7 +143,8 @@ class RadioParadiseProvider(MusicProvider):
             return None
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get current track and upcoming tracks from Radio Paradise's API.
+        """
+        Get current track and upcoming tracks from Radio Paradise's API.
 
         Tries the enriched play API first, falls back to simple now_playing API if it fails.
 
@@ -159,7 +161,8 @@ class RadioParadiseProvider(MusicProvider):
         return await self._get_nowplaying_api_metadata(channel_id)
 
     async def _get_play_api_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get metadata from the enriched play API with upcoming track info.
+        """
+        Get metadata from the enriched play API with upcoming track info.
 
         :param channel_id: Radio Paradise channel ID (0-5).
         """
@@ -181,7 +184,8 @@ class RadioParadiseProvider(MusicProvider):
         }
 
     async def _get_nowplaying_api_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get metadata from the simple now_playing API (fallback).
+        """
+        Get metadata from the simple now_playing API (fallback).
 
         :param channel_id: Radio Paradise channel ID (0-5).
         """
@@ -194,7 +198,8 @@ class RadioParadiseProvider(MusicProvider):
     async def _update_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
-        """Update stream metadata callback called by player queue controller.
+        """
+        Update stream metadata callback called by player queue controller.
 
         Fetches current track info from Radio Paradise's API and updates
         StreamDetails with track metadata. Alternates between showing the artist

@@ -14,7 +14,8 @@ from .constants import COVER_BASE_URL, RADIO_PARADISE_CHANNELS, STATION_ICONS_BA
 
 
 def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radio:
-    """Create a Radio object from cached channel information.
+    """
+    Create a Radio object from cached channel information.
 
     :param channel_id: A known Radio Paradise channel id; callers must validate.
     :param instance_id: The provider instance id.
@@ -50,7 +51,8 @@ def parse_radio(channel_id: str, instance_id: str, provider_domain: str) -> Radi
 
 
 def _build_upcoming_string(metadata: dict[str, Any], current_song: dict[str, Any]) -> str | None:
-    """Build "Up Next: Artist - Track ● Later: Artist2, Artist3" string.
+    """
+    Build "Up Next: Artist - Track ● Later: Artist2, Artist3" string.
 
     :param metadata: Full metadata response with next song and block data.
     :param current_song: Current track data to exclude from upcoming list.
@@ -106,7 +108,8 @@ def build_stream_metadata(
     *,
     show_upcoming: bool = False,
 ) -> StreamMetadata:
-    """Build StreamMetadata with current track info.
+    """
+    Build StreamMetadata with current track info.
 
     :param current_song: Current track data from Radio Paradise API.
     :param metadata: Full metadata response with next song and block data.
