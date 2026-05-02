@@ -184,12 +184,14 @@ async def test_orphan_stream_after_ma_restart_gets_adopted_via_resync(
 
 
 @pytest.mark.asyncio
-async def test_concurrent_register_calls_dont_double_create(
+async def test_second_register_call_is_idempotent_when_stream_already_set(
     fake_provider: MagicMock, fake_snapserver: FakeSnapserver
 ) -> None:
-    """Two coroutines calling _register_tcp_server_source() race-free.
+    """Calling _register_tcp_server_source after self.snap_stream is set is a no-op.
 
-    The first one wins; the second sees self.snap_stream already set and returns early.
+    This is the early-return guard at the top of the method. Real concurrency
+    safety is provided by `_lifecycle_lock` in setup(); that path is exercised
+    by integration tests, not unit tests.
     """
     fake_snapserver.queue_success(stream_id="single-stream")
     fake_snapserver.queue_success(stream_id="should-not-happen")
