@@ -467,7 +467,10 @@ class SnapcastMAStream:
         if self._socket_server:
             await self._stop_socket_server()
 
-        msg = "Unable to create stream - No free port found?"
+        msg = (
+            f"Unable to register snapserver stream {self.stream_name!r} "
+            f"after 50 attempts"
+        )
         raise RuntimeError(msg)
 
     async def _remove_snap_source(self) -> None:

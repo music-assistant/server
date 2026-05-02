@@ -59,3 +59,26 @@ async def test_real_port_conflict_retries_with_different_port(
     port_1 = fake_snapserver.add_stream_calls[0].split("0.0.0.0:")[1].split("?")[0]
     port_2 = fake_snapserver.add_stream_calls[1].split("0.0.0.0:")[1].split("?")[0]
     assert port_1 != port_2
+
+
+@pytest.mark.asyncio
+async def test_all_attempts_exhausted_raises_with_honest_message(
+    fake_provider, fake_snapserver: "FakeSnapserver"
+):
+    """When all 50 retries fail, the error must reference 'after retries' or
+    similar — not 'No free port found' which lies about the cause.
+    """
+    # Queue 51 errors so even after 50 attempts the loop hits the raise
+    for _ in range(51):
+        fake_snapserver.queue_other_error("Some persistent error")
+
+    stream = _make_stream(fake_provider)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await stream._register_tcp_server_source()
+
+    message = str(exc_info.value)
+    assert "No free port" not in message, (
+        f"Error message still claims port shortage when the real cause may differ: {message}"
+    )
+    assert "attempts" in message.lower() or "register" in message.lower()
