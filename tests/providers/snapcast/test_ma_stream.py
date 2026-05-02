@@ -149,3 +149,28 @@ async def test_orphan_stream_after_ma_restart_gets_adopted_via_resync(
     assert stream.snap_stream.identifier == "orphan-id"
     # The status() round-trip must have happened
     assert fake_snapserver.status.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_register_calls_dont_double_create(
+    fake_provider, fake_snapserver: "FakeSnapserver"
+):
+    """Two coroutines calling _register_tcp_server_source() race-free.
+
+    The first one wins; the second sees self.snap_stream already set and returns early.
+    """
+    fake_snapserver.queue_success(stream_id="single-stream")
+    fake_snapserver.queue_success(stream_id="should-not-happen")
+
+    stream = _make_stream(fake_provider)
+
+    import asyncio
+    await asyncio.gather(
+        stream._register_tcp_server_source(),
+        stream._register_tcp_server_source(),
+    )
+
+    assert stream.snap_stream is not None
+    assert stream.snap_stream.identifier == "single-stream"
+    # Only ONE add_stream call was issued
+    assert len(fake_snapserver.add_stream_calls) == 1
