@@ -41,6 +41,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
+from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
@@ -632,25 +633,34 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400 * 14)  # 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
-        return [
-            parse_album(item, self)
-            async for item in self._get_all_items(
-                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation"
-            )
-            if (item and item["id"])
-        ]
+        try:
+            return [
+                parse_album(item, self)
+                async for item in self._get_all_items(
+                    f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation",
+                    limit=10,
+                )
+                if (item and item["id"])
+            ]
+        except MediaNotFoundError:
+            self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
+            return []
 
     @use_cache(86400 * 14)  # 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
-        artist = await self.get_artist(prov_artist_id)
-        endpoint = f"artists/{prov_artist_id}/top-tracks"
-        items = await self._get_data(endpoint)
-        return [
-            parse_track(item, self, artist=artist)
-            for item in items["tracks"]
-            if (item and item["id"])
-        ]
+        try:
+            artist = await self.get_artist(prov_artist_id)
+            endpoint = f"artists/{prov_artist_id}/top-tracks"
+            items = await self._get_data(endpoint)
+            return [
+                parse_track(item, self, artist=artist)
+                for item in items["tracks"]
+                if (item and item["id"])
+            ]
+        except MediaNotFoundError:
+            self.logger.warning("Unable to fetch top tracks for artist %s", prov_artist_id)
+            return []
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -1121,10 +1131,9 @@ class SpotifyProvider(MusicProvider):
         return chapters_data
 
     async def _get_all_items(
-        self, endpoint: str, key: str = "items", **kwargs: Any
+        self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Get all items from a paged list."""
-        limit = 50
         offset = 0
         # do single request to get the etag (which we use as checksum for caching)
         cache_checksum = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
@@ -1210,9 +1219,23 @@ class SpotifyProvider(MusicProvider):
                     self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
-            # handle 404 not found, convert to MediaNotFoundError
-            if response.status in (400, 404):
+            if response.status in (400, 403, 404):
+                try:
+                    error = await response.json(loads=json_loads)
+                    message = error.get("error", {}).get("message") or response.reason
+                except (aiohttp.ContentTypeError, JSONDecodeError):
+                    message = (await response.text()) or response.reason
+
+                self.logger.debug(
+                    "Spotify API error: endpoint=%s, status=%s, reason=%s, message=%s",
+                    endpoint,
+                    response.status,
+                    response.reason,
+                    message,
+                )
+
                 raise MediaNotFoundError(f"{endpoint} not found")
+
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)
             if etag := response.headers.get("ETag"):
