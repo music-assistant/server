@@ -606,9 +606,11 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
 
-        # Get etag for caching
-        cache_checksum = await self._get_etag(uri, limit=1, offset=0, use_global_session=use_global)
-        total = await self._get_total(uri, limit=1, offset=0, use_global_session=use_global)
+        meta = await self._get_paginated_meta(
+            uri, limit=1, offset=0, use_global_session=use_global
+        )
+        cache_checksum = meta["etag"]
+        total = meta["total"]
 
         # Spotify has started returning 5xx for offset >= total on some
         # playlists (notably algorithmic ones like Daily Mix). The retry
@@ -1133,9 +1135,10 @@ class SpotifyProvider(MusicProvider):
         """Get all items from a paged list."""
         limit = 50
         offset = 0
-        # do single request to get the etag (which we use as checksum for caching)
-        cache_checksum = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
-        total = await self._get_total(endpoint, limit=1, offset=0, **kwargs)
+        # single request to fetch the etag (used as cache checksum) and total
+        meta = await self._get_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
+        cache_checksum = meta["etag"]
+        total = meta["total"]
         while True:
             # Avoid requesting beyond the known end. Spotify can return 5xx
             # for offset >= total on some endpoints (e.g. algorithmic playlists).
@@ -1170,17 +1173,11 @@ class SpotifyProvider(MusicProvider):
         )
         return result
 
-    @use_cache(120, allow_bypass=False)  # short cache for etags (subsequent calls use cached data)
-    async def _get_etag(self, endpoint: str, **kwargs: Any) -> str | None:
-        """Get etag for api endpoint."""
+    @use_cache(120, allow_bypass=False)  # short cache: subsequent calls reuse cached data
+    async def _get_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        """Get etag and total item count for a paginated api endpoint."""
         _res = await self._get_data(endpoint, **kwargs)
-        return _res.get("etag")
-
-    @use_cache(120, allow_bypass=False)  # short cache for totals (subsequent calls use cached data)
-    async def _get_total(self, endpoint: str, **kwargs: Any) -> int:
-        """Get total item count for paginated api endpoint."""
-        _res = await self._get_data(endpoint, **kwargs)
-        return _res.get("total", 0)
+        return {"etag": _res.get("etag"), "total": _res.get("total", 0)}
 
     @throttle_with_retries
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
