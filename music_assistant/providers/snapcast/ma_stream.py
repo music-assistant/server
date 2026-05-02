@@ -448,6 +448,20 @@ class SnapcastMAStream:
             and "already exists" in data
         )
 
+    def _pick_port_avoiding(self, used: set[int]) -> int | None:
+        """Pick a random TCP source port within the unchanged upstream range,
+        avoiding ports already tried in the current retry loop.
+
+        :param used: Set of ports that should not be returned again.
+        :return: A port in [4953, 5153] not in `used`, or None if none could be
+            found within 20 attempts (extremely rare; the range has 201 values).
+        """
+        for _ in range(20):
+            port = random.randint(4953, 4953 + 200)
+            if port not in used:
+                return port
+        return None
+
     async def _register_tcp_server_source(self) -> None:
         """Create a Snapcast TCP source for this stream (or reuse an existing one)."""
         # prefer to reuse existing stream if possible
@@ -469,12 +483,14 @@ class SnapcastMAStream:
                 f"--streamserver-port={self._mass.streams.publish_port}"
             )
 
+        tried_ports: set[int] = set()
         attempts = 50
         while attempts:
             attempts -= 1
-            # pick a random port
-            port = random.randint(4953, 4953 + 200)
-            ## Do we need to add a time out here?
+            port = self._pick_port_avoiding(tried_ports)
+            if port is None:
+                break
+            tried_ports.add(port)
             result = await self._provider._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!

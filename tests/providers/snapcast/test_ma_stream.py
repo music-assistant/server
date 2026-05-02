@@ -174,3 +174,19 @@ async def test_concurrent_register_calls_dont_double_create(
     assert stream.snap_stream.identifier == "single-stream"
     # Only ONE add_stream call was issued
     assert len(fake_snapserver.add_stream_calls) == 1
+
+
+def test_pick_port_avoids_already_tried():
+    """Within a single retry loop, _pick_port_avoiding must not return a tried port."""
+    from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
+
+    # Build a stream stub that exposes only what _pick_port_avoiding needs
+    stream = SnapcastMAStream.__new__(SnapcastMAStream)
+
+    used = set()
+    for _ in range(100):
+        port = stream._pick_port_avoiding(used)
+        assert port is not None, "Helper unexpectedly returned None when ports remain"
+        assert 4953 <= port <= 4953 + 200
+        assert port not in used
+        used.add(port)
