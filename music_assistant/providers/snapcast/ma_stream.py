@@ -421,7 +421,7 @@ class SnapcastMAStream:
             self._streamer_task = self._mass.create_task(self._streamer_task_impl())
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
-    def _find_local_stream_by_name(self, name: str):
+    def _find_local_stream_by_name(self, name: str) -> SnapstreamProto | None:
         """Look up a snapserver stream by its name (not id) in the local cache.
 
         :param name: Stream name to look up.
@@ -449,8 +449,9 @@ class SnapcastMAStream:
         )
 
     def _pick_port_avoiding(self, used: set[int]) -> int | None:
-        """Pick a random TCP source port within the unchanged upstream range,
-        avoiding ports already tried in the current retry loop.
+        """Pick a random TCP source port within the unchanged upstream range.
+
+        Avoids ports already tried in the current retry loop.
 
         :param used: Set of ports that should not be returned again.
         :return: A port in [4953, 5153] not in `used`, or None if none could be
@@ -528,10 +529,7 @@ class SnapcastMAStream:
         if self._socket_server:
             await self._stop_socket_server()
 
-        msg = (
-            f"Unable to register snapserver stream {self.stream_name!r} "
-            f"after 50 attempts"
-        )
+        msg = f"Unable to register snapserver stream {self.stream_name!r} after 50 attempts"
         raise RuntimeError(msg)
 
     async def _remove_snap_source(self) -> None:

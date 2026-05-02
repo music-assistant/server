@@ -11,45 +11,48 @@ import pytest
 class FakeSnapstream:
     """Minimal Snapstream stand-in for testing ma_stream._register_tcp_server_source."""
 
-    def __init__(self, identifier: str, name: str, path: str = ""):
+    def __init__(self, identifier: str, name: str, path: str = "") -> None:
+        """Initialize with stream identifier, name, and optional path."""
         self.identifier = identifier
         self.name = name
         self.path = path
         self._stream: dict[str, Any] = {"uri": {"host": "127.0.0.1"}}
         self._callback = None
 
-    def set_callback(self, cb):
+    def set_callback(self, cb: Any) -> None:
+        """Register a callback for stream events."""
         self._callback = cb
 
 
 class FakeSnapserver:
     """Configurable mock implementing the subset of SnapserverProto used by ma_stream."""
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize with empty stream registry and response queues."""
         # streams added via stream_add_stream are kept here keyed by id
         self._streams_by_id: dict[str, FakeSnapstream] = {}
         # responses to return for each call to stream_add_stream, in order
         # Each entry is a dict that looks like the snapserver result OR error payload.
-        self._add_stream_responses: list[dict] = []
+        self._add_stream_responses: list[dict[str, Any]] = []
         # Calls captured for assertions
         self.add_stream_calls: list[str] = []
 
         self.stream_add_stream = AsyncMock(side_effect=self._add_stream_impl)
         self.stream_remove_stream = AsyncMock()
         self.status = AsyncMock(side_effect=self._status_impl)
-        self._status_payload: dict | None = None
+        self._status_payload: dict[str, Any] | None = None
 
     @property
     def streams(self) -> list[FakeSnapstream]:
+        """Return all registered streams."""
         return list(self._streams_by_id.values())
 
     def stream(self, identifier: str) -> FakeSnapstream:
+        """Return the stream with the given identifier."""
         return self._streams_by_id[identifier]
 
-    def synchronize(self, status: dict) -> None:
+    def synchronize(self, status: dict[str, Any]) -> None:
         """Populate _streams_by_id from a status payload, simulating real Snapserver."""
-        if not isinstance(status, dict):
-            return
         streams = status.get("server", {}).get("streams", [])
         for s in streams:
             sid = s.get("id")
@@ -58,16 +61,20 @@ class FakeSnapserver:
             if sid not in self._streams_by_id:
                 self._streams_by_id[sid] = FakeSnapstream(sid, name=s.get("name", sid))
 
-    def _status_impl(self):
+    def _status_impl(self) -> tuple[dict[str, Any] | None, None]:
         # status() in the real Snapserver returns (result, error)
         return (self._status_payload, None)
 
-    async def _add_stream_impl(self, stream_uri: str):
+    async def _add_stream_impl(self, stream_uri: str) -> dict[str, Any]:
         self.add_stream_calls.append(stream_uri)
         if self._add_stream_responses:
             response = self._add_stream_responses.pop(0)
         else:
-            response = {"code": -32603, "data": "Generic snapserver error", "message": "Internal error"}
+            response = {
+                "code": -32603,
+                "data": "Generic snapserver error",
+                "message": "Internal error",
+            }
         # On a successful add, also register the stream in our internal store
         if isinstance(response, dict) and "id" in response:
             stream_id = response["id"]
@@ -76,19 +83,26 @@ class FakeSnapserver:
             self._streams_by_id[stream_id] = FakeSnapstream(stream_id, name, path=stream_uri)
         return response
 
-    def queue_response(self, response: dict) -> None:
+    def queue_response(self, response: dict[str, Any]) -> None:
         """Queue a response that the next stream_add_stream call will return."""
         self._add_stream_responses.append(response)
 
     def queue_success(self, stream_id: str = "stream-1") -> None:
+        """Queue a successful stream_add_stream response with the given stream id."""
         self.queue_response({"id": stream_id})
 
     def queue_name_collision(self) -> None:
+        """Queue a name-already-exists error response."""
         self.queue_response(
-            {"code": -32603, "data": 'Stream with name "x" already exists', "message": "Internal error"}
+            {
+                "code": -32603,
+                "data": 'Stream with name "x" already exists',
+                "message": "Internal error",
+            }
         )
 
     def queue_other_error(self, data: str = "bind: Address already in use") -> None:
+        """Queue a generic (non-name-collision) error response."""
         self.queue_response({"code": -32603, "data": data, "message": "Internal error"})
 
     def cache_stream_directly(self, stream_id: str, name: str) -> FakeSnapstream:
