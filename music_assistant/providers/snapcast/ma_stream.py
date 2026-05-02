@@ -465,6 +465,10 @@ class SnapcastMAStream:
 
     async def _register_tcp_server_source(self) -> None:
         """Create a Snapcast TCP source for this stream (or reuse an existing one)."""
+        # This runs under the per-stream `_lifecycle_lock` (acquired in setup()), not the
+        # provider-wide `_snapcast_ma_streams_lock`. Adoption is safe because each MA-managed
+        # stream has at most one outstanding setup() call at a time.
+
         # prefer to reuse existing stream if possible
         if self.snap_stream:
             return
