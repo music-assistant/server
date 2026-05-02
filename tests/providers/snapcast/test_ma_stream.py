@@ -123,3 +123,29 @@ async def test_name_collision_with_local_stream_cached_adopts_it(
     assert stream.snap_stream.identifier == "orphan-id"
     # Adoption must NOT spend further retries
     assert len(fake_snapserver.add_stream_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_orphan_stream_after_ma_restart_gets_adopted_via_resync(
+    fake_provider, fake_snapserver: "FakeSnapserver"
+):
+    """Bug B core scenario: MA restarted while a stream was registered.
+
+    The local snapserver cache is empty, but the server still holds the orphan.
+    MA must call status() + synchronize() to re-discover it before adopting.
+    """
+    target_name = "Music Assistant - 590b15 (announcement)"
+    # Stream visible only via status(), NOT in the local cache yet
+    fake_snapserver.stage_orphan_stream("orphan-id", target_name)
+    fake_snapserver.queue_name_collision()
+
+    # Sanity: the local cache is empty before
+    assert fake_snapserver._streams_by_id == {}
+
+    stream = _make_stream(fake_provider, name=target_name)
+    await stream._register_tcp_server_source()
+
+    assert stream.snap_stream is not None
+    assert stream.snap_stream.identifier == "orphan-id"
+    # The status() round-trip must have happened
+    assert fake_snapserver.status.await_count >= 1

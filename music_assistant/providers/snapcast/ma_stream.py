@@ -489,6 +489,12 @@ class SnapcastMAStream:
 
             if self._is_name_collision_error(result):
                 adopted = self._find_local_stream_by_name(self.stream_name)
+                if adopted is None:
+                    # Local cache may be stale (e.g. after an MA restart). Resync.
+                    status, _ = await self._provider._snapserver.status()
+                    if isinstance(status, dict):
+                        self._provider._snapserver.synchronize(status)
+                    adopted = self._find_local_stream_by_name(self.stream_name)
                 if adopted is not None:
                     self._logger.info(
                         "Adopted orphaned snapserver stream %s (name=%s)",
