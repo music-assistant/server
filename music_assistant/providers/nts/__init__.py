@@ -279,7 +279,8 @@ class NTSProvider(MusicProvider):
         try:
             async with self.mass.http_session.get(NTS_API_MIXTAPES, timeout=HTTP_TIMEOUT) as resp:
                 resp.raise_for_status()
-                return await resp.json()
+                data: dict[str, Any] = await resp.json()
+                return data
         except (aiohttp.ClientError, TimeoutError) as err:
             msg = f"NTS API unavailable: {err}"
             raise ProviderUnavailableError(msg) from err
@@ -358,7 +359,8 @@ class NTSProvider(MusicProvider):
         try:
             async with self.mass.http_session.get(NTS_API_LIVE, timeout=HTTP_TIMEOUT) as resp:
                 resp.raise_for_status()
-                return await resp.json()
+                data: dict[str, Any] = await resp.json()
+                return data
         except (aiohttp.ClientError, TimeoutError) as err:
             msg = f"NTS API unavailable: {err}"
             raise ProviderUnavailableError(msg) from err
