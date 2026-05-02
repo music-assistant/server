@@ -529,6 +529,14 @@ class SnapcastMAStream:
                         self.snap_stream.set_callback(self._snap_on_stream_update)
                         loop_succeeded = True
                         return
+                elif isinstance(result, dict) and result.get("code") == -32603:
+                    # Forward-compat hint: snapserver may rephrase the name-collision
+                    # error in a future release; surface mismatches in debug logs.
+                    self._logger.debug(
+                        "snapserver returned internal error not matching "
+                        "name-collision pattern: %s",
+                        result,
+                    )
 
                 # if the port is already taken, the result will be an error
                 self._logger.warning(result)
