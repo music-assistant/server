@@ -61,8 +61,8 @@ class FakeSnapserver:
             if sid not in self._streams_by_id:
                 self._streams_by_id[sid] = FakeSnapstream(sid, name=s.get("name", sid))
 
-    def _status_impl(self) -> tuple[dict[str, Any] | None, None]:
-        # status() in the real Snapserver returns (result, error)
+    async def _status_impl(self) -> tuple[Any, Any]:
+        # status() in the real Snapserver is async and returns (result, error)
         return (self._status_payload, None)
 
     async def _add_stream_impl(self, stream_uri: str) -> dict[str, Any]:
