@@ -421,6 +421,22 @@ class SnapcastMAStream:
             self._streamer_task = self._mass.create_task(self._streamer_task_impl())
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
+    @staticmethod
+    def _is_name_collision_error(result: object) -> bool:
+        """Detect snapserver's 'Stream with name X already exists' error.
+
+        :param result: Result returned by snapserver.stream_add_stream.
+        :return: True if the result indicates a stream-name collision.
+        """
+        if not isinstance(result, dict):
+            return False
+        data = result.get("data", "")
+        return (
+            isinstance(data, str)
+            and data.startswith("Stream with name")
+            and "already exists" in data
+        )
+
     async def _register_tcp_server_source(self) -> None:
         """Create a Snapcast TCP source for this stream (or reuse an existing one)."""
         # prefer to reuse existing stream if possible

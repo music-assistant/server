@@ -82,3 +82,24 @@ async def test_all_attempts_exhausted_raises_with_honest_message(
         f"Error message still claims port shortage when the real cause may differ: {message}"
     )
     assert "attempts" in message.lower() or "register" in message.lower()
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"code": -32603, "data": 'Stream with name "x" already exists', "message": "Internal error"}, True),
+        ({"code": -32603, "data": "Stream with name \"abc\" already exists in registry", "message": "Internal error"}, True),
+        # negative cases — these must NOT match
+        ({"code": -32603, "data": "bind: Address already in use", "message": "Internal error"}, False),
+        ({"code": -32603, "data": "Some other error already exists somewhere", "message": "Internal error"}, False),
+        ({}, False),
+        (None, False),
+        ("plain string", False),
+        ({"data": 12345}, False),
+    ],
+)
+def test_is_name_collision_error_matches_only_specific_pattern(result, expected):
+    """_is_name_collision_error must NOT false-positive on unrelated errors."""
+    from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
+
+    assert SnapcastMAStream._is_name_collision_error(result) is expected
