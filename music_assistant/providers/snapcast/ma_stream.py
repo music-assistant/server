@@ -490,48 +490,55 @@ class SnapcastMAStream:
 
         tried_ports: set[int] = set()
         attempts = 50
-        while attempts:
-            attempts -= 1
-            port = self._pick_port_avoiding(tried_ports)
-            if port is None:
-                break
-            tried_ports.add(port)
-            result = await self._provider._snapserver.stream_add_stream(
-                # NOTE: setting the sampleformat to something else
-                # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
-                f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
-                f"{extra_args}&name={self.stream_name}"
-            )
-            if isinstance(result, dict) and "id" in result:
-                self.snap_stream = self._provider._snapserver.stream(result["id"])
-                self.snap_stream.set_callback(self._snap_on_stream_update)
-                return
-
-            if self._is_name_collision_error(result):
-                adopted = self._find_local_stream_by_name(self.stream_name)
-                if adopted is None:
-                    # Local cache may be stale (e.g. after an MA restart). Resync.
-                    status, _ = await self._provider._snapserver.status()
-                    if isinstance(status, dict):
-                        self._provider._snapserver.synchronize(status)
-                    adopted = self._find_local_stream_by_name(self.stream_name)
-                if adopted is not None:
-                    self._logger.info(
-                        "Adopted orphaned snapserver stream %s (name=%s)",
-                        adopted.identifier,
-                        self.stream_name,
-                    )
-                    self.snap_stream = adopted
+        loop_succeeded = False
+        try:
+            while attempts:
+                attempts -= 1
+                port = self._pick_port_avoiding(tried_ports)
+                if port is None:
+                    break
+                tried_ports.add(port)
+                result = await self._provider._snapserver.stream_add_stream(
+                    # NOTE: setting the sampleformat to something else
+                    # (like 24 bits bit depth) does not seem to work at all!
+                    f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
+                    f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
+                    f"{extra_args}&name={self.stream_name}"
+                )
+                if isinstance(result, dict) and "id" in result:
+                    self.snap_stream = self._provider._snapserver.stream(result["id"])
                     self.snap_stream.set_callback(self._snap_on_stream_update)
+                    loop_succeeded = True
                     return
 
-            # if the port is already taken, the result will be an error
-            self._logger.warning(result)
-            continue
+                if self._is_name_collision_error(result):
+                    adopted = self._find_local_stream_by_name(self.stream_name)
+                    if adopted is None:
+                        # Local cache may be stale (e.g. after an MA restart). Resync.
+                        status, _ = await self._provider._snapserver.status()
+                        if isinstance(status, dict):
+                            self._provider._snapserver.synchronize(status)
+                        adopted = self._find_local_stream_by_name(self.stream_name)
+                    if adopted is not None:
+                        self._logger.info(
+                            "Adopted orphaned snapserver stream %s (name=%s)",
+                            adopted.identifier,
+                            self.stream_name,
+                        )
+                        self.snap_stream = adopted
+                        self.snap_stream.set_callback(self._snap_on_stream_update)
+                        loop_succeeded = True
+                        return
 
-        if self._socket_server:
-            await self._stop_socket_server()
+                # if the port is already taken, the result will be an error
+                self._logger.warning(result)
+                continue
+        finally:
+            # Invariant: if we leave _register_tcp_server_source without setting
+            # self.snap_stream (retries exhausted OR exception during a retry),
+            # any socket_server we started must be stopped.
+            if not loop_succeeded and self._socket_server:
+                await self._stop_socket_server()
 
         msg = f"Unable to register snapserver stream {self.stream_name!r} after 50 attempts"
         raise RuntimeError(msg)
