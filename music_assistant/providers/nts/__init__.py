@@ -98,9 +98,14 @@ class NTSProvider(MusicProvider):
         self._mixtapes = {}
         self._unknown_channels = set()
 
-        # Verify API is reachable and populate mixtape stream URLs
+        # Live channels use static URLs; metadata enrichment is best-effort.
         try:
             await self._fetch_live_data()
+        except ProviderUnavailableError as err:
+            self.logger.debug("NTS live metadata unavailable at setup: %s", err)
+
+        # Mixtape stream URLs must be loaded from the API for playback to work.
+        try:
             await self._get_mixtapes()
         except ProviderUnavailableError as err:
             raise SetupFailedError(str(err)) from err
@@ -179,32 +184,47 @@ class NTSProvider(MusicProvider):
 
     async def _get_live_channels(self) -> list[Radio]:
         """Build Radio objects for NTS live channels."""
-        live_data = await self._fetch_live_data()
+        try:
+            live_data = await self._fetch_live_data()
+        except ProviderUnavailableError as err:
+            self.logger.debug("NTS live metadata unavailable, returning bare channels: %s", err)
+            live_data = {}
+
+        api_channels: dict[str, dict[str, Any]] = {
+            ch.get("channel_name", ""): ch for ch in live_data.get("results", [])
+        }
+
+        for channel_name in api_channels:
+            if (
+                channel_name
+                and channel_name not in NTS_LIVE_STREAMS
+                and channel_name not in self._unknown_channels
+            ):
+                self.logger.warning(
+                    "Unknown NTS channel %r — please report so it can be added",
+                    channel_name,
+                )
+                self._unknown_channels.add(channel_name)
+
         radios: list[Radio] = []
-
-        for channel in live_data.get("results", []):
-            channel_name = channel.get("channel_name", "")
-            if channel_name not in NTS_LIVE_STREAMS:
-                if channel_name and channel_name not in self._unknown_channels:
-                    self.logger.warning(
-                        "Unknown NTS channel %r — please report so it can be added",
-                        channel_name,
-                    )
-                    self._unknown_channels.add(channel_name)
-                continue
-
-            title, location, description, image_url = self._extract_channel_info(channel)
-            desc_parts = [f"Now playing: {title}"]
-            if location:
-                desc_parts.append(f"Broadcasting from {location}")
-            if description:
-                desc_parts.append(description)
+        for channel_name in NTS_LIVE_STREAMS:
+            channel = api_channels.get(channel_name)
+            description_text = ""
+            image_url: str | None = None
+            if channel:
+                title, location, description, image_url = self._extract_channel_info(channel)
+                desc_parts = [f"Now playing: {title}"]
+                if location:
+                    desc_parts.append(f"Broadcasting from {location}")
+                if description:
+                    desc_parts.append(description)
+                description_text = "\n".join(desc_parts)
 
             radios.append(
                 self._build_radio(
                     item_id=f"{CHANNEL_PREFIX}{channel_name}",
                     name=f"NTS {channel_name}",
-                    description="\n".join(desc_parts),
+                    description=description_text,
                     image_url=image_url,
                 )
             )
