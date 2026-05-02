@@ -539,7 +539,7 @@ class SnapcastMAStream:
                     )
 
                 # if the port is already taken, the result will be an error
-                self._logger.warning(result)
+                self._logger.warning("stream_add_stream failed: %s", result)
                 continue
         finally:
             # Invariant: if we leave _register_tcp_server_source without setting
