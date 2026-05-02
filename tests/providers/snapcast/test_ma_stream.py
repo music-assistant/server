@@ -103,3 +103,23 @@ def test_is_name_collision_error_matches_only_specific_pattern(result, expected)
     from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 
     assert SnapcastMAStream._is_name_collision_error(result) is expected
+
+
+@pytest.mark.asyncio
+async def test_name_collision_with_local_stream_cached_adopts_it(
+    fake_provider, fake_snapserver: "FakeSnapserver"
+):
+    """When snapserver reports the name as already-registered AND the stream is
+    in the local snapserver cache, MA must adopt it instead of looping until
+    retries exhaust."""
+    target_name = "Music Assistant - 590b15 (announcement)"
+    fake_snapserver.cache_stream_directly("orphan-id", target_name)
+    fake_snapserver.queue_name_collision()
+
+    stream = _make_stream(fake_provider, name=target_name)
+    await stream._register_tcp_server_source()
+
+    assert stream.snap_stream is not None
+    assert stream.snap_stream.identifier == "orphan-id"
+    # Adoption must NOT spend further retries
+    assert len(fake_snapserver.add_stream_calls) == 1

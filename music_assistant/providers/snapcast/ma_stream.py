@@ -421,6 +421,17 @@ class SnapcastMAStream:
             self._streamer_task = self._mass.create_task(self._streamer_task_impl())
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
+    def _find_local_stream_by_name(self, name: str):
+        """Look up a snapserver stream by its name (not id) in the local cache.
+
+        :param name: Stream name to look up.
+        :return: The matching SnapstreamProto, or None if not found.
+        """
+        for s in self._provider._snapserver.streams:
+            if getattr(s, "name", None) == name:
+                return s
+        return None
+
     @staticmethod
     def _is_name_collision_error(result: object) -> bool:
         """Detect snapserver's 'Stream with name X already exists' error.
@@ -471,14 +482,26 @@ class SnapcastMAStream:
                 f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
                 f"{extra_args}&name={self.stream_name}"
             )
-            if result is None or "id" not in result:
-                # if the port is already taken, the result will be an error
-                self._logger.warning(result)
-                continue
-            ## Do we need to synchronize the snapserver repr first?
-            self.snap_stream = self._provider._snapserver.stream(result["id"])
-            self.snap_stream.set_callback(self._snap_on_stream_update)
-            return
+            if isinstance(result, dict) and "id" in result:
+                self.snap_stream = self._provider._snapserver.stream(result["id"])
+                self.snap_stream.set_callback(self._snap_on_stream_update)
+                return
+
+            if self._is_name_collision_error(result):
+                adopted = self._find_local_stream_by_name(self.stream_name)
+                if adopted is not None:
+                    self._logger.info(
+                        "Adopted orphaned snapserver stream %s (name=%s)",
+                        adopted.identifier,
+                        self.stream_name,
+                    )
+                    self.snap_stream = adopted
+                    self.snap_stream.set_callback(self._snap_on_stream_update)
+                    return
+
+            # if the port is already taken, the result will be an error
+            self._logger.warning(result)
+            continue
 
         if self._socket_server:
             await self._stop_socket_server()
