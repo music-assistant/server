@@ -1,4 +1,5 @@
-"""NTS Radio music provider for Music Assistant.
+"""
+NTS Radio music provider for Music Assistant.
 
 Provides NTS Radio's two live channels and Infinite Mixtapes as
 browsable radio stations with live now-playing show metadata.
@@ -85,6 +86,7 @@ class NTSProvider(MusicProvider):
     """Provider implementation for NTS Radio."""
 
     _mixtapes: dict[str, str]
+    _unknown_channels: set[str]
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -94,6 +96,7 @@ class NTSProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._mixtapes = {}
+        self._unknown_channels = set()
 
         # Verify API is reachable and populate mixtape stream URLs
         try:
@@ -182,15 +185,15 @@ class NTSProvider(MusicProvider):
         for channel in live_data.get("results", []):
             channel_name = channel.get("channel_name", "")
             if channel_name not in NTS_LIVE_STREAMS:
+                if channel_name and channel_name not in self._unknown_channels:
+                    self.logger.warning(
+                        "Unknown NTS channel %r — please report so it can be added",
+                        channel_name,
+                    )
+                    self._unknown_channels.add(channel_name)
                 continue
-            now = channel.get("now", {})
-            details = now.get("embeds", {}).get("details", {})
-            media = details.get("media", {})
 
-            title = html.unescape(now.get("broadcast_title", f"NTS {channel_name}"))
-            description = details.get("description", "")
-            location = details.get("location_long", "")
-
+            title, location, description, image_url = self._extract_channel_info(channel)
             desc_parts = [f"Now playing: {title}"]
             if location:
                 desc_parts.append(f"Broadcasting from {location}")
@@ -202,11 +205,24 @@ class NTSProvider(MusicProvider):
                     item_id=f"{CHANNEL_PREFIX}{channel_name}",
                     name=f"NTS {channel_name}",
                     description="\n".join(desc_parts),
-                    image_url=media.get("picture_large") or media.get("background_large"),
+                    image_url=image_url,
                 )
             )
 
         return radios
+
+    @staticmethod
+    def _extract_channel_info(channel: dict[str, Any]) -> tuple[str, str, str, str | None]:
+        """Extract (title, location, description, image_url) from a live channel payload."""
+        channel_name = channel.get("channel_name", "")
+        now = channel.get("now", {})
+        details = now.get("embeds", {}).get("details", {})
+        media = details.get("media", {})
+        title = html.unescape(now.get("broadcast_title", f"NTS {channel_name}"))
+        location = details.get("location_long", "")
+        description = details.get("description", "")
+        image_url = media.get("picture_large") or media.get("background_large")
+        return title, location, description, image_url
 
     async def _get_mixtapes(self) -> list[Radio]:
         """Build Radio objects for all Infinite Mixtapes."""
@@ -302,12 +318,7 @@ class NTSProvider(MusicProvider):
             if f"{CHANNEL_PREFIX}{channel_name}" != stream_details.item_id:
                 continue
 
-            now = channel.get("now", {})
-            details = now.get("embeds", {}).get("details", {})
-            media = details.get("media", {})
-            location = details.get("location_long", "")
-            description = details.get("description", "")
-
+            title, location, description, image_url = self._extract_channel_info(channel)
             desc_parts = []
             if location:
                 desc_parts.append(f"Broadcasting from {location}")
@@ -315,9 +326,9 @@ class NTSProvider(MusicProvider):
                 desc_parts.append(description)
 
             stream_details.stream_metadata = StreamMetadata(
-                title=html.unescape(now.get("broadcast_title", f"NTS {channel_name}")),
+                title=title,
                 description="\n".join(desc_parts),
-                image_url=media.get("picture_large") or media.get("background_large"),
+                image_url=image_url,
             )
             break
 
