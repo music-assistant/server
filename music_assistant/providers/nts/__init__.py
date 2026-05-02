@@ -22,7 +22,6 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
-    SetupFailedError,
 )
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -104,11 +103,12 @@ class NTSProvider(MusicProvider):
         except ProviderUnavailableError as err:
             self.logger.debug("NTS live metadata unavailable at setup: %s", err)
 
-        # Mixtape stream URLs must be loaded from the API for playback to work.
+        # Mixtapes are best-effort too: a transient outage shouldn't take the
+        # whole provider offline (live channels still work). Will retry on browse.
         try:
             await self._get_mixtapes()
         except ProviderUnavailableError as err:
-            raise SetupFailedError(str(err)) from err
+            self.logger.debug("NTS mixtapes unavailable at setup: %s", err)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | BrowseFolder]:
         """Browse NTS radio stations."""
@@ -281,7 +281,7 @@ class NTSProvider(MusicProvider):
                 resp.raise_for_status()
                 data: dict[str, Any] = await resp.json()
                 return data
-        except (aiohttp.ClientError, TimeoutError) as err:
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             msg = f"NTS API unavailable: {err}"
             raise ProviderUnavailableError(msg) from err
 
@@ -361,6 +361,6 @@ class NTSProvider(MusicProvider):
                 resp.raise_for_status()
                 data: dict[str, Any] = await resp.json()
                 return data
-        except (aiohttp.ClientError, TimeoutError) as err:
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             msg = f"NTS API unavailable: {err}"
             raise ProviderUnavailableError(msg) from err
