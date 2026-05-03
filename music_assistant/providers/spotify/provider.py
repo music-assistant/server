@@ -607,9 +607,7 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
 
-        meta = await self._get_paginated_meta(
-            uri, limit=1, offset=0, use_global_session=use_global
-        )
+        meta = await self._get_paginated_meta(uri, limit=1, offset=0, use_global_session=use_global)
         cache_checksum = meta["etag"]
         total = meta["total"]
 
