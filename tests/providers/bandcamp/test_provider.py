@@ -327,7 +327,8 @@ async def test_search_does_not_duplicate_existing_artists(
 async def test_search_unifies_label_release_to_real_performer_band(
     provider: BandcampProvider,
 ) -> None:
-    """A label-released album whose performer has their own band page links to the real band.
+    """
+    A label-released album whose performer has their own band page links to the real band.
 
     Regression test for music-assistant/support#5389 / Apollo Brown on
     Hip Dozer. When a user searches by album name (e.g. "Night Moves"),
@@ -391,7 +392,8 @@ async def test_search_unifies_label_release_to_real_performer_band(
 async def test_lookup_performer_band_id_caches_negative_result(
     provider: BandcampProvider, mass_mock: Mock
 ) -> None:
-    """A performer with no own band page caches the 'not found' outcome.
+    """
+    A performer with no own band page caches the 'not found' outcome.
 
     The cache layer treats ``None`` as a miss, so we store integer 0 as
     the negative-cache sentinel. A repeated lookup for the same slug
@@ -428,7 +430,8 @@ async def test_lookup_performer_band_id_caches_negative_result(
 async def test_lookup_performer_band_id_skips_label_results(
     provider: BandcampProvider,
 ) -> None:
-    """A label that shares a performer's exact name must not be returned as a band.
+    """
+    A label that shares a performer's exact name must not be returned as a band.
 
     Without the ``is_label`` filter, a label called "Apollo Brown"
     (rare but possible) would shadow the actual artist's band page.
@@ -451,7 +454,8 @@ async def test_lookup_performer_band_id_skips_label_results(
 async def test_search_resilient_to_lookup_exception_in_one_slug(
     provider: BandcampProvider,
 ) -> None:
-    """One slug's lookup raising must not kill the whole batch.
+    """
+    One slug's lookup raising must not kill the whole batch.
 
     ``_resolve_search_artist_ids`` runs lookups in parallel via
     ``asyncio.gather(..., return_exceptions=True)``; an unexpected
@@ -497,7 +501,8 @@ async def test_search_resilient_to_lookup_exception_in_one_slug(
 async def test_lookup_performer_band_id_corrupt_cache_falls_through(
     provider: BandcampProvider, mass_mock: Mock
 ) -> None:
-    """A non-integer cache payload is discarded and a fresh fetch runs.
+    """
+    A non-integer cache payload is discarded and a fresh fetch runs.
 
     Defensive guard: if the cache returns a value that can't be coerced
     to int (schema change, manual edit, …), the lookup must NOT raise
@@ -520,7 +525,8 @@ async def test_lookup_performer_band_id_corrupt_cache_falls_through(
 async def test_search_suppresses_retries_exhausted_from_get_artist(
     provider: BandcampProvider,
 ) -> None:
-    """``RetriesExhausted`` from ``get_artist`` must not crash an in-progress search.
+    """
+    ``RetriesExhausted`` from ``get_artist`` must not crash an in-progress search.
 
     The materialized-artist emission is best-effort — its failure should
     leave album/track results intact rather than propagate up.
@@ -559,7 +565,8 @@ async def test_search_suppresses_retries_exhausted_from_get_artist(
 async def test_get_album_unifies_label_release_to_real_performer_band(
     provider: BandcampProvider,
 ) -> None:
-    """Fetching a label-released album embeds the performer's real band_id.
+    """
+    Fetching a label-released album embeds the performer's real band_id.
 
     Regression test paralleling
     :func:`test_search_unifies_label_release_to_real_performer_band` but
@@ -1048,7 +1055,8 @@ async def test_get_artist_albums_label_uses_band_id(provider: BandcampProvider) 
 async def test_get_artist_albums_label_unifies_performer_to_real_band(
     provider: BandcampProvider,
 ) -> None:
-    """Listing a label's discography unifies label-released performers to their real band pages.
+    """
+    Listing a label's discography unifies label-released performers to their real band pages.
 
     When the user navigates to a label artist (e.g. Hip Dozer), the
     discography listing must use real performer band_ids — matching what

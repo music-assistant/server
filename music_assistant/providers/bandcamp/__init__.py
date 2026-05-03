@@ -316,10 +316,7 @@ class BandcampProvider(MusicProvider):
         capped: Sequence[SearchResultItem],
         bands_by_id: dict[int, SearchResultArtist],
     ) -> dict[int, str]:
-        """Resolve artist item_ids for every album/track row in a search batch.
-
-        Keyed by ``id(row)`` so the materialization loop is a sync lookup.
-        """
+        """Resolve artist item_ids for every album/track row, keyed by ``id(row)``."""
         rows: list[SearchResultAlbum | SearchResultTrack] = [
             row for row in capped if isinstance(row, (SearchResultAlbum, SearchResultTrack))
         ]
@@ -374,11 +371,7 @@ class BandcampProvider(MusicProvider):
         return out
 
     async def _lookup_performer_band_id(self, performer_name: str) -> int | None:
-        """Find the band_id for a performer who has their own Bandcamp page.
-
-        Negative results are cached as integer ``0`` because the cache layer
-        treats ``None`` as a miss.
-        """
+        """Find the band_id for a performer who has their own Bandcamp page."""
         target_slug = slugify_performer(performer_name)
         if not target_slug:
             return None
@@ -394,6 +387,8 @@ class BandcampProvider(MusicProvider):
                     cached,
                 )
             else:
+                # Negative results are persisted as 0 since the cache layer
+                # treats None as a miss.
                 return cached_int or None
         band_id = await self._fetch_performer_band_id(performer_name, target_slug)
         await self.mass.cache.set(
@@ -406,20 +401,20 @@ class BandcampProvider(MusicProvider):
 
     @throttle_with_retries
     async def _fetch_performer_band_id(self, performer_name: str, target_slug: str) -> int | None:
-        """Autocomplete-search for ``performer_name``, return the first matching band_id.
-
-        ``is_label`` results are skipped so a same-named label doesn't
-        masquerade as the performer's band page.
-        """
+        """Autocomplete-search for ``performer_name``; return the first non-label band match."""
         try:
             results = await self._client.search(performer_name)
         except BandcampRateLimitError as error:
             raise ResourceTemporarilyUnavailable(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
-        except BandcampAPIError:
+        except BandcampAPIError as error:
+            self.logger.warning(
+                "Bandcamp autocomplete failed for performer %r: %s", performer_name, error
+            )
             return None
         for item in results:
+            # Skip labels so a same-named label doesn't masquerade as the band page.
             if (
                 isinstance(item, SearchResultArtist)
                 and not item.is_label
@@ -622,6 +617,10 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
 
+        # Collapse synthetics whose slug matches the band's own name back to
+        # the real band BEFORE consulting the discography. Otherwise a
+        # band-by-itself item with `artist_name=null` would mint a shadow
+        # synthetic parallel to the real band, producing duplicates.
         if slugify_performer(api_artist.name) == performer_slug:
             return self._converters.artist_from_api(api_artist)
 
@@ -668,11 +667,13 @@ class BandcampProvider(MusicProvider):
         underlying ``mobile/24/band_details`` call hits once per band per
         cache window, not once per ``prov_artist_id``.
 
-        Return type is ``list[dict[str, Any]]`` rather than
-        ``list[DiscographyItem]`` because the cache controller falls back to
-        ``isinstance(value, value_type)`` on deserialization, which TypedDict
-        does not support. Callers cast at the converter boundary.
+        :param band_id: The Bandcamp ``band_id`` (page owner) whose
+            discography to fetch.
         """
+        # Return type is `list[dict[str, Any]]` rather than
+        # `list[DiscographyItem]`: the cache controller's deserializer
+        # uses `isinstance` checks which TypedDict does not support.
+        # Callers cast at the converter boundary.
         result: list[dict[str, Any]] = await self._client.get_artist_discography(band_id)
         return result
 
@@ -1056,10 +1057,9 @@ class BandcampProvider(MusicProvider):
         """
         Resolve a path segment to a fan_id.
 
-        Checks the slug→fan_id cache first, then tries numeric parse.
-        For unknown slugs, rebuilds the cache from fan/follower lists and retries.
-        Returns None if the segment is neither a known slug nor a valid int,
-        or if it is a known sub-route name (e.g. "collection", "wishlist").
+        Returns None if the segment is neither a known slug nor a valid
+        int, or if it is a known sub-route name (e.g. "collection",
+        "wishlist").
         """
         if segment in self._slug_to_fan_id:
             return self._slug_to_fan_id[segment]

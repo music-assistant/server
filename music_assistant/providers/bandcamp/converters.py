@@ -84,11 +84,8 @@ class BandcampConverters:
         """
         Create a Track from new API SearchResultTrack.
 
-        :param artist_item_id: Resolved artist item_id chosen by the provider's
-            cross-result dedup. If omitted, defaults to the synthetic form
-            ``"{artist_id}:{slug(artist_name)}"`` so callers without
-            disambiguation context still get correct labels-vs-performers
-            behavior.
+        :param artist_item_id: Pre-resolved artist item_id; falls back to
+            slug-based resolution if omitted.
         """
         track_id = f"{item.artist_id}-{item.album_id or 0}-{item.id}"
         artist_item_id = artist_item_id or make_artist_id(item.artist_id, item.artist_name)
@@ -132,9 +129,8 @@ class BandcampConverters:
         """
         Create an Album from new API SearchResultAlbum.
 
-        :param artist_item_id: Resolved artist item_id chosen by the provider's
-            cross-result dedup. If omitted, defaults to the synthetic form
-            ``"{artist_id}:{slug(artist_name)}"``.
+        :param artist_item_id: Pre-resolved artist item_id; falls back to
+            slug-based resolution if omitted.
         """
         album_id = f"{item.artist_id}-{item.id}"
         artist_item_id = artist_item_id or make_artist_id(item.artist_id, item.artist_name)
@@ -215,10 +211,8 @@ class BandcampConverters:
         """
         Convert a Track object from the API to MA Track format.
 
-        :param tralbum_artist: The per-album performer credit
-            (``BCAlbum.tralbum_artist`` for tracks within an album, or
-            ``BCTrack.tralbum_artist`` for standalone tracks). When set
-            and different from the band's own name, the displayed artist
+        :param tralbum_artist: Per-album performer credit. When set and
+            different from the band's own name, the displayed artist
             name is the performer rather than the band.
         :param artist_item_id: Pre-resolved artist item_id; falls back to
             slug-based resolution if omitted.
@@ -439,7 +433,8 @@ class BandcampConverters:
         return output
 
     def album_from_api(self, album: APIAlbum, *, artist_item_id: str | None = None) -> MAAlbum:
-        """Convert an API Album object to MA Album format.
+        """
+        Convert an API Album object to MA Album format.
 
         :param artist_item_id: Pre-resolved artist item_id; falls back to
             slug-based resolution if omitted.
@@ -555,8 +550,7 @@ def _resolve_artist_id(
 
     Returns the synthetic ``{band_id}:{slug(performer)}`` form only when
     the performer is set AND its slug differs from the band's own slug;
-    otherwise returns the plain ``{band_id}``. Missing inputs collapse
-    to the plain form rather than fabricating a meaningless synthetic.
+    otherwise returns the plain ``{band_id}``.
     """
     if (
         not performer
