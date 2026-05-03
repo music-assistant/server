@@ -28,9 +28,35 @@ class AirPlay2Stream(AirPlayProtocol):
     """
     AirPlay 2 Audio Streamer.
 
-    Uses cliap2 (C executable based on owntone) for timestamped playback.
+    Uses cliap2 (C executable based on OwnTone) for timestamped playback.
     Audio is fed via stdin, commands via a named pipe.
     """
+
+    @property
+    def _session_establishment_ms(self) -> int | None:
+        """
+        Return the actual number of milliseconds taken to establish a streaming session with the device.
+
+        Will return None if session establishment has not yet happened.
+        """
+        if self._cli_start_ts is None:
+            return None
+        if self._connected_ts is None:
+            return None
+        return int((self._connected_ts - self._cli_start_ts) * 1000)
+
+    @property
+    def _recommended_session_establishment_latency(self) -> int | None:
+        """
+        Return the suggested value for session establishmnet latency configuration.
+
+        Will return None if recommended value cannot be determined.
+        Recommended value is rounded up to the next 100ms greater than the actual duration
+        taken to establish the session.
+        """
+        if self._session_establishment_ms is None:
+            return None
+        return ((self._session_establishment_ms + 99) // 100) * 100
 
     @property
     def _cli_loglevel(self) -> int:
@@ -54,6 +80,32 @@ class AirPlay2Stream(AirPlayProtocol):
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             mass_level = 5
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
+
+    def _session_established(self) -> None:
+        """
+        Streaming session is now established.
+
+        Log the actual session establishment duration and check against configured value.
+        """
+        if self._connected_ts is not None:
+            """We have previously connected, so we ignore this call"""
+            return
+        self._connected_ts = time.time()
+        assert self._session_establishment_ms is not None  # for type checker
+        self.logger.info(
+            f"Streaming session established in {self._session_establishment_ms}ms for player {self.player.name}"
+        )
+        if self._session_establishment_ms > self.player.session_establishment_latency_ms:
+            self.logger.warning(
+                f"Configured value of {self.player.session_establishment_latency_ms}ms for session establishment latency "
+                f"is too low for player {self.player.name}. Recommended value is {self._recommended_session_establishment_latency}ms."
+            )
+        elif self.player.session_establishment_latency_ms - self._session_establishment_ms > 200:
+            self.logger.info(
+                f"Playback latency performance opportunity exists for player {self.player.name}. "
+                f"Configured value of {self.player.session_establishment_latency_ms}ms for session establishment latency "
+                f"can be reduced to {self._recommended_session_establishment_latency}ms."
+            )
 
     @staticmethod
     def _log_cli_output(logger: logging.Logger, line: str) -> None:
@@ -87,6 +139,7 @@ class AirPlay2Stream(AirPlayProtocol):
         player_id = self.player.player_id
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST)
         assert isinstance(sync_adjust, int)  # for type checker
+        self._cli_start_ts = time.time()
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
@@ -131,8 +184,8 @@ class AirPlay2Stream(AirPlayProtocol):
             self.commands_pipe.path,
             "--latency",
             str(self.player.output_buffer_duration_ms),
-            "--pairing_latency",
-            str(self.player.pairing_latency_ms),
+            "--session_establishment_latency",
+            str(self.player.session_establishment_latency_ms),
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
@@ -168,9 +221,10 @@ class AirPlay2Stream(AirPlayProtocol):
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
-            if "player: event_play_start()" in line:
+            if "player: Registered callback to device_streaming_cb" in line:
                 # successfully connected
                 self._connected.set()
+                self._session_established()
             if "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
             elif "Restarted at" in line:

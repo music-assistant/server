@@ -26,9 +26,9 @@ from .constants import (
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
     AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
-    AIRPLAY_PAIRING_LATENCY_DEFAULT_MS,
-    AIRPLAY_PAIRING_LATENCY_MAX_MS,
-    AIRPLAY_PAIRING_LATENCY_MIN_MS,
+    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
+    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
+    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
     BASE_PLAYER_FEATURES,
     BROKEN_AIRPLAY_WARN,
     CONF_ACTION_FINISH_PAIRING,
@@ -41,11 +41,11 @@ from .constants import (
     CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
-    CONF_PAIRING_LATENCY,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    CONF_SESSION_ESTABLISHMENT_LATENCY,
     CONF_STORED_VOLUME,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
@@ -178,12 +178,15 @@ class AirPlayPlayer(Player):
         )
 
     @property
-    def pairing_latency_ms(self) -> int:
-        """Get the configured pairing latency in milliseconds."""
+    def session_establishment_latency_ms(self) -> int:
+        """Get the configured session establishment latency in milliseconds."""
         if self.protocol == StreamingProtocol.AIRPLAY2:
             return cast(
                 "int",
-                self.config.get_value(CONF_PAIRING_LATENCY, AIRPLAY_PAIRING_LATENCY_DEFAULT_MS),
+                self.config.get_value(
+                    CONF_SESSION_ESTABLISHMENT_LATENCY,
+                    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
+                ),
             )
         return RAOP_CONNECT_TIME_MS
 
@@ -191,10 +194,10 @@ class AirPlayPlayer(Player):
     def wait_start(self) -> int:
         """Get the time in ms to allow device to connect before starting stream."""
         if self.protocol == StreamingProtocol.AIRPLAY2:
-            base = self.pairing_latency_ms
-        else:
-            base = RAOP_CONNECT_TIME_MS
-        return int(base + self.output_buffer_duration_ms)
+            # Session establishment latency doesn't include time from when this code is executed till the binary is spawned
+            # Discuss this code with @MarvinSchenkel with respect to preventing initial audio loss
+            return int(self.session_establishment_latency_ms + 900)
+        return int(self.session_establishment_latency_ms + self.output_buffer_duration_ms)
 
     async def get_config_entries(
         self,
@@ -314,19 +317,18 @@ class AirPlayPlayer(Player):
                 advanced=True,
             ),
             ConfigEntry(
-                key=CONF_PAIRING_LATENCY,
+                key=CONF_SESSION_ESTABLISHMENT_LATENCY,
                 type=ConfigEntryType.INTEGER,
-                default_value=AIRPLAY_PAIRING_LATENCY_DEFAULT_MS,
+                default_value=AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
                 range=(
-                    AIRPLAY_PAIRING_LATENCY_MIN_MS,
-                    AIRPLAY_PAIRING_LATENCY_MAX_MS,
+                    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
+                    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
                 ),
-                label="Expected milliseconds to pair with AirPlay device and "
-                "negotiate the playback session.",
+                label="Expected milliseconds to establish streaming session with the AirPlay device.",
                 description="Improve playback latency by aligning this value "
-                "with the actual duration your device takes to pair and negotiate "
-                "the session.\nYou can calculate it by looking at timestamps in the "
-                "log.",
+                "with the actual duration your device takes to establish "
+                "the session.\nThe log will contain an INFO entry showing the actual time "
+                "taken to establish the session. Set your config value ~100-200ms higher.",
                 hidden=is_raop,
                 category="protocol_generic",
                 advanced=True,
