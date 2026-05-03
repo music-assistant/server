@@ -67,17 +67,12 @@ class PlaybackMixin:
         :param player_id: The player ID to seek on.
         :param offset: The offset in milliseconds.
         """
-        for _ in range(10):  # Try up to 10 times (5 seconds total)
-            await asyncio.sleep(0.5)
-            queue = self.provider.mass.player_queues.get(player_id)
-            if queue and queue.current_item:
-                try:
-                    await self.provider.mass.players.cmd_seek(player_id, offset // 1000)
-                    await asyncio.sleep(0.1)
-                    break
-                except Exception as e:
-                    LOGGER.debug(f"Could not seek to offset {offset}ms: {e}")
-                    break
+        queue = self.provider.mass.player_queues.get(player_id)
+        if queue and queue.current_item:
+            try:
+                await self.provider.mass.players.cmd_seek(player_id, offset // 1000)
+            except Exception as e:
+                LOGGER.debug(f"Could not seek to offset {offset}ms: {e}")
         else:
             LOGGER.warning("Queue not ready for seeking after timeout")
 
