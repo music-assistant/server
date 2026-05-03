@@ -87,6 +87,27 @@ from music_assistant.models.player import Player, PlayerMedia
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
+_LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
+_START_ITEM_SUBSTRING_MIN_LEN = 3
+
+
+def _start_item_matches(start_item: str, item: Any) -> bool:
+    """
+    Return whether `item` satisfies a `start_item` directive.
+
+    :param start_item: Exact `item_id` / `uri`, or a case-insensitive
+        substring of the item's name (minimum
+        `_START_ITEM_SUBSTRING_MIN_LEN` characters).
+    :param item: Candidate media item.
+    """
+    if start_item in (getattr(item, "item_id", None), getattr(item, "uri", None)):
+        return True
+    if len(start_item) < _START_ITEM_SUBSTRING_MIN_LEN:
+        return False
+    name = getattr(item, "name", None)
+    return bool(name and start_item.lower() in name.lower())
+
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -2073,7 +2094,15 @@ class PlayerQueuesController(CoreController):
         episode: PodcastEpisode | str | None,
         userid: str | None = None,
     ) -> UniqueList[PodcastEpisode]:
-        """Return (next) episode(s) and resume point for given podcast."""
+        """
+        Return the next episode(s) and resume point for the given podcast.
+
+        :param podcast: Podcast to enqueue, or `None` if `episode` is a
+            concrete `PodcastEpisode`.
+        :param episode: An `item_id` / `uri`, a case-insensitive substring
+            of an episode name or the keyword "latest"` / `"newest"`.
+        :param userid: User whose resume position should be applied.
+        """
         if podcast is None and isinstance(episode, str | NoneType):
             raise InvalidDataError("Either podcast or episode must be provided")
         if podcast is None:
@@ -2098,6 +2127,20 @@ class PlayerQueuesController(CoreController):
         all_episodes = [
             x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
         ]
+        # Require exact case and keyword match to minimise false positives.
+        if isinstance(episode, str) and episode in _LATEST_EPISODE_KEYWORDS:
+            if not all_episodes:
+                raise InvalidDataError(
+                    f"Unable to resolve episode to play for Podcast {podcast.name}"
+                )
+            latest = all_episodes[0]
+            (
+                fully_played,
+                resume_position_ms,
+            ) = await self.mass.music.get_resume_position(latest, userid=userid)
+            latest.fully_played = fully_played
+            latest.resume_position_ms = 0 if fully_played else resume_position_ms
+            return UniqueList([latest])
         all_episodes.sort(key=lambda x: x.position)
         # if a episode was provided, a user explicitly selected a episode to play
         # so we need to find the index of the episode in the list
@@ -2113,7 +2156,7 @@ class PlayerQueuesController(CoreController):
                 resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
         elif isinstance(episode, str):
             resolved_episode = next(
-                (x for x in all_episodes if episode in (x.uri, x.item_id)), None
+                (x for x in all_episodes if _start_item_matches(episode, x)), None
             )
             if resolved_episode:
                 # ensure we have accurate resume info
