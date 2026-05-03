@@ -96,8 +96,7 @@ def _start_item_matches(start_item: str, item: Any) -> bool:
     Return whether `item` satisfies a `start_item` directive.
 
     :param start_item: Exact `item_id` / `uri`, or a case-insensitive
-        substring of the item's name (minimum
-        `_START_ITEM_SUBSTRING_MIN_LEN` characters).
+        substring of the item's name.
     :param item: Candidate media item.
     """
     if start_item in (getattr(item, "item_id", None), getattr(item, "uri", None)):
