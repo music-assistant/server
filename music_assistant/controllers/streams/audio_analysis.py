@@ -15,13 +15,11 @@ from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 
 from music_assistant.constants import (
+    CONF_BACKGROUND_SCAN_CONCURRENCY,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_PROVIDER_MAPPINGS,
-    LOUDNESS_MEASUREMENT_MIN_LUFS,
-)
-from music_assistant.controllers.streams.constants import (
-    CONF_BACKGROUND_SCAN_CONCURRENCY,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    LOUDNESS_MEASUREMENT_MIN_LUFS,
 )
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_dumps, json_loads

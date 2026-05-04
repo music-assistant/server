@@ -30,6 +30,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    CONF_BACKGROUND_SCAN_CONCURRENCY,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE_DURATION,
@@ -43,6 +44,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
@@ -55,11 +57,9 @@ from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
-    CONF_BACKGROUND_SCAN_CONCURRENCY,
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
-    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     DEFAULT_PORT,
     BufferSize,
 )
