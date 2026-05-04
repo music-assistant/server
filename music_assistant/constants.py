@@ -140,11 +140,13 @@ CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
+CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
+DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = 1
 
 
 # common db tables
