@@ -106,7 +106,8 @@ class FakeSnapserver:
         self.queue_response({"code": -32603, "data": data, "message": "Internal error"})
 
     def cache_stream_directly(self, stream_id: str, name: str) -> FakeSnapstream:
-        """Pre-register a stream in the local cache (skipping the status round-trip).
+        """
+        Pre-register a stream in the local cache (skipping the status round-trip).
 
         Use this when the test wants the orphan to be visible WITHOUT requiring
         adopt() to call status() + synchronize() first.
@@ -116,7 +117,8 @@ class FakeSnapserver:
         return s
 
     def stage_orphan_stream(self, stream_id: str, name: str) -> None:
-        """Stage an orphan stream that only appears after .synchronize(.status()).
+        """
+        Stage an orphan stream that only appears after .synchronize(.status()).
 
         Use this when the test wants to verify that adopt() falls back to a
         status-driven resync (the actual Bug B post-MA-restart scenario).

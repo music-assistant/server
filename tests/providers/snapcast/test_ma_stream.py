@@ -17,7 +17,8 @@ if TYPE_CHECKING:
 def _make_stream(
     provider: MagicMock, name: str = "Music Assistant - testhash (announcement)"
 ) -> SnapcastMAStream:
-    """Build a SnapcastMAStream instance directly.
+    """
+    Build a SnapcastMAStream instance directly.
 
     Bypasses the constructor's media handling (we only test the snapserver
     source registration).
@@ -70,7 +71,8 @@ async def test_real_port_conflict_retries_with_different_port(
 async def test_all_attempts_exhausted_raises_with_honest_message(
     fake_provider: MagicMock, fake_snapserver: FakeSnapserver
 ) -> None:
-    """When all 50 retries fail the error must reference 'after retries' or similar.
+    """
+    When all 50 retries fail the error must reference 'after retries' or similar.
 
     Must NOT say 'No free port found' which lies about the cause.
     """
@@ -139,7 +141,8 @@ def test_is_name_collision_error_matches_only_specific_pattern(
 async def test_name_collision_with_local_stream_cached_adopts_it(
     fake_provider: MagicMock, fake_snapserver: FakeSnapserver
 ) -> None:
-    """When snapserver reports the name as already-registered MA must adopt the orphan.
+    """
+    When snapserver reports the name as already-registered MA must adopt the orphan.
 
     The stream must be in the local snapserver cache; MA must adopt it instead of
     looping until retries exhaust.
@@ -161,7 +164,8 @@ async def test_name_collision_with_local_stream_cached_adopts_it(
 async def test_orphan_stream_after_ma_restart_gets_adopted_via_resync(
     fake_provider: MagicMock, fake_snapserver: FakeSnapserver
 ) -> None:
-    """Bug B core scenario: MA restarted while a stream was registered.
+    """
+    Bug B core scenario: MA restarted while a stream was registered.
 
     The local snapserver cache is empty, but the server still holds the orphan.
     MA must call status() + synchronize() to re-discover it before adopting.
@@ -187,7 +191,8 @@ async def test_orphan_stream_after_ma_restart_gets_adopted_via_resync(
 async def test_second_register_call_is_idempotent_when_stream_already_set(
     fake_provider: MagicMock, fake_snapserver: FakeSnapserver
 ) -> None:
-    """Calling _register_tcp_server_source after self.snap_stream is set is a no-op.
+    """
+    Calling _register_tcp_server_source after self.snap_stream is set is a no-op.
 
     This is the early-return guard at the top of the method. Real concurrency
     safety is provided by `_lifecycle_lock` in setup(); that path is exercised

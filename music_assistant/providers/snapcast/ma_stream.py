@@ -422,7 +422,8 @@ class SnapcastMAStream:
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
     def _find_local_stream_by_name(self, name: str) -> SnapstreamProto | None:
-        """Look up a snapserver stream by its name (not id) in the local cache.
+        """
+        Look up a snapserver stream by its name (not id) in the local cache.
 
         :param name: Stream name to look up.
         :return: The matching SnapstreamProto, or None if not found.
@@ -434,7 +435,8 @@ class SnapcastMAStream:
 
     @staticmethod
     def _is_name_collision_error(result: object) -> bool:
-        """Detect snapserver's 'Stream with name X already exists' error.
+        """
+        Detect snapserver's 'Stream with name X already exists' error.
 
         :param result: Result returned by snapserver.stream_add_stream.
         :return: True if the result indicates a stream-name collision.
@@ -449,7 +451,8 @@ class SnapcastMAStream:
         )
 
     def _pick_port_avoiding(self, used: set[int]) -> int | None:
-        """Pick a random TCP source port within the unchanged upstream range.
+        """
+        Pick a random TCP source port within the unchanged upstream range.
 
         Avoids ports already tried in the current retry loop.
 
