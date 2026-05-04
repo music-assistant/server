@@ -320,14 +320,19 @@ async def test_finalized_guard_prevents_double_finalize(
 
 
 @pytest.mark.asyncio
-async def test_provider_error_during_chunk_processing(
+async def test_provider_error_during_chunk_processing_evicts_provider(
     controller: AudioAnalysisController,
     audio_buffer: AudioBuffer,
     mock_stream_details: MagicMock,
     mock_provider: MagicMock,
     mock_mass: MagicMock,
 ) -> None:
-    """Provider raising in process_pcm_chunk still processes remaining chunks and finalizes."""
+    """Provider that raises in process_pcm_chunk is evicted from the session.
+
+    The first chunk processes successfully. The second chunk's exception
+    triggers eviction. The third chunk is not delivered. The provider's
+    cancel hook is dispatched (replaces finalize for evicted providers).
+    """
     call_count = 0
 
     async def _flaky_process(_session_id: str, _chunk: bytes) -> None:
@@ -340,8 +345,12 @@ async def test_provider_error_during_chunk_processing(
     await controller.start_analysis(audio_buffer, mock_stream_details)
     await _send_chunks(audio_buffer, 3)
     await _await_tasks(mock_mass)
-    assert call_count == 3
-    mock_provider.finalize.assert_called_once()
+
+    # Provider was called twice: chunk 1 (success), chunk 2 (raised → evicted)
+    assert call_count == 2
+    # Evicted provider does NOT get finalize, but does get cancel
+    mock_provider.finalize.assert_not_called()
+    mock_provider.cancel.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -393,7 +402,7 @@ async def test_slow_provider_removed_after_timeout(
     mock_mass.get_provider = MagicMock(side_effect=_get_prov)
 
     with unittest.mock.patch(
-        "music_assistant.controllers.streams.audio_analysis.CHUNK_PROCESS_TIMEOUT", 0.1
+        "music_assistant.controllers.streams.audio_analysis.CHUNK_PROCESS_TIMEOUT_SECONDS", 0.1
     ):
         await controller.start_analysis(audio_buffer, mock_stream_details)
         await _send_chunks(audio_buffer, 3)
@@ -423,10 +432,11 @@ async def test_provider_rejects_analysis(
 
 @pytest.mark.asyncio
 async def test_finalize_cleans_up_provider_sessions() -> None:
-    """Verify provider._sessions is cleaned up after finalize, even if _finalize raises."""
+    """Verify provider._sessions is cleaned up after finalize."""
     provider = MagicMock(spec=AudioAnalysisProvider)
+    provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
-    provider._finalize = AsyncMock()
+    provider._finalize = AsyncMock(return_value=None)
 
     await AudioAnalysisProvider.finalize(provider, "test_session")
 
@@ -467,13 +477,19 @@ async def test_provider_start_analysis_uses_media_type_for_version_gating() -> N
 
 
 @pytest.mark.asyncio
-async def test_finalize_cleans_up_sessions_on_error() -> None:
-    """Verify provider._sessions is cleaned up even when _finalize raises."""
+async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
+    """Verify provider._sessions is cleaned up even when _finalize raises.
+
+    The finalize wrapper catches _finalize exceptions and logs ERROR; it must
+    not propagate them to the controller, and must still pop the session.
+    """
     provider = MagicMock(spec=AudioAnalysisProvider)
+    provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
     provider._finalize = AsyncMock(side_effect=RuntimeError("analysis failed"))
 
-    with pytest.raises(RuntimeError, match="analysis failed"):
-        await AudioAnalysisProvider.finalize(provider, "test_session")
+    # MUST NOT raise — exception is swallowed and logged
+    await AudioAnalysisProvider.finalize(provider, "test_session")
 
     assert "test_session" not in provider._sessions
+    provider.logger.error.assert_called_once()
