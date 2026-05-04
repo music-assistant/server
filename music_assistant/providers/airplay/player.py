@@ -24,8 +24,6 @@ from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
-    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
-    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
@@ -35,7 +33,6 @@ from .constants import (
     CONF_ACTION_RESET_PAIRING,
     CONF_ACTION_START_PAIRING,
     CONF_AIRPLAY_CREDENTIALS,
-    CONF_AIRPLAY_LATENCY,
     CONF_AIRPLAY_PROTOCOL,
     CONF_ALAC_ENCODE,
     CONF_AP2PASSWORD,
@@ -171,11 +168,8 @@ class AirPlayPlayer(Player):
 
     @property
     def output_buffer_duration_ms(self) -> int:
-        """Get the configured output buffer duration in milliseconds."""
-        return cast(
-            "int",
-            self.config.get_value(CONF_AIRPLAY_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
-        )
+        """Get the output buffer duration in milliseconds."""
+        return AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS
 
     @property
     def session_establishment_latency_ms(self) -> int:
@@ -299,24 +293,6 @@ class AirPlayPlayer(Player):
                 supported_sample_rates=[44100], supported_bit_depths=[16], hidden=True
             ),
             ConfigEntry(
-                key=CONF_AIRPLAY_LATENCY,
-                type=ConfigEntryType.INTEGER,
-                default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
-                range=(
-                    AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS,
-                    AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS,
-                ),
-                label="Milliseconds of data to buffer",
-                description=(
-                    "The number of milliseconds of data to buffer\n"
-                    "NOTE: This adds to the latency experienced for commencement "
-                    "of playback. \n"
-                    "Try increasing value if playback is unreliable."
-                ),
-                category="protocol_generic",
-                advanced=True,
-            ),
-            ConfigEntry(
                 key=CONF_SESSION_ESTABLISHMENT_LATENCY,
                 type=ConfigEntryType.INTEGER,
                 default_value=AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
@@ -325,10 +301,10 @@ class AirPlayPlayer(Player):
                     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
                 ),
                 label="Expected milliseconds to establish streaming session with the AirPlay device.",
-                description="Improve playback latency by aligning this value "
-                "with the actual duration your device takes to establish "
-                "the session.\nThe log will contain an INFO entry showing the actual time "
-                "taken to establish the session. Set your config value ~100-200ms higher.",
+                description="Adjust this value only if playback is out of sync or does not work.\n"
+                "The log will contain an INFO entry showing the actual time "
+                "taken to establish the session. Set your config value somewhere in the window "
+                "of 600ms less than and no more than 100ms greater than the actual time.",
                 hidden=is_raop,
                 category="protocol_generic",
                 advanced=True,
@@ -337,6 +313,27 @@ class AirPlayPlayer(Player):
 
         if is_broken_airplay_model(self.device_info.manufacturer, self.device_info.model):
             base_entries.insert(-1, BROKEN_AIRPLAY_WARN)
+
+        if effective_protocol == StreamingProtocol.AIRPLAY2:
+            # Insert the warning right after the protocol choice entry
+            for i, entry in enumerate(base_entries):
+                if entry.key == CONF_AIRPLAY_PROTOCOL:
+                    base_entries.insert(
+                        i + 1,
+                        ConfigEntry(
+                            key="AIRPLAY2_SYNC_WARN",
+                            type=ConfigEntryType.ALERT,
+                            default_value=None,
+                            required=False,
+                            label="The binary used to provide support for the AirPlay2 protocol "
+                            "does support audio synchronisation, but it is fragile. "
+                            "If playback or synchronisation does not work, try adjusting the "
+                            "session establishment latency. This is an interim advanced configuration "
+                            "setting. It will be removed when a robust synchronisation method is implemented "
+                            "into the cliap2 binary.",
+                        ),
+                    )
+                    break
 
         return base_entries
 

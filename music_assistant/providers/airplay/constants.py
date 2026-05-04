@@ -43,7 +43,7 @@ AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250
 # Maximum output buffer duration permitted.
 AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
 # Default session establishment latency i.e. expected duration to pair with AirPlay device and negotiate session
-AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 1000
+AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 500
 AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS: Final[int] = (
     150  # Minimum session establishment latency permitted
 )
@@ -84,6 +84,7 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 
 BROKEN_AIRPLAY_MODELS = (
     # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
+    # Samsung will work with AirPlay2 once PTP timing is implemented for the MA build
     ("Samsung", "*"),
 )
 

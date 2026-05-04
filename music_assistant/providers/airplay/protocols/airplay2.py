@@ -13,6 +13,8 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
+    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
+    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_AP2PASSWORD,
 )
@@ -46,17 +48,27 @@ class AirPlay2Stream(AirPlayProtocol):
         return int((self._connected_ts - self._cli_start_ts) * 1000)
 
     @property
-    def _recommended_session_establishment_latency(self) -> int | None:
+    def _recommended_session_establishment_latency(self) -> tuple[int, int] | None:
         """
-        Return the suggested value for session establishmnet latency configuration.
+        Return the suggested value window for session establishment latency configuration.
 
-        Will return None if recommended value cannot be determined.
-        Recommended value is rounded up to the next 100ms greater than the actual duration
-        taken to establish the session.
+        Will return None if a recommended window cannot be determined.
+        Empirical testing has found that a value in the range of no less than 700ms
+        less than and no more than 100ms more than the actual session establishment time
+        provides a reliable window. The exact reasoning for this is not yet understood and
+        it seems counter intuitive to have a value less than the actual. A more robust
+        solution for ensuring synchronised playback needs to be implemented into the AirPlay2
+        binary and once done, there will be no need for the complexity of a session establishment
+        latency concept to exist in MA.
         """
         if self._session_establishment_ms is None:
             return None
-        return ((self._session_establishment_ms + 99) // 100) * 100
+        high = min(
+            ((self._session_establishment_ms + 99) // 100) * 100,
+            AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
+        )
+        low = max(high - 600, AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS)
+        return (low, high)
 
     @property
     def _cli_loglevel(self) -> int:
@@ -95,16 +107,17 @@ class AirPlay2Stream(AirPlayProtocol):
         self.logger.info(
             f"Streaming session established in {self._session_establishment_ms}ms for player {self.player.name}"
         )
-        if self._session_establishment_ms > self.player.session_establishment_latency_ms:
+        window = self._recommended_session_establishment_latency
+        if window is None:  # guard
+            return
+        low, high = window
+        if (self.player.session_establishment_latency_ms < low) or (
+            self.player.session_establishment_latency_ms > high
+        ):
             self.logger.warning(
                 f"Configured value of {self.player.session_establishment_latency_ms}ms for session establishment latency "
-                f"is too low for player {self.player.name}. Recommended value is {self._recommended_session_establishment_latency}ms."
-            )
-        elif self.player.session_establishment_latency_ms - self._session_establishment_ms > 200:
-            self.logger.info(
-                f"Playback latency performance opportunity exists for player {self.player.name}. "
-                f"Configured value of {self.player.session_establishment_latency_ms}ms for session establishment latency "
-                f"can be reduced to {self._recommended_session_establishment_latency}ms."
+                f"is outside the recommended range for player {self.player.name}. The recommended range is between "
+                f"{low} and {high} ms. Please adjust this advanced configuration value accordingly."
             )
 
     @staticmethod
