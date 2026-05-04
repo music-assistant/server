@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
-import time
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -153,6 +151,13 @@ async def test_background_streaming_per_track_timeout(monkeypatch: pytest.Monkey
     await controller._run_background_streaming_for_track(streamdetails, [p])
 
     assert streamdetails.uri not in controller._active_sessions
+    # Per-track timeout must be surfaced to the TasksController so the run ends
+    # as PARTIAL_SUCCESS with a retryable status.
+    controller.mass.tasks.add_task_failure.assert_called_once()  # type: ignore[attr-defined]
+    failure_args = controller.mass.tasks.add_task_failure.call_args.args  # type: ignore[attr-defined]
+    assert failure_args[0] == audio_analysis_mod.BACKGROUND_SCAN_TASK_ID
+    assert "Timed out" in failure_args[1]
+    assert streamdetails.uri in failure_args[1]
 
 
 @pytest.mark.asyncio
@@ -172,6 +177,12 @@ async def test_background_streaming_ffmpeg_startup_failure(monkeypatch: pytest.M
     # Should not raise
     await controller._run_background_streaming_for_track(streamdetails, [p])
     assert streamdetails.uri not in controller._active_sessions
+    # Per-track exception must be surfaced to the TasksController.
+    controller.mass.tasks.add_task_failure.assert_called_once()  # type: ignore[attr-defined]
+    failure_args = controller.mass.tasks.add_task_failure.call_args.args  # type: ignore[attr-defined]
+    assert failure_args[0] == audio_analysis_mod.BACKGROUND_SCAN_TASK_ID
+    assert "Failed" in failure_args[1]
+    assert "ffmpeg startup failed" in failure_args[1]
 
 
 class _FakeFFMpeg:
@@ -393,260 +404,3 @@ async def test_run_background_scan_concurrency_semaphore(
     await controller._run_background_scan()
 
     assert max_in_flight == 2
-
-
-# ---------------------------------------------------------------------------
-# _get_scan_start_hour / _get_scan_end_hour
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_scan_start_hour_returns_default_on_unset() -> None:
-    """When the config read raises, fall back to DEFAULT_BACKGROUND_SCAN_START_HOUR (0)."""
-    controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(  # type: ignore[method-assign]
-        side_effect=Exception("no config")
-    )
-    assert controller._get_scan_start_hour() == 0
-
-
-@pytest.mark.asyncio
-async def test_get_scan_start_hour_clamps_to_max() -> None:
-    """Values above 23 are clamped to 23."""
-    controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
-    assert controller._get_scan_start_hour() == 23
-
-
-@pytest.mark.asyncio
-async def test_get_scan_start_hour_clamps_to_min() -> None:
-    """Values below 0 are clamped to 0."""
-    controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=-5)  # type: ignore[method-assign]
-    assert controller._get_scan_start_hour() == 0
-
-
-@pytest.mark.asyncio
-async def test_get_scan_end_hour_returns_default_on_error() -> None:
-    """When config read raises, fall back to DEFAULT_BACKGROUND_SCAN_END_HOUR (6)."""
-    controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(  # type: ignore[method-assign]
-        side_effect=Exception("no config")
-    )
-    assert controller._get_scan_end_hour() == 6
-
-
-@pytest.mark.asyncio
-async def test_get_scan_end_hour_clamps_to_max() -> None:
-    """Values above 23 are clamped to 23."""
-    controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
-    assert controller._get_scan_end_hour() == 23
-
-
-@pytest.mark.asyncio
-async def test_get_scan_end_hour_clamps_to_min() -> None:
-    """Values below 0 are clamped to 0."""
-    controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=-1)  # type: ignore[method-assign]
-    assert controller._get_scan_end_hour() == 0
-
-
-# ---------------------------------------------------------------------------
-# _compute_scan_deadline_monotonic
-# ---------------------------------------------------------------------------
-
-_FAKE_DATETIME_PATH = "music_assistant.controllers.streams.audio_analysis.datetime"
-
-
-@pytest.mark.asyncio
-async def test_compute_scan_deadline_same_day_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same-day window: deadline is > now and within 24 hours."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 0)
-    monkeypatch.setattr(controller, "_get_scan_end_hour", lambda: 6)
-
-    # Simulate 2 AM — end_hour=6 is still in the future today
-    fake_now = datetime.datetime(2025, 1, 15, 2, 0, 0)  # noqa: DTZ001
-    with patch(_FAKE_DATETIME_PATH) as mock_dt:
-        mock_dt.datetime.now.return_value = fake_now
-        mock_dt.timedelta = datetime.timedelta
-
-        before = time.monotonic()
-        deadline = controller._compute_scan_deadline_monotonic()
-        after = time.monotonic()
-
-    assert deadline > after  # deadline is in the future
-    assert deadline <= before + 24 * 3600  # within 24 hours
-
-
-@pytest.mark.asyncio
-async def test_compute_scan_deadline_wrap_around_at_4am(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wrap-around window (start=22, end=6): at 4 AM, deadline is today's 6 AM."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 22)
-    monkeypatch.setattr(controller, "_get_scan_end_hour", lambda: 6)
-
-    # Simulate 4 AM — end_hour=6 is still in the future today
-    fake_now = datetime.datetime(2025, 1, 15, 4, 0, 0)  # noqa: DTZ001
-    with patch(_FAKE_DATETIME_PATH) as mock_dt:
-        mock_dt.datetime.now.return_value = fake_now
-        mock_dt.timedelta = datetime.timedelta
-
-        before = time.monotonic()
-        deadline = controller._compute_scan_deadline_monotonic()
-
-    # From 4:00 to 6:00 = 2 hours = 7200 seconds
-    expected_seconds = 2 * 3600
-    assert abs((deadline - before) - expected_seconds) < 5  # within 5 seconds tolerance
-
-
-@pytest.mark.asyncio
-async def test_compute_scan_deadline_start_equals_end(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When start_hour == end_hour, deadline is exactly 24 hours from now."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 3)
-    monkeypatch.setattr(controller, "_get_scan_end_hour", lambda: 3)
-
-    before = time.monotonic()
-    deadline = controller._compute_scan_deadline_monotonic()
-
-    assert abs((deadline - before) - 24 * 3600) < 1  # within 1 second tolerance
-
-
-# ---------------------------------------------------------------------------
-# _is_in_scan_window
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_is_in_scan_window_inside_same_day(monkeypatch: pytest.MonkeyPatch) -> None:
-    """At 2 AM with start=0, end=6: inside the window."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 0)
-    monkeypatch.setattr(controller, "_get_scan_end_hour", lambda: 6)
-    fake_now = datetime.datetime(2025, 1, 15, 2, 0, 0)  # noqa: DTZ001
-    with patch(_FAKE_DATETIME_PATH) as mock_dt:
-        mock_dt.datetime.now.return_value = fake_now
-        assert controller._is_in_scan_window() is True
-
-
-@pytest.mark.asyncio
-async def test_is_in_scan_window_outside_same_day(monkeypatch: pytest.MonkeyPatch) -> None:
-    """At noon with start=0, end=6: outside the window."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 0)
-    monkeypatch.setattr(controller, "_get_scan_end_hour", lambda: 6)
-    fake_now = datetime.datetime(2025, 1, 15, 12, 0, 0)  # noqa: DTZ001
-    with patch(_FAKE_DATETIME_PATH) as mock_dt:
-        mock_dt.datetime.now.return_value = fake_now
-        assert controller._is_in_scan_window() is False
-
-
-@pytest.mark.asyncio
-async def test_is_in_scan_window_inside_wrap_around(monkeypatch: pytest.MonkeyPatch) -> None:
-    """At 2 AM with start=22, end=6: inside the wrap-around window."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 22)
-    monkeypatch.setattr(controller, "_get_scan_end_hour", lambda: 6)
-    fake_now = datetime.datetime(2025, 1, 15, 2, 0, 0)  # noqa: DTZ001
-    with patch(_FAKE_DATETIME_PATH) as mock_dt:
-        mock_dt.datetime.now.return_value = fake_now
-        assert controller._is_in_scan_window() is True
-
-
-@pytest.mark.asyncio
-async def test_is_in_scan_window_outside_wrap_around(monkeypatch: pytest.MonkeyPatch) -> None:
-    """At noon with start=22, end=6: outside the wrap-around window."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 22)
-    monkeypatch.setattr(controller, "_get_scan_end_hour", lambda: 6)
-    fake_now = datetime.datetime(2025, 1, 15, 12, 0, 0)  # noqa: DTZ001
-    with patch(_FAKE_DATETIME_PATH) as mock_dt:
-        mock_dt.datetime.now.return_value = fake_now
-        assert controller._is_in_scan_window() is False
-
-
-# ---------------------------------------------------------------------------
-# Deadline gating in _run_background_scan
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_run_background_scan_skips_past_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Tracks are skipped when the deadline has already passed."""
-    controller = _make_controller()
-
-    p1 = _make_aa_provider("prov-1", available=True)
-    p1.domain = "p1"
-    monkeypatch.setattr(
-        controller.__class__,
-        "providers",
-        property(lambda _self: [p1]),
-    )
-
-    candidates = [
-        {
-            "item_id": f"track-{i}",
-            "provider_instance": "filesystem_local",
-            "missing_domains": ["p1"],
-        }
-        for i in range(3)
-    ]
-    monkeypatch.setattr(
-        controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
-    )
-
-    # Deadline already expired
-    monkeypatch.setattr(
-        controller, "_compute_scan_deadline_monotonic", lambda: time.monotonic() - 1
-    )
-
-    streaming_called = False
-
-    async def _track_streaming(_sd: object, _providers: object) -> None:
-        nonlocal streaming_called
-        streaming_called = True
-
-    monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
-
-    await controller._run_background_scan()
-
-    assert not streaming_called
-
-
-# ---------------------------------------------------------------------------
-# setup() catch-up behaviour
-# ---------------------------------------------------------------------------
-
-
-def test_setup_schedules_catchup_when_in_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """setup() creates an immediate scan task when booting inside the scan window."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_configure_thread_caps", lambda: None)
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 0)
-    monkeypatch.setattr(controller, "_is_in_scan_window", lambda: True)
-
-    create_task_calls: list[object] = []
-    controller.mass.create_task = MagicMock(side_effect=create_task_calls.append)  # type: ignore[method-assign]
-
-    controller.setup()
-
-    assert len(create_task_calls) == 1
-
-
-def test_setup_no_catchup_when_outside_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """setup() does NOT create an immediate scan task when outside the scan window."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_configure_thread_caps", lambda: None)
-    monkeypatch.setattr(controller, "_get_scan_start_hour", lambda: 0)
-    monkeypatch.setattr(controller, "_is_in_scan_window", lambda: False)
-
-    create_task_calls: list[object] = []
-    controller.mass.create_task = MagicMock(side_effect=create_task_calls.append)  # type: ignore[method-assign]
-
-    controller.setup()
-
-    assert len(create_task_calls) == 0
