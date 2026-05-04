@@ -63,9 +63,9 @@ class ScrobblerHelper:
             return
 
         # handle optional player_id filtering
-        if self.config.mass_playerids and report.playerid not in self.config.mass_playerids:
+        if self.config.mass_playerids and report.player_id not in self.config.mass_playerids:
             self.logger.debug(
-                "skipped scrobbling for player %s due to player filter", report.playerid
+                "skipped scrobbling for player %s due to player filter", report.player_id
             )
             return
 

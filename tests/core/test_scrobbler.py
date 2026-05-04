@@ -160,7 +160,7 @@ def create_report(
             fully_played=duration - seconds_played < 5,
             is_playing=is_playing,
             version=version,
-            playerid=player_id,
+            player_id=player_id,
         )
     )
 
