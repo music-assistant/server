@@ -30,6 +30,11 @@ CHUNK_PROCESS_TIMEOUT = 1.0
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
+# Wall-clock cap for a single _run_background_scan invocation. After this
+# budget is exhausted, in-flight tracks are allowed to finish (bounded by
+# their per-track timeout) but no new tracks are started. Remaining
+# candidates are picked up by the next scheduled run.
+BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 CONF_BACKGROUND_SCAN_CONCURRENCY = "background_scan_concurrency"
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY = 1
 # providers whose tracks can be analyzed from their local filesystem path
@@ -72,6 +77,24 @@ class AudioAnalysisController:
             metadata={"task_domain": "audio_analysis"},
             allow_retry=True,
         )
+
+    async def close(self) -> None:
+        """Drain in-flight sessions and chunk workers on shutdown.
+
+        Cancels live-playback chunk workers and dispatches provider.cancel()
+        for every active session so providers can release their per-session
+        state. Awaits workers so their cancellation completes before the
+        event loop is torn down.
+        """
+        workers = list(self._workers.values())
+        self._workers.clear()
+        for worker in workers:
+            if not worker.done():
+                worker.cancel()
+        for session_key in list(self._active_sessions):
+            self._cancel_providers(session_key)
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
 
     def _configure_thread_caps(self) -> None:
         """Cap PyTorch threading so Audio Analysis inference stays around a quarter of cpu_count."""
@@ -345,10 +368,13 @@ class AudioAnalysisController:
             return
 
         scan_started = time.monotonic()
+        run_deadline = scan_started + BACKGROUND_SCAN_RUN_BUDGET_SECONDS
         self.logger.info(
-            "Background analysis (streaming): %d track(s) pending across %d provider(s)",
+            "Background analysis (streaming): %d track(s) pending across %d provider(s); "
+            "run budget %dh",
             len(candidates),
             len(providers),
+            BACKGROUND_SCAN_RUN_BUDGET_SECONDS // 3600,
         )
 
         concurrency = self._get_scan_concurrency()
@@ -356,10 +382,15 @@ class AudioAnalysisController:
         provider_by_domain = {p.domain: p for p in providers}
 
         processed = 0
+        deferred = 0
 
         async def _run_one(candidate: dict[str, Any]) -> None:
-            nonlocal processed
+            nonlocal processed, deferred
             async with semaphore:
+                if time.monotonic() >= run_deadline:
+                    deferred += 1
+                    return
+
                 item_id = candidate["item_id"]
                 provider_instance = candidate["provider_instance"]
                 missing = candidate["missing_domains"]
@@ -396,11 +427,20 @@ class AudioAnalysisController:
         await asyncio.gather(*(_run_one(c) for c in candidates))
 
         elapsed = time.monotonic() - scan_started
-        self.logger.info(
-            "Background analysis: complete (%d candidates processed in %.1fs)",
-            processed,
-            elapsed,
-        )
+        if deferred:
+            self.logger.info(
+                "Background analysis: run-budget reached "
+                "(%d processed, %d deferred to next run, %.1fs elapsed)",
+                processed,
+                deferred,
+                elapsed,
+            )
+        else:
+            self.logger.info(
+                "Background analysis: complete (%d candidates processed in %.1fs)",
+                processed,
+                elapsed,
+            )
 
     async def _run_background_streaming_for_track(
         self,
@@ -429,6 +469,14 @@ class AudioAnalysisController:
                 self._run_background_streaming_inner(session_key, streamdetails, providers),
                 timeout=BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
             )
+        except asyncio.CancelledError:
+            # CancelledError inherits from BaseException so the broad except below
+            # does NOT catch it. Clean up per-session state, then re-raise so the
+            # cancel propagates to the caller (gather → _run_background_scan →
+            # TasksController) and is recorded as TaskStatus.CANCELLED.
+            self.logger.debug("Background analysis cancelled for %s", session_key)
+            self._cancel_providers(session_key)
+            raise
         except TimeoutError:
             self.logger.warning(
                 "Background analysis exceeded %ds budget for %s, skipping",

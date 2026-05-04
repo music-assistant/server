@@ -328,6 +328,7 @@ class StreamsController(CoreController):
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self._audio_analysis.close()
         await self._server.close()
 
     async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:

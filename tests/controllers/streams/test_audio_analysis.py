@@ -404,3 +404,102 @@ async def test_run_background_scan_concurrency_semaphore(
     await controller._run_background_scan()
 
     assert max_in_flight == 2
+
+
+@pytest.mark.asyncio
+async def test_background_streaming_cancellation_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CancelledError mid-track must trigger _cancel_providers and re-raise."""
+    controller = _make_controller()
+    streamdetails = _make_streamdetails(path="/music/test.flac")
+    p = _make_aa_provider("p1", available=True)
+    controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+
+    session_key = streamdetails.uri
+
+    async def _inner_cancelled(_session_key: str, _sd: object, _providers: object) -> None:
+        # Simulate the inner having registered the session before being cancelled.
+        controller._active_sessions[session_key] = {"p1"}
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(controller, "_run_background_streaming_inner", _inner_cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await controller._run_background_streaming_for_track(streamdetails, [p])
+
+    # Session must be popped and provider.cancel scheduled.
+    assert session_key not in controller._active_sessions
+    p.cancel.assert_called_once_with(session_key)
+
+
+@pytest.mark.asyncio
+async def test_run_background_scan_defers_past_run_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tracks past the run-budget deadline are deferred to the next run."""
+    controller = _make_controller()
+
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "p1"
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    candidates = [
+        {
+            "item_id": f"track-{i}",
+            "provider_instance": "filesystem_local",
+            "missing_domains": ["p1"],
+        }
+        for i in range(3)
+    ]
+    monkeypatch.setattr(
+        controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
+    )
+
+    # Force budget to negative so every candidate is past deadline.
+    monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_SCAN_RUN_BUDGET_SECONDS", -1)
+
+    streaming_called = False
+
+    async def _track_streaming(_sd: object, _providers: object) -> None:
+        nonlocal streaming_called
+        streaming_called = True
+
+    monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
+
+    await controller._run_background_scan()
+
+    assert not streaming_called
+
+
+@pytest.mark.asyncio
+async def test_close_drains_sessions_and_workers() -> None:
+    """close() cancels in-flight chunk workers and dispatches provider cancels."""
+    controller = _make_controller()
+
+    # Real asyncio task that swallows cancellation cleanly.
+    async def _busy_worker() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            return
+
+    worker_task = asyncio.create_task(_busy_worker())
+    controller._workers["track://test/a"] = worker_task
+
+    p = _make_aa_provider("p1", available=True)
+    controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    controller._active_sessions["track://test/a"] = {"p1"}
+
+    await controller.close()
+
+    # Worker awaited to completion; both dicts drained.
+    assert worker_task.done()
+    assert controller._workers == {}
+    assert controller._active_sessions == {}
+    # Provider cancel scheduled with the session key.
+    p.cancel.assert_called_once_with("track://test/a")
