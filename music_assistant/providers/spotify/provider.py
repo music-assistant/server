@@ -666,7 +666,7 @@ class SpotifyProvider(MusicProvider):
                 if (item and item["id"])
             ]
         except MediaNotFoundError:
-            self.logger.warning("Unable to fetch top tracks for artist %s", prov_artist_id)
+            self.logger.info("Top tracks search for artist %s appears to have been removed by Spotify for this account.", prov_artist_id)
             return []
 
     async def library_add(self, item: MediaItemType) -> bool:
