@@ -251,7 +251,7 @@ class StreamsController(CoreController):
                 description="Log level for the Smart Fades mixer and analyzer.",
                 options=CONF_ENTRY_LOG_LEVEL.options,
                 default_value="GLOBAL",
-                category="generic",
+                category="audio_analysis",
                 advanced=True,
             ),
             ConfigEntry(
