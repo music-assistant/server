@@ -139,7 +139,6 @@ class AirPlay2Stream(AirPlayProtocol):
         player_id = self.player.player_id
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST)
         assert isinstance(sync_adjust, int)  # for type checker
-        self._cli_start_ts = time.time()
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
@@ -221,6 +220,8 @@ class AirPlay2Stream(AirPlayProtocol):
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
+            if "main: DACP ID set to:" in line:
+                self._cli_start_ts = time.time()
             if "player: Registered callback to device_streaming_cb" in line:
                 # successfully connected
                 self._connected.set()
