@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import os
 import time
 from math import inf
@@ -12,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 import torch
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
-from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
@@ -33,12 +33,8 @@ CHUNK_PROCESS_TIMEOUT_SECONDS = 1.0
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
-# Wall-clock cap for a single _run_background_scan invocation. After this
-# budget is exhausted, in-flight tracks are allowed to finish (bounded by
-# their per-track timeout) but no new tracks are started. Remaining
-# candidates are picked up by the next scheduled run.
+# Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
-# providers whose tracks can be analyzed from their local filesystem path
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -46,6 +42,7 @@ FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -449,10 +446,8 @@ class AudioAnalysisController:
                 timeout=BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
-            # CancelledError inherits from BaseException so the broad except below
-            # does NOT catch it. Clean up per-session state, then re-raise so the
-            # cancel propagates to the caller (gather → _run_background_scan →
-            # TasksController) and is recorded as TaskStatus.CANCELLED.
+            # CancelledError inherits from BaseException — the broad except below
+            # does not catch it. Clean up the session, then re-raise.
             self.logger.debug("Background analysis cancelled for %s", session_key)
             self._cancel_providers(session_key)
             raise
@@ -485,15 +480,10 @@ class AudioAnalysisController:
         if not isinstance(streamdetails.path, str) or not streamdetails.path:
             return
 
-        # Derive the PCM format from streamdetails the same way the live playback
-        # path does (audio_buffer.py:385). Source bit depth, sample rate, and
-        # channel count are preserved; only content_type is overridden so ffmpeg
-        # decodes rather than re-muxing the source codec.
-        pcm_format = AudioFormat(
+        # Override content_type so ffmpeg decodes rather than re-muxing the source codec.
+        pcm_format = dataclasses.replace(
+            streamdetails.audio_format,
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
-            sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
-            channels=streamdetails.audio_format.channels,
         )
 
         accepted = await self._start_analysis_on_providers(
@@ -504,8 +494,6 @@ class AudioAnalysisController:
             return
         self._active_sessions[session_key] = accepted
 
-        # Reuse the canonical decode pipeline used by live playback. For
-        # LOCAL_FILE sources this runs ffmpeg flat-out (no -re pacing).
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
         async for chunk in audio_source:
             if session_key not in self._active_sessions:
@@ -535,10 +523,8 @@ class AudioAnalysisController:
         if not filesystem_domains:
             return []
 
-        # CROSS JOIN every track against every AA-provider domain it could need,
-        # then keep only (track, domain) pairs where no analysis row exists.
-        # GROUP_CONCAT collapses the surviving missing domains per track. Tracks
-        # that are fully covered produce zero pair-rows and so don't appear.
+        # CROSS JOIN (track x possible domain), keep pairs with no analysis row,
+        # GROUP_CONCAT the missing domains per track.
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(
             f"SELECT :aa_{i} AS aa_provider_domain" for i in range(len(aa_provider_domains))

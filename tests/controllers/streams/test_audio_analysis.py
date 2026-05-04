@@ -7,7 +7,8 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import StreamType
+from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
@@ -191,10 +192,12 @@ def _make_streamdetails(*, path: str, item_id: str = "test-item") -> MagicMock:
     sd = MagicMock()
     sd.path = path
     sd.uri = f"track://test/{path}"
-    sd.audio_format = MagicMock()
-    sd.audio_format.sample_rate = 44100
-    sd.audio_format.bit_depth = 16
-    sd.audio_format.channels = 2
+    sd.audio_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+    )
     sd.item_id = item_id
     sd.provider = "test-provider"
     sd.media_type = MagicMock()
