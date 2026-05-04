@@ -1055,12 +1055,18 @@ class MusicProvider(Provider):
                         lib_narrator = library_item.narrators[0]
                     if len(prov_item.narrators) > 0:
                         prov_narrator = prov_item.narrators[0]
-                    if (isinstance(lib_author, Artist) and not isinstance(prov_author, Artist)) or (
-                        isinstance(lib_narrator, Artist) and not isinstance(prov_narrator, Artist)
-                    ):
-                        library_item = await self.mass.music.audiobooks.update_item_in_library(
-                            library_item.item_id, prov_item
-                        )
+                    for possible_type in [Artist, str]:
+                        if (
+                            isinstance(lib_author, possible_type)
+                            and not isinstance(prov_author, possible_type)
+                        ) or (
+                            isinstance(lib_narrator, possible_type)
+                            and not isinstance(prov_narrator, possible_type)
+                        ):
+                            library_item = await self.mass.music.audiobooks.update_item_in_library(
+                                library_item.item_id, prov_item
+                            )
+                            break
 
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
