@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "mammamiradio",
+  "name": "mammamiradio",
+  "description": "AI-generated Italian radio station — continuous music, banter, and ads. Self-hosted via the mammamiradio HA addon.",
+  "codeowners": ["@florianhorner"],
+  "requirements": [],
+  "documentation": "https://github.com/florianhorner/mammamiradio",
+  "multi_instance": false,
+  "stage": "alpha"
+}
