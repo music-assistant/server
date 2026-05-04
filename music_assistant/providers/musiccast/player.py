@@ -696,14 +696,14 @@ class MusicCastPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        if len(self.physical_device.zone_devices) > 1:
-            # zone handling
-            # only a single zone may have netusb capability
-            for zone_name, dev in self.physical_device.zone_devices.items():
-                if zone_name == self.zone_device.zone_name:
-                    continue
-                if dev.is_netusb:
-                    await self._handle_zone_grouping(dev)
+        # if len(self.physical_device.zone_devices) > 1:
+        #     # zone handling
+        #     # only a single zone may have netusb capability
+        #     for zone_name, dev in self.physical_device.zone_devices.items():
+        #         if zone_name == self.zone_device.zone_name:
+        #             continue
+        #         if dev.is_netusb:
+        #             await self._handle_zone_grouping(dev)
         async with self.update_lock:
             # just in case
             if self.zone_device.source_id != "server":
