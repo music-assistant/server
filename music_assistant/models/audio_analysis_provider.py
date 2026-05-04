@@ -28,43 +28,13 @@ class AnalysisSessionData:
 
 
 class AudioAnalysisProvider(Provider):
-    """Base representation of an Audio Analysis Provider.
+    """
+    Base representation of an Audio Analysis Provider.
 
-    Audio Analysis Provider implementations should inherit from this base model.
-    These providers receive PCM audio chunks during streaming and produce analysis
-    results such as beat tracking, key detection, phrase boundaries, etc.
-
-    Providers implement four hooks (`_start_analysis`, `process_pcm_chunk`,
-    `_finalize`, optionally `post_analysis`) and the base class manages session
-    lifecycle, version gating, and cleanup. The same hooks drive both live
-    playback (PCM from `AudioBuffer`) and background scans (PCM from ffmpeg
-    decoding a local file). Providers do not need to know which context they
-    are running in.
-
-    Provider contract (binding):
-
-    1. `process_pcm_chunk` MUST `await` all work that processes the chunk.
-       The controller serializes chunks across providers and uses this to
-       backpressure the audio source. Fire-and-forget per-chunk work breaks
-       backpressure and can pile up unboundedly at flat-out background rates.
-
-    2. Providers MAY spawn background tasks during `process_pcm_chunk` only
-       when the total task count is bounded by per-track properties (e.g. a
-       fixed number of CLAP target windows configured per track). All such
-       tasks MUST be tracked and awaited in `_finalize`.
-
-    3. Providers MUST NOT begin work for session N+1 while session N is
-       still active. Per-session state should be keyed on `session_id`.
-
-    4. `_finalize` MUST return the AudioAnalysisData it persisted, or None
-       if it chose not to persist (e.g. insufficient audio). The base class
-       uses the return value to drive `post_analysis`.
-
-    5. `post_analysis` is optional and called by the base class after
-       `_finalize` returns a non-None analysis. It is the place for filesystem
-       side effects such as tag-writing. Implementations MUST self-gate on
-       whether `streamdetails.path` is a writable filesystem path, because
-       this hook fires for both live and background scans.
+    Receives PCM audio chunks during streaming and produces analysis results
+    such as beat tracking, key detection, or loudness. The same hooks drive
+    both live playback and background scans; providers do not need to know
+    which context they are running in.
     """
 
     # Version of the analysis algorithm. Providers should increment this when
@@ -89,10 +59,9 @@ class AudioAnalysisProvider(Provider):
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> bool:
-        """Start analysis for a new session.
+        """
+        Start analysis for a new session.
 
-        Checks whether analysis is needed (version gating), stores session data,
-        and calls _start_analysis for provider-specific initialization.
         Returns True if the provider accepted the session.
 
         :param session_id: Session ID created by the AudioAnalysisController.
@@ -123,11 +92,10 @@ class AudioAnalysisProvider(Provider):
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> bool:
-        """Provider-specific initialization for a new analysis session.
+        """
+        Provider-specific initialization for a new analysis session.
 
-        Called by start_analysis after version gating and session storage.
         Return False to reject the session (e.g. unsupported format).
-        Session data is available in self._sessions[session_id].
 
         :param session_id: The analysis session ID.
         :param streamdetails: The stream details for the item being analyzed.
@@ -140,9 +108,11 @@ class AudioAnalysisProvider(Provider):
         session_id: str,
         pcm_chunk: bytes,
     ) -> None:
-        """Process a PCM audio chunk.
+        """
+        Process a PCM audio chunk.
 
-        Called for each chunk of audio data during streaming.
+        Implementations MUST `await` all chunk-processing work; the controller
+        relies on this to backpressure the audio source.
 
         :param session_id: The analysis session ID.
         :param pcm_chunk: Raw PCM audio data.
@@ -150,27 +120,17 @@ class AudioAnalysisProvider(Provider):
 
     @abstractmethod
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
-        """Finalize analysis and return the persisted analysis (or None to skip).
+        """
+        Finalize analysis and return the persisted analysis (or None to skip).
 
-        Called when the track has finished streaming. Providers are responsible
-        for storing their results via mass.streams.audio_analysis.set_audio_analysis().
-        Return the AudioAnalysisData that was persisted, or None if the provider
-        chose not to store a result (e.g. insufficient audio data). The base
-        class uses the returned value to drive the post_analysis hook.
+        Providers store results via mass.streams.audio_analysis.set_audio_analysis().
+        The returned value drives the post_analysis hook; return None to skip it.
 
         :param session_id: The analysis session ID.
         """
 
     async def finalize(self, session_id: str) -> None:
-        """Finalize analysis, optionally fire post_analysis, and clean up state.
-
-        Calls _finalize, then post_analysis (when _finalize returned a non-None
-        analysis), then removes the session from _sessions. Both _finalize and
-        post_analysis exceptions are caught and logged — neither is allowed to
-        leave session state behind or to propagate to the controller.
-
-        :param session_id: The analysis session ID.
-        """
+        """Finalize analysis, optionally fire post_analysis, and clean up state."""
         analysis: AudioAnalysisData | None = None
         try:
             analysis = await self._finalize(session_id)
@@ -191,17 +151,12 @@ class AudioAnalysisProvider(Provider):
         streamdetails: StreamDetails,
         analysis: AudioAnalysisData,
     ) -> None:
-        """Run side effects after analysis is finalized and persisted.
+        """
+        Run side effects after analysis is finalized and persisted.
 
-        Called by the base class `finalize` wrapper after `_finalize` returns
-        a non-None analysis. Default is a no-op. Providers override this to
-        perform filesystem side effects such as writing tags back to the
-        source file. Failures are caught by the base class and logged — they
-        must not undo the analysis row.
-
-        Implementations must self-gate on whether `streamdetails.path` is a
-        writable filesystem path, since this hook fires for both live and
-        background-scan analyses.
+        Default is a no-op. Implementations MUST self-gate on whether
+        `streamdetails.path` is a writable filesystem path, since this hook
+        fires for both live and background-scan analyses.
 
         :param streamdetails: The stream details for the analyzed item.
         :param analysis: The analysis data that was persisted by `_finalize`.

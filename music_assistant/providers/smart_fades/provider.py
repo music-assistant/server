@@ -142,10 +142,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             await self._process_block(data)
 
     async def cancel(self, session_id: str) -> None:
-        """Cancel a beat tracking session.
-
-        :param session_id: The analysis session ID.
-        """
+        """Cancel a beat tracking session."""
         data = self._data.pop(session_id, None)
         if data:
             data.pcm_buffer.clear()
@@ -313,12 +310,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
     def _compute_energy_and_spectral_centroids(
         self, pcm_22k: np.ndarray, data: SmartFadesData
     ) -> None:
-        """Compute fine-resolution RMS energy and spectral centroid for a block.
-
-        RMS is computed in 100ms windows (~2205 samples at 22050 Hz).
-        Spectral centroid is computed per hop frame (~43 frames/s).
-        Both are interpolated to the fixed 1800-bin output representation in _finalize.
-        """
+        """Compute fine-resolution RMS energy and spectral centroid for a block."""
         sr = ANALYSIS_SAMPLE_RATE
         # RMS energy in 100ms windows, including partial final window
         window_samples = sr // 10  # 2205 samples = 100ms

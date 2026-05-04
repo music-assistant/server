@@ -23,7 +23,8 @@ FIXTURE_AUDIO = Path(__file__).parent.parent / "fixtures" / "audio" / "short_tes
 
 @pytest.mark.skipif(not FIXTURE_AUDIO.exists(), reason="fixture FLAC missing")
 async def test_streaming_background_scan_loudness_end_to_end() -> None:
-    """Drive a real LoudnessAnalysisProvider through _run_background_streaming_for_track.
+    """
+    Drive a real LoudnessAnalysisProvider through _run_background_streaming_for_track.
 
     Verifies:
     - An audio_analysis row is written (captured via mocked set_audio_analysis)

@@ -188,11 +188,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         streamdetails: StreamDetails,
         analysis: AudioAnalysisData,
     ) -> None:
-        """Write the ReplayGain track-gain tag back to the source file when configured.
-
-        :param streamdetails: Stream context for the analyzed track.
-        :param analysis: The persisted analysis result produced by ``_finalize``.
-        """
+        """Write the ReplayGain track-gain tag back to the source file when configured."""
         if not isinstance(streamdetails.path, str) or not streamdetails.path:
             return
         if not self.config.get_value(CONF_WRITE_REPLAYGAIN_TAGS):

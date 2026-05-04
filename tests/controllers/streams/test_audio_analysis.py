@@ -292,7 +292,8 @@ async def test_run_background_scan_uses_union_candidate_query(
 async def test_find_candidates_handles_sqlite_row_without_get(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_find_candidates_missing_analysis must use __getitem__ not .get() on rows.
+    """
+    _find_candidates_missing_analysis must use __getitem__ not .get() on rows.
 
     sqlite3.Row supports only __getitem__, not .get(). This regression test
     uses a row class that lacks .get() to ensure we never reintroduce the bug.

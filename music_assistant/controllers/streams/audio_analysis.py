@@ -55,10 +55,7 @@ class AudioAnalysisController:
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
     def __init__(self, streams: StreamsController) -> None:
-        """Initialize the AudioAnalysisController.
-
-        :param streams: Parent StreamsController instance.
-        """
+        """Initialize the AudioAnalysisController."""
         self.streams = streams
         self.mass = streams.mass
         self.logger = self.mass.logger.getChild("audio_analysis")
@@ -79,13 +76,7 @@ class AudioAnalysisController:
         )
 
     async def close(self) -> None:
-        """Drain in-flight sessions and chunk workers on shutdown.
-
-        Cancels live-playback chunk workers and dispatches provider.cancel()
-        for every active session so providers can release their per-session
-        state. Awaits workers so their cancellation completes before the
-        event loop is torn down.
-        """
+        """Drain in-flight sessions and chunk workers on shutdown."""
         workers = list(self._workers.values())
         self._workers.clear()
         for worker in workers:
@@ -126,9 +117,6 @@ class AudioAnalysisController:
         """
         Start analysis session for a track across all providers.
 
-        Starts an analysis session for the given track on all available
-        Audio Analysis providers.
-
         :param audio_buffer: The AudioBuffer to observe for PCM chunks.
         :param streamdetails: The stream details for the item being analyzed.
         """
@@ -158,7 +146,6 @@ class AudioAnalysisController:
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=10)
         self._workers[session_key] = self.mass.create_task(self._chunk_worker(session_key, queue))
 
-        # Build and register closures for callbacks on the audio buffer
         finalized = False
 
         async def _on_chunk(position_seconds: int, pcm_data: bytes, is_last_chunk: bool) -> None:  # noqa: ARG001
@@ -447,16 +434,7 @@ class AudioAnalysisController:
         streamdetails: StreamDetails,
         providers: list[AudioAnalysisProvider],
     ) -> None:
-        """Run a single track through the streaming pipeline using ffmpeg as the source.
-
-        Wraps the entire body in a per-track wall-clock budget. On timeout, ffmpeg
-        failure, or any exception, all providers are cancelled and the session is
-        cleaned up. On clean EOF, finalize is dispatched per provider (which fires
-        post_analysis via the base class wrapper).
-
-        :param streamdetails: Stream details for the track to analyze.
-        :param providers: AA providers that need this track. Caller computes the set.
-        """
+        """Run a single track through the streaming pipeline using ffmpeg as the source."""
         session_key = streamdetails.uri
         if session_key in self._active_sessions:
             self.logger.debug(
@@ -502,12 +480,7 @@ class AudioAnalysisController:
         streamdetails: StreamDetails,
         providers: list[AudioAnalysisProvider],
     ) -> None:
-        """Inner body of _run_background_streaming_for_track, wrapped by wait_for.
-
-        :param session_key: The session key (streamdetails.uri).
-        :param streamdetails: Stream details for the track to analyze.
-        :param providers: AA providers that need this track.
-        """
+        """Inner body of _run_background_streaming_for_track, wrapped by wait_for."""
         if not isinstance(streamdetails.path, str) or not streamdetails.path:
             self.logger.debug("Background streaming: no local path for %s, skipping", session_key)
             return
@@ -537,8 +510,8 @@ class AudioAnalysisController:
 
         async with FFMpeg(
             audio_input=streamdetails.path,
-            input_format=streamdetails.audio_format,  # source format — input
-            output_format=pcm_format,  # PCM_S16LE — output
+            input_format=streamdetails.audio_format,
+            output_format=pcm_format,
             collect_log_history=True,
         ) as ffmpeg_proc:
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
@@ -546,7 +519,6 @@ class AudioAnalysisController:
                     # all providers evicted — bail early
                     break
                 await self._distribute_chunk(session_key, chunk)
-            # Clean EOF: finalize the providers still in the session
             if session_key in self._active_sessions:
                 self._finalize_providers(session_key)
 
@@ -555,15 +527,7 @@ class AudioAnalysisController:
         aa_provider_domains: list[str],
         limit: int,
     ) -> list[dict[str, Any]]:
-        """Return tracks where any of the given AA provider domains lacks analysis.
-
-        Returns rows with shape: {item_id, provider_instance, missing_domains}.
-        Order: arbitrary but stable within one call.
-
-        :param aa_provider_domains: List of AA provider domains to consider.
-        :param limit: Maximum number of candidates to return.
-        :returns: List of dicts with item_id, provider_instance, missing_domains.
-        """
+        """Return rows {item_id, provider_instance, missing_domains} for tracks lacking analysis."""
         if not aa_provider_domains:
             return []
 
@@ -660,16 +624,7 @@ class AudioAnalysisController:
                 self.mass.create_task(provider.cancel(session_key))
 
     async def _distribute_chunk(self, session_key: str, pcm_data: bytes) -> None:
-        """Fan a single PCM chunk to every provider in the session.
-
-        Times out and evicts providers per CHUNK_PROCESS_TIMEOUT. Also evicts
-        providers that raise an exception (a provider that errors mid-session
-        cannot keep processing). Pops the session from _active_sessions if all
-        providers get evicted.
-
-        :param session_key: The active session key.
-        :param pcm_data: PCM bytes to process.
-        """
+        """Fan a single PCM chunk to every provider in the session."""
         provider_ids = self._active_sessions.get(session_key)
         if not provider_ids:
             return
@@ -727,10 +682,7 @@ class AudioAnalysisController:
         return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
 
     def _get_scan_concurrency(self) -> int:
-        """Read background scan concurrency from config, clamped to [1, 8].
-
-        :returns: Configured concurrency, or DEFAULT_BACKGROUND_SCAN_CONCURRENCY on any read error.
-        """
+        """Read background scan concurrency from config, clamped to [1, 8]."""
         try:
             value = int(
                 self.mass.config.get_raw_core_config_value(
