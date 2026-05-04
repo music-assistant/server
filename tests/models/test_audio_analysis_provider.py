@@ -33,6 +33,7 @@ class _StubProvider(AudioAnalysisProvider):
 def _make_provider() -> _StubProvider:
     mass = MagicMock()
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
     manifest = MagicMock()
     manifest.domain = "test_stub_provider"
     config = MagicMock()
