@@ -100,9 +100,21 @@ async def test_get_scan_concurrency_clamps_to_min() -> None:
     assert controller._get_scan_concurrency() == 1
 
 
+def _make_stream_mock(chunks: list[bytes]) -> object:
+    """Return a get_media_stream mock that yields the given chunks."""
+
+    async def _stream(
+        _streamdetails: object, _pcm_format: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    return _stream
+
+
 @pytest.mark.asyncio
-async def test_background_streaming_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ffmpeg chunks reach providers; session is cleaned up on clean EOF."""
+async def test_background_streaming_happy_path() -> None:
+    """PCM chunks reach providers; session is cleaned up on clean EOF."""
     controller = _make_controller()
     streamdetails = _make_streamdetails(path="/music/test.flac")
     p = _make_aa_provider("p1", available=True)
@@ -111,12 +123,7 @@ async def test_background_streaming_happy_path(monkeypatch: pytest.MonkeyPatch) 
     controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
     fake_chunks = [b"\x00\x01" * 512 for _ in range(5)]
-    fake_ffmpeg = _FakeFFMpeg(chunks=fake_chunks, returncode=0)
-
-    monkeypatch.setattr(
-        "music_assistant.controllers.streams.audio_analysis.FFMpeg",
-        lambda **_: fake_ffmpeg,
-    )
+    controller.mass.streams.audio.get_media_stream = _make_stream_mock(fake_chunks)  # type: ignore[method-assign,assignment]
 
     await controller._run_background_streaming_for_track(streamdetails, [p])
 
@@ -140,12 +147,7 @@ async def test_background_streaming_per_track_timeout(monkeypatch: pytest.Monkey
     p.process_pcm_chunk = AsyncMock(side_effect=_hang_chunk)
     controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    fake_ffmpeg = _FakeFFMpeg(chunks=[b"\x00" * 1024] * 50, returncode=0)
-    monkeypatch.setattr(
-        "music_assistant.controllers.streams.audio_analysis.FFMpeg",
-        lambda **_: fake_ffmpeg,
-    )
-
+    controller.mass.streams.audio.get_media_stream = _make_stream_mock([b"\x00" * 1024] * 50)  # type: ignore[method-assign,assignment]
     monkeypatch.setattr(audio_analysis_mod, "BACKGROUND_PER_TRACK_TIMEOUT_SECONDS", 0.2)
 
     await controller._run_background_streaming_for_track(streamdetails, [p])
@@ -161,18 +163,18 @@ async def test_background_streaming_per_track_timeout(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_background_streaming_ffmpeg_startup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ffmpeg startup failure cancels providers cleanly without raising."""
+async def test_background_streaming_ffmpeg_startup_failure() -> None:
+    """get_media_stream failure cancels providers cleanly without raising."""
     controller = _make_controller()
     streamdetails = _make_streamdetails(path="/nonexistent.flac")
     p = _make_aa_provider("p1", available=True)
     p.start_analysis = AsyncMock(return_value=True)
     controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    def _ffmpeg_fail(**_kwargs: object) -> None:
+    def _failing_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes, None]:
         raise RuntimeError("ffmpeg startup failed")
 
-    monkeypatch.setattr("music_assistant.controllers.streams.audio_analysis.FFMpeg", _ffmpeg_fail)
+    controller.mass.streams.audio.get_media_stream = _failing_stream  # type: ignore[method-assign]
 
     # Should not raise
     await controller._run_background_streaming_for_track(streamdetails, [p])
@@ -183,26 +185,6 @@ async def test_background_streaming_ffmpeg_startup_failure(monkeypatch: pytest.M
     assert failure_args[0] == audio_analysis_mod.BACKGROUND_SCAN_TASK_ID
     assert "Failed" in failure_args[1]
     assert "ffmpeg startup failed" in failure_args[1]
-
-
-class _FakeFFMpeg:
-    """Minimal FFMpeg stand-in for tests."""
-
-    def __init__(self, chunks: list[bytes], returncode: int = 0) -> None:
-        self._chunks = chunks
-        self.returncode = returncode
-        self.concat_error = None
-        self.log_history: list[str] = []
-
-    async def __aenter__(self) -> _FakeFFMpeg:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes, None]:
-        for chunk in self._chunks:
-            yield chunk
 
 
 def _make_streamdetails(*, path: str, item_id: str = "test-item") -> MagicMock:

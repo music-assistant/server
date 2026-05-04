@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,13 +13,43 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.loudness_analysis.provider import (
     CONF_WRITE_REPLAYGAIN_TAGS,
     LoudnessAnalysisProvider,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from music_assistant_models.streamdetails import StreamDetails
+
 FIXTURE_AUDIO = Path(__file__).parent.parent / "fixtures" / "audio" / "short_test.flac"
+
+
+async def _real_get_media_stream(
+    sd: StreamDetails, pcm_format: AudioFormat, **_kwargs: object
+) -> AsyncGenerator[bytes, None]:
+    """Real-ffmpeg stand-in for mass.streams.audio.get_media_stream.
+
+    Mirrors the wait-then-close pattern in audio.py:466-528 so close() doesn't
+    hit the SIGINT path on Windows when the process is still running.
+    """
+    assert isinstance(sd.path, str)
+    proc = FFMpeg(
+        audio_input=sd.path,
+        input_format=sd.audio_format,
+        output_format=pcm_format,
+        collect_log_history=True,
+    )
+    try:
+        await proc.start()
+        async for chunk in proc.iter_chunked(pcm_format.pcm_sample_size):
+            yield chunk
+        await proc.wait_with_timeout(5)
+    finally:
+        await proc.close()
 
 
 @pytest.mark.skipif(not FIXTURE_AUDIO.exists(), reason="fixture FLAC missing")
@@ -76,6 +107,8 @@ async def test_streaming_background_scan_loudness_end_to_end() -> None:
 
     mass.create_task = MagicMock(side_effect=_create_task)
     mass.logger.getChild = MagicMock(return_value=MagicMock())
+
+    mass.streams.audio.get_media_stream = _real_get_media_stream
 
     streams = MagicMock()
     streams.mass = mass

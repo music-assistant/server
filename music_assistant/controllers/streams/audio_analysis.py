@@ -24,7 +24,6 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
 )
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
@@ -486,11 +485,10 @@ class AudioAnalysisController:
         if not isinstance(streamdetails.path, str) or not streamdetails.path:
             return
 
-        # Override only the content_type so ffmpeg actually decodes the source
-        # (with input_format=output_format on a compressed source, ffmpeg would
-        # re-mux compressed frames straight through). Sample rate, bit depth,
-        # and channel count are preserved end-to-end so providers see the
-        # source's natural format — same shape as the live playback path.
+        # Derive the PCM format from streamdetails the same way the live playback
+        # path does (audio_buffer.py:385). Source bit depth, sample rate, and
+        # channel count are preserved; only content_type is overridden so ffmpeg
+        # decodes rather than re-muxing the source codec.
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
@@ -506,22 +504,16 @@ class AudioAnalysisController:
             return
         self._active_sessions[session_key] = accepted
 
-        # 1 second of PCM per chunk
-        chunk_size = pcm_format.pcm_sample_size
-
-        async with FFMpeg(
-            audio_input=streamdetails.path,
-            input_format=streamdetails.audio_format,
-            output_format=pcm_format,
-            collect_log_history=True,
-        ) as ffmpeg_proc:
-            async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
-                if session_key not in self._active_sessions:
-                    # all providers evicted — bail early
-                    break
-                await self._distribute_chunk(session_key, chunk)
-            if session_key in self._active_sessions:
-                self._finalize_providers(session_key)
+        # Reuse the canonical decode pipeline used by live playback. For
+        # LOCAL_FILE sources this runs ffmpeg flat-out (no -re pacing).
+        audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
+        async for chunk in audio_source:
+            if session_key not in self._active_sessions:
+                # all providers evicted — bail early
+                break
+            await self._distribute_chunk(session_key, chunk)
+        if session_key in self._active_sessions:
+            self._finalize_providers(session_key)
 
     async def _find_candidates_missing_analysis(
         self,
