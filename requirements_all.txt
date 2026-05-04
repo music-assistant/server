@@ -17,7 +17,7 @@ aiosendspin[server]==5.1.1
 aioslimproto==3.1.8
 aiosonos==0.1.12
 aiosqlite==0.22.1
-aiovban==0.6.3
+aiovban==1.1.0
 alexapy==1.29.17
 async-upnp-client==0.46.2
 audible==0.10.0
