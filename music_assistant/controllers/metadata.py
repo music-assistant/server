@@ -10,6 +10,7 @@ import random
 import urllib.parse
 from base64 import b64encode
 from contextlib import suppress
+from dataclasses import replace
 from time import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -151,6 +152,7 @@ AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "pro
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
+CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"
 CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
 MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
@@ -213,6 +215,17 @@ class MetaDataController(CoreController):
                 "The retrieval of additional rich metadata is a process that is executed slowly "
                 "in the background to not overload these free services with requests. "
                 "You can speedup the process by storing the images and other metadata locally.",
+            ),
+            ConfigEntry(
+                key=CONF_PREFER_LOCAL_GENRES,
+                type=ConfigEntryType.BOOLEAN,
+                label="Use local genre metadata only when available",
+                required=False,
+                default_value=False,
+                description="When enabled, online metadata providers will not add genres to "
+                "items that already have a genre from a local source such as a file tag "
+                "or NFO file. Items with no local genre still receive genres from online "
+                "providers as usual.",
             ),
             ConfigEntry(
                 key=CONF_ENABLE_RADIO_METADATA_LOOKUP,
@@ -1244,6 +1257,11 @@ class MetaDataController(CoreController):
             if mbid := await self._get_artist_mbid(artist):
                 artist.mbid = mbid
 
+        # don't merge online genres on top of source-supplied ones
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
+            artist.metadata.genres
+        )
+
         # collect metadata from all (online)[metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
         if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and artist.mbid:
@@ -1251,6 +1269,8 @@ class MetaDataController(CoreController):
                 if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                     continue
                 if metadata := await provider.get_artist_metadata(artist):
+                    if prefer_local_genres:
+                        metadata = replace(metadata, genres=None)
                     artist.metadata.update(metadata)
                     self.logger.debug(
                         "Fetched metadata for Artist %s on provider %s",
@@ -1297,6 +1317,11 @@ class MetaDataController(CoreController):
                 if album.album_type == AlbumType.UNKNOWN:
                     album.album_type = prov_item.album_type
 
+        # don't merge online genres on top of source-supplied ones
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
+            album.metadata.genres
+        )
+
         # collect metadata from all (online) [metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
         if self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
@@ -1304,6 +1329,8 @@ class MetaDataController(CoreController):
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                     continue
                 if metadata := await provider.get_album_metadata(album):
+                    if prefer_local_genres:
+                        metadata = replace(metadata, genres=None)
                     album.metadata.update(metadata)
                     self.logger.debug(
                         "Fetched metadata for Album %s on provider %s",
@@ -1346,6 +1373,11 @@ class MetaDataController(CoreController):
                 )
                 track.metadata.update(prov_item.metadata)
 
+        # don't merge online genres on top of source-supplied ones
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
+            track.metadata.genres
+        )
+
         # collect metadata from all [metadata] providers
         # Only fetch metadata from these sources if force_refresh is set OR
         # if the track needs a refresh (based on REFRESH_INTERVAL) AND
@@ -1356,6 +1388,8 @@ class MetaDataController(CoreController):
                     continue
 
                 if metadata := await provider.get_track_metadata(track):
+                    if prefer_local_genres:
+                        metadata = replace(metadata, genres=None)
                     track.metadata.update(metadata)
                     self.logger.debug(
                         "Fetched metadata for Track %s on provider %s",

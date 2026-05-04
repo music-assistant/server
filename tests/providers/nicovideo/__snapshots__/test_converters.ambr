@@ -4,6 +4,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -134,6 +135,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'artist_type': 'singer',
           'date_added': None,
           'external_ids': list([
           ]),
@@ -262,6 +264,7 @@
         'album': None,
         'artists': list([
           dict({
+            'artist_type': 'singer',
             'date_added': None,
             'external_ids': list([
             ]),
@@ -421,6 +424,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -547,6 +551,7 @@
 # ---
 # name: test_converter_with_fixture[artists/following_users.json]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -620,6 +625,7 @@
 # ---
 # name: test_converter_with_fixture[artists/user_details.json]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -696,6 +702,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -853,6 +860,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1247,6 +1255,7 @@
         'album': None,
         'artists': list([
           dict({
+            'artist_type': 'singer',
             'date_added': None,
             'external_ids': list([
             ]),
@@ -1485,6 +1494,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1614,6 +1624,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1771,6 +1782,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1966,6 +1978,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2123,6 +2136,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2281,6 +2295,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'artist_type': 'singer',
           'date_added': None,
           'external_ids': list([
           ]),
@@ -2418,6 +2433,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
