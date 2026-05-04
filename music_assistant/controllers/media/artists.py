@@ -263,14 +263,14 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def _remove_author_narrator_from_library(self, db_id: int, recursive: bool) -> None:
         # recursively also remove author/ narrator audiobooks
         for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT album_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id",
+            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id",
             {"artist_id": db_id},
             limit=5000,
         ):
             if not recursive:
-                raise MusicAssistantError("Artist still has albums linked")
+                raise MusicAssistantError("Artist still has audiobooks linked")
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.audiobooks.remove_item_from_library(db_row["album_id"])
+                await self.mass.music.audiobooks.remove_item_from_library(db_row["audiobook_id"])
 
     async def get_provider_artist_toptracks(
         self,
@@ -611,7 +611,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         Artist_type can be omitted for in-library artists.
         """
         if artist_type == ArtistType.SINGER:
-            self.logger.warning("Audiobooks not supported for artist_type ARTIST.")
+            self.logger.warning("Audiobooks not supported for artist_type SINGER.")
             return []
         # always check if we have a library item for this artist
         library_artist = await self.get_library_item_by_prov_id(
@@ -644,10 +644,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         # initialize unique_ids with db_items to prevent duplicates
         unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
         unique_providers = self.mass.music.get_unique_providers()
+        audiobook_method = (
+            self.get_provider_author_audiobooks
+            if artist_type == ArtistType.AUTHOR
+            else self.get_provider_narrator_audiobooks
+        )
         for provider_mapping in library_artist.provider_mappings:
             if provider_mapping.provider_instance not in unique_providers:
                 continue
-            provider_audiobooks = await self.get_provider_author_audiobooks(
+            provider_audiobooks = await audiobook_method(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
             for provider_audiobook in provider_audiobooks:
@@ -694,7 +699,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         prov = cast("MusicProvider", prov)
         if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
-            return await prov.get_author_audiobooks(item_id)
+            return await prov.get_narrator_audiobooks(item_id)
         # fallback implementation using the db
         return await self._get_db_author_narrator_audiobooks(
             item_id=item_id,
