@@ -19,6 +19,10 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
 )
+from music_assistant.controllers.streams.constants import (
+    CONF_BACKGROUND_SCAN_CONCURRENCY,
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+)
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.json import json_dumps, json_loads
@@ -26,7 +30,7 @@ from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 
-CHUNK_PROCESS_TIMEOUT = 1.0
+CHUNK_PROCESS_TIMEOUT_SECONDS = 1.0
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
@@ -35,8 +39,6 @@ BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 # their per-track timeout) but no new tracks are started. Remaining
 # candidates are picked up by the next scheduled run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
-CONF_BACKGROUND_SCAN_CONCURRENCY = "background_scan_concurrency"
-DEFAULT_BACKGROUND_SCAN_CONCURRENCY = 1
 # providers whose tracks can be analyzed from their local filesystem path
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
@@ -158,7 +160,7 @@ class AudioAnalysisController:
                 self.mass.create_task(_finalize_session())
                 return
             try:
-                await asyncio.wait_for(queue.put(pcm_data), timeout=CHUNK_PROCESS_TIMEOUT)
+                await asyncio.wait_for(queue.put(pcm_data), timeout=CHUNK_PROCESS_TIMEOUT_SECONDS)
             except (TimeoutError, asyncio.QueueFull):
                 return
 
@@ -358,10 +360,10 @@ class AudioAnalysisController:
         run_deadline = scan_started + BACKGROUND_SCAN_RUN_BUDGET_SECONDS
         self.logger.info(
             "Background analysis (streaming): %d track(s) pending across %d provider(s); "
-            "run budget %dh",
+            "run budget %.1fh",
             len(candidates),
             len(providers),
-            BACKGROUND_SCAN_RUN_BUDGET_SECONDS // 3600,
+            BACKGROUND_SCAN_RUN_BUDGET_SECONDS / 3600,
         )
 
         concurrency = self._get_scan_concurrency()
@@ -482,18 +484,17 @@ class AudioAnalysisController:
     ) -> None:
         """Inner body of _run_background_streaming_for_track, wrapped by wait_for."""
         if not isinstance(streamdetails.path, str) or not streamdetails.path:
-            self.logger.debug("Background streaming: no local path for %s, skipping", session_key)
             return
 
-        # ffmpeg must DECODE the source to PCM. Build a PCM format that preserves
-        # the source's sample rate and channel count but uses PCM_S16LE as the
-        # content type. All current AA providers expect 16-bit PCM; standardising
-        # here avoids a per-source bit-depth permutation that nothing downstream
-        # would benefit from.
+        # Override only the content_type so ffmpeg actually decodes the source
+        # (with input_format=output_format on a compressed source, ffmpeg would
+        # re-mux compressed frames straight through). Sample rate, bit depth,
+        # and channel count are preserved end-to-end so providers see the
+        # source's natural format — same shape as the live playback path.
         pcm_format = AudioFormat(
-            content_type=ContentType.PCM_S16LE,
+            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=16,
+            bit_depth=streamdetails.audio_format.bit_depth,
             channels=streamdetails.audio_format.channels,
         )
 
@@ -506,7 +507,7 @@ class AudioAnalysisController:
         self._active_sessions[session_key] = accepted
 
         # 1 second of PCM per chunk
-        chunk_size = pcm_format.sample_rate * (pcm_format.bit_depth // 8) * pcm_format.channels
+        chunk_size = pcm_format.pcm_sample_size
 
         async with FFMpeg(
             audio_input=streamdetails.path,
@@ -542,42 +543,48 @@ class AudioAnalysisController:
         if not filesystem_domains:
             return []
 
-        domains_sql = ", ".join(f"'{d}'" for d in filesystem_domains)
-        track_media_type = MediaType.TRACK.value
-        aa_domains_in = ", ".join(f"'{d}'" for d in aa_provider_domains)
-
-        # Find every (item_id, provider_instance) for filesystem tracks, then
-        # left-join the existing analysis rows to figure out which AA domains
-        # are already covered. The resulting "missing_domains" is the diff.
+        # CROSS JOIN every track against every AA-provider domain it could need,
+        # then keep only (track, domain) pairs where no analysis row exists.
+        # GROUP_CONCAT collapses the surviving missing domains per track. Tracks
+        # that are fully covered produce zero pair-rows and so don't appear.
+        fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
+        aa_select_terms = " UNION ALL ".join(
+            f"SELECT :aa_{i} AS aa_provider_domain" for i in range(len(aa_provider_domains))
+        )
+        params: dict[str, Any] = {
+            "media_type": MediaType.TRACK.value,
+            **{f"aa_{i}": d for i, d in enumerate(aa_provider_domains)},
+        }
         query = (
             f"SELECT pm.provider_item_id AS item_id, "
             f"       pm.provider_instance AS provider_instance, "
-            f"       GROUP_CONCAT(aa.aa_provider_domain) AS covered_domains "
+            f"       GROUP_CONCAT(possible.aa_provider_domain) AS missing_domains "
             f"FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
-            f"LEFT JOIN {DB_TABLE_AUDIO_ANALYSIS} aa "
-            f"  ON aa.item_id = pm.provider_item_id "
-            f"  AND aa.provider = pm.provider_instance "
-            f"  AND aa.aa_provider_domain IN ({aa_domains_in}) "
-            f"  AND aa.media_type = '{track_media_type}' "
-            f"WHERE pm.media_type = '{track_media_type}' "
-            f"  AND pm.provider_domain IN ({domains_sql}) "
+            f"CROSS JOIN ({aa_select_terms}) possible "
+            f"WHERE pm.media_type = :media_type "
+            f"  AND pm.provider_domain IN ({fs_inline}) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
+            f"    WHERE aa.item_id = pm.provider_item_id "
+            f"      AND aa.provider = pm.provider_instance "
+            f"      AND aa.aa_provider_domain = possible.aa_provider_domain "
+            f"      AND aa.media_type = :media_type"
+            f"  ) "
             f"GROUP BY pm.provider_item_id, pm.provider_instance"
         )
-        rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+        rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
         results: list[dict[str, Any]] = []
-        all_domains = set(aa_provider_domains)
         for r in rows:
-            covered_raw = r["covered_domains"]
-            covered = set((covered_raw or "").split(",")) - {""}
-            missing = sorted(all_domains - covered)
-            if missing:
-                results.append(
-                    {
-                        "item_id": str(r["item_id"]),
-                        "provider_instance": str(r["provider_instance"]),
-                        "missing_domains": missing,
-                    }
-                )
+            missing_raw = r["missing_domains"]
+            if not missing_raw:
+                continue
+            results.append(
+                {
+                    "item_id": str(r["item_id"]),
+                    "provider_instance": str(r["provider_instance"]),
+                    "missing_domains": sorted(set(missing_raw.split(","))),
+                }
+            )
         return results
 
     async def _start_analysis_on_providers(
@@ -638,7 +645,7 @@ class AudioAnalysisController:
                     return None
                 await asyncio.wait_for(
                     provider.process_pcm_chunk(session_key, pcm_data),
-                    timeout=CHUNK_PROCESS_TIMEOUT,
+                    timeout=CHUNK_PROCESS_TIMEOUT_SECONDS,
                 )
             except TimeoutError:
                 self.logger.warning(

@@ -53,6 +53,9 @@ CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 
+CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
+DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = 1
+
 # Maximum seconds we wait for the buffer to catch up on a forward seek.
 # Beyond this, the stream is re-fetched at the seek position.
 SEEK_WAIT_THRESHOLD: Final[int] = 20

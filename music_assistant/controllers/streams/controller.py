@@ -52,16 +52,14 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio
-from music_assistant.controllers.streams.audio_analysis import (
-    CONF_BACKGROUND_SCAN_CONCURRENCY,
-    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
-    AudioAnalysisController,
-)
+from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    CONF_BACKGROUND_SCAN_CONCURRENCY,
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     DEFAULT_PORT,
     BufferSize,
 )

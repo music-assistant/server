@@ -34,7 +34,7 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
 @pytest.mark.asyncio
 async def test_distribute_chunk_evicts_provider_on_timeout() -> None:
-    """A provider whose process_pcm_chunk exceeds CHUNK_PROCESS_TIMEOUT is evicted."""
+    """A provider whose process_pcm_chunk exceeds CHUNK_PROCESS_TIMEOUT_SECONDS is evicted."""
     controller = _make_controller()
     session_key = "track://provider/abc"
     controller._active_sessions[session_key] = {"slow", "fast"}
@@ -47,7 +47,7 @@ async def test_distribute_chunk_evicts_provider_on_timeout() -> None:
     provider_map = {"slow": slow, "fast": fast}
     controller.mass.get_provider = MagicMock(side_effect=provider_map.get)  # type: ignore[method-assign]
 
-    with patch.object(audio_analysis_mod, "CHUNK_PROCESS_TIMEOUT", 0.05):
+    with patch.object(audio_analysis_mod, "CHUNK_PROCESS_TIMEOUT_SECONDS", 0.05):
         await controller._distribute_chunk(session_key, b"\x00" * 1024)
 
     assert "slow" not in controller._active_sessions[session_key]
@@ -323,19 +323,14 @@ async def test_find_candidates_handles_sqlite_row_without_get(
         def __getitem__(self, key: str) -> object:
             return self._d[key]
 
+    # SQL filters out fully-covered tracks via NOT EXISTS + GROUP BY, so the
+    # rows we receive from the database only contain missing-domain pairs.
     rows = [
         _RowNoGet(
             {
                 "item_id": "track-1",
                 "provider_instance": "filesystem_local",
-                "covered_domains": None,  # no analysis yet
-            }
-        ),
-        _RowNoGet(
-            {
-                "item_id": "track-2",
-                "provider_instance": "filesystem_local",
-                "covered_domains": "loudness_analysis",  # already covered
+                "missing_domains": "loudness_analysis",
             }
         ),
     ]
@@ -343,8 +338,6 @@ async def test_find_candidates_handles_sqlite_row_without_get(
 
     result = await controller._find_candidates_missing_analysis(["loudness_analysis"], 100)
 
-    # track-1 is missing loudness_analysis → included
-    # track-2 is already covered → excluded
     assert len(result) == 1
     assert result[0]["item_id"] == "track-1"
     assert result[0]["missing_domains"] == ["loudness_analysis"]
