@@ -52,7 +52,7 @@ def _make_session_data() -> tuple[LoudnessSessionData, MagicMock]:
 
 @pytest.mark.asyncio
 async def test_finalize_returns_analysis_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_finalize must return the AudioAnalysisData it persisted when analysis succeeds."""
+    """_finalize must return AudioAnalysisData with the parsed metrics when analysis succeeds."""
     provider = _make_provider()
     session_id = "test-session-success"
 
@@ -72,16 +72,10 @@ async def test_finalize_returns_analysis_on_success(monkeypatch: pytest.MonkeyPa
         lambda _log: (-14.5, 7.2, -1.2),
     )
 
-    set_aa_mock: AsyncMock = provider.mass.streams.audio_analysis.set_audio_analysis  # type: ignore[assignment]
-
     result = await provider._finalize(session_id)
 
     assert isinstance(result, AudioAnalysisData)
     assert result.loudness_integrated == -14.5
-    # Verify the same object was persisted via set_audio_analysis
-    set_aa_mock.assert_awaited_once()
-    call_kwargs = set_aa_mock.call_args.kwargs
-    assert call_kwargs["analysis"] is result
 
 
 @pytest.mark.asyncio
@@ -100,12 +94,9 @@ async def test_finalize_returns_none_when_insufficient_duration() -> None:
         audio_format=MagicMock(),
     )
 
-    set_aa_mock: AsyncMock = provider.mass.streams.audio_analysis.set_audio_analysis  # type: ignore[assignment]
-
     result = await provider._finalize(session_id)
 
     assert result is None
-    set_aa_mock.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -163,14 +163,6 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             loudness_range=round(loudness_range, 2) if loudness_range is not None else None,
             true_peak=round(true_peak, 2) if true_peak is not None else None,
         )
-        await self.mass.streams.audio_analysis.set_audio_analysis(
-            item_id=session.streamdetails.item_id,
-            provider_instance_id_or_domain=session.streamdetails.provider,
-            aa_provider_domain=self.domain,
-            analysis=analysis,
-            analysis_version=self.analysis_version,
-            media_type=session.streamdetails.media_type,
-        )
         # update in-memory streamdetails so subsequent seeks use the measurement
         # instead of dynamic normalization
         session.streamdetails.loudness = round(loudness, 2)

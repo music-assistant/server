@@ -256,17 +256,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
             mode=mode,
         )
 
-        await self.mass.streams.audio_analysis.set_audio_analysis(
-            data.item_id,
-            data.provider,
-            self.domain,
-            analysis,
-            analysis_version=self.analysis_version,
-            media_type=MediaType.TRACK,
-        )
-
         self.logger.debug(
-            "Stored beat analysis for %s: BPM=%.1f, %d beats, %d downbeats, key=%s",
+            "Beat analysis for %s: BPM=%.1f, %d beats, %d downbeats, key=%s",
             data.item_id,
             bpm,
             len(beats),

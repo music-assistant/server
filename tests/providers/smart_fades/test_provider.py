@@ -149,7 +149,7 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     # Verify set_audio_analysis was called with correct data
     set_aa_mock = mass_mock.streams.audio_analysis.set_audio_analysis
     set_aa_mock.assert_awaited_once()
-    analysis = set_aa_mock.call_args[0][3]  # 4th positional arg: analysis
+    analysis = set_aa_mock.call_args.kwargs["analysis"]
 
     beats = analysis.beats
     downbeats = analysis.downbeats
@@ -207,7 +207,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     await provider.finalize(session_id)
 
     set_aa_mock = mass_mock.streams.audio_analysis.set_audio_analysis
-    analysis = set_aa_mock.call_args[0][3]
+    analysis = set_aa_mock.call_args.kwargs["analysis"]
 
     # Energy curve should be 1800 bins, normalized to [0, 1]
     assert analysis.rms_energy is not None
@@ -244,10 +244,8 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     assert 115 < analysis.bpm < 125
 
 
-async def test_finalize_returns_audio_analysis_data(
-    provider: SmartFadesProvider, mass_mock: Mock
-) -> None:
-    """Test that _finalize returns the AudioAnalysisData that was persisted."""
+async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider) -> None:
+    """Test that _finalize returns an AudioAnalysisData on success."""
     audio_format = AudioFormat(
         content_type=ContentType.PCM_F32LE,
         bit_depth=32,
@@ -276,9 +274,6 @@ async def test_finalize_returns_audio_analysis_data(
     result = await provider._finalize(session_id)
 
     assert isinstance(result, AudioAnalysisData)
-    set_aa_mock = mass_mock.streams.audio_analysis.set_audio_analysis
-    persisted = set_aa_mock.call_args[0][3]
-    assert result is persisted
 
 
 async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider) -> None:
