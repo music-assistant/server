@@ -396,6 +396,7 @@ class SendspinPlayer(SendspinBasePlayer):
     last_sent_artist_artwork_url: str | None = None
     playback_session: SendspinPlaybackSession
     is_web_player: bool = False
+    static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -514,7 +515,7 @@ class SendspinPlayer(SendspinBasePlayer):
             case StaticDelayChangedEvent(static_delay_ms=delay_ms):
                 self.logger.debug("Static delay changed to %d ms", delay_ms)
                 current = self.config.get_value(
-                    CONF_SENDSPIN_STATIC_DELAY, DEFAULT_SENDSPIN_STATIC_DELAY
+                    CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms
                 )
                 if current != delay_ms:
                     self.mass.config.set_raw_player_config_value(
@@ -677,7 +678,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
         config_value = cast(
             "int",
-            self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, DEFAULT_SENDSPIN_STATIC_DELAY),
+            self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms),
         )
         player_role.set_static_delay(config_value)
 
@@ -936,7 +937,7 @@ class SendspinPlayer(SendspinBasePlayer):
                         "from an amp, active speakers, or the OS."
                     ),
                     required=False,
-                    default_value=DEFAULT_SENDSPIN_STATIC_DELAY,
+                    default_value=self.static_delay_default_ms,
                     range=(0, 5000),
                     immediate_apply=True,
                     # Not a advanced option since this will only show up for players where it is likely
