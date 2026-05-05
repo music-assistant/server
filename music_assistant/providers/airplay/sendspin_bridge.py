@@ -310,10 +310,22 @@ class SendspinAirPlayBridge:
                     self.airplay_player.display_name,
                 )
                 return
-            self._airplay_stream = RaopStream(self.airplay_player)
-            self.airplay_player.stream = self._airplay_stream
-
-            await self._airplay_stream.start(start_ntp)
+            # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
+            # for cleanup. If we assigned it earlier, the new stream would be missed
+            # and leaked. Only publish once start() succeeds and this task is current.
+            new_stream = RaopStream(self.airplay_player)
+            try:
+                await new_stream.start(start_ntp)
+            except BaseException:
+                with suppress(Exception):
+                    await new_stream.stop(force=True)
+                raise
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                with suppress(Exception):
+                    await new_stream.stop(force=True)
+                return
+            self._airplay_stream = new_stream
+            self.airplay_player.stream = new_stream
             self._airplay_stream_ready.set()
             self.logger.info(
                 "Bridge protocol started for %s (NTP=%s, lookahead=%.0fms)",
@@ -328,12 +340,6 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
                 err,
             )
-            # Clean up partially created protocol
-            if self._airplay_stream:
-                with suppress(Exception):
-                    await self._airplay_stream.stop(force=True)
-                self._airplay_stream = None
-                self.airplay_player.stream = None
             # Stop accepting chunks, unblock the writer, and schedule full cleanup
             self._is_streaming = False
             self._airplay_stream_ready.set()
