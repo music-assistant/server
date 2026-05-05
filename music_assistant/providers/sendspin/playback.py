@@ -191,7 +191,10 @@ class _BufferedFfmpegProcessor:
         target_bytes = self._target_bytes_for_duration_us(duration_us)
         if target_bytes <= 0:
             return b""
-        self._pending_skip_bytes += target_bytes
+        # Drop buffered output with stale source positions.
+        leftover = len(self._output_buffer)
+        self._output_buffer.clear()
+        self._pending_skip_bytes += max(0, target_bytes - leftover)
         return b"\x00" * target_bytes
 
     def _consume_pending_skip(self, chunk: bytes) -> bytes:
