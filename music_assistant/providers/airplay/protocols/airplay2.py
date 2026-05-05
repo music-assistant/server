@@ -235,14 +235,14 @@ class AirPlay2Stream(AirPlayProtocol):
                 break
             if "main: DACP ID set to:" in line:
                 self._cli_start_ts = time.time()
-            if (
+            elif (
                 f"player: Callback from AirPlay 2 device {self.player.name} to device_activate_cb (status 2)"
                 in line
             ):
                 # successfully connected
                 self._connected.set()
                 self._session_established()
-            if "Pause at" in line:
+            elif "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
             elif "Restarted at" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
@@ -256,7 +256,7 @@ class AirPlay2Stream(AirPlayProtocol):
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
                 )
-            if "put delay detected" in line:
+            elif "put delay detected" in line:
                 if "resetting all outputs" in line:
                     logger.error(
                         "Repeated output buffer low level detected, restarting playback..."
@@ -268,7 +268,7 @@ class AirPlay2Stream(AirPlayProtocol):
                     self.mass.create_task(self.mass.players.cmd_resume(self.player.player_id))
                 else:
                     logger.warning("Output buffer low level detected!")
-            if "end of stream reached" in line:
+            elif "end of stream reached" in line:
                 logger.debug("End of stream reached")
                 expected_eof = True
                 break
