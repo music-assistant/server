@@ -104,9 +104,9 @@ class NTSProvider(MusicProvider):
             self.logger.debug("NTS live metadata unavailable at setup: %s", err)
 
         # Mixtapes are best-effort too: a transient outage shouldn't take the
-        # whole provider offline (live channels still work). Will retry on browse.
+        # whole provider offline (live channels still work). Will retry on demand.
         try:
-            await self._get_mixtapes()
+            await self._refresh_mixtape_streams()
         except ProviderUnavailableError as err:
             self.logger.debug("NTS mixtapes unavailable at setup: %s", err)
 
@@ -155,6 +155,13 @@ class NTSProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for an NTS radio station."""
         stream_url = self._resolve_stream_url(item_id)
+        if not stream_url and item_id.startswith(MIXTAPE_PREFIX):
+            # mixtape map may be empty if the setup prefetch failed; retry on demand
+            try:
+                await self._refresh_mixtape_streams()
+            except ProviderUnavailableError as err:
+                self.logger.debug("NTS mixtape refresh failed: %s", err)
+            stream_url = self._resolve_stream_url(item_id)
         if not stream_url:
             msg = f"Could not resolve stream URL for {item_id}"
             raise MediaNotFoundError(msg)
@@ -244,22 +251,29 @@ class NTSProvider(MusicProvider):
         image_url = media.get("picture_large") or media.get("background_large")
         return title, location, description, image_url
 
+    async def _refresh_mixtape_streams(self) -> dict[str, Any]:
+        """Fetch the mixtapes payload and refresh the stream URL map. Returns the payload."""
+        payload = await self._fetch_mixtapes_data()
+        self._mixtapes = {
+            alias: endpoint
+            for mixtape in payload.get("results", [])
+            if (alias := mixtape.get("mixtape_alias"))
+            and (endpoint := mixtape.get("audio_stream_endpoint"))
+        }
+        return payload
+
     async def _get_mixtapes(self) -> list[Radio]:
         """Build Radio objects for all Infinite Mixtapes."""
-        mixtapes_data = await self._fetch_mixtapes_data()
+        mixtapes_data = await self._refresh_mixtape_streams()
         radios: list[Radio] = []
-        mixtape_streams: dict[str, str] = {}
 
         for mixtape in mixtapes_data.get("results", []):
             alias = mixtape.get("mixtape_alias", "")
-            stream_endpoint = mixtape.get("audio_stream_endpoint", "")
-            if not alias or not stream_endpoint:
+            if not alias or not mixtape.get("audio_stream_endpoint"):
                 continue
             title = mixtape.get("title", alias)
             subtitle = mixtape.get("subtitle", "")
             description = mixtape.get("description", "")
-
-            mixtape_streams[alias] = stream_endpoint
 
             radios.append(
                 self._build_radio(
@@ -270,7 +284,6 @@ class NTSProvider(MusicProvider):
                 )
             )
 
-        self._mixtapes = mixtape_streams
         return radios
 
     @use_cache(3600)
