@@ -3,7 +3,6 @@
 import math
 
 import numpy as np
-import pytest
 
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.sonic_analysis.helpers import (
@@ -185,6 +184,3 @@ def test_collapse_to_analysis_overlay_owned_fields_are_none() -> None:
     assert result.instrumentalness is None
     assert result.acousticness is None
     assert result.speechiness is None
-
-
-_ = pytest

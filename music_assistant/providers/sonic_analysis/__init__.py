@@ -75,7 +75,7 @@ class SonicSessionData(AnalysisSessionData):
     """Per-session state: PCM block buffer and accumulated per-block features."""
 
     pcm_buffer: bytearray = field(default_factory=bytearray)
-    block_samples: int = 0
+    block_bytes: int = 0
     resampler: soxr.ResampleStream | None = None
     accumulated: BlockFeatures = field(default_factory=BlockFeatures)
     total_samples: int = 0
@@ -221,7 +221,7 @@ def compute_clap_target_starts(
 
 
 def _store_clap_embedding(analysis: AudioAnalysisData, embedding: np.ndarray) -> None:
-    """Persist the 1024-dim CLAP audio embedding under analysis.extra_data."""
+    """Store the CLAP audio embedding on the analysis object for downstream consumers."""
     if analysis.extra_data is None:
         analysis.extra_data = {}
     analysis.extra_data[EXTRA_DATA_CLAP_EMBEDDING] = embedding.tolist()
@@ -345,9 +345,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     analysis_version: int = 1
 
-    _clap_model: Any = None
-    _clap_text_embeddings: Any = None
-
     def __init__(
         self,
         mass: MusicAssistant,
@@ -357,6 +354,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     ) -> None:
         """Initialize the provider."""
         super().__init__(mass, manifest, config, supported_features)
+        self._clap_model: Any = None
+        self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
         self._unregister_handles: list[Callable[[], None]] = []
 
@@ -392,7 +391,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     def _load_clap(
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
-        """Return (model, text_embedding_matrix, prompt_order); prefers cached prompt .npz."""
+        """Load and return the CLAP model, text embeddings, and prompt ordering."""
         from .vendored_clap import CLAP  # noqa: PLC0415
 
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
@@ -608,7 +607,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 streamdetails.duration, preset_n, audio_format.sample_rate
             )
 
-        base = self._sessions[session_id]
         resampler: soxr.ResampleStream | None = None
         if audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
             resampler = soxr.ResampleStream(
@@ -618,9 +616,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 dtype="float32",
             )
         self._sessions[session_id] = SonicSessionData(
-            streamdetails=base.streamdetails,
-            audio_format=base.audio_format,
-            block_samples=block_bytes,
+            streamdetails=streamdetails,
+            audio_format=audio_format,
+            block_bytes=block_bytes,
             resampler=resampler,
             start_time=time.monotonic(),
             clap_target_starts=target_starts,
@@ -661,9 +659,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         assert isinstance(session, SonicSessionData)
         session.pcm_buffer.extend(pcm_chunk)
         af = session.audio_format
-        while len(session.pcm_buffer) >= session.block_samples:
-            block_bytes = bytes(session.pcm_buffer[: session.block_samples])
-            del session.pcm_buffer[: session.block_samples]
+        while len(session.pcm_buffer) >= session.block_bytes:
+            block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
+            del session.pcm_buffer[: session.block_bytes]
             pre_audio, post_audio, bf = await asyncio.to_thread(
                 _decode_resample_extract,
                 af,
@@ -695,7 +693,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     async def _run_live_clap_if_eligible(
         self, session: SonicSessionData, analysis: AudioAnalysisData
     ) -> None:
-        """Await per-window inferences, mean-pool, populate scalars + extra_data embedding."""
+        """Finalize CLAP analysis for the session, writing scalar attributes and the embedding onto analysis."""
         if not session.clap_target_starts:
             return
         if session.clap_inference_tasks:

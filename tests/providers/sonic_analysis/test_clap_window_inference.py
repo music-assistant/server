@@ -8,10 +8,14 @@ import numpy as np
 import pytest
 import torch
 
-from music_assistant.providers.sonic_analysis import SonicAnalysisProvider, SonicSessionData
+from music_assistant.providers.sonic_analysis import (
+    CLAP_WINDOW_SECONDS,
+    SonicAnalysisProvider,
+    SonicSessionData,
+)
 
 SR = 22050
-WINDOW_SAMPLES = 7 * SR
+WINDOW_SAMPLES = CLAP_WINDOW_SECONDS * SR
 
 
 def _make_provider(

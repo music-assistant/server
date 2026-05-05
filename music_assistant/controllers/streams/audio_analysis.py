@@ -353,8 +353,8 @@ class AudioAnalysisController:
         """
         return await self.mass.music.database.get_count_from_query(
             f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            f"WHERE aa_provider_domain = :domain AND media_type = :media_type",
-            {"domain": aa_provider_domain, "media_type": media_type.value},
+            f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
+            {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
         )
 
     async def get_audio_analysis_rows(
@@ -409,14 +409,14 @@ class AudioAnalysisController:
             f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa2 "
             f"    WHERE aa2.item_id = aa1.item_id "
             f"    AND aa2.provider = aa1.provider "
-            f"    AND aa2.aa_provider_domain = :primary "
+            f"    AND aa2.aa_provider_domain = :primary_aa_domain "
             f"    AND aa2.media_type = :media_type"
             f") "
             f"ORDER BY aa1.item_id, aa1.provider, aa1.timestamp_created ASC"
         )
         rows = await self.mass.music.database.get_rows_from_query(
             query,
-            params={"media_type": media_type.value, "primary": primary_aa_domain},
+            params={"media_type": media_type.value, "primary_aa_domain": primary_aa_domain},
             limit=0,
         )
 
@@ -429,6 +429,8 @@ class AudioAnalysisController:
         current_merged = AudioAnalysisData()
         current_dirty = False
 
+        # Invariant: rows are ordered by (item_id, provider, timestamp_created ASC) per the SQL above.
+        # The continue-before-key-update pattern below relies on contiguous (item_id, provider) groups.
         for row in rows:
             if row["aa_provider_domain"] not in available_aa_domains:
                 continue

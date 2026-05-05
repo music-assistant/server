@@ -110,7 +110,7 @@ def _make_session(
     session = SonicSessionData(
         streamdetails=sd,
         audio_format=af,
-        block_samples=block_bytes,
+        block_bytes=block_bytes,
         start_time=time.monotonic(),
         clap_target_starts=[],
         clap_target_buffers=[],

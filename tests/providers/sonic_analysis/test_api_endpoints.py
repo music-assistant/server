@@ -12,7 +12,7 @@ import pytest
 from music_assistant.providers.sonic_analysis import SonicAnalysisProvider
 
 
-def _stub_provider(
+def _make_provider(
     *,
     clap_model: Any = None,
     count: int = 0,
@@ -49,7 +49,7 @@ def _stub_provider(
 @pytest.mark.asyncio
 async def test_status_minimal_no_clap() -> None:
     """Status returns sensible defaults when CLAP is absent and no rows exist."""
-    p, _, _ = _stub_provider(clap_model=None, count=0)
+    p, _, _ = _make_provider(clap_model=None, count=0)
     result = await p._handle_status()
     assert result["provider_loaded"] is True
     assert result["clap_model_loaded"] is False
@@ -60,7 +60,7 @@ async def test_status_minimal_no_clap() -> None:
 @pytest.mark.asyncio
 async def test_status_routes_count_through_controller() -> None:
     """_handle_status pulls the count from the controller helper, not the DB."""
-    p, aa, _ = _stub_provider(clap_model=MagicMock(), count=42)
+    p, aa, _ = _make_provider(clap_model=MagicMock(), count=42)
     result = await p._handle_status()
     assert result["clap_model_loaded"] is True
     assert result["analyzed_tracks_count"] == 42
@@ -70,7 +70,7 @@ async def test_status_routes_count_through_controller() -> None:
 @pytest.mark.asyncio
 async def test_analyzed_tracks_passes_limit_and_offset_to_db() -> None:
     """_handle_analyzed_tracks must pass limit/offset to the DB — not fetch all rows."""
-    p, aa, _ = _stub_provider(rows=[], count=0)
+    p, aa, _ = _make_provider(rows=[], count=0)
 
     await p._handle_analyzed_tracks(limit=10, offset=20)
 
@@ -87,7 +87,7 @@ async def test_analyzed_tracks_dedupes_and_paginates() -> None:
         {"item_id": "c", "provider": "filesystem_local"},
     ]
     # count=4 represents the domain total (raw DB rows, pre-dedup)
-    p, aa, _ = _stub_provider(rows=all_rows, count=4)
+    p, aa, _ = _make_provider(rows=all_rows, count=4)
     # Simulate DB-level pagination: return only the rows the DB would emit for limit/offset.
     aa.get_audio_analysis_rows = AsyncMock(
         side_effect=lambda *_a, limit=50, offset=0, **_kw: all_rows[offset : offset + limit]
@@ -111,7 +111,7 @@ async def test_analyzed_tracks_search_filters_on_item_id_before_resolve() -> Non
         {"item_id": "pop_track_4", "provider": "filesystem_local"},
     ]
     # count=4 is the domain total; search is page-scoped so total still reflects the domain
-    p, _, tracks = _stub_provider(rows=rows, count=4)
+    p, _, tracks = _make_provider(rows=rows, count=4)
 
     result = await p._handle_analyzed_tracks(search="rock", limit=10, offset=0)
     assert result["total"] == 4  # domain total, unaffected by page-scoped search filter
@@ -137,7 +137,7 @@ async def test_export_analysis_strips_embedding_and_surfaces_presence_flag() -> 
             ),
         }
     ]
-    p, aa, _ = _stub_provider(rows=rows, count=1)
+    p, aa, _ = _make_provider(rows=rows, count=1)
 
     result = await p._handle_export_analysis(limit=10, offset=0)
     assert result["total"] == 1
@@ -162,7 +162,7 @@ async def test_export_analysis_has_clap_embedding_false_when_absent() -> None:
             "analysis_data": json.dumps({"bpm": 100.0}),
         }
     ]
-    p, _, _ = _stub_provider(rows=rows, count=1)
+    p, _, _ = _make_provider(rows=rows, count=1)
 
     result = await p._handle_export_analysis(limit=10, offset=0)
     item = result["items"][0]
@@ -181,10 +181,10 @@ async def test_export_analysis_skips_unparseable_rows() -> None:
             "analysis_data": json.dumps({"bpm": 100.0}),
         },
     ]
-    # total reflects the DB row count for the domain — independent of JSON validity
-    p, _, _ = _stub_provider(rows=rows, count=2)
+    # count=5 is the domain total; rows has 2 entries with 1 parseable.
+    p, _, _ = _make_provider(rows=rows, count=5)
 
     result = await p._handle_export_analysis(limit=10, offset=0)
-    assert result["total"] == 2  # both rows exist in the DB
-    assert len(result["items"]) == 1  # but only one parsed successfully
+    assert result["total"] == 5  # from DB count, not len(parsed items)
+    assert len(result["items"]) == 1  # only one row parsed successfully
     assert result["items"][0]["bpm"] == 100.0

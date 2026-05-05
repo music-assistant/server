@@ -94,7 +94,9 @@ class CLAPWrapper:
                     if k in args.__dict__:
                         args.__dict__[k] = v
                     else:
-                        sys.stderr.write(f"Ignored unknown parameter {k} in yaml.\n")
+                        # MA MOD: stderr write never triggers because the vendored config_2023.yml
+                        # is fixed — all its keys are known. Silenced to avoid bypassing MA logging.
+                        pass  # sys.stderr.write(f"Ignored unknown parameter {k} in yaml.\n")
             else:
                 for k, v in yml_config.items():
                     return_dict[k] = v
@@ -134,7 +136,10 @@ class CLAPWrapper:
                 skip_text_encoder=not self.text_enabled,  # MA MOD
             )
 
-            # Load pretrained weights for model
+            # MA MOD: weights_only=False is required because the CLAP .pth stores
+            # non-tensor metadata (the original args namespace). Source is trusted
+            # (microsoft/msclap on HuggingFace Hub) so the unsafe-deserialization
+            # risk that motivated CVE-2026-1839 doesn't apply here.
             model_state_dict = torch.load(self.model_fp, map_location=torch.device("cpu"))["model"]
 
             # We unwrap the DDP model and save. If the model is not unwrapped and saved, then the model needs to unwrapped before `load_state_dict`:

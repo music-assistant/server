@@ -78,24 +78,21 @@ async def test_distribute_chunk_evicts_provider_on_exception() -> None:
     assert "ok" in controller._active_sessions[session_key]
 
 
-@pytest.mark.asyncio
-async def test_get_scan_concurrency_returns_default_on_unset() -> None:
+def test_get_scan_concurrency_returns_default_on_unset() -> None:
     """When the config value is unset/None, fall back to DEFAULT_BACKGROUND_SCAN_CONCURRENCY."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=None)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == 1
 
 
-@pytest.mark.asyncio
-async def test_get_scan_concurrency_clamps_to_max() -> None:
+def test_get_scan_concurrency_clamps_to_max() -> None:
     """Values above 8 are clamped to 8."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == 8
 
 
-@pytest.mark.asyncio
-async def test_get_scan_concurrency_clamps_to_min() -> None:
+def test_get_scan_concurrency_clamps_to_min() -> None:
     """Values below 1 are clamped to 1."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=0)  # type: ignore[method-assign]
@@ -352,7 +349,7 @@ async def test_run_background_scan_concurrency_semaphore(
             "provider_instance": "filesystem_local",
             "missing_domains": ["p1"],
         }
-        for i in range(5)
+        for i in range(4)
     ]
     monkeypatch.setattr(
         controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
@@ -371,12 +368,13 @@ async def test_run_background_scan_concurrency_semaphore(
 
     in_flight = 0
     max_in_flight = 0
+    barrier = asyncio.Barrier(2)
 
     async def _track_streaming(_streamdetails: MagicMock, _providers: object) -> None:
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
-        await asyncio.sleep(0.05)
+        await barrier.wait()
         in_flight -= 1
 
     monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
@@ -517,9 +515,9 @@ async def test_get_audio_analysis_count_filters_by_domain_and_track_media_type()
     c, db = _stub_controller(count_result=0)
     await c.get_audio_analysis_count("sonic_analysis")
     sql, params = db.get_count_from_query.await_args.args
-    assert "aa_provider_domain = :domain" in sql
+    assert "aa_provider_domain = :aa_provider_domain" in sql
     assert "media_type = :media_type" in sql
-    assert params == {"domain": "sonic_analysis", "media_type": MediaType.TRACK.value}
+    assert params == {"aa_provider_domain": "sonic_analysis", "media_type": MediaType.TRACK.value}
 
 
 @pytest.mark.asyncio

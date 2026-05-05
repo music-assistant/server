@@ -1,4 +1,9 @@
 # ruff: noqa  # vendored code — see vendored_clap/README.md
+# MA MOD: This file is the upstream HTSAT training configuration vendored as-is.
+# The path constants below (workspace, dataset_path, desed_folder, etc.) are
+# inert in MA deployment — they're never read by any code path we exercise.
+# Only the signal-processing hyperparameters (htsat_window_size, sample_rate, etc.)
+# are actually consumed by the model.
 # Ke Chen
 # knutchen@ucsd.edu
 # HTS-AT: A HIERARCHICAL TOKEN-SEMANTIC AUDIO TRANSFORMER FOR SOUND CLASSIFICATION AND DETECTION

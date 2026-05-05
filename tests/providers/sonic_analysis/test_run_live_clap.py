@@ -30,10 +30,13 @@ def _make_provider() -> tuple[SonicAnalysisProvider, MagicMock]:
 
 
 def _make_session(target_starts: list[int] | None = None) -> SonicSessionData:
+    starts = list(target_starts) if target_starts is not None else []
     return SonicSessionData(
         streamdetails=MagicMock(),
         audio_format=MagicMock(),
-        clap_target_starts=list(target_starts) if target_starts is not None else [],
+        clap_target_starts=starts,
+        clap_target_buffers=[[] for _ in starts],
+        clap_target_complete=[False] * len(starts),
     )
 
 
@@ -47,6 +50,12 @@ async def test_no_targets_short_circuits_silently() -> None:
     await p._run_live_clap_if_eligible(session, analysis)
 
     assert analysis.danceability is None
+    assert analysis.valence is None
+    assert analysis.arousal is None
+    assert analysis.instrumentalness is None
+    assert analysis.acousticness is None
+    assert analysis.speechiness is None
+    assert analysis.extra_data is None or "clap_embedding" not in (analysis.extra_data or {})
     fake_logger.warning.assert_not_called()
 
 
@@ -61,6 +70,12 @@ async def test_no_completions_logs_warning() -> None:
     await p._run_live_clap_if_eligible(session, analysis)
 
     assert analysis.danceability is None
+    assert analysis.valence is None
+    assert analysis.arousal is None
+    assert analysis.instrumentalness is None
+    assert analysis.acousticness is None
+    assert analysis.speechiness is None
+    assert analysis.extra_data is None or "clap_embedding" not in (analysis.extra_data or {})
     fake_logger.warning.assert_called_once()
 
 

@@ -1,4 +1,7 @@
 # ruff: noqa  # vendored code — see vendored_clap/README.md
+# MA MOD: This file is unreachable in MA — clap_wrapper.py has its own inline
+# read_config_as_args and models/__init__.py does not import utils. Preserved
+# verbatim from upstream for license/attribution clarity.
 import argparse
 import yaml
 import sys

@@ -26,6 +26,9 @@ _CHROMA_SR = 22050  # filterbank-baked sample rate — must match audio SR
 _CONTRAST_N_BANDS = 6
 _CONTRAST_FMIN = 200.0
 _CONTRAST_QUANTILE = 0.02
+_ROUGHNESS_CONTRAST_MAX_DB = 80.0  # rough physical ceiling for spectral contrast range in dB
+_ROUGHNESS_CONTRAST_WEIGHT = 0.6  # weighting of contrast-derived component
+_ROUGHNESS_FLATNESS_WEIGHT = 0.4  # weighting of flatness-derived component
 
 _CHROMA_FILTERBANK = torch.from_numpy(
     librosa.filters.chroma(sr=_CHROMA_SR, n_fft=_STFT_N_FFT, n_chroma=12)
@@ -186,7 +189,6 @@ def _onset_strength_torch(audio: torch.Tensor) -> np.ndarray:
     diff = torch.diff(mel_db, dim=-1)
     rectified = torch.clamp(diff, min=0.0)
     envelope = rectified.mean(dim=0)
-    envelope = torch.cat([envelope.new_zeros(1), envelope])
     return np.asarray(envelope.numpy())
 
 
@@ -207,7 +209,9 @@ def _spectral_centroid_torch(mag: torch.Tensor, sample_rate: int) -> np.ndarray:
 def _spectral_flatness_torch(mag: torch.Tensor) -> np.ndarray:
     """Per-frame spectral flatness (geom/arith mean), shape (1, n_frames).
 
-    :param mag: Magnitude spectrogram, shape (n_freqs, n_frames).
+    :param mag: Magnitude spectrogram (NOT power; this function squares
+        internally to match librosa's default behavior), shape (n_freqs, n_frames).
+        Contrast with :func:`_chroma_stft_torch`, which accepts power directly.
     """
     power = mag**2
     power = torch.clamp(power, min=1e-10)
@@ -252,7 +256,7 @@ def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioA
     :param accumulated: All block features accumulated during streaming.
     :param sample_rate: Sample rate used during extraction.
     """
-    onset_env = np.concatenate(accumulated.onset_env_frames)
+    onset_env = np.concatenate([[0.0], np.concatenate(accumulated.onset_env_frames)])
     chroma = np.concatenate(accumulated.chroma_frames, axis=1)
     rms = np.concatenate(accumulated.rms_frames, axis=1).squeeze()
     centroid = np.concatenate(accumulated.centroid_frames, axis=1).squeeze()
@@ -295,7 +299,11 @@ def _derive_energy(rms: np.ndarray) -> float:
 
 
 def _derive_loudness(rms: np.ndarray) -> tuple[float, float]:
-    """Compute RMS-derived dB approximations for integrated loudness and loudness range.
+    """Compute RMS-based loudness approximations (NOT EBU R128).
+
+    Returns (loudness_integrated, loudness_range) as RMS-derived proxies.
+    loudness_integrated is mean RMS in dB (not gated LUFS), and loudness_range
+    is the std-dev of per-frame RMS in dB (not the gated 95th-10th percentile LRA).
 
     :param rms: Per-frame RMS values (1D after squeeze).
     """
@@ -313,7 +321,10 @@ def _derive_brightness(centroid: np.ndarray, sample_rate: int) -> float:
     :param sample_rate: Sample rate in Hz.
     """
     nyquist = sample_rate / 2.0
-    return _clamp(float(centroid.mean()) / nyquist)
+    active_frames = centroid[centroid > 0]
+    if len(active_frames) == 0:
+        return 0.0
+    return _clamp(float(active_frames.mean()) / nyquist)
 
 
 def _derive_harmonic_complexity(chroma: np.ndarray) -> float:
@@ -339,9 +350,11 @@ def _derive_roughness(contrast: np.ndarray, flatness: np.ndarray) -> float:
     :param flatness: Per-frame spectral flatness values (1D after squeeze).
     """
     contrast_range = float(contrast.max() - contrast.min())
-    contrast_score = _clamp(contrast_range / 80.0)
+    contrast_score = _clamp(contrast_range / _ROUGHNESS_CONTRAST_MAX_DB)
     flatness_score = _clamp(float(flatness.mean()))
-    return _clamp(0.6 * contrast_score + 0.4 * flatness_score)
+    return _clamp(
+        _ROUGHNESS_CONTRAST_WEIGHT * contrast_score + _ROUGHNESS_FLATNESS_WEIGHT * flatness_score
+    )
 
 
 def _derive_rhythmic_regularity(onset_env: np.ndarray, sample_rate: int) -> float:

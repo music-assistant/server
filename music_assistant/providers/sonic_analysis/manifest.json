@@ -14,6 +14,7 @@
     "[Microsoft CLAP](https://github.com/microsoft/CLAP)",
     "[librosa](https://librosa.org)"
   ],
+  "documentation": "https://music-assistant.io/audio-analysis-providers/sonic-analysis/",
   "multi_instance": false,
   "builtin": false,
   "icon": "pulse"

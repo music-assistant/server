@@ -179,7 +179,8 @@ def count_flops(model, audio_length):
             elif isinstance(net, nn.AvgPool1d) or isinstance(net, nn.MaxPool1d):
                 net.register_forward_hook(pooling1d_hook)
             else:
-                print("Warning: flop of module {} is not counted!".format(net))
+                # MA MOD: silenced print to avoid stdout pollution (count_flops is unreachable in MA)
+                pass  # print("Warning: flop of module {} is not counted!".format(net))
             return
         for c in childrens:
             foo(c)
