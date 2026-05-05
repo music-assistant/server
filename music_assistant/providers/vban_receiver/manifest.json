@@ -7,5 +7,5 @@
   "codeowners": ["@sprocket-9"],
   "documentation": "https://music-assistant.io/plugins/vban-receiver/",
   "multi_instance": true,
-  "requirements": ["aiovban==0.6.3"]
+  "requirements": ["aiovban==1.1.0"]
 }
