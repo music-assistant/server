@@ -430,7 +430,7 @@ class SendspinChromecastBridge:
                 self.cast_player.device_info.model or "",
             )
         else:
-            sync_delay = cast("int", raw_delay)
+            sync_delay = int(cast("int", raw_delay))
         # The Cast receiver JS reads playerId (not clientId) from the config.
         # It uses this as the client_id in its hello message to the Sendspin server,
         # allowing the server to match it to the bridge's pre-registered external client.

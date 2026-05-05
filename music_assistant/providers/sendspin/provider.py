@@ -27,6 +27,7 @@ from music_assistant.constants import CONF_ENABLED
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
@@ -136,6 +137,13 @@ class SendspinProvider(PlayerProvider):
         existing = self.mass.players.get_player(client_id)
         if isinstance(existing, SendspinPlayer):
             existing.static_delay_default_ms = default_ms
+            # If no user-set value exists, push the new default to the device now
+            # so already-connected clients pick it up without a config edit.
+            if (
+                self.mass.config.get_raw_player_config_value(client_id, CONF_SENDSPIN_STATIC_DELAY)
+                is None
+            ):
+                self.mass.create_task(existing._apply_static_delay())
             return
         self._bridge_static_delay_defaults[client_id] = default_ms
 
