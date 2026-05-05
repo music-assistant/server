@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import soxr
 import torch
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 BLOCK_SECONDS: int = 10
+# Must equal helpers._CHROMA_SR — filterbanks in helpers.py are baked at this rate.
+ANALYSIS_SAMPLE_RATE: int = 22050
 OVERLAP_SAMPLES: int = 2048
 
 EXTRA_DATA_CLAP_EMBEDDING: str = "clap_embedding"
@@ -72,6 +75,7 @@ class SonicSessionData(AnalysisSessionData):
 
     pcm_buffer: bytearray = field(default_factory=bytearray)
     block_samples: int = 0
+    resampler: soxr.ResampleStream | None = None
     accumulated: BlockFeatures = field(default_factory=BlockFeatures)
     total_samples: int = 0
     overlap: np.ndarray | None = None
@@ -563,10 +567,19 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             )
 
         base = self._sessions[session_id]
+        resampler: soxr.ResampleStream | None = None
+        if audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
+            resampler = soxr.ResampleStream(
+                in_rate=audio_format.sample_rate,
+                out_rate=ANALYSIS_SAMPLE_RATE,
+                num_channels=1,
+                dtype="float32",
+            )
         self._sessions[session_id] = SonicSessionData(
             streamdetails=base.streamdetails,
             audio_format=base.audio_format,
             block_samples=block_bytes,
+            resampler=resampler,
             start_time=time.monotonic(),
             clap_target_starts=target_starts,
             clap_target_buffers=[[] for _ in target_starts],
@@ -613,10 +626,12 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             session.total_samples += len(audio)
             session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(audio))))
             self._dispatch_clap_to_targets(session, audio, af.sample_rate)
+            if session.resampler is not None:
+                audio = session.resampler.resample_chunk(audio)
             if session.overlap is not None:
                 audio = np.concatenate([session.overlap, audio])
             session.overlap = audio[-OVERLAP_SAMPLES:].copy()
-            bf = await asyncio.to_thread(extract_block_features, audio, af.sample_rate)
+            bf = await asyncio.to_thread(extract_block_features, audio, ANALYSIS_SAMPLE_RATE)
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
 
@@ -674,13 +689,16 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             len(session.clap_target_starts),
         )
 
-    async def _finalize(self, session_id: str) -> None:
-        """Flush remaining PCM, collapse features, and store analysis data.
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        """Flush remaining PCM, collapse features, and return the analysis result.
+
+        Returns the analysis for the base class to persist, or None to skip persistence.
 
         :param session_id: The analysis session ID.
         """
         if session_id not in self._sessions:
-            return
+            self.logger.debug("Finalize called for unknown session %s", session_id)
+            return None
         session = self._sessions[session_id]
         assert isinstance(session, SonicSessionData)
         sd = session.streamdetails
@@ -691,19 +709,21 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             session.total_samples += len(audio)
             session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(audio))))
             self._dispatch_clap_to_targets(session, audio, af.sample_rate)
+            if session.resampler is not None:
+                audio = session.resampler.resample_chunk(audio, last=True)
             if session.overlap is not None:
                 audio = np.concatenate([session.overlap, audio])
-            bf = await asyncio.to_thread(extract_block_features, audio, af.sample_rate)
+            bf = await asyncio.to_thread(extract_block_features, audio, ANALYSIS_SAMPLE_RATE)
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
             session.pcm_buffer.clear()
 
         if not session.accumulated.rms_frames:
             self.logger.debug("No feature blocks for session %s, skipping", session_id)
-            return
+            return None
 
         analysis = await asyncio.to_thread(
-            collapse_to_analysis, session.accumulated, af.sample_rate
+            collapse_to_analysis, session.accumulated, ANALYSIS_SAMPLE_RATE
         )
 
         analysis.duration = session.total_samples / af.sample_rate
@@ -714,14 +734,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
         await self._run_live_clap_if_eligible(session, analysis)
 
-        await self.mass.streams.audio_analysis.set_audio_analysis(
-            item_id=sd.item_id,
-            provider_instance_id_or_domain=sd.provider,
-            aa_provider_domain=self.domain,
-            analysis=analysis,
-            analysis_version=self.analysis_version,
-            media_type=sd.media_type,
-        )
         elapsed = time.monotonic() - session.start_time
         self.logger.debug(
             "Stored analysis for %s/%s (%.1fs elapsed)",
@@ -729,6 +741,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             sd.item_id,
             elapsed,
         )
+        return analysis
 
     def _single_window_inference_sync(
         self,

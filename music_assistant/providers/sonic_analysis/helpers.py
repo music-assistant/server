@@ -96,8 +96,13 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
     """Extract per-frame features from a single audio block, or None if too short.
 
     :param audio: Mono float32 audio samples for this block.
-    :param sample_rate: Sample rate in Hz.
+    :param sample_rate: Sample rate in Hz. Must equal ``_CHROMA_SR`` (22050) — the filterbanks
+        are baked at this rate. Use soxr to resample before calling if needed.
     """
+    assert sample_rate == _CHROMA_SR, (
+        f"extract_block_features requires sample_rate={_CHROMA_SR} "
+        f"(filterbanks baked at this rate); got {sample_rate}"
+    )
     if len(audio) < MIN_BLOCK_SAMPLES:
         return None
     bf = BlockFeatures()
