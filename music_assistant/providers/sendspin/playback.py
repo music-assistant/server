@@ -77,6 +77,7 @@ class _BufferedFfmpegProcessor:
         # ~25ms worth of audio per read syscall.
         self._read_quantum_bytes = max(1, int(self._bytes_per_second * 0.025))
         self._produced_output_us = 0
+        self._pending_skip_bytes = 0
 
     async def start(self) -> None:
         await self._ffmpeg.start()
@@ -108,7 +109,9 @@ class _BufferedFfmpegProcessor:
             chunk = await self._ffmpeg.readexactly(read_size)
             if not chunk:
                 break
-            self._output_buffer.extend(chunk)
+            chunk = self._consume_pending_skip(chunk)
+            if chunk:
+                self._output_buffer.extend(chunk)
 
         out = bytes(self._output_buffer[:target_bytes])
         del self._output_buffer[:target_bytes]
@@ -130,8 +133,10 @@ class _BufferedFfmpegProcessor:
                 break
             if not chunk:
                 break
-            self._output_buffer.extend(chunk)
             self._produced_output_us += self._duration_us_for_bytes(len(chunk))
+            chunk = self._consume_pending_skip(chunk)
+            if chunk:
+                self._output_buffer.extend(chunk)
             if len(chunk) < self._read_quantum_bytes:
                 break
         return self._produced_output_us
@@ -142,8 +147,10 @@ class _BufferedFfmpegProcessor:
             chunk = await self._ffmpeg.read(self._read_quantum_bytes)
             if not chunk:
                 break
-            self._output_buffer.extend(chunk)
             self._produced_output_us += self._duration_us_for_bytes(len(chunk))
+            chunk = self._consume_pending_skip(chunk)
+            if chunk:
+                self._output_buffer.extend(chunk)
 
     def pop_duration_us(self, duration_us: int) -> bytes | None:
         """Pop exactly `duration_us` from already buffered output, or None if insufficient."""
@@ -176,7 +183,16 @@ class _BufferedFfmpegProcessor:
             return None
         out = bytes(self._output_buffer)
         self._output_buffer.clear()
+        self._pending_skip_bytes += short_bytes
         return out + (b"\x00" * short_bytes)
+
+    def _consume_pending_skip(self, chunk: bytes) -> bytes:
+        # Drops bytes pop_duration_us_or_pad replaced with silence to keep timeline aligned.
+        if self._pending_skip_bytes <= 0 or not chunk:
+            return chunk
+        skip = min(self._pending_skip_bytes, len(chunk))
+        self._pending_skip_bytes -= skip
+        return chunk[skip:]
 
     def _duration_us_for_bytes(self, byte_count: int) -> int:
         if byte_count <= 0 or self._sample_rate <= 0 or self._frame_size <= 0:
