@@ -142,13 +142,33 @@ class NTSProvider(MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if prov_radio_id.startswith(CHANNEL_PREFIX):
-            for radio in await self._get_live_channels():
-                if radio.item_id == prov_radio_id:
-                    return radio
+            channel_name = prov_radio_id.removeprefix(CHANNEL_PREFIX)
+            if channel_name in NTS_LIVE_STREAMS:
+                try:
+                    live_data = await self._fetch_live_data()
+                except ProviderUnavailableError:
+                    live_data = {}
+                api_channel = next(
+                    (
+                        ch
+                        for ch in live_data.get("results", [])
+                        if ch.get("channel_name") == channel_name
+                    ),
+                    None,
+                )
+                return self._build_channel_radio(channel_name, api_channel)
         elif prov_radio_id.startswith(MIXTAPE_PREFIX):
-            for radio in await self._get_mixtapes():
-                if radio.item_id == prov_radio_id:
-                    return radio
+            alias = prov_radio_id.removeprefix(MIXTAPE_PREFIX)
+            try:
+                payload = await self._refresh_mixtape_streams()
+            except ProviderUnavailableError:
+                payload = {}
+            if alias in self._mixtapes:
+                mixtape = next(
+                    (m for m in payload.get("results", []) if m.get("mixtape_alias") == alias),
+                    None,
+                )
+                return self._build_mixtape_radio(alias, mixtape)
         msg = f"NTS radio item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)
 
@@ -214,30 +234,28 @@ class NTSProvider(MusicProvider):
                 )
                 self._unknown_channels.add(channel_name)
 
-        radios: list[Radio] = []
-        for channel_name in NTS_LIVE_STREAMS:
-            channel = api_channels.get(channel_name)
-            description_text = ""
-            image_url: str | None = None
-            if channel:
-                title, location, description, image_url = self._extract_channel_info(channel)
-                desc_parts = [f"Now playing: {title}"]
-                if location:
-                    desc_parts.append(f"Broadcasting from {location}")
-                if description:
-                    desc_parts.append(description)
-                description_text = "\n".join(desc_parts)
+        return [
+            self._build_channel_radio(name, api_channels.get(name)) for name in NTS_LIVE_STREAMS
+        ]
 
-            radios.append(
-                self._build_radio(
-                    item_id=f"{CHANNEL_PREFIX}{channel_name}",
-                    name=f"NTS {channel_name}",
-                    description=description_text,
-                    image_url=image_url,
-                )
-            )
-
-        return radios
+    def _build_channel_radio(self, channel_name: str, api_channel: dict[str, Any] | None) -> Radio:
+        """Build a Radio for a static live channel, enriched with API metadata if available."""
+        description_text = ""
+        image_url: str | None = None
+        if api_channel:
+            title, location, description, image_url = self._extract_channel_info(api_channel)
+            desc_parts = [f"Now playing: {title}"]
+            if location:
+                desc_parts.append(f"Broadcasting from {location}")
+            if description:
+                desc_parts.append(description)
+            description_text = "\n".join(desc_parts)
+        return self._build_radio(
+            item_id=f"{CHANNEL_PREFIX}{channel_name}",
+            name=f"NTS {channel_name}",
+            description=description_text,
+            image_url=image_url,
+        )
 
     @staticmethod
     def _extract_channel_info(channel: dict[str, Any]) -> tuple[str, str, str, str | None]:
@@ -272,20 +290,28 @@ class NTSProvider(MusicProvider):
             alias = mixtape.get("mixtape_alias", "")
             if not alias or not mixtape.get("audio_stream_endpoint"):
                 continue
+            radios.append(self._build_mixtape_radio(alias, mixtape))
+
+        return radios
+
+    def _build_mixtape_radio(self, alias: str, mixtape: dict[str, Any] | None) -> Radio:
+        """Build a Radio for a mixtape, enriched with API metadata if available."""
+        if mixtape:
             title = mixtape.get("title", alias)
             subtitle = mixtape.get("subtitle", "")
             description = mixtape.get("description", "")
-
-            radios.append(
-                self._build_radio(
-                    item_id=f"{MIXTAPE_PREFIX}{alias}",
-                    name=f"NTS: {title}",
-                    description=f"{subtitle}\n\n{description}" if subtitle else description,
-                    image_url=mixtape.get("media", {}).get("picture_large"),
-                )
+            return self._build_radio(
+                item_id=f"{MIXTAPE_PREFIX}{alias}",
+                name=f"NTS: {title}",
+                description=f"{subtitle}\n\n{description}" if subtitle else description,
+                image_url=mixtape.get("media", {}).get("picture_large"),
             )
-
-        return radios
+        return self._build_radio(
+            item_id=f"{MIXTAPE_PREFIX}{alias}",
+            name=f"NTS: {alias}",
+            description="",
+            image_url=None,
+        )
 
     @use_cache(3600)
     async def _fetch_mixtapes_data(self) -> dict[str, Any]:
