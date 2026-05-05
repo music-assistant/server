@@ -56,6 +56,14 @@ divergence point.
   sonic_analysis provider can run CLAP inference on PCM it already has
   in memory, without round-tripping through a temp file.
 
+**Warnings filter scoped to model load:**
+- `clap_wrapper.py` — removed `warnings.filterwarnings("ignore")` from module scope.
+  Upstream placed this call at module level, meaning it would install a permanent
+  process-wide suppress-all entry into `warnings.filters` the first time the module was
+  imported, silencing warnings from all other MA providers for the rest of the process
+  lifetime.  Replaced with a `with warnings.catch_warnings(): warnings.filterwarnings("ignore")`
+  block inside `load_clap()`, which restores the original filter state when the method returns.
+
 **transformers v5 compatibility:**
 - `clap_wrapper.py::preprocess_text` — `tokenizer.encode_plus(text=ttext, ...)`
   → `tokenizer(ttext, ...)`. Reason: `encode_plus()` was *removed* (not just

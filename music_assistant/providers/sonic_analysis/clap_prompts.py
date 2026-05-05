@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
+
+_LOGGER = logging.getLogger(__name__)
 
 PRECOMPUTED_EMBEDDINGS_PATH: Path = (
     Path(__file__).parent / "vendored_clap" / "precomputed_prompt_embeddings.npz"
@@ -93,6 +96,23 @@ def hash_scalar_prompt_pairs(prompts: dict[str, tuple[str, str]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Calibration provenance
+# ----------------------
+# (a, b) Platt-scaling coefficients: score = sigmoid(a * (pos_logit - neg_logit) + b).
+# Fit via sklearn.LogisticRegression (5-fold CV) on a 50-track diverse ground-truth
+# set during initial development (commit c93183684, 2026-04-23).
+# 5-fold CV accuracy on the validation set:
+#   acousticness: 0.843, danceability: 0.910, instrumentalness: 0.896,
+#   arousal: 0.727, valence: 0.713
+# The b term corrects for CLAP's per-attribute bias (e.g., b<<0 on instrumentalness
+# corrects CLAP's tendency to interpret most music as instrumental).
+#
+# CALIBRATION_PROMPTS_HASH records the SCALAR_PROMPT_PAIRS hash at calibration time.
+# If you edit SCALAR_PROMPT_PAIRS, the hash will drift and a warning fires at startup.
+# You must re-fit CALIBRATION and update CALIBRATION_PROMPTS_HASH, then bump
+# analysis_version in the provider so existing rows get re-analyzed.
+CALIBRATION_PROMPTS_HASH: str = "67495ab1df2dae36c6886975fdc56265151656f68bc7b3c9dbc941abd518b969"
+
 CALIBRATION: dict[str, tuple[float, float]] = {
     "danceability": (0.940, -0.134),
     "valence": (0.441, -1.870),
@@ -100,3 +120,28 @@ CALIBRATION: dict[str, tuple[float, float]] = {
     "instrumentalness": (0.761, -3.538),
     "acousticness": (0.549, +0.453),
 }
+
+
+def validate_calibration_freshness(
+    prompts: dict[str, tuple[str, str]] | None = None,
+) -> None:
+    """Warn if CALIBRATION was fit against different prompts than the ones currently in use.
+
+    :param prompts: Prompt mapping to check; defaults to ``SCALAR_PROMPT_PAIRS``.
+    """
+    if prompts is None:
+        prompts = SCALAR_PROMPT_PAIRS
+    actual = hash_scalar_prompt_pairs(prompts)
+    if actual != CALIBRATION_PROMPTS_HASH:
+        _LOGGER.warning(
+            "CALIBRATION_PROMPTS_HASH (%s) does not match current "
+            "SCALAR_PROMPT_PAIRS hash (%s). The Platt calibration "
+            "coefficients were fit against different prompts; CLAP "
+            "scalar outputs will be systematically biased. Re-fit "
+            "CALIBRATION and update CALIBRATION_PROMPTS_HASH.",
+            CALIBRATION_PROMPTS_HASH,
+            actual,
+        )
+
+
+validate_calibration_freshness()

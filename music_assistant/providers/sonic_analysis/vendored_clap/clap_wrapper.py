@@ -4,7 +4,10 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-warnings.filterwarnings("ignore")
+# MA MOD: upstream applied warnings.filterwarnings("ignore") here at module scope,
+# which would suppress warnings from all other MA providers for the rest of the
+# process lifetime.  Removed; suppression is now scoped to load_clap() via a
+# with warnings.catch_warnings() block.
 import argparse
 import collections
 import math
@@ -108,40 +111,47 @@ class CLAPWrapper:
         elif "bert" in args.text_model:
             self.token_keys = ["input_ids", "token_type_ids", "attention_mask"]
 
-        clap = CLAP(
-            audioenc_name=args.audioenc_name,
-            sample_rate=args.sampling_rate,
-            window_size=args.window_size,
-            hop_size=args.hop_size,
-            mel_bins=args.mel_bins,
-            fmin=args.fmin,
-            fmax=args.fmax,
-            classes_num=args.num_classes,
-            out_emb=args.out_emb,
-            text_model=args.text_model,
-            transformer_embed_dim=args.transformer_embed_dim,
-            d_proj=args.d_proj,
-            skip_text_encoder=not self.text_enabled,  # MA MOD
-        )
+        # MA MOD: scope CLAP/HuggingFace import-time warnings to the load only.
+        # Upstream applied warnings.filterwarnings("ignore") at module scope which
+        # would suppress warnings from all other MA providers for the rest of the
+        # process lifetime.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
 
-        # Load pretrained weights for model
-        model_state_dict = torch.load(self.model_fp, map_location=torch.device("cpu"))["model"]
+            clap = CLAP(
+                audioenc_name=args.audioenc_name,
+                sample_rate=args.sampling_rate,
+                window_size=args.window_size,
+                hop_size=args.hop_size,
+                mel_bins=args.mel_bins,
+                fmin=args.fmin,
+                fmax=args.fmax,
+                classes_num=args.num_classes,
+                out_emb=args.out_emb,
+                text_model=args.text_model,
+                transformer_embed_dim=args.transformer_embed_dim,
+                d_proj=args.d_proj,
+                skip_text_encoder=not self.text_enabled,  # MA MOD
+            )
 
-        # We unwrap the DDP model and save. If the model is not unwrapped and saved, then the model needs to unwrapped before `load_state_dict`:
-        # Reference link: https://discuss.pytorch.org/t/how-to-load-dataparallel-model-which-trained-using-multiple-gpus/146005
-        clap.load_state_dict(model_state_dict, strict=False)
+            # Load pretrained weights for model
+            model_state_dict = torch.load(self.model_fp, map_location=torch.device("cpu"))["model"]
 
-        clap.eval()  # set clap in eval mode
-        # MA MOD: skip tokenizer download when text encoder is disabled.
-        if self.text_enabled:
-            tokenizer = AutoTokenizer.from_pretrained(args.text_model)
-            if "gpt" in args.text_model:
-                tokenizer.add_special_tokens({"pad_token": "!"})
-        else:
-            tokenizer = None
+            # We unwrap the DDP model and save. If the model is not unwrapped and saved, then the model needs to unwrapped before `load_state_dict`:
+            # Reference link: https://discuss.pytorch.org/t/how-to-load-dataparallel-model-which-trained-using-multiple-gpus/146005
+            clap.load_state_dict(model_state_dict, strict=False)
 
-        if self.use_cuda and torch.cuda.is_available():
-            clap = clap.cuda()
+            clap.eval()  # set clap in eval mode
+            # MA MOD: skip tokenizer download when text encoder is disabled.
+            if self.text_enabled:
+                tokenizer = AutoTokenizer.from_pretrained(args.text_model)
+                if "gpt" in args.text_model:
+                    tokenizer.add_special_tokens({"pad_token": "!"})
+            else:
+                tokenizer = None
+
+            if self.use_cuda and torch.cuda.is_available():
+                clap = clap.cuda()
 
         return clap, tokenizer, args
 

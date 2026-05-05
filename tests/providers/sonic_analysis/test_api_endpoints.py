@@ -68,35 +68,53 @@ async def test_status_routes_count_through_controller() -> None:
 
 
 @pytest.mark.asyncio
+async def test_analyzed_tracks_passes_limit_and_offset_to_db() -> None:
+    """_handle_analyzed_tracks must pass limit/offset to the DB — not fetch all rows."""
+    p, aa, _ = _stub_provider(rows=[], count=0)
+
+    await p._handle_analyzed_tracks(limit=10, offset=20)
+
+    aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis", limit=10, offset=20)
+
+
+@pytest.mark.asyncio
 async def test_analyzed_tracks_dedupes_and_paginates() -> None:
-    """_handle_analyzed_tracks dedupes (item_id, provider) pairs and respects offset/limit."""
-    rows = [
+    """_handle_analyzed_tracks dedupes (item_id, provider) pairs within the DB page."""
+    all_rows = [
         {"item_id": "a", "provider": "filesystem_local"},
-        {"item_id": "a", "provider": "filesystem_local"},  # duplicate, should drop
+        {"item_id": "a", "provider": "filesystem_local"},  # duplicate within page, drop
         {"item_id": "b", "provider": "filesystem_local"},
         {"item_id": "c", "provider": "filesystem_local"},
     ]
-    p, aa, _ = _stub_provider(rows=rows)
+    # count=4 represents the domain total (raw DB rows, pre-dedup)
+    p, aa, _ = _stub_provider(rows=all_rows, count=4)
+    # Simulate DB-level pagination: return only the rows the DB would emit for limit/offset.
+    aa.get_audio_analysis_rows = AsyncMock(
+        side_effect=lambda *_a, limit=50, offset=0, **_kw: all_rows[offset : offset + limit]
+    )
 
-    result = await p._handle_analyzed_tracks(limit=2, offset=0)
-    assert result["total"] == 3  # deduped
-    assert len(result["items"]) == 2  # limited
-    aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis")
+    result = await p._handle_analyzed_tracks(limit=3, offset=0)
+    assert result["total"] == 4  # from get_audio_analysis_count, not in-memory dedup
+    # DB returned [a, a, b]; dedup reduces to [a, b] = 2 unique items
+    assert len(result["items"]) == 2
+    aa.get_audio_analysis_rows.assert_awaited_once_with("sonic_analysis", limit=3, offset=0)
+    aa.get_audio_analysis_count.assert_awaited_once_with("sonic_analysis")
 
 
 @pytest.mark.asyncio
 async def test_analyzed_tracks_search_filters_on_item_id_before_resolve() -> None:
-    """Search filters on item_id substring at the row level — only the page is resolved."""
+    """Search filters on item_id substring within the page — only matches are resolved."""
     rows = [
         {"item_id": "rock_track_1", "provider": "filesystem_local"},
         {"item_id": "jazz_track_2", "provider": "filesystem_local"},
         {"item_id": "rock_track_3", "provider": "filesystem_local"},
         {"item_id": "pop_track_4", "provider": "filesystem_local"},
     ]
-    p, _, tracks = _stub_provider(rows=rows)
+    # count=4 is the domain total; search is page-scoped so total still reflects the domain
+    p, _, tracks = _stub_provider(rows=rows, count=4)
 
     result = await p._handle_analyzed_tracks(search="rock", limit=10, offset=0)
-    assert result["total"] == 2
+    assert result["total"] == 4  # domain total, unaffected by page-scoped search filter
     item_ids = {item["item_id"] for item in result["items"]}
     assert item_ids == {"rock_track_1", "rock_track_3"}
     # Only the matching rows were resolved — not all 4

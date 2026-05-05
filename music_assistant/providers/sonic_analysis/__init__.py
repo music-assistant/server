@@ -28,6 +28,7 @@ from .clap_prompts import (
     SCALAR_PROMPT_PAIRS,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
+    validate_calibration_freshness,
 )
 from .helpers import (
     BlockFeatures,
@@ -301,6 +302,44 @@ def _pcm_bytes_to_audio(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarr
     return np.asarray(audio.numpy(), dtype=np.float32)
 
 
+def _decode_resample_extract(
+    audio_format: AudioFormat,
+    block_bytes: bytes,
+    overlap: np.ndarray | None,
+    sample_rate: int,
+    resampler: soxr.ResampleStream | None,
+    *,
+    is_last: bool = False,
+) -> tuple[np.ndarray, np.ndarray, BlockFeatures | None]:
+    """Decode PCM bytes, optionally resample, and extract block features in one offloaded call.
+
+    :param audio_format: AudioFormat describing the PCM encoding of block_bytes.
+    :param block_bytes: Raw PCM bytes for one analysis block (or the final tail).
+    :param overlap: Post-resample samples from the previous block to prepend before
+        feature extraction, or None for the first block.
+    :param sample_rate: Sample rate expected by extract_block_features
+        (must equal ANALYSIS_SAMPLE_RATE after resampling).
+    :param resampler: Active ResampleStream, or None when source SR already matches
+        ANALYSIS_SAMPLE_RATE.
+    :param is_last: Pass True when processing the tail PCM in _finalize so the resampler
+        flushes its internal delay buffer.
+    :returns: A 3-tuple of (pre_resample_audio, post_resample_audio, block_features).
+        pre_resample_audio is at the source sample rate (for CLAP dispatch and duration/peak
+        accounting). post_resample_audio is at ANALYSIS_SAMPLE_RATE (for overlap bookkeeping).
+        block_features is None when the audio is too short for meaningful extraction.
+    """
+    pre_resample = _pcm_bytes_to_audio(audio_format, block_bytes)
+    if resampler is not None:
+        post_resample = resampler.resample_chunk(pre_resample, last=is_last)
+    else:
+        post_resample = pre_resample
+    audio_for_extract = (
+        np.concatenate([overlap, post_resample]) if overlap is not None else post_resample
+    )
+    bf = extract_block_features(audio_for_extract, sample_rate)
+    return pre_resample, post_resample, bf
+
+
 class SonicAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider running librosa scalars + CLAP zero-shot per track."""
 
@@ -323,6 +362,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Load the CLAP model and prompt embeddings before the provider goes live."""
+        validate_calibration_freshness()
         try:
             (
                 self._clap_model,
@@ -425,10 +465,15 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         """Return a paginated list of tracks analyzed by this provider.
 
         :param search: Optional case-insensitive substring filter on item_id.
+            Filtering is page-scoped: only rows in the current DB page are searched.
         :param limit: Max results per page.
         :param offset: Pagination offset.
         """
-        rows = await self.mass.streams.audio_analysis.get_audio_analysis_rows(self.domain)
+        aa = self.mass.streams.audio_analysis
+        total = await aa.get_audio_analysis_count(self.domain)
+        # Fetch only the rows for this page; dedup on (item_id, provider) handles
+        # the rare case of multiple analysis versions per track within the page.
+        rows = await aa.get_audio_analysis_rows(self.domain, limit=limit, offset=offset)
         seen: set[tuple[str, str]] = set()
         entries: list[tuple[str, str]] = []
         for row in rows:
@@ -442,9 +487,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             q = search.lower()
             entries = [(iid, prov) for iid, prov in entries if q in iid.lower()]
 
-        total = len(entries)
-        page_entries = entries[offset : offset + limit]
-
         async def _resolve(item_id: str, provider: str) -> dict[str, Any]:
             try:
                 t = await self.mass.music.tracks.get(item_id, provider)
@@ -454,7 +496,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 self.logger.debug("Failed to resolve track %s/%s: %s", provider, item_id, err)
                 return {"item_id": item_id, "name": "(unknown)", "artist": ""}
 
-        items = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in page_entries]))
+        items = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries]))
         return {"total": total, "offset": offset, "limit": limit, "items": items}
 
     async def _handle_export_analysis(
@@ -622,16 +664,18 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         while len(session.pcm_buffer) >= session.block_samples:
             block_bytes = bytes(session.pcm_buffer[: session.block_samples])
             del session.pcm_buffer[: session.block_samples]
-            audio = _pcm_bytes_to_audio(af, block_bytes)
-            session.total_samples += len(audio)
-            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(audio))))
-            self._dispatch_clap_to_targets(session, audio, af.sample_rate)
-            if session.resampler is not None:
-                audio = session.resampler.resample_chunk(audio)
-            if session.overlap is not None:
-                audio = np.concatenate([session.overlap, audio])
-            session.overlap = audio[-OVERLAP_SAMPLES:].copy()
-            bf = await asyncio.to_thread(extract_block_features, audio, ANALYSIS_SAMPLE_RATE)
+            pre_audio, post_audio, bf = await asyncio.to_thread(
+                _decode_resample_extract,
+                af,
+                block_bytes,
+                session.overlap,
+                ANALYSIS_SAMPLE_RATE,
+                session.resampler,
+            )
+            session.total_samples += len(pre_audio)
+            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
+            self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
+            session.overlap = post_audio[-OVERLAP_SAMPLES:].copy()
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
 
@@ -705,15 +749,18 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         af = session.audio_format
 
         if session.pcm_buffer:
-            audio = _pcm_bytes_to_audio(af, bytes(session.pcm_buffer))
-            session.total_samples += len(audio)
-            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(audio))))
-            self._dispatch_clap_to_targets(session, audio, af.sample_rate)
-            if session.resampler is not None:
-                audio = session.resampler.resample_chunk(audio, last=True)
-            if session.overlap is not None:
-                audio = np.concatenate([session.overlap, audio])
-            bf = await asyncio.to_thread(extract_block_features, audio, ANALYSIS_SAMPLE_RATE)
+            pre_audio, _post_audio, bf = await asyncio.to_thread(
+                _decode_resample_extract,
+                af,
+                bytes(session.pcm_buffer),
+                session.overlap,
+                ANALYSIS_SAMPLE_RATE,
+                session.resampler,
+                is_last=True,
+            )
+            session.total_samples += len(pre_audio)
+            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
+            self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
             session.pcm_buffer.clear()
@@ -747,11 +794,20 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self,
         window_audio: np.ndarray,
         source_sr: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Run CLAP on one 7s window. Returns (1024-dim embedding, similarity logit row)."""
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Run CLAP inference on a single 7-second window.
+
+        :param window_audio: Mono float32 audio at source_sr.
+        :param source_sr: Sample rate of window_audio.
+        :returns: (1024-dim embedding, similarity logit row), or None if the model is unloaded.
+        """
+        model = self._clap_model
+        text_embeddings = self._clap_text_embeddings
+        if model is None or text_embeddings is None:
+            return None
         window_tensor = torch.from_numpy(window_audio)
-        audio_embs = self._clap_model.get_audio_embeddings_from_tensor([window_tensor], source_sr)
-        similarities = self._clap_model.compute_similarity(audio_embs, self._clap_text_embeddings)
+        audio_embs = model.get_audio_embeddings_from_tensor([window_tensor], source_sr)
+        similarities = model.compute_similarity(audio_embs, text_embeddings)
         embedding = audio_embs[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
         similarity_row = similarities[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
         return embedding, similarity_row
@@ -766,12 +822,16 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if self._clap_model is None:
             return
         try:
-            embedding, similarity_row = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._single_window_inference_sync, window_audio, source_sr
             )
         except Exception as err:
             self.logger.debug("CLAP single-window inference failed: %s", err)
             return
+        if result is None:
+            self.logger.debug("CLAP inference skipped — model unloaded mid-flight")
+            return
+        embedding, similarity_row = result
         if session.clap_sum_embedding is None:
             session.clap_sum_embedding = np.zeros_like(embedding)
             session.clap_sum_similarities = np.zeros_like(similarity_row)
