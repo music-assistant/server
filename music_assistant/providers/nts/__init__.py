@@ -181,7 +181,8 @@ class NTSProvider(MusicProvider):
             details.stream_metadata_update_callback = self._stream_metadata_callback
             details.stream_metadata_update_interval = METADATA_REFRESH_INTERVAL
             # populate initial metadata so the UI doesn't wait an interval
-            await self._stream_metadata_callback(details, 0)
+            if (initial := await self._fetch_channel_stream_metadata(item_id)) is not None:
+                details.stream_metadata = initial
 
         return details
 
@@ -341,30 +342,37 @@ class NTSProvider(MusicProvider):
 
     async def _stream_metadata_callback(self, stream_details: StreamDetails, _elapsed: int) -> None:
         """Refresh stream metadata during playback (invoked by MA)."""
+        if (
+            metadata := await self._fetch_channel_stream_metadata(stream_details.item_id)
+        ) is not None:
+            stream_details.stream_metadata = metadata
+
+    async def _fetch_channel_stream_metadata(self, item_id: str) -> StreamMetadata | None:
+        """Fetch live data and build StreamMetadata for the given channel item_id."""
         try:
             live_data = await self._fetch_live_data()
         except ProviderUnavailableError as err:
-            self.logger.debug("NTS live data fetch failed during playback: %s", err)
-            return
-
+            self.logger.debug("NTS live data fetch failed: %s", err)
+            return None
         for channel in live_data.get("results", []):
-            channel_name = channel.get("channel_name", "")
-            if f"{CHANNEL_PREFIX}{channel_name}" != stream_details.item_id:
-                continue
+            if f"{CHANNEL_PREFIX}{channel.get('channel_name', '')}" == item_id:
+                return self._build_stream_metadata(channel)
+        return None
 
-            title, location, description, image_url = self._extract_channel_info(channel)
-            desc_parts = []
-            if location:
-                desc_parts.append(f"Broadcasting from {location}")
-            if description:
-                desc_parts.append(description)
-
-            stream_details.stream_metadata = StreamMetadata(
-                title=title,
-                description="\n".join(desc_parts),
-                image_url=image_url,
-            )
-            break
+    @classmethod
+    def _build_stream_metadata(cls, channel: dict[str, Any]) -> StreamMetadata:
+        """Build StreamMetadata from a live channel payload."""
+        title, location, description, image_url = cls._extract_channel_info(channel)
+        desc_parts = []
+        if location:
+            desc_parts.append(f"Broadcasting from {location}")
+        if description:
+            desc_parts.append(description)
+        return StreamMetadata(
+            title=title,
+            description="\n".join(desc_parts),
+            image_url=image_url,
+        )
 
     @use_cache(METADATA_REFRESH_INTERVAL)
     async def _fetch_live_data(self) -> dict[str, Any]:
