@@ -160,18 +160,11 @@ class AirPlayPlayer(Player):
     def can_group_with(self) -> set[str]:
         """Return player IDs this player can group with.
 
-        AP2 players cannot group (broken NTP sync in cliap2).
-        RAOP players can group with other RAOP players only.
+        RAOP and AP2 players can group with other RAOP and/or AP2 players.
         """
-        if self.protocol == StreamingProtocol.AIRPLAY2:
-            return set()
         prov = cast("AirPlayProvider", self.provider)
         return {
-            p.player_id
-            for p in prov.get_players()
-            if p.available
-            and p.player_id != self.player_id
-            and p.protocol != StreamingProtocol.AIRPLAY2
+            p.player_id for p in prov.get_players() if p.available and p.player_id != self.player_id
         }
 
     @property
