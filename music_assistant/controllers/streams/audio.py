@@ -112,6 +112,9 @@ if TYPE_CHECKING:
 
 # ruff: noqa: PLR0915
 
+# Seconds of PCM yielded directly to the player before the crossfade holdback starts buffering.
+WARMUP_DURATION = 8
+
 
 @dataclass
 class CrossfadeData:
@@ -1094,14 +1097,17 @@ class StreamsAudio:
             player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
         )
         supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
-        supported_bit_depths = tuple(int(x[1]) for x in supported_rates_conf)
 
-        player_max_bit_depth = max(supported_bit_depths)
-        output_bit_depth = min(content_bit_depth, player_max_bit_depth)
         if content_sample_rate in supported_sample_rates:
             output_sample_rate = content_sample_rate
         else:
             output_sample_rate = max(supported_sample_rates)
+
+        # only consider bit depths that are actually paired with the chosen sample rate
+        bit_depths_for_rate = [
+            int(bd) for (sr, bd) in supported_rates_conf if int(sr) == output_sample_rate
+        ]
+        output_bit_depth = min(content_bit_depth, max(bit_depths_for_rate, default=16))
 
         if not content_type.is_lossless():
             # no point in having a higher bit depth for lossy formats
@@ -1499,9 +1505,9 @@ class StreamsAudio:
             discard_seconds = streamdetails.seek_position
             discard_leftover = 0
 
-        # Yield the first crossfade_buffer_size worth of audio immediately
-        # so playback starts right away. Only after that, start accumulating
-        # the crossfade holdback buffer for the end-of-track crossfade.
+        # Yield the first WARMUP_DURATION worth of audio immediately so playback starts
+        # right away. After that, start accumulating the crossfade holdback buffer.
+        warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
         warmup_bytes = 0
         total_chunks_received = 0
         async for chunk in self.get_queue_item_stream(
@@ -1515,7 +1521,7 @@ class StreamsAudio:
                 chunk = chunk[discard_leftover:]  # noqa: PLW2901
                 discard_leftover = 0
 
-            if warmup_bytes < crossfade_buffer_size:
+            if warmup_bytes < warmup_size:
                 # warmup: yield directly, don't buffer
                 yield chunk
                 warmup_bytes += len(chunk)
@@ -1823,6 +1829,7 @@ class StreamsAudio:
             crossfade_buffer_size = int(pcm_format.pcm_sample_size * crossfade_buffer_duration)
             # Round down to nearest frame boundary
             crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
+            warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
 
             bytes_written = 0
             crossfade_buffer = b""
@@ -1863,12 +1870,11 @@ class StreamsAudio:
                     del chunk
                     continue
 
-                # Warmup: yield chunks directly until we have streamed
-                # crossfade_buffer_size worth of audio, so playback starts
-                # immediately instead of waiting for the full buffer to fill.
-                # Skip warmup when crossfade data from the previous track
-                # is pending, as we need a full buffer for the mix.
-                if warmup_bytes < crossfade_buffer_size and not last_fadeout_part:
+                # Warmup: yield chunks directly until we have streamed WARMUP_DURATION
+                # worth of audio, so playback starts immediately. Skip warmup when
+                # crossfade data from the previous track is pending — we need a full
+                # buffer for the mix.
+                if warmup_bytes < warmup_size and not last_fadeout_part:
                     yield chunk
                     warmup_bytes += len(chunk)
                     bytes_written += len(chunk)

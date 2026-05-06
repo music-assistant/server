@@ -6,11 +6,14 @@ import base64
 import hashlib
 import hmac
 import re
+from collections.abc import Mapping
+from typing import Any
 from unittest import mock
 
 import pytest
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
-from yandex_music.exceptions import NetworkError
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
+from ya_passport_auth import SecretStr
+from yandex_music.exceptions import NetworkError, UnauthorizedError
 from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
@@ -29,7 +32,7 @@ def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
 
     :return: Tuple of (YandexMusicClient, mock_underlying_client).
     """
-    client = YandexMusicClient(token="fake_token")
+    client = YandexMusicClient(token=SecretStr("fake_token"))
     mock_underlying = mock.AsyncMock()
     client._client = mock_underlying
     client._user_id = 12345
@@ -124,53 +127,10 @@ async def test_get_tracks_retry_on_network_error_both_fail() -> None:
     assert underlying.tracks.await_count == 2
 
 
-# -- get_my_wave_tracks --------------------------------------------------------
-
-
-async def test_get_my_wave_tracks_returns_tracks_and_batch_id() -> None:
-    """get_my_wave_tracks calls rotor_station_tracks and returns ordered tracks and batch_id."""
+async def test_send_rotor_station_feedback_track_started() -> None:
+    """send_rotor_station_feedback delegates trackStarted to public helper."""
     client, underlying = _make_client()
-
-    seq_track = type("TrackShort", (), {"id": 100, "track_id": 100})()
-    sequence_item = type("SequenceItem", (), {"track": seq_track})()
-    result_obj = type(
-        "StationTracksResult",
-        (),
-        {"sequence": [sequence_item], "batch_id": "batch_abc"},
-    )()
-    underlying.rotor_station_tracks = mock.AsyncMock(return_value=result_obj)
-
-    full_track = type("Track", (), {"id": 100, "title": "My Wave Track"})()
-    underlying.tracks = mock.AsyncMock(return_value=[full_track])
-
-    tracks, batch_id = await client.get_my_wave_tracks()
-
-    underlying.rotor_station_tracks.assert_awaited_once()
-    assert batch_id == "batch_abc"
-    assert len(tracks) == 1
-    assert tracks[0].id == 100
-
-
-async def test_get_my_wave_tracks_empty_sequence_returns_empty() -> None:
-    """When rotor returns no sequence, get_my_wave_tracks returns ([], batch_id or None)."""
-    client, underlying = _make_client()
-
-    result_obj = type("StationTracksResult", (), {"sequence": [], "batch_id": None})()
-    underlying.rotor_station_tracks = mock.AsyncMock(return_value=result_obj)
-
-    tracks, batch_id = await client.get_my_wave_tracks()
-
-    assert tracks == []
-    assert batch_id is None
-    underlying.tracks.assert_not_awaited()
-
-
-async def test_send_rotor_station_feedback_posts() -> None:
-    """send_rotor_station_feedback POSTs to rotor feedback endpoint."""
-    client, underlying = _make_client()
-
-    underlying._request = mock.AsyncMock()
-    underlying.base_url = "https://api.music.yandex.net"
+    underlying.rotor_station_feedback_track_started = mock.AsyncMock(return_value=True)
 
     result = await client.send_rotor_station_feedback(
         "user:onyourwave",
@@ -180,13 +140,429 @@ async def test_send_rotor_station_feedback_posts() -> None:
     )
 
     assert result is True
-    underlying._request.post.assert_awaited_once()
-    call_args = underlying._request.post.await_args
-    assert "rotor/station/user:onyourwave/feedback" in call_args[0][0]
-    body = call_args[0][1]
-    assert body["type"] == "trackStarted"
-    assert body["trackId"] == "12345"
-    assert body["batchId"] == "batch_xyz"
+    underlying.rotor_station_feedback_track_started.assert_awaited_once()
+    args, kwargs = underlying.rotor_station_feedback_track_started.await_args
+    assert args[0] == "user:onyourwave"
+    assert kwargs["track_id"] == "12345"
+    assert kwargs["batch_id"] == "batch_xyz"
+    assert "timestamp" in kwargs
+
+
+async def test_send_rotor_station_feedback_radio_started() -> None:
+    """send_rotor_station_feedback delegates radioStarted to public helper with from_."""
+    client, underlying = _make_client()
+    underlying.rotor_station_feedback_radio_started = mock.AsyncMock(return_value=True)
+
+    result = await client.send_rotor_station_feedback(
+        "user:onyourwave",
+        "radioStarted",
+        batch_id="batch_xyz",
+    )
+
+    assert result is True
+    underlying.rotor_station_feedback_radio_started.assert_awaited_once()
+    _, kwargs = underlying.rotor_station_feedback_radio_started.await_args
+    assert kwargs["from_"] == "YandexMusicDesktopAppWindows"
+    assert kwargs["batch_id"] == "batch_xyz"
+
+
+async def test_send_rotor_station_feedback_track_finished() -> None:
+    """send_rotor_station_feedback delegates trackFinished with total_played_seconds."""
+    client, underlying = _make_client()
+    underlying.rotor_station_feedback_track_finished = mock.AsyncMock(return_value=True)
+
+    result = await client.send_rotor_station_feedback(
+        "user:onyourwave",
+        "trackFinished",
+        track_id="12345",
+        total_played_seconds=42,
+        batch_id="batch_xyz",
+    )
+
+    assert result is True
+    underlying.rotor_station_feedback_track_finished.assert_awaited_once()
+    _, kwargs = underlying.rotor_station_feedback_track_finished.await_args
+    assert kwargs["track_id"] == "12345"
+    assert kwargs["total_played_seconds"] == 42.0
+    assert kwargs["batch_id"] == "batch_xyz"
+
+
+async def test_send_rotor_station_feedback_skip() -> None:
+    """send_rotor_station_feedback delegates skip to public helper."""
+    client, underlying = _make_client()
+    underlying.rotor_station_feedback_skip = mock.AsyncMock(return_value=True)
+
+    result = await client.send_rotor_station_feedback(
+        "user:onyourwave",
+        "skip",
+        track_id="12345",
+        total_played_seconds=10,
+    )
+
+    assert result is True
+    underlying.rotor_station_feedback_skip.assert_awaited_once()
+    _, kwargs = underlying.rotor_station_feedback_skip.await_args
+    assert kwargs["track_id"] == "12345"
+    assert kwargs["total_played_seconds"] == 10.0
+
+
+# -- rotor session API (/rotor/session/*) --------------------------------------
+
+
+def _patch_rotor_session_request(client: YandexMusicClient, response: object) -> mock.AsyncMock:
+    """Install a mocked _rotor_session_request on the client and return the mock."""
+    req_mock = mock.AsyncMock(return_value=response)
+    client._rotor_session_request = req_mock  # type: ignore[method-assign]
+    return req_mock
+
+
+def _patch_get_tracks(client: YandexMusicClient, tracks: list[object]) -> mock.AsyncMock:
+    """Install a mocked get_tracks on the client and return the mock."""
+    tracks_mock = mock.AsyncMock(return_value=tracks)
+    client.get_tracks = tracks_mock  # type: ignore[method-assign]
+    return tracks_mock
+
+
+def _call_args(m: mock.AsyncMock) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
+    """Return (args, kwargs) from the most recent await on ``m``.
+
+    Raises AssertionError when the mock was never awaited — intentionally
+    surfacing missed setup rather than letting mypy's `None is not iterable`
+    propagate into destructuring sites.
+    """
+    call = m.await_args
+    assert call is not None, "mock was not awaited"
+    return call.args, call.kwargs
+
+
+async def test_rotor_session_new_posts_expected_body_and_returns_session() -> None:
+    """rotor_session_new POSTs to /rotor/session/new with wave-model flags and parses result."""
+    client, underlying = _make_client()
+    del underlying  # unused; session API bypasses MarshalX client
+    response = {
+        "radioSessionId": "sess_abc",
+        "batchId": "batch_1",
+        "sequence": [{"track": {"id": 100, "title": "T"}, "liked": False}],
+    }
+    req_mock = _patch_rotor_session_request(client, response)
+    _patch_get_tracks(client, [type("T", (), {"id": 100})()])
+
+    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+
+    req_mock.assert_awaited_once()
+    args, _ = _call_args(req_mock)
+    path, body = args[0], args[1]
+    assert path == "new"
+    assert body["seeds"] == ["user:onyourwave"]
+    assert body["queue"] == []
+    assert body["includeTracksInResponse"] is True
+    assert body["includeWaveModel"] is True
+    assert body["interactive"] is True
+    assert session_id == "sess_abc"
+    assert batch_id == "batch_1"
+    assert len(tracks) == 1
+    assert tracks[0].id == 100
+
+
+async def test_rotor_session_new_appends_settings_as_seeds() -> None:
+    """rotor_session_new appends settingDiversity / settingMoodEnergy / settingLanguage seeds."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(
+        client, {"radioSessionId": "s1", "batchId": "b1", "sequence": []}
+    )
+    _patch_get_tracks(client, [])
+
+    await client.rotor_session_new(
+        "user:onyourwave",
+        settings={"diversity": "discover", "moodEnergy": "calm", "language": "russian"},
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    assert body["seeds"] == [
+        "user:onyourwave",
+        "settingDiversity:discover",
+        "settingMoodEnergy:calm",
+        "settingLanguage:russian",
+    ]
+
+
+async def test_rotor_session_new_returns_empty_on_missing_session_id() -> None:
+    """If the response lacks radioSessionId the call returns (None, [], None) without raising."""
+    client, underlying = _make_client()
+    del underlying
+    _patch_rotor_session_request(client, None)
+
+    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+
+    assert session_id is None
+    assert tracks == []
+    assert batch_id is None
+
+
+async def test_rotor_session_tracks_posts_current_track_queue() -> None:
+    """rotor_session_tracks POSTs {queue: [current_track_id]} and returns tracks + batch_id."""
+    client, underlying = _make_client()
+    del underlying
+    response = {
+        "batchId": "batch_2",
+        "sequence": [{"track": {"id": 200}}, {"track": {"id": 201}}],
+    }
+    req_mock = _patch_rotor_session_request(client, response)
+    _patch_get_tracks(client, [type("T", (), {"id": 200})(), type("T", (), {"id": 201})()])
+
+    tracks, batch_id = await client.rotor_session_tracks("sess_abc", current_track_id="100")
+
+    args, _ = _call_args(req_mock)
+    path, body = args[0], args[1]
+    assert path == "sess_abc/tracks"
+    assert body == {"queue": ["100"]}
+    assert batch_id == "batch_2"
+    assert [t.id for t in tracks] == [200, 201]
+
+
+async def test_rotor_session_feedback_radio_started_sends_from_field() -> None:
+    """RadioStarted event uses event.from=track_id (not trackId)."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    result = await client.rotor_session_feedback(
+        "sess_abc", "radioStarted", track_id="100", batch_id="batch_1"
+    )
+
+    assert result is True
+    args, _ = _call_args(req_mock)
+    path, body = args[0], args[1]
+    assert path == "sess_abc/feedback"
+    assert body["batchId"] == "batch_1"
+    event = body["event"]
+    assert event["type"] == "radioStarted"
+    assert event["from"] == "100"
+    assert "trackId" not in event
+    assert "timestamp" in event
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T", event["timestamp"])
+
+
+async def test_rotor_session_feedback_track_started_sends_track_id() -> None:
+    """TrackStarted event uses event.trackId (not from)."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback(
+        "sess_abc", "trackStarted", track_id="100", batch_id="batch_1"
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "trackStarted"
+    assert event["trackId"] == "100"
+    assert "from" not in event
+    assert "totalPlayedSeconds" not in event
+
+
+async def test_rotor_session_feedback_track_finished_includes_seconds() -> None:
+    """TrackFinished event includes totalPlayedSeconds."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback(
+        "sess_abc",
+        "trackFinished",
+        track_id="100",
+        total_played_seconds=42,
+        batch_id="batch_1",
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "trackFinished"
+    assert event["trackId"] == "100"
+    assert event["totalPlayedSeconds"] == 42
+
+
+async def test_rotor_session_feedback_skip_includes_seconds() -> None:
+    """Skip event includes totalPlayedSeconds and trackId."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback(
+        "sess_abc", "skip", track_id="100", total_played_seconds=10, batch_id="batch_1"
+    )
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "skip"
+    assert event["trackId"] == "100"
+    assert event["totalPlayedSeconds"] == 10
+
+
+async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> None:
+    """like/dislike events use trackId but do NOT include totalPlayedSeconds."""
+    client, underlying = _make_client()
+    del underlying
+    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+
+    await client.rotor_session_feedback("sess_abc", "like", track_id="100", batch_id="batch_1")
+
+    args, _ = _call_args(req_mock)
+    body = args[1]
+    event = body["event"]
+    assert event["type"] == "like"
+    assert event["trackId"] == "100"
+    assert "totalPlayedSeconds" not in event
+
+
+async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None:
+    """Expired/invalid token during /rotor/session/* surfaces as LoginFailed.
+
+    Without this mapping the raw ``UnauthorizedError`` from the MarshalX
+    client would bubble up through browse / play paths and crash the
+    provider instead of triggering MA's re-auth prompt.
+    """
+    client, underlying = _make_client()
+    # _do is awaited via _call_with_retry → _ensure_connected → returns our
+    # AsyncMock underlying client. The underlying client's ._request.post is
+    # what actually raises.
+    underlying._request = mock.MagicMock()
+    underlying._request.post = mock.AsyncMock(side_effect=UnauthorizedError("stale token"))
+
+    with pytest.raises(LoginFailed):
+        await client._rotor_session_request("new", {"seeds": ["user:onyourwave"]})
+
+
+# -- get_similar_artists ------------------------------------------------------
+
+
+async def test_get_similar_artists_returns_list() -> None:
+    """get_similar_artists returns the similar_artists list from artists_similar()."""
+    client, underlying = _make_client()
+    similar = [type("Artist", (), {"id": i, "name": f"A{i}"})() for i in (1, 2, 3)]
+    result_obj = type("ArtistSimilar", (), {"similar_artists": similar})()
+    underlying.artists_similar = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_similar_artists("100")
+
+    underlying.artists_similar.assert_awaited_once_with("100")
+    assert result == similar
+
+
+async def test_get_similar_artists_respects_limit() -> None:
+    """get_similar_artists truncates results to the requested limit."""
+    client, underlying = _make_client()
+    similar = [type("Artist", (), {"id": i})() for i in range(10)]
+    result_obj = type("ArtistSimilar", (), {"similar_artists": similar})()
+    underlying.artists_similar = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_similar_artists("100", limit=3)
+
+    assert len(result) == 3
+    assert [a.id for a in result] == [0, 1, 2]
+
+
+async def test_get_similar_artists_handles_none_response() -> None:
+    """get_similar_artists returns [] when underlying call returns None."""
+    client, underlying = _make_client()
+    underlying.artists_similar = mock.AsyncMock(return_value=None)
+
+    result = await client.get_similar_artists("100")
+
+    assert result == []
+
+
+async def test_get_similar_artists_handles_empty_field() -> None:
+    """get_similar_artists returns [] when similar_artists is empty/None."""
+    client, underlying = _make_client()
+    result_obj = type("ArtistSimilar", (), {"similar_artists": None})()
+    underlying.artists_similar = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_similar_artists("100")
+
+    assert result == []
+
+
+async def test_get_similar_artists_returns_empty_on_network_error() -> None:
+    """get_similar_artists returns [] when underlying raises NetworkError."""
+    client, underlying = _make_client()
+    underlying.artists_similar = mock.AsyncMock(
+        side_effect=[NetworkError("timeout"), NetworkError("again")]
+    )
+
+    result = await client.get_similar_artists("100")
+
+    assert result == []
+
+
+# -- get_pins / get_music_history / get_artist_about -------------------------
+
+
+async def test_get_pins_returns_list_object() -> None:
+    """get_pins forwards the underlying pins() result."""
+    client, underlying = _make_client()
+    pins_obj = type("PinsList", (), {"pins": [type("Pin", (), {"type": "album_item"})()]})()
+    underlying.pins = mock.AsyncMock(return_value=pins_obj)
+
+    result = await client.get_pins()
+
+    underlying.pins.assert_awaited_once_with()
+    assert result is pins_obj
+
+
+async def test_get_pins_returns_none_on_network_error() -> None:
+    """get_pins returns None when retries are exhausted."""
+    client, underlying = _make_client()
+    underlying.pins = mock.AsyncMock(side_effect=NetworkError("boom"))
+
+    result = await client.get_pins()
+
+    assert result is None
+
+
+async def test_get_music_history_returns_object() -> None:
+    """get_music_history forwards the underlying music_history() result."""
+    client, underlying = _make_client()
+    history = type("MusicHistory", (), {"history_tabs": []})()
+    underlying.music_history = mock.AsyncMock(return_value=history)
+
+    result = await client.get_music_history()
+
+    underlying.music_history.assert_awaited_once_with()
+    assert result is history
+
+
+async def test_get_music_history_returns_none_on_network_error() -> None:
+    """get_music_history returns None on persistent NetworkError."""
+    client, underlying = _make_client()
+    underlying.music_history = mock.AsyncMock(side_effect=NetworkError("boom"))
+
+    assert await client.get_music_history() is None
+
+
+async def test_get_artist_about_returns_object() -> None:
+    """get_artist_about forwards the underlying artists_about() result."""
+    client, underlying = _make_client()
+    about = type("ArtistAbout", (), {"description": "x", "stats": None})()
+    underlying.artists_about = mock.AsyncMock(return_value=about)
+
+    result = await client.get_artist_about("42")
+
+    underlying.artists_about.assert_awaited_once_with("42")
+    assert result is about
+
+
+async def test_get_artist_about_returns_none_on_network_error() -> None:
+    """get_artist_about returns None on persistent NetworkError."""
+    client, underlying = _make_client()
+    underlying.artists_about = mock.AsyncMock(side_effect=NetworkError("boom"))
+
+    assert await client.get_artist_about("42") is None
 
 
 # -- LRC regex tests ---------------------------------------------------------
@@ -359,6 +735,41 @@ async def test_get_dashboard_stations_returns_personalized_stations() -> None:
     assert station_id == "mood:sad"
     assert name == "Грустное"  # station.name takes priority over rup_title
     underlying.rotor_stations_dashboard.assert_called_once()
+
+
+# -- get_track_file_info: response key normalization -------------------------
+
+
+async def test_get_track_file_info_parses_camelcase_download_info() -> None:
+    """get_track_file_info parses the v3-style camelCase ``downloadInfo`` key.
+
+    The yandex-music v3 client no longer recursively normalises camelCase keys
+    inside ``Response.result``. The raw JSON for /get-file-info comes back as
+    ``{"downloadInfo": {...}}`` — the provider must accept both shapes.
+    """
+    client, underlying = _make_client()
+
+    raw_response = {
+        "downloadInfo": {
+            "trackId": "132401416",
+            "quality": "lossless",
+            "codec": "flac-mp4",
+            "bitrate": 0,
+            "transport": "raw",
+            "url": "https://example.com/flac-mp4.bin",
+            "realId": "132401416",
+        }
+    }
+    underlying._request = mock.MagicMock()
+    underlying._request.get = mock.AsyncMock(return_value=raw_response)
+    underlying.base_url = "https://api.music.yandex.net"
+
+    result = await client.get_track_file_info("132401416")
+
+    assert result is not None
+    assert result["url"] == "https://example.com/flac-mp4.bin"
+    assert result["codec"] == "flac-mp4"
+    assert result["needs_decryption"] is False
 
 
 async def test_get_dashboard_stations_empty_on_error() -> None:

@@ -10,7 +10,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from .constants import CACHE_CATEGORY_ISRC_MAP, CONF_QUALITY
+from .constants import CACHE_CATEGORY_ISRC_MAP, CONF_QUALITY, OPEN_API_URL
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
@@ -172,7 +172,7 @@ class TidalStreamingManager:
 
         # Lookup by ISRC
         api_result = await self.api.get(
-            "/tracks", params={"filter[isrc]": isrc}, base_url=self.api.OPEN_API_URL
+            "tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL
         )
         data = api_result[0] if isinstance(api_result, tuple) else api_result
 

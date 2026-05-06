@@ -1915,6 +1915,8 @@ class Player(ABC):
             base_features.add(PlayerFeature.VOLUME_MUTE)
         else:
             base_features.discard(PlayerFeature.VOLUME_MUTE)
+        if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
+            base_features.add(PlayerFeature.SELECT_SOURCE)
         return base_features
 
     @cached_property

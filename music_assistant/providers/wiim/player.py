@@ -126,7 +126,7 @@ class WiimPlayer(Player):
         return [
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
-                safe_max_sample_rate=192000,
+                safe_max_sample_rate=96000,
                 max_bit_depth=24,
                 safe_max_bit_depth=24,
             ),
@@ -247,11 +247,13 @@ class WiimPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         try:
             if player_ids_to_add:
-                for member_id in player_ids_to_add:
-                    if member := self.mass.players.get_player(member_id):
-                        await self._wiim_controller.async_join_group(
-                            self.device.udn, cast("WiimPlayer", member).device.udn
-                        )
+                follower_udns = [
+                    cast("WiimPlayer", member).device.udn
+                    for member_id in player_ids_to_add
+                    if (member := self.mass.players.get_player(member_id))
+                ]
+                if follower_udns:
+                    await self._wiim_controller.async_join_group(self.device.udn, follower_udns)
 
             if player_ids_to_remove:
                 for member_id in player_ids_to_remove:
@@ -347,7 +349,8 @@ class WiimPlayer(Player):
         ]
 
         # Active source detection
-        device_uri = self.device.current_track_uri or ""
+        media = self.device.current_media
+        device_uri = media.uri if media and media.uri else ""
         play_mode = self.device.play_mode
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
@@ -362,7 +365,7 @@ class WiimPlayer(Player):
             self._attr_active_source = None
 
         # Sync current_media from device state
-        if self._attr_active_source is not None and (media := self.device.current_media):
+        if self._attr_active_source is not None and media:
             self.set_current_media(
                 uri=media.uri or "",
                 title=media.title,
@@ -392,9 +395,8 @@ class WiimPlayer(Player):
         except (WiimDeviceException, WiimRequestException) as err:
             self.logger.debug("Failed to sync position for %s: %s", self._attr_name, err)
             return
-        device_pos = self.device.current_position
-        if device_pos is not None:
-            self._attr_elapsed_time = device_pos
+        if (media := self.device.current_media) is not None and media.position is not None:
+            self._attr_elapsed_time = media.position
             self._attr_elapsed_time_last_updated = time.time()
         self._update_ma_state_from_sdk_cache()
 

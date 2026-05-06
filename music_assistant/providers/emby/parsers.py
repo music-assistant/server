@@ -19,6 +19,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.emby.const import (
     AUDIO_STREAM_BIT_DEPTH,
+    AUDIO_STREAM_BIT_RATE,
     AUDIO_STREAM_CHANNELS,
     AUDIO_STREAM_CODEC,
     AUDIO_STREAM_SAMPLE_RATE,
@@ -91,10 +92,9 @@ def parse_track(
     )
 
     duration = int(item.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000)  # Convert ticks to seconds
-    media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
-    audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
     track_number = int(item.get(ITEM_KEY_INDEX_NUMBER, 0))
     disc_number = int(item.get(ITEM_KEY_PARENT_INDEX_NUMBER, 0))
+    audio_format = parse_stream_details(item)
 
     track = Track(
         item_id=track_id,
@@ -110,13 +110,7 @@ def parse_track(
                 item_id=track_id,
                 provider_domain=provider.domain,
                 provider_instance=instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(str(item.get(ITEM_KEY_CONTAINER))),
-                    codec_type=ContentType.try_parse(str(audio_stream.get(AUDIO_STREAM_CODEC))),
-                    sample_rate=int(audio_stream.get(AUDIO_STREAM_SAMPLE_RATE, 44100)),
-                    bit_depth=int(audio_stream.get(AUDIO_STREAM_BIT_DEPTH, 16)),
-                    channels=int(audio_stream.get(AUDIO_STREAM_CHANNELS, 2)),
-                ),
+                audio_format=audio_format,
             )
         },
     )
@@ -289,3 +283,20 @@ def parse_playlist(
     playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
 
     return playlist
+
+
+def parse_stream_details(
+    item: dict[str, Any],
+) -> AudioFormat:
+    """Parse Emby media stream details into an AudioFormat."""
+    media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
+    audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
+
+    return AudioFormat(
+        content_type=ContentType.try_parse(str(item.get(ITEM_KEY_CONTAINER))),
+        codec_type=ContentType.try_parse(str(audio_stream.get(AUDIO_STREAM_CODEC))),
+        sample_rate=int(audio_stream.get(AUDIO_STREAM_SAMPLE_RATE, 44100)),
+        bit_depth=int(audio_stream.get(AUDIO_STREAM_BIT_DEPTH, 16)),
+        channels=int(audio_stream.get(AUDIO_STREAM_CHANNELS, 2)),
+        bit_rate=audio_stream.get(AUDIO_STREAM_BIT_RATE),
+    )

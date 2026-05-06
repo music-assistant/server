@@ -192,6 +192,8 @@ class AirPlay2Stream(AirPlayProtocol):
             str(self._cli_loglevel),
             "--dacp_id",
             prov.dacp_id,
+            "--pipe",
+            "-",  # Use stdin for audio input
             "--command_pipe",
             self.commands_pipe.path,
             "--latency",

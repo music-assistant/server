@@ -17,7 +17,6 @@ from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 from music_assistant_models import config_entries
 from music_assistant_models.config_entries import (
-    MULTI_VALUE_SPLITTER,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -80,7 +79,6 @@ from music_assistant.constants import (
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
@@ -1340,34 +1338,8 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:  # noqa: PLR0915
+    async def _migrate(self) -> None:
         changed = False
-
-        # some type hints to help with the code below
-        instance_id: str
-        player_id: str
-        provider_config: dict[str, Any]
-        player_config: dict[str, Any]
-
-        # Older versions of MA can create corrupt entries with no domain if retrying
-        # logic runs after a provider has been removed. Remove those corrupt entries.
-        # TODO: remove after 2.8 release
-        for instance_id, provider_config in {**self._data.get(CONF_PROVIDERS, {})}.items():
-            if "domain" not in provider_config:
-                self._data[CONF_PROVIDERS].pop(instance_id, None)
-                LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
-                changed = True
-
-        # Remove corrupt player configurations that are missing the required 'player_id' key
-        # This can happen when _clear_protocol_parent_id is called on an already-deleted player
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            if "player_id" not in player_config:
-                self._data[CONF_PLAYERS].pop(player_id, None)
-                # Also remove any DSP config for this player
-                if CONF_PLAYER_DSP in self._data:
-                    self._data[CONF_PLAYER_DSP].pop(player_id, None)
-                changed = True
 
         # The background tasks controller originally persisted runtime state directly under
         # core/tasks, which could create a CoreConfig object without the required domain field.
@@ -1378,150 +1350,6 @@ class ConfigController:
             tasks_core_config["domain"] = "tasks"
             LOGGER.warning("Repaired corrupt tasks core configuration")
             changed = True
-
-        # migrate manual_ips to new format
-        # TODO: remove after 2.8 release
-        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
-            if not (values := provider_config.get("values")):
-                continue
-            if not (ips := values.get("ips")):
-                continue
-            values["manual_discovery_ip_addresses"] = ips.split(",")
-            del values["ips"]
-            changed = True
-
-        # migrate zeroconf interface selection from players controller to discovery controller
-        # TODO: remove after 2.8 release
-        core_configs = self._data.setdefault(CONF_CORE, {})
-        players_core = core_configs.get("players", {})
-        discovery_core = core_configs.setdefault("discovery", {"domain": "discovery", "values": {}})
-        discovery_values = discovery_core.setdefault("values", {})
-        players_values = players_core.get("values", {})
-        legacy_zeroconf_interfaces = players_values.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
-        if legacy_zeroconf_interfaces is None and players_core:
-            legacy_zeroconf_interfaces = players_core.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
-        if (
-            legacy_zeroconf_interfaces is not None
-            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_values
-            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_core
-        ):
-            discovery_values[CONF_ENTRY_ZEROCONF_INTERFACES.key] = legacy_zeroconf_interfaces
-            changed = True
-        elif legacy_zeroconf_interfaces is not None:
-            changed = True
-
-        # migrate sample_rates config entry
-        # TODO: remove after 2.8 release
-        for player_config in self._data.get(CONF_PLAYERS, {}).values():
-            if not (values := player_config.get("values")):
-                continue
-            if not (sample_rates := values.get("sample_rates")):
-                continue
-            if not isinstance(sample_rates, list):
-                del player_config["values"]["sample_rates"]
-            if not any(isinstance(x, list) for x in sample_rates):
-                continue
-            player_config["values"]["sample_rates"] = [
-                f"{x[0]}{MULTI_VALUE_SPLITTER}{x[1]}" if isinstance(x, list) else x
-                for x in sample_rates
-            ]
-            changed = True
-
-        # Remove obsolete builtin_player configurations (provider was deleted in 2.7)
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            if player_config.get("provider") != "builtin_player":
-                continue
-            self._data[CONF_PLAYERS].pop(player_id, None)
-            # Also remove any DSP config for this player
-            if CONF_PLAYER_DSP in self._data:
-                self._data[CONF_PLAYER_DSP].pop(player_id, None)
-            LOGGER.warning("Removed obsolete builtin_player configuration: %s", player_id)
-            changed = True
-
-        # Remove corrupt player configurations that are missing the required 'provider' key
-        # or have an invalid/removed provider
-        all_provider_ids: set[str] = set(self._data.get(CONF_PROVIDERS, {}).keys())
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            player_provider = player_config.get("provider")
-            if not player_provider:
-                LOGGER.warning("Removing corrupt player configuration: %s", player_id)
-            elif player_provider not in all_provider_ids:
-                LOGGER.warning("Removed orphaned player configuration: %s", player_id)
-            else:
-                continue
-            self._data[CONF_PLAYERS].pop(player_id, None)
-            # Also remove any DSP config for this player
-            if CONF_PLAYER_DSP in self._data:
-                self._data[CONF_PLAYER_DSP].pop(player_id, None)
-            changed = True
-
-        # migrate sync_group players to use the new sync_group provider
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            if not player_id.startswith(SGP_PREFIX):
-                continue
-            player_provider = player_config["provider"]
-            if player_provider == "sync_group":
-                continue
-            player_config["provider"] = "sync_group"
-            changed = True
-
-        # Migrate AirPlay legacy credentials (ap_credentials) to protocol-specific keys
-        # The old key was used for both RAOP and AirPlay, now we have separate keys
-        # TODO: remove after 2.8 release
-        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
-            if player_config.get("provider") != "airplay":
-                continue
-            if not (values := player_config.get("values")):
-                continue
-            if "ap_credentials" not in values:
-                continue
-            # Migrate to raop_credentials (RAOP is the default/fallback protocol)
-            # The new code will use the correct key based on the protocol
-            old_creds = values.pop("ap_credentials")
-            if old_creds and "raop_credentials" not in values:
-                values["raop_credentials"] = old_creds
-                LOGGER.info("Migrated AirPlay credentials for player %s", player_id)
-            changed = True
-
-        # Clean up stale ARP/MAC caches from group/stereo pair player configs
-        # and protocol players that were incorrectly linked to groups.
-        # TODO: remove after 2.8 release
-        group_player_ids: set[str] = set()
-        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
-            if player_config.get("player_type") not in ("group", "stereo_pair"):
-                continue
-            group_player_ids.add(player_id)
-            if not (values := player_config.get("values")):
-                continue
-            for key in ("cached_arp_mac", "reported_mac", "linked_protocol_ids"):
-                if values.pop(key, None) is not None:
-                    changed = True
-        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
-            if not (values := player_config.get("values")):
-                continue
-            if values.get("protocol_parent_id") in group_player_ids:
-                values.pop("protocol_parent_id")
-                changed = True
-
-        # Remove orphaned stored_radios config from RadioBrowser provider instances
-        # now that LIBRARY_RADIOS support has been removed from the provider.
-        # TODO: remove after 2.8 release
-        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
-            if provider_config.get("domain") != "radiobrowser":
-                continue
-            if not (values := provider_config.get("values")):
-                continue
-            for key in (
-                "stored_radios",
-                "library_sync_radios",
-                "provider_sync_interval_radios",
-                "library_sync_back",
-            ):
-                if values.pop(key, None) is not None:
-                    changed = True
 
         if changed:
             await self._async_save()
@@ -1796,6 +1624,10 @@ class ConfigController:
                 key=CONF_HIDE_IN_UI,
                 type=ConfigEntryType.BOOLEAN,
                 label="Hide this player in the user interface",
+                description="Hide this player from the main players list and dashboard selection "
+                "menus.  The player remains fully controllable and still appears in any sync group "
+                "it currently belongs to and in the settings. Disable the player to exclude "
+                "it everywhere.",
                 default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
