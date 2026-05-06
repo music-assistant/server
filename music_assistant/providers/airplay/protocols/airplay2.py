@@ -236,7 +236,7 @@ class AirPlay2Stream(AirPlayProtocol):
             if "main: DACP ID set to:" in line:
                 self._cli_start_ts = time.time()
             elif (
-                f"player: Callback from AirPlay 2 device {self.player.name} to device_activate_cb (status 2)"
+                f"player: Callback from AirPlay 2 device {self.player.display_name} to device_activate_cb (status 2)"
                 in line
             ):
                 # successfully connected
