@@ -21,6 +21,7 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, i
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AIRPLAY_DEFAULT_SESSION_DELAY_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
@@ -188,9 +189,7 @@ class AirPlayPlayer(Player):
     def wait_start(self) -> int:
         """Get the time in ms to allow device to connect before starting stream."""
         if self.protocol == StreamingProtocol.AIRPLAY2:
-            # Session establishment latency doesn't include time from when this code is executed till the binary is spawned
-            # Discuss this code with @MarvinSchenkel with respect to preventing initial audio loss
-            return int(self.session_establishment_latency_ms + 900)
+            return int(self.session_establishment_latency_ms + AIRPLAY_DEFAULT_SESSION_DELAY_MS)
         return int(self.session_establishment_latency_ms + self.output_buffer_duration_ms)
 
     async def get_config_entries(
@@ -325,12 +324,11 @@ class AirPlayPlayer(Player):
                             type=ConfigEntryType.ALERT,
                             default_value=None,
                             required=False,
-                            label="The binary used to provide support for the AirPlay2 protocol "
+                            label="Music Assistant support for the AirPlay2 protocol "
                             "does support audio synchronisation, but it is fragile. "
                             "If playback or synchronisation does not work, try adjusting the "
                             "session establishment latency. This is an interim advanced configuration "
-                            "setting. It will be removed when a robust synchronisation method is implemented "
-                            "into the cliap2 binary.",
+                            "setting. It will be removed when a robust synchronisation method is implemented.",
                         ),
                     )
                     break

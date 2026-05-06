@@ -36,6 +36,8 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
+# Time allowance for MA processing and OS spawning of the binary. Helps reduce initial audio loss.
+AIRPLAY_DEFAULT_SESSION_DELAY_MS: Final[int] = 900
 # Read ahead buffer for cliraop. Default output buffer duration.
 AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
 # Minimum output buffer duration permitted.
