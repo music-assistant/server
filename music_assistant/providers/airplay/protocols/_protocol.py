@@ -63,6 +63,8 @@ class AirPlayProtocol(ABC):
         self._metadata_checksum = ""
         self._last_progress_sent: int = -1
         self._elapsed_time_offset: float | None = None
+        self._cli_start_ts: float | None = None
+        self._connected_ts: float | None = None
 
     @property
     def running(self) -> bool:
