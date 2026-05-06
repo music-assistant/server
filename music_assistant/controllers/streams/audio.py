@@ -1097,14 +1097,17 @@ class StreamsAudio:
             player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
         )
         supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
-        supported_bit_depths = tuple(int(x[1]) for x in supported_rates_conf)
 
-        player_max_bit_depth = max(supported_bit_depths)
-        output_bit_depth = min(content_bit_depth, player_max_bit_depth)
         if content_sample_rate in supported_sample_rates:
             output_sample_rate = content_sample_rate
         else:
             output_sample_rate = max(supported_sample_rates)
+
+        # only consider bit depths that are actually paired with the chosen sample rate
+        bit_depths_for_rate = [
+            int(bd) for (sr, bd) in supported_rates_conf if int(sr) == output_sample_rate
+        ]
+        output_bit_depth = min(content_bit_depth, max(bit_depths_for_rate, default=16))
 
         if not content_type.is_lossless():
             # no point in having a higher bit depth for lossy formats
