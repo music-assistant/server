@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import time
 from collections.abc import Callable
@@ -358,23 +359,36 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
         self._unregister_handles: list[Callable[[], None]] = []
+        self._clap_load_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
-        """Load the CLAP model and prompt embeddings before the provider goes live."""
+        """Schedule the CLAP model load in the background and return immediately."""
         validate_calibration_freshness()
+        self._clap_load_task = self.mass.create_task(self._load_clap_in_background())
+
+    async def _load_clap_in_background(self) -> None:
+        """Run the CLAP model load in a worker thread and record the result."""
         try:
             (
                 self._clap_model,
                 self._clap_text_embeddings,
                 self._clap_prompt_order,
             ) = await asyncio.to_thread(self._load_clap)
-            self.logger.info(
-                "CLAP model loaded; %d prompt pairs ready",
-                len(self._clap_prompt_order),
-            )
+        except asyncio.CancelledError:
+            raise
         except Exception as err:
-            self.logger.warning("CLAP model load failed (librosa-only mode): %s", err)
+            self.logger.error(
+                "CLAP model failed to load; sonic_analysis will skip background "
+                "scans until the provider is reloaded: %s",
+                err,
+                exc_info=err,
+            )
             self._clap_model = None
+            return
+        self.logger.info(
+            "CLAP model loaded; %d prompt pairs ready",
+            len(self._clap_prompt_order),
+        )
 
     async def loaded_in_mass(self) -> None:
         """Register API commands once the provider is live."""
@@ -433,6 +447,11 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Release the CLAP model and unregister API handlers."""
+        if self._clap_load_task is not None and not self._clap_load_task.done():
+            self._clap_load_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._clap_load_task
+        self._clap_load_task = None
         for unregister in self._unregister_handles:
             try:
                 unregister()
@@ -585,6 +604,12 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param streamdetails: Stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        if self._clap_model is None:
+            self.logger.debug(
+                "Skipping analysis for %s: CLAP model not yet available",
+                streamdetails.item_id,
+            )
+            return False
         bytes_per_sample = audio_format.bit_depth // 8
         block_bytes = (
             audio_format.sample_rate * bytes_per_sample * audio_format.channels * BLOCK_SECONDS

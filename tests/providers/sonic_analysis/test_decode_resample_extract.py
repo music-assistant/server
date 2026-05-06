@@ -36,7 +36,7 @@ def _make_provider() -> SonicAnalysisProvider:
     p.mass = mass
     p.manifest = manifest
     p._sessions = {}
-    p._clap_model = None
+    p._clap_model = MagicMock()
     p._clap_prompt_order = []
     p._clap_text_embeddings = None
     p.analysis_version = 1

@@ -180,13 +180,13 @@ async def test_handle_async_init_calls_validate_calibration_freshness() -> None:
     p._clap_text_embeddings = None
     p._clap_prompt_order = []
     p._unregister_handles = []
-    p.mass = SimpleNamespace()  # type: ignore[assignment]
+    p._clap_load_task = None
+    p.mass = SimpleNamespace(  # type: ignore[assignment]
+        create_task=MagicMock(side_effect=lambda coro: coro.close() or MagicMock())
+    )
 
-    with (
-        patch(
-            "music_assistant.providers.sonic_analysis.validate_calibration_freshness"
-        ) as mock_validate,
-        patch.object(p, "_load_clap", side_effect=RuntimeError("no model in test")),
-    ):
+    with patch(
+        "music_assistant.providers.sonic_analysis.validate_calibration_freshness"
+    ) as mock_validate:
         await p.handle_async_init()
         mock_validate.assert_called_once_with()
