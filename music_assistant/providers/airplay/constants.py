@@ -40,10 +40,6 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 AIRPLAY_DEFAULT_SESSION_DELAY_MS: Final[int] = 900
 # Read ahead buffer for cliraop. Default output buffer duration.
 AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
-# Minimum output buffer duration permitted.
-AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250
-# Maximum output buffer duration permitted.
-AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
 # Default session establishment latency i.e. expected duration to pair with AirPlay device and negotiate session
 AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 500
 AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS: Final[int] = (

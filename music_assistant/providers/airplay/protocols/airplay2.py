@@ -67,6 +67,7 @@ class AirPlay2Stream(AirPlayProtocol):
             ((self._session_establishment_ms + 99) // 100) * 100,
             AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
         )
+        # 600 used to provide protection against hitting the 700ms boundary mentioned in docstring above.
         low = max(high - 600, AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS)
         return (low, high)
 
@@ -104,7 +105,7 @@ class AirPlay2Stream(AirPlayProtocol):
             return
         self._connected_ts = time.time()
         assert self._session_establishment_ms is not None  # for type checker
-        self.logger.info(
+        self.logger.debug(
             f"Streaming session established in {self._session_establishment_ms}ms for player {self.player.name}"
         )
         window = self._recommended_session_establishment_latency
