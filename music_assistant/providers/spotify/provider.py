@@ -666,7 +666,7 @@ class SpotifyProvider(MusicProvider):
                 if (item and item["id"])
             ]
         except MediaNotFoundError:
-            self.logger.info(
+            self.logger.warning(
                 "Top tracks search for artist %s appears to have been removed by Spotify for this account.",
                 prov_artist_id,
             )
