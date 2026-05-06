@@ -77,6 +77,7 @@ class _BufferedFfmpegProcessor:
         # ~25ms worth of audio per read syscall.
         self._read_quantum_bytes = max(1, int(self._bytes_per_second * 0.025))
         self._produced_output_us = 0
+        self._pending_skip_bytes = 0
 
     async def start(self) -> None:
         await self._ffmpeg.start()
@@ -108,7 +109,9 @@ class _BufferedFfmpegProcessor:
             chunk = await self._ffmpeg.readexactly(read_size)
             if not chunk:
                 break
-            self._output_buffer.extend(chunk)
+            chunk = self._consume_pending_skip(chunk)
+            if chunk:
+                self._output_buffer.extend(chunk)
 
         out = bytes(self._output_buffer[:target_bytes])
         del self._output_buffer[:target_bytes]
@@ -130,8 +133,10 @@ class _BufferedFfmpegProcessor:
                 break
             if not chunk:
                 break
-            self._output_buffer.extend(chunk)
             self._produced_output_us += self._duration_us_for_bytes(len(chunk))
+            chunk = self._consume_pending_skip(chunk)
+            if chunk:
+                self._output_buffer.extend(chunk)
             if len(chunk) < self._read_quantum_bytes:
                 break
         return self._produced_output_us
@@ -142,8 +147,10 @@ class _BufferedFfmpegProcessor:
             chunk = await self._ffmpeg.read(self._read_quantum_bytes)
             if not chunk:
                 break
-            self._output_buffer.extend(chunk)
             self._produced_output_us += self._duration_us_for_bytes(len(chunk))
+            chunk = self._consume_pending_skip(chunk)
+            if chunk:
+                self._output_buffer.extend(chunk)
 
     def pop_duration_us(self, duration_us: int) -> bytes | None:
         """Pop exactly `duration_us` from already buffered output, or None if insufficient."""
@@ -176,7 +183,27 @@ class _BufferedFfmpegProcessor:
             return None
         out = bytes(self._output_buffer)
         self._output_buffer.clear()
+        self._pending_skip_bytes += short_bytes
         return out + (b"\x00" * short_bytes)
+
+    def pad_and_skip(self, duration_us: int) -> bytes:
+        """Return silence PCM and skip the equivalent from upcoming ffmpeg output."""
+        target_bytes = self._target_bytes_for_duration_us(duration_us)
+        if target_bytes <= 0:
+            return b""
+        # Drop buffered output with stale source positions.
+        leftover = len(self._output_buffer)
+        self._output_buffer.clear()
+        self._pending_skip_bytes += max(0, target_bytes - leftover)
+        return b"\x00" * target_bytes
+
+    def _consume_pending_skip(self, chunk: bytes) -> bytes:
+        # Drops bytes pop_duration_us_or_pad replaced with silence to keep timeline aligned.
+        if self._pending_skip_bytes <= 0 or not chunk:
+            return chunk
+        skip = min(self._pending_skip_bytes, len(chunk))
+        self._pending_skip_bytes -= skip
+        return chunk[skip:]
 
     def _duration_us_for_bytes(self, byte_count: int) -> int:
         if byte_count <= 0 or self._sample_rate <= 0 or self._frame_size <= 0:
@@ -946,6 +973,9 @@ class SendspinPlaybackSession:
             )
             if transformed_history is None:
                 continue
+            transformed_history = await self._pad_history_to_live_tail(
+                state, target_end_us, transformed_history
+            )
             pipeline = await self._sync_member_pipeline(player_id)
             # Split the blob into slices so push_stream can yield between encodes.
             frame_stride = (_SENDSPIN_PCM_FORMAT.bit_depth // 8) * _SENDSPIN_PCM_FORMAT.channels
@@ -964,6 +994,25 @@ class SendspinPlaybackSession:
             await self._promote_join_catchup_processor(player_id, pipeline, target_end_us)
             injected_any = True
         return injected_any
+
+    async def _pad_history_to_live_tail(
+        self,
+        state: _JoinCatchupState,
+        target_end_us: int,
+        transformed_history: bytes,
+    ) -> bytes:
+        """Append silence so joiner's channel_timing aligns with the live tail at promotion."""
+        # target_end_us is locked from earlier and may lag the live tail by seconds.
+        async with self._state_lock:
+            live_tail_us = (
+                self._history[-1].start_time_us + self._history[-1].duration_us
+                if self._history
+                else target_end_us
+            )
+        promotion_lag_us = max(0, live_tail_us - target_end_us)
+        if promotion_lag_us <= 0:
+            return transformed_history
+        return transformed_history + state.processor.pad_and_skip(promotion_lag_us)
 
     async def _prefeed_pending_backlog_for_join(
         self,

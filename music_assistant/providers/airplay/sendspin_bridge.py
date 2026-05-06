@@ -250,15 +250,25 @@ class SendspinAirPlayBridge:
         Called via the BridgePlayerRole.on_stream_start callback when the
         PushStream begins delivering audio chunks.
         """
-        # Cancel any existing writer task (leftover from previous stream)
-        if self._writer_task is not None and not self._writer_task.done():
-            self._writer_task.cancel()
-        # Re-assert streaming state and clear protocol references so the first
-        # audio chunk triggers a fresh protocol start. This is needed because
-        # the async cleanup scheduled by _on_stream_start may have cleared
-        # _is_streaming and _protocol_start_task between then and now.
-        self._is_streaming = True
+        # The stream might not yet be cleaned up completely (on rapid skips for example)
+        old_stream = self._airplay_stream
+        old_writer_task = self._writer_task
+        old_stream_start_task = self._airplay_stream_start_task
+
+        self._airplay_stream = None
+        self._writer_task = None
         self._airplay_stream_start_task = None
+        self.airplay_player.stream = None
+
+        if old_stream or old_writer_task or old_stream_start_task:
+            prev_cleanup = self._cleanup_task
+            self._cleanup_task = self.mass.create_task(
+                self._cleanup_old_stream(
+                    old_stream, old_writer_task, old_stream_start_task, prev_cleanup
+                )
+            )
+
+        self._is_streaming = True
         self._airplay_stream_ready.clear()
         self._next_expected_timestamp_us = None
         self._drop_until_us = 0
@@ -285,8 +295,11 @@ class SendspinAirPlayBridge:
 
             # Derive start_ntp from _drop_until_us (set on first chunk arrival)
             # to give the CLI enough lead time to connect and fill the output buffer.
-            future_s = self._drop_until_us / 1_000_000 - time.monotonic()
-            start_ntp = unix_time_to_ntp(time.time() + future_s)
+            # _drop_until_us may use a different clock, convert to NTP
+            sendspin_clock_now_us = self.sendspin_server.clock.now_us()
+            unix_clock_now = time.time()
+            future_s = (self._drop_until_us - sendspin_clock_now_us) / 1_000_000
+            start_ntp = unix_time_to_ntp(unix_clock_now + future_s)
 
             # Always use RAOP for the bridge — AP2 (cliap2) doesn't respect
             # NTP start times correctly, breaking multi-device sync.
@@ -297,10 +310,22 @@ class SendspinAirPlayBridge:
                     self.airplay_player.display_name,
                 )
                 return
-            self._airplay_stream = RaopStream(self.airplay_player)
-            self.airplay_player.stream = self._airplay_stream
-
-            await self._airplay_stream.start(start_ntp)
+            # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
+            # for cleanup. If we assigned it earlier, the new stream would be missed
+            # and leaked. Only publish once start() succeeds and this task is current.
+            new_stream = RaopStream(self.airplay_player)
+            try:
+                await new_stream.start(start_ntp)
+            except BaseException:
+                with suppress(Exception):
+                    await new_stream.stop(force=True)
+                raise
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                with suppress(Exception):
+                    await new_stream.stop(force=True)
+                return
+            self._airplay_stream = new_stream
+            self.airplay_player.stream = new_stream
             self._airplay_stream_ready.set()
             self.logger.info(
                 "Bridge protocol started for %s (NTP=%s, lookahead=%.0fms)",
@@ -315,12 +340,6 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
                 err,
             )
-            # Clean up partially created protocol
-            if self._airplay_stream:
-                with suppress(Exception):
-                    await self._airplay_stream.stop(force=True)
-                self._airplay_stream = None
-                self.airplay_player.stream = None
             # Stop accepting chunks, unblock the writer, and schedule full cleanup
             self._is_streaming = False
             self._airplay_stream_ready.set()
@@ -435,8 +454,8 @@ class SendspinAirPlayBridge:
         if self._airplay_stream_start_task is None:
             # Set the target start time (wait_start) in the future so the CLI
             # has enough time to connect and fill the device's output buffer.
-            wait_start_s = self.airplay_player.wait_start / 1000
-            self._drop_until_us = int((time.monotonic() + wait_start_s) * 1_000_000)
+            wait_start_us = int(self.airplay_player.wait_start * 1_000)
+            self._drop_until_us = self.sendspin_server.clock.now_us() + wait_start_us
             self._start_aligned = False
             self._airplay_stream_start_task = self.mass.create_task(
                 self._start_protocol_from_chunk()
