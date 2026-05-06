@@ -88,7 +88,7 @@ async def test_handle_async_init_schedules_load_via_mass_create_task() -> None:
         coro.close()
         return MagicMock()
 
-    provider.mass.create_task = MagicMock(side_effect=_capture)
+    provider.mass.create_task = MagicMock(side_effect=_capture)  # type: ignore[method-assign]
 
     await provider.handle_async_init()
 
@@ -132,7 +132,9 @@ async def test_load_clap_in_background_offloads_load_to_thread() -> None:
 async def test_handle_async_init_validates_calibration() -> None:
     """``handle_async_init`` must still call ``validate_calibration_freshness``."""
     provider = _make_provider()
-    provider.mass.create_task = MagicMock(side_effect=lambda coro: coro.close() or MagicMock())
+    provider.mass.create_task = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda coro: coro.close() or MagicMock()
+    )
 
     with patch(
         "music_assistant.providers.sonic_analysis.validate_calibration_freshness"
@@ -169,8 +171,8 @@ async def test_load_clap_in_background_populates_state_on_success() -> None:
     assert provider._clap_text_embeddings is fake_embeddings
     assert provider._clap_prompt_order == fake_prompt_order
 
-    provider.logger.info.assert_called_once()
-    info_call = provider.logger.info.call_args
+    provider.logger.info.assert_called_once()  # type: ignore[attr-defined]
+    info_call = provider.logger.info.call_args  # type: ignore[attr-defined]
     assert info_call.args[1] == len(fake_prompt_order)
 
 
@@ -190,8 +192,8 @@ async def test_load_clap_in_background_logs_error_on_failure() -> None:
 
     assert provider._clap_model is None
 
-    provider.logger.error.assert_called_once()
-    call = provider.logger.error.call_args
+    provider.logger.error.assert_called_once()  # type: ignore[attr-defined]
+    call = provider.logger.error.call_args  # type: ignore[attr-defined]
     assert call.kwargs.get("exc_info") is err
     fmt = call.args[0]
     assert "CLAP" in fmt
@@ -225,7 +227,7 @@ async def test_load_clap_in_background_propagates_cancellation() -> None:
         await provider._load_clap_in_background()
 
     assert provider._clap_model == "sentinel"
-    provider.logger.error.assert_not_called()
+    provider.logger.error.assert_not_called()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -238,7 +240,7 @@ async def test_load_clap_in_background_runs_failure_handler_on_exception() -> No
         await provider._load_clap_in_background()
 
     assert provider._clap_model is None
-    provider.logger.error.assert_called_once()
+    provider.logger.error.assert_called_once()  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +262,8 @@ async def test_start_analysis_returns_false_when_clap_not_loaded() -> None:
     assert result is False
     assert provider._sessions == {}
 
-    provider.logger.debug.assert_called()
-    debug_msgs = [str(c) for c in provider.logger.debug.call_args_list]
+    provider.logger.debug.assert_called()  # type: ignore[attr-defined]
+    debug_msgs = [str(c) for c in provider.logger.debug.call_args_list]  # type: ignore[attr-defined]
     assert any("CLAP model not yet available" in c for c in debug_msgs)
 
 
