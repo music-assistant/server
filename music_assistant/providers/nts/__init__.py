@@ -8,6 +8,7 @@ browsable radio stations with live now-playing show metadata.
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -62,6 +63,19 @@ MIXTAPE_PREFIX = "nts_mixtape_"
 METADATA_REFRESH_INTERVAL = 60
 
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+# NTS source images are landscape; their CDN exposes /resize/ (preserves aspect)
+# and /crop/ (center-crop) endpoints. Rewriting picks the square variant so UIs
+# that expect square thumbnails don't get a letterboxed result.
+IMAGE_CROP_SIZE = 1000
+_NTS_IMAGE_OP_RE = re.compile(r"/(?:resize|crop)/\d+x\d+/")
+
+
+def _square_image_url(url: str | None) -> str | None:
+    """Rewrite an NTS image URL to a square center-crop."""
+    if not url:
+        return None
+    return _NTS_IMAGE_OP_RE.sub(f"/crop/{IMAGE_CROP_SIZE}x{IMAGE_CROP_SIZE}/", url, count=1)
 
 
 async def setup(
@@ -267,7 +281,7 @@ class NTSProvider(MusicProvider):
         title = html.unescape(now.get("broadcast_title", f"NTS {channel_name}"))
         location = details.get("location_long", "")
         description = details.get("description", "")
-        image_url = media.get("picture_large") or media.get("background_large")
+        image_url = _square_image_url(media.get("picture_large") or media.get("background_large"))
         return title, location, description, image_url
 
     async def _refresh_mixtape_streams(self) -> dict[str, Any]:
@@ -304,7 +318,7 @@ class NTSProvider(MusicProvider):
                 item_id=f"{MIXTAPE_PREFIX}{alias}",
                 name=f"NTS: {title}",
                 description=f"{subtitle}\n\n{description}" if subtitle else description,
-                image_url=mixtape.get("media", {}).get("picture_large"),
+                image_url=_square_image_url(mixtape.get("media", {}).get("picture_large")),
             )
         return self._build_radio(
             item_id=f"{MIXTAPE_PREFIX}{alias}",
