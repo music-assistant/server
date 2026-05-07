@@ -48,6 +48,7 @@ from deezer_python_gql.generated.get_recently_played import (
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist,
+    GetRecentlyPlayedMeRecentlyPlayedEdgesNodeSmartTracklist,
 )
 from deezer_python_gql.generated.get_recommendations import GetRecommendationsMe
 from deezer_python_gql.generated.search_flows import (
@@ -2532,6 +2533,16 @@ class DeezerProvider(MusicProvider):
                 items.append(
                     self._create_virtual_playlist(
                         playlist_id, f"Flow: {node.title}", image_url=cover, is_dynamic=True
+                    )
+                )
+            elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeSmartTracklist):
+                cover = node.cover.urls[0] if node.cover and node.cover.urls else None
+                items.append(
+                    self._create_virtual_playlist(
+                        f"{SMART_TRACKLIST_PREFIX}{node.id}",
+                        node.title,
+                        image_url=cover,
+                        is_dynamic=True,
                     )
                 )
         return items
