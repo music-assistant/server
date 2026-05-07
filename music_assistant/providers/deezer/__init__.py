@@ -140,6 +140,7 @@ USER_TOP_TRACKS_PLAYLIST_ID = "user_top_tracks"
 SHAKER_PREFIX = "shaker_"
 SHAKER_CURATED_PREFIX = "shaker_curated_"
 SHAKER_MIX_COVER = "https://cdn-assets.dzcdn.net/shaker/_next/static/media/group_mix.d986951b.svg"
+PERSONAL_SONGS_PLAYLIST_ID = "personal_songs"
 # TODO: Re-enable mood mixes when Deezer's mood API is working again
 # SHAKER_MOODS = {
 #     "_chill": MusicTogetherSuggestedTracklistMoodInput.CHILL,
@@ -632,6 +633,8 @@ class DeezerProvider(MusicProvider):
             return await self._get_chart_tracks()
         if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
             return await self._get_user_chart_tracks()
+        if prov_playlist_id == PERSONAL_SONGS_PLAYLIST_ID:
+            return await self._get_personal_songs()
         if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
             return await self._get_flow_config_tracks(
                 prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
@@ -834,6 +837,7 @@ class DeezerProvider(MusicProvider):
                         path=f"{base}Discover Audiobooks",
                         name="Discover Audiobooks",
                     ),
+                    self._create_virtual_playlist(PERSONAL_SONGS_PLAYLIST_ID, "My Uploads"),
                 ]
             )
             return base_items
@@ -1599,6 +1603,8 @@ class DeezerProvider(MusicProvider):
             return await self._get_podcast_episode_stream_details(item_id)
         url_details, song_data = await self.gw_client.get_deezer_track_urls(item_id)
         url = url_details["sources"][0]["url"]
+        size_key = f"FILESIZE_{url_details['format']}"
+        size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
@@ -1608,7 +1614,7 @@ class DeezerProvider(MusicProvider):
             stream_type=StreamType.CUSTOM,
             duration=int(song_data["DURATION"]),
             data={"url": url, "format": url_details["format"], "track_id": song_data["SNG_ID"]},
-            size=int(song_data[f"FILESIZE_{url_details['format']}"]),
+            size=size,
             can_seek=True,
             allow_seek=True,
         )
@@ -1897,6 +1903,63 @@ class DeezerProvider(MusicProvider):
 
     # -- Virtual playlist helpers --
 
+    async def _get_personal_songs(self) -> list[Track]:
+        """Get user-uploaded personal songs via the GW API."""
+        results = await self.gw_client.get_personal_songs(start=0, nb=500)
+        data = results.get("data", [])
+        return [self._parse_gw_track(song, position=idx) for idx, song in enumerate(data, 1)]
+
+    def _parse_gw_track(self, song: dict[str, Any], position: int = 0) -> Track:
+        """Parse a GW API song dict into a Music Assistant Track.
+
+        :param song: Raw song dict from the GW API (personal_song.getList, etc.).
+        :param position: Position in a track list.
+        """
+        song_id = str(song["SNG_ID"])
+        artists: UniqueList[Artist | ItemMapping] = UniqueList()
+        art_name = song.get("ART_NAME", "")
+        art_id = song.get("ART_ID", "0")
+        if art_name and art_id != "0":
+            artists.append(
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=str(art_id),
+                    provider=self.instance_id,
+                    name=art_name,
+                )
+            )
+
+        album_mapping: ItemMapping | None = None
+        alb_title = song.get("ALB_TITLE", "")
+        alb_id = song.get("ALB_ID", 0)
+        if alb_title and alb_id:
+            album_mapping = ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id=str(alb_id),
+                provider=self.instance_id,
+                name=alb_title,
+            )
+
+        name, version = parse_title_and_version(song.get("SNG_TITLE", ""))
+        return Track(
+            item_id=song_id,
+            provider=self.instance_id,
+            name=name,
+            version=version,
+            duration=int(song.get("DURATION", 0)),
+            artists=artists,
+            album=album_mapping,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=song_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=True,
+                )
+            },
+            position=position,
+        )
+
     async def _get_virtual_playlist(self, prov_playlist_id: str) -> Playlist | None:
         """Return a virtual playlist, or None if the ID is not virtual."""
         if prov_playlist_id == FLOW_PLAYLIST_ID:
@@ -1912,6 +1975,8 @@ class DeezerProvider(MusicProvider):
             return self._create_virtual_playlist(TOP_CHARTS_PLAYLIST_ID, "Top Charts")
         if prov_playlist_id == USER_TOP_TRACKS_PLAYLIST_ID:
             return self._create_virtual_playlist(USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks")
+        if prov_playlist_id == PERSONAL_SONGS_PLAYLIST_ID:
+            return self._create_virtual_playlist(PERSONAL_SONGS_PLAYLIST_ID, "My Uploads")
         if prov_playlist_id.startswith(FLOW_CONFIG_PREFIX):
             config_id = prov_playlist_id.removeprefix(FLOW_CONFIG_PREFIX)
             flow_config = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)

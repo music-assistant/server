@@ -240,3 +240,15 @@ class GWClient:
             }
 
         await self._gw_api_call("log.listen", args=payload)
+
+    async def get_personal_songs(self, start: int = 0, nb: int = 500) -> dict[str, Any]:
+        """Get user-uploaded personal songs via the GW API.
+
+        :param start: Offset for pagination.
+        :param nb: Number of songs to fetch per page.
+        """
+        result = await self._gw_api_call(
+            "personal_song.getList",
+            args={"start": start, "nb": nb},
+        )
+        return cast("dict[str, Any]", result["results"])
