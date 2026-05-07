@@ -877,7 +877,9 @@ class DeezerProvider(MusicProvider):
                 name="Genres",
             ),
             self._create_virtual_playlist(USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks"),
-            self._create_virtual_playlist(RECOMMENDED_TRACKS_PLAYLIST_ID, "Hot Tracks"),
+            self._create_virtual_playlist(
+                RECOMMENDED_TRACKS_PLAYLIST_ID, "Hot Tracks", is_dynamic=True
+            ),
             BrowseFolder(
                 item_id="your_top_artists",
                 provider=self.instance_id,
@@ -959,6 +961,7 @@ class DeezerProvider(MusicProvider):
                 f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
                 f"Flow: {edge.node.title}",
                 image_url=self._get_flow_config_image(edge.node),
+                is_dynamic=True,
             )
             for edge in edges
             if edge.node is not None
@@ -1113,6 +1116,7 @@ class DeezerProvider(MusicProvider):
                     f"{SHAKER_PREFIX}{group_id}",
                     f"{group.name} - Mix",
                     image_url=SHAKER_MIX_COVER,
+                    is_dynamic=True,
                 )
             )
         if group.curated_tracklist:
@@ -1126,6 +1130,7 @@ class DeezerProvider(MusicProvider):
                     f"{SHAKER_CURATED_PREFIX}{group_id}",
                     f"{group.name} - Playlist",
                     image_url=cover_url,
+                    is_dynamic=True,
                 )
             )
         return items
@@ -1224,7 +1229,7 @@ class DeezerProvider(MusicProvider):
                 )
             )
 
-        authors: UniqueList[str] = UniqueList()
+        authors: UniqueList[str | Artist] = UniqueList()
         if art_name := data.get("ART_NAME"):
             authors.append(art_name)
 
@@ -1398,7 +1403,9 @@ class DeezerProvider(MusicProvider):
                 else None
             )
             made_for_me_items.append(
-                self._create_virtual_playlist(FLOW_PLAYLIST_ID, "Flow", image_url=cover)
+                self._create_virtual_playlist(
+                    FLOW_PLAYLIST_ID, "Flow", image_url=cover, is_dynamic=True
+                )
             )
         made_for_me_items.extend(await self._get_smart_tracklist_playlists())
         if made_for_me_items:
@@ -1532,15 +1539,17 @@ class DeezerProvider(MusicProvider):
 
     # -- Streaming (tracks via GW API, radio/podcasts via GQL stream URLs) --
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Get the resume position for a podcast episode.
 
         :param item_id: The provider-specific episode ID.
         :param media_type: The media type (only PODCAST_EPISODE is supported).
-        :returns: Tuple of (fully_played, resume_position_ms).
+        :returns: Tuple of (fully_played, resume_position_ms, timestamp).
         """
         if media_type != MediaType.PODCAST_EPISODE:
-            return (False, 0)
+            return (False, 0, None)
         # Paginate bookmarks, stop early when the target episode is found
         cursor: str | None = None
         while True:
@@ -1551,11 +1560,11 @@ class DeezerProvider(MusicProvider):
                 if edge.node is None:
                     continue
                 if edge.node.episode.id == item_id:
-                    return (edge.node.is_played, edge.node.position * 1000)
+                    return (edge.node.is_played, edge.node.position * 1000, None)
             if not result.podcast_episode_bookmarks.page_info.has_next_page:
                 break
             cursor = result.podcast_episode_bookmarks.page_info.end_cursor
-        return (False, 0)
+        return (False, 0, None)
 
     async def on_played(
         self,
@@ -1718,6 +1727,7 @@ class DeezerProvider(MusicProvider):
                         f"{SMART_TRACKLIST_PREFIX}{edge.node.id}",
                         edge.node.title,
                         image_url=cover,
+                        is_dynamic=True,
                     )
                 )
         return playlists
@@ -1890,10 +1900,12 @@ class DeezerProvider(MusicProvider):
         """Return a virtual playlist, or None if the ID is not virtual."""
         if prov_playlist_id == FLOW_PLAYLIST_ID:
             cover = await self._get_flow_cover()
-            return self._create_virtual_playlist(FLOW_PLAYLIST_ID, "Flow", image_url=cover)
+            return self._create_virtual_playlist(
+                FLOW_PLAYLIST_ID, "Flow", image_url=cover, is_dynamic=True
+            )
         if prov_playlist_id == RECOMMENDED_TRACKS_PLAYLIST_ID:
             return self._create_virtual_playlist(
-                RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended Tracks"
+                RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended Tracks", is_dynamic=True
             )
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             return self._create_virtual_playlist(TOP_CHARTS_PLAYLIST_ID, "Top Charts")
@@ -1904,7 +1916,9 @@ class DeezerProvider(MusicProvider):
             flow_config = await self.gql_client.get_flow_config_tracks(flow_config_id=config_id)
             name = f"Flow: {flow_config.title}" if flow_config else f"Flow: {config_id}"
             cover = self._get_flow_config_image(flow_config) if flow_config else None
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
+            return self._create_virtual_playlist(
+                prov_playlist_id, name, image_url=cover, is_dynamic=True
+            )
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
             tracklist = await self.gql_client.get_smart_tracklist(
@@ -1916,7 +1930,9 @@ class DeezerProvider(MusicProvider):
                 if tracklist and tracklist.cover and tracklist.cover.urls
                 else None
             )
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover)
+            return self._create_virtual_playlist(
+                prov_playlist_id, name, image_url=cover, is_dynamic=True
+            )
         if prov_playlist_id.startswith(SHAKER_CURATED_PREFIX):
             group_id = prov_playlist_id.removeprefix(SHAKER_CURATED_PREFIX)
             group = await self.gql_client.get_music_together_group(
@@ -1933,7 +1949,9 @@ class DeezerProvider(MusicProvider):
                 and group.curated_tracklist.picture.urls
             ):
                 cover_url = group.curated_tracklist.picture.urls[0]
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover_url)
+            return self._create_virtual_playlist(
+                prov_playlist_id, name, image_url=cover_url, is_dynamic=True
+            )
         if prov_playlist_id.startswith(SHAKER_PREFIX):
             group_id = prov_playlist_id.removeprefix(SHAKER_PREFIX)
             group = await self.gql_client.get_music_together_group(
@@ -1942,7 +1960,9 @@ class DeezerProvider(MusicProvider):
                 tracks_first=1,
             )
             name = f"{group.name} - Mix" if group else f"Shaker {group_id}"
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=SHAKER_MIX_COVER)
+            return self._create_virtual_playlist(
+                prov_playlist_id, name, image_url=SHAKER_MIX_COVER, is_dynamic=True
+            )
         return None
 
     @use_cache(3600)
@@ -1958,12 +1978,14 @@ class DeezerProvider(MusicProvider):
         item_id: str,
         name: str,
         image_url: str | None = None,
+        is_dynamic: bool = False,
     ) -> Playlist:
         """Create a virtual playlist for Flow, recommended content, etc.
 
         :param item_id: The unique identifier (e.g., "flow", "smart_tracklist_123").
         :param name: Display name for the playlist.
         :param image_url: Optional cover image URL.
+        :param is_dynamic: Whether the playlist returns fresh tracks on each fetch.
         """
         images: UniqueList[MediaItemImage] = UniqueList()
         if image_url:
@@ -1989,6 +2011,7 @@ class DeezerProvider(MusicProvider):
             },
             metadata=MediaItemMetadata(images=images) if images else MediaItemMetadata(),
             is_editable=False,
+            is_dynamic=is_dynamic,
             owner="Deezer",
         )
 
@@ -2381,8 +2404,8 @@ class DeezerProvider(MusicProvider):
         if audiobook.fans_count:
             metadata.popularity = int(audiobook.fans_count)
 
-        authors: UniqueList[str] = UniqueList()
-        narrators: UniqueList[str] = UniqueList()
+        authors: UniqueList[str | Artist] = UniqueList()
+        narrators: UniqueList[str | Artist] = UniqueList()
         for edge in audiobook.contributors.edges:
             if AudiobookContributorRoles.NARRATOR in edge.roles:
                 narrators.append(edge.node.name)
@@ -2430,7 +2453,7 @@ class DeezerProvider(MusicProvider):
                 )
             )
 
-        authors: UniqueList[str] = UniqueList()
+        authors: UniqueList[str | Artist] = UniqueList()
         for edge in album.contributors.edges:
             if edge.node is not None:
                 authors.append(edge.node.name)
@@ -2499,14 +2522,16 @@ class DeezerProvider(MusicProvider):
             elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow):
                 cover = node.cover.urls[0] if node.cover and node.cover.urls else None
                 items.append(
-                    self._create_virtual_playlist(FLOW_PLAYLIST_ID, node.title, image_url=cover)
+                    self._create_virtual_playlist(
+                        FLOW_PLAYLIST_ID, node.title, image_url=cover, is_dynamic=True
+                    )
                 )
             elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig):
                 cover = self._get_flow_config_image(node)
                 playlist_id = f"{FLOW_CONFIG_PREFIX}{node.id}"
                 items.append(
                     self._create_virtual_playlist(
-                        playlist_id, f"Flow: {node.title}", image_url=cover
+                        playlist_id, f"Flow: {node.title}", image_url=cover, is_dynamic=True
                     )
                 )
         return items
