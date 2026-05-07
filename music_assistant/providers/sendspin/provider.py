@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from copy import deepcopy
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlsplit
 
 from aiosendspin.models.types import PlayerCommand
 from aiosendspin.server import (
@@ -23,7 +25,11 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import AlreadyRegisteredError
 
-from music_assistant.constants import CONF_ENABLED
+from music_assistant.constants import (
+    CONF_ENABLED,
+    CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+)
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -43,6 +49,40 @@ if TYPE_CHECKING:
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
+DEFAULT_SENDSPIN_CLIENT_PORT = 8928
+DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
+
+
+def _manual_client_url(address: str) -> str:
+    """Convert a manually configured Sendspin host/IP to a client WebSocket URL."""
+    stripped_address = address.strip()
+    if not stripped_address:
+        raise ValueError("Address is empty")
+
+    if "://" in stripped_address:
+        return stripped_address
+
+    try:
+        parsed_ip = ip_address(stripped_address)
+    except ValueError:
+        pass
+    else:
+        return (
+            f"ws://{format_ip_for_url(str(parsed_ip))}:"
+            f"{DEFAULT_SENDSPIN_CLIENT_PORT}{DEFAULT_SENDSPIN_CLIENT_PATH}"
+        )
+
+    parsed_address = urlsplit(f"//{stripped_address}")
+    if parsed_address.hostname is None:
+        raise ValueError("Address does not contain a host")
+
+    return (
+        f"ws://{format_ip_for_url(parsed_address.hostname)}:"
+        f"{parsed_address.port or DEFAULT_SENDSPIN_CLIENT_PORT}"
+        f"{parsed_address.path or DEFAULT_SENDSPIN_CLIENT_PATH}"
+    )
+
+
 class SendspinProvider(PlayerProvider):
     """Player Provider for Sendspin."""
 
@@ -53,6 +93,7 @@ class SendspinProvider(PlayerProvider):
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
+    _manual_ip_config: tuple[str, ...]
     _unloading: bool
 
     def __init__(
@@ -60,6 +101,9 @@ class SendspinProvider(PlayerProvider):
     ) -> None:
         """Initialize a new Sendspin player provider."""
         super().__init__(mass, manifest, config)
+        # Handle config option for manual IP's
+        manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
+        self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
         self.server_api = SendspinServer(
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
@@ -416,6 +460,20 @@ class SendspinProvider(PlayerProvider):
             host=self.mass.streams.bind_ip,
             advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
         )
+        for address in self._manual_ip_config:
+            try:
+                url = _manual_client_url(address)
+            except ValueError as err:
+                self.logger.warning(
+                    "Ignoring invalid manual Sendspin client address %s: %s", address, err
+                )
+                continue
+            self.logger.debug("Connecting to manually configured Sendspin client at %s", url)
+            self.server_api.connect_to_client(
+                url,
+                retry_initial_connection=True,
+                retry_indefinitely=True,
+            )
 
     async def unload(self, is_removed: bool = False) -> None:
         """
