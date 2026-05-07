@@ -874,10 +874,8 @@ class SendspinBridgeManager:
 
         cast_app_was_active = cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
 
-        def _on_cast_status_changed(app_id: str | None) -> None:
+        def _handle_app_gone(app_id: str | None) -> None:
             nonlocal cast_app_was_active
-            if app_id == SENDSPIN_CAST_APP_ID:
-                return
             if not cast_app_was_active:
                 return
             cast_app_was_active = False
@@ -893,6 +891,13 @@ class SendspinBridgeManager:
                 self.mass.create_task(_apply_fatal_disconnect(client, self.logger))
             if cast_player.on_app_status_changed is _on_cast_status_changed:
                 cast_player.on_app_status_changed = None
+
+        def _on_cast_status_changed(app_id: str | None) -> None:
+            if app_id == SENDSPIN_CAST_APP_ID:
+                return
+            if not cast_app_was_active:
+                return
+            self.mass.loop.call_soon_threadsafe(_handle_app_gone, app_id)
 
         cast_player.on_app_status_changed = _on_cast_status_changed
 
