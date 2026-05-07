@@ -164,4 +164,4 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     # ruff: noqa: ARG001
-    return await ScrobblerConfig.get_shared_config_entries(mass, values)
+    return (*await ScrobblerConfig.get_shared_config_entries(mass, values),)
