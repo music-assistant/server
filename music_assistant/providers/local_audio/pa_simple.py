@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
 import ctypes
 import os
 import threading
-from pathlib import Path
 from typing import Any, ClassVar, Final
 
 PA_STREAM_PLAYBACK: Final = 1
@@ -205,30 +203,12 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
     import shutil  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
 
-    # Locate pactl — prefer system binary, fall back to bundled
-    bundled = os.path.join(os.path.dirname(__file__), "bin", "pactl")
-    if path := shutil.which("pactl"):
-        pactl_bin = path
-    elif os.path.isfile(bundled):
-        if not os.access(bundled, os.X_OK):
-            with contextlib.suppress(OSError):
-                Path(bundled).chmod(0o755)
-        if os.access(bundled, os.X_OK):
-            pactl_bin = bundled
-        else:
-            raise FileNotFoundError(
-                "pactl not found — pulseaudio-utils not installed and bundled binary not executable"
-            )
-    else:
-        raise FileNotFoundError(
-            "pactl not found — install pulseaudio-utils or provide a bundled binary"
-        )
+    # Locate pactl — requires pulseaudio-utils to be installed
+    if not (path := shutil.which("pactl")):
+        raise FileNotFoundError("pactl not found — please install pulseaudio-utils")
+    pactl_bin = path
 
-    # Build environment with bundled lib dir and PULSE_SERVER
-    lib_dir = os.path.join(os.path.dirname(__file__), "bin", "lib")
-    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
-    ld_path = f"{lib_dir}:{existing_ld}" if existing_ld else lib_dir
-    env = {**os.environ, "LD_LIBRARY_PATH": ld_path}
+    env = {**os.environ}
     pulse_server = _get_pulse_server()
     if pulse_server:
         env["PULSE_SERVER"] = pulse_server
@@ -255,31 +235,14 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             fmt = parts[0]  # e.g. 's32le'
             channels = int(parts[1].replace("ch", ""))
             sample_rate = int(parts[2].replace("Hz", ""))
-            # Parse bit depth from PA format string (e.g. s16le, s24le, s24-32le, s32le)
-            # s24-32le means 24-bit samples packed in 32-bit containers — treat as 32-bit
-            # for PCM buffer sizing, but note PASimpleStream uses PA_SAMPLE_S24LE for 24-bit.
-            _fmt_to_depth = {
-                "u8": 8,
-                "s16le": 16,
-                "s16be": 16,
-                "s24le": 24,
-                "s24be": 24,
-                "s24-32le": 32,
-                "s24-32be": 32,
-                "s32le": 32,
-                "s32be": 32,
-                "float32le": 32,
-                "float32be": 32,
-            }
-            bit_depth = _fmt_to_depth.get(fmt.lower(), 16)
+            bit_depth = int("".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0])))
         except (IndexError, ValueError):
             continue
         if channels < 2:
             continue
         sinks.append(
             {
-                "name": name,  # stable PA sink name — used for UUID/player-id generation
-                "description": desc,  # human-readable label — used as MA player display name
+                "name": desc,
                 "pa_sink_name": name,
                 "max_output_channels": channels,
                 "sample_rate": sample_rate,
