@@ -293,9 +293,14 @@ class SendspinChromecastBridge:
         return fut
 
     def ensure_cast_ready_future(self) -> asyncio.Future[None]:
-        """Return the current pending future, creating one if missing or done."""
+        """Return the current future, creating one only if missing.
+
+        Leaves a resolved future intact so a stream-start fired after a
+        successful connect doesn't replace it with a pending one that
+        nothing will resolve.
+        """
         fut = self._cast_ready_future
-        if fut is None or fut.done():
+        if fut is None:
             fut = self.mass.loop.create_future()
             self._cast_ready_future = fut
         return fut
