@@ -107,14 +107,13 @@ This approach avoids exposing audio stack implementation details to the user and
 | `pa_simple.py` | ctypes wrapper around `libpulse-simple` for direct PCM output; sink enumeration via `pactl` *(Linux only)* |
 | `constants.py` | Shared constants (UUID namespace, buffer size) |
 | `manifest.json` | Provider metadata and dependencies |
-| `bin/pactl` | Bundled `pactl` binary for sink enumeration (fallback if `pulseaudio-utils` not installed) |
-| `bin/lib/` | Bundled `libpulsecommon` shared library required by the bundled `pactl` binary |
+
 
 ## Dependencies
 
 - **Sendspin provider** (`depends_on: sendspin`): Required for audio synchronization and player management
 - **libpulse-simple** *(Linux)*: PulseAudio simple client library accessed via ctypes for direct PCM streaming to sinks
-- **pactl** *(Linux)*: Used for sink enumeration via `--format=json`. Provided by `pulseaudio-utils` in the MA base image, with a bundled binary as fallback
+- **pactl** *(Linux)*: Used for sink enumeration via `--format=json`. Requires `pulseaudio-utils` to be installed
 - **pulsectl** *(Linux)*: Python PulseAudio bindings used to set PA sink hardware volume to 100% at startup
 - **sounddevice** *(macOS)*: Python bindings for PortAudio, used for audio output and device enumeration
 - **numpy**: Used for PCM volume scaling
@@ -130,7 +129,7 @@ For Home Assistant OS users, the companion addon [Pulse Audio Stereo Pairs](../s
 - On Linux, multi-channel sinks (5.1, 7.1) are supported — the bridge opens a stereo stream and PulseAudio handles channel remapping automatically.
 - Virtual sinks created by `module-remap-sink` (stereo pairs split from multi-channel cards) are fully supported and are the recommended way to expose individual speaker pairs as independent MA players.
 - On Linux, `pactl --format=json` is used for enumeration because it always reports the sink's native sample rate and format, unlike `pulsectl`/libpulse which reports the currently negotiated stream format when streams are active.
-- The system `pactl` binary is preferred for sink enumeration; the bundled binary in `bin/pactl` is used only as a fallback when `pulseaudio-utils` is not installed.
+- Sink enumeration requires `pactl` from `pulseaudio-utils` to be installed on the host.
 - Sample rate and bit depth are determined by the PA daemon configuration (`/etc/pulse/daemon.conf`) and the sink's native hardware capabilities — they are not configurable per-player in MA.
 
 ## Related Documentation
