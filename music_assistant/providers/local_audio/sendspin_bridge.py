@@ -444,27 +444,31 @@ class LocalAudioBridgeManager:
 
         async with self._lock:
             for device in devices:
+                # Use stable PA sink name for UUID/player-id generation
+                # Use human-readable description for MA player display name
                 device_name: str = device["name"]
+                display_name: str = device.get("description", device_name)
                 hostapi_index: int = device.get("hostapi", 0)
                 pa_sink_name: str | None = device.get("pa_sink_name")
                 device_uuid = get_device_uuid(device_name, hostapi_index)
                 client_id = bridge_client_id_from_uuid(device_uuid)
 
                 if client_id in self._bridges:
-                    self.logger.debug("Bridge already exists for %s", device_name)
+                    self.logger.debug("Bridge already exists for %s", display_name)
                     continue
 
                 player = LocalAudioPlayer(
                     self.provider,
                     player_id=device_uuid,
-                    device_name=device_name,
+                    device_name=display_name,
                     hostapi_index=hostapi_index,
                     device_index=device.get("index", 0),
                     pa_sink_name=pa_sink_name,
                 )
-                await self.mass.players.register_or_update(player)
-                # Restore cached volume/mute state from previous session
+                # Restore cached volume/mute state before registering so the
+                # correct values are included in the initial PLAYER_ADDED event
                 await player.restore_state()
+                await self.mass.players.register_or_update(player)
                 # Set PA sink hardware volume to 100% on init
                 await player.apply_hardware_ceiling()
 
