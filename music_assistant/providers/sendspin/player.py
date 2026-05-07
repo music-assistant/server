@@ -750,7 +750,30 @@ class SendspinPlayer(SendspinBasePlayer):
         for player_id in player_ids_to_add or []:
             member_player = self.mass.players.get_player(player_id, True)
             member_player = cast("SendspinPlayer", member_player)
+
+            # Reset the cast-ready future *before* group add so a fatal error
+            # on a Cast-bridged member (e.g. AudioContext unsupported) raises
+            # PlayerCommandFailed out of set_members → frontend toast.
+            cast_ready_future: asyncio.Future[None] | None = None
+            bridge_manager = self._get_cast_bridge_manager()
+            if bridge_manager is not None:
+                bridge = bridge_manager.get_bridge_by_client_id(player_id)
+                if bridge is not None:
+                    cast_ready_future = bridge.reset_cast_ready_future()
+
             await self.api.group.add_client(member_player.api)
+
+            if cast_ready_future is None:
+                continue
+            try:
+                await asyncio.wait_for(asyncio.shield(cast_ready_future), timeout=30.0)
+            except TimeoutError:
+                self.logger.warning(
+                    "Timed out waiting for Cast app on %s to report ready",
+                    member_player.display_name,
+                )
+                if not cast_ready_future.done():
+                    cast_ready_future.cancel()
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
@@ -932,9 +955,8 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key="cast_audio_unsupported",
                     type=ConfigEntryType.ALERT,
-                    label="This Cast device does not support audio playback. "
-                    "The Sendspin Cast bridge requires AudioContext support, "
-                    "which is not available on this device.",
+                    label="This device has incompatible Cast firmware that doesn't "
+                    "support Sendspin. Use the Native Cast protocol for this device.",
                     required=False,
                 )
             )
