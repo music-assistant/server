@@ -837,15 +837,24 @@ class GenreController(MediaControllerBase[Genre]):
         count_before = await db.get_count(gm)
 
         for table, media_type in MEDIA_TABLES:
-            # Delete a mapping when either:
-            # - The media item was deleted (orphaned row), or
-            # - The media item exists but the alias is no longer in metadata.genres.
-            #   When genres is null or [] json_each returns no rows, so NOT EXISTS is true
-            #   and all mappings for that item are removed.
+            # Orphan pass: remove mappings whose media item no longer exists.
+            # Runs regardless of is_manual — an orphan is always garbage.
+            await db.delete_where_query(
+                gm,
+                f"media_type = '{media_type.value}' "
+                f"AND NOT EXISTS ("
+                f"  SELECT 1 FROM {table} "
+                f"  WHERE {table}.item_id = {gm}.media_id"
+                f")",
+            )
+            # Stale-alias pass: media item exists but the alias has dropped out
+            # of metadata.genres. Manual mappings are excluded: their alias is
+            # never written to metadata.genres.
             await db.delete_where_query(
                 gm,
                 f"media_type = '{media_type.value}' "
                 f"AND alias IS NOT NULL "
+                f"AND is_manual = 0 "
                 f"AND NOT EXISTS ("
                 f"  SELECT 1 FROM {table}, "
                 f"  json_each(json_extract({table}.metadata, '$.genres')) AS g "
@@ -1209,6 +1218,7 @@ class GenreController(MediaControllerBase[Genre]):
                 "media_id": int(media_id),
                 "media_type": media_type.value,
                 "alias": alias,
+                "is_manual": 1,
             },
             allow_replace=True,
         )

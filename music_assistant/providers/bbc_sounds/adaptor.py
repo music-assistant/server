@@ -419,7 +419,7 @@ class PodcastConverter(BaseConverter):
                 audio_format=AudioFormat(content_type=ContentType.try_parse(source_obj.stream)),
                 allow_seek=True,
                 can_seek=True,
-                duration=(episode.duration if episode.duration else None),
+                duration=(episode.duration or None),
                 seek_position=(int(episode.position) if episode.position else 0),
                 seconds_streamed=(int(episode.position) if episode.position else 0),
             )

@@ -91,6 +91,7 @@ async def buffered(
     producer_error: Exception | None = None
     threshold_reached = asyncio.Event()
     cancelled = asyncio.Event()
+    min_buffer_before_yield = max(1, min(min_buffer_before_yield, buffer_size))
 
     if buffer_size <= 1:
         # No buffering needed, yield directly

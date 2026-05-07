@@ -6,6 +6,6 @@
   "description": "Stream music from Zvuk Music service.",
   "codeowners": ["@TrudenBoy"],
   "documentation": "https://music-assistant.io/music-providers/zvuk/",
-  "requirements": ["zvuk-music[async]==0.5.3"],
+  "requirements": ["zvuk-music[async]==0.6.1"],
   "multi_instance": true
 }

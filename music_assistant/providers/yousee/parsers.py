@@ -246,4 +246,4 @@ async def parse_lyrics(lyrics: list[JsonLike]) -> tuple[str | None, str | None]:
     plain = plain.strip()
     lrc = lrc.strip()
 
-    return plain if plain else None, lrc if lrc else None
+    return plain or None, lrc or None

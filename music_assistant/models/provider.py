@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, final
 
@@ -42,6 +43,7 @@ class Provider:
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
+        self.initialized = asyncio.Event()
 
     @property
     def supported_features(self) -> set[ProviderFeature]:

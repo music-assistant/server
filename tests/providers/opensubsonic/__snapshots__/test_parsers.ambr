@@ -165,6 +165,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -303,6 +304,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -964,6 +966,7 @@
 # ---
 # name: test_parse_artists[no-sort-name.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1042,6 +1045,7 @@
 # ---
 # name: test_parse_artists[no-sort-name.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1126,6 +1130,7 @@
 # ---
 # name: test_parse_artists[spec-artistid3.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1204,6 +1209,7 @@
 # ---
 # name: test_parse_artists[spec-artistid3.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1288,6 +1294,7 @@
 # ---
 # name: test_parse_artists[spec-sample.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -1356,6 +1363,7 @@
 # ---
 # name: test_parse_artists[spec-sample.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -2079,6 +2087,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2341,6 +2350,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2494,6 +2504,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2756,6 +2767,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),

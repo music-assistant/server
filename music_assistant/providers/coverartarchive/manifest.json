@@ -1,0 +1,13 @@
+{
+  "type": "metadata",
+  "domain": "coverartarchive",
+  "stage": "stable",
+  "name": "Cover Art Archive",
+  "description": "Provides album artwork from the Cover Art Archive, the official artwork repository for MusicBrainz.",
+  "codeowners": ["@music-assistant"],
+  "credits": ["[Cover Art Archive](https://coverartarchive.org)"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true
+}

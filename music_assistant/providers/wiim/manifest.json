@@ -1,0 +1,11 @@
+{
+  "type": "player",
+  "domain": "wiim",
+  "stage": "beta",
+  "name": "WiiM",
+  "description": "Stream music to WiiM devices.",
+  "codeowners": ["@davidanthoff", "@music-assistant"],
+  "requirements": ["wiim==0.1.4"],
+  "documentation": "https://music-assistant.io/player-support/wiim/",
+  "mdns_discovery": ["_linkplay._tcp.local."]
+}

@@ -178,8 +178,7 @@ class AsyncProcess:
             return
         async with self._stdin_lock:
             self.proc.stdin.write(data)
-            with suppress(BrokenPipeError, ConnectionResetError):
-                await self.proc.stdin.drain()
+            await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""

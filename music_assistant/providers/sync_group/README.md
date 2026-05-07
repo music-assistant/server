@@ -73,19 +73,22 @@ The sync group doesn't directly play audio. Instead, it delegates to a **sync le
 
 ### Sync Leader Selection
 
-The sync leader is automatically selected when playback starts:
+The sync leader is selected when the group is powered on (which forms the group). Selection is also re-evaluated when the current leader is removed from the group or becomes unavailable.
 
-1. **Check current leader**: If a leader exists and is available, keep it
-2. **Prioritize static members**: For static groups, prefer members from the configured list
-3. **First available**: Select the first available member as leader
+1. **Keep current leader**: If a leader exists and is still available, keep it
+2. **Prefer protocol continuity**: When re-selecting after a leader change while playing, prefer a member that supports the currently active output protocol so the live session can continue without a teardown
+3. **Prioritize static members**: For static groups, prefer members from the configured list
+4. **First available**: Otherwise pick the first available member as leader
 
 ### Leader Responsibilities
 
-The sync leader:
+The sync leader is the **source of truth** for the group's playback state:
 - Receives the actual `play_media` command
 - Syncs all other group members to itself
-- Reports playback state (elapsed time, playback state) to the group
-- Contributes features (enqueue, gapless, volume) to the group
+- Reports playback state, elapsed time, current media, and active source to the group (via the group's `_update_attributes` reading the leader's raw values)
+- Contributes features (enqueue, gapless, volume, DSP) to the group
+
+> **State derivation note:** The leader's own `__final_playback_state` does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group always report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state.
 
 ## Group Types
 
@@ -173,23 +176,44 @@ In this scenario, the Denon AVR has three output protocols available. Since the 
 
 For detailed information on protocol linking, output protocol selection, and how devices with multiple protocols are handled, see the [Player Controller README](../../controllers/players/README.md#multi-protocol-player-system).
 
-## Playback Flow
+## Group Lifecycle
+
+The group's lifecycle is driven by **power**:
+
+- `power(True)` **forms** the group: selects a sync leader and syncs all members to it
+- `power(False)` **dissolves** the group: ungroups all members from the leader and clears the sync leader
+- `stop()` only stops the leader — it does **not** dissolve the group; the group remains powered and ready to resume
+
+This mirrors how a typical AVR or stereo system behaves: turn it on, it's an active output; turn it off, it's gone.
+
+### Powering On
+
+```
+1. cmd_power(syncgroup, True)  (also called implicitly by play_media / play)
+   │
+2. _form_syncgroup() runs
+   │
+   ├─► Ensure static members are included in _attr_group_members
+   ├─► Select sync leader (if not already set)
+   ├─► Move sync leader to the front of the member list
+   ├─► If leader is currently playing something else, stop it (and wait for IDLE)
+   └─► cmd_set_members on the leader to sync the remaining members
+   │
+3. _attr_powered = True ; state event emitted
+```
 
 ### Starting Playback
 
 ```
 1. User starts playback on SyncGroupPlayer
    │
-2. _form_syncgroup() called
+2. play_media(media)
    │
-   ├─► Cancel any pending dissolve timer
-   ├─► Ensure static members are included
-   ├─► Select sync leader (if not already set)
-   └─► Sync all members to the leader
+   ├─► Optimistically set _attr_current_media / _attr_active_source
+   ├─► _form_syncgroup()            # idempotent - recovers if dissolved-but-powered
+   └─► _handle_play_media(sync_leader, media)   # leader actually plays
    │
-3. play_media() forwarded to sync leader
-   │
-4. Leader starts playback, synced members follow
+3. Leader starts playback, synced members follow
 ```
 
 ### Stopping Playback
@@ -197,18 +221,28 @@ For detailed information on protocol linking, output protocol selection, and how
 ```
 1. User stops playback on SyncGroupPlayer
    │
-2. stop() forwarded to sync leader
-   │
-3. Schedule dissolve after 5 seconds
-   │
-4. _dissolve_syncgroup() called
-   │
-   ├─► Unsync all members from leader
-   ├─► Clear sync_leader reference
-   └─► Update group state
+2. stop() forwarded to sync leader (group stays powered & formed)
 ```
 
-The 5-second delay before dissolving prevents unnecessary sync/unsync cycles during brief pauses or track changes.
+### Powering Off
+
+```
+1. cmd_power(syncgroup, False)
+   │
+2. If currently playing/paused: stop() first
+   │
+3. _dissolve_syncgroup()
+   │
+   ├─► cmd_set_members on leader to remove all sync children (waits for state)
+   ├─► Clear leader's active_output_protocol (when leader is not still playing)
+   └─► sync_leader = None
+   │
+4. _attr_powered = False ; state event emitted
+```
+
+### State Polling
+
+While the group is playing, `SyncGroupPlayer.poll()` is called every 1 second to refresh `elapsed_time` from the sync leader. When idle, the poll interval drops to 30 seconds. This avoids the per-second eventbus cascade that would happen if we forwarded every elapsed_time tick from the leader through the group's update chain.
 
 ## Dynamic Member Management
 
@@ -216,23 +250,23 @@ When `SET_MEMBERS` is called on a dynamic group:
 
 ### Adding Members
 
-1. Validate member is available
-2. Check compatibility with current sync leader
-3. Add to internal member list
-4. If playing, sync new member to leader
+1. Validate the member exists, is available, and is not in the members filter
+2. If there is no sync leader yet (empty / unpowered group): just register the member; sync happens when the group is next formed
+3. Otherwise check compatibility with the current sync leader's `can_group_with` (which already includes all of the leader's linked output protocols, so e.g. an AirPlay-only player IS valid for a Sonos leader that has AirPlay as a linked protocol)
+4. Incompatible members are **not** registered (avoids stranding orphan entries in the group)
+5. Compatible members are appended to the internal member list and forwarded to `cmd_set_members` on the leader, which handles protocol selection (and possibly switching the leader to a different output protocol so the new member can be grouped via that protocol)
 
 ### Removing Members
 
-1. Remove from internal member list
-2. If removing the sync leader while playing:
-   - Stop current playback
-   - Dissolve sync group
-   - Re-form with new leader
-   - Resume playback (if was playing)
+1. Remove from the internal member list (static members cannot be removed)
+2. If removing the **sync leader** while playing:
+   - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_leader_protocol])` on the old session player and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol player. Remaining members keep playing.
+   - If the chosen new leader is not part of the live session (e.g. a freshly-added player), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
+3. If removing a non-leader member: forward to `cmd_set_members` on the leader
 
 ### Removing Last Member
 
-If the last member is removed, the sync group becomes empty and cannot play until members are added.
+If the last member is removed, the group is dissolved (leader stopped, sync_leader cleared).
 
 ## Feature Inheritance
 
@@ -240,6 +274,7 @@ The SyncGroupPlayer has limited base features but inherits additional capabiliti
 
 ### Base Features
 - `PLAY_MEDIA` - Always supported
+- `POWER` - Always supported (powered state is the canonical "is this group active" signal)
 
 ### Features from Sync Leader (when active)
 - `ENQUEUE` - Queue next track
@@ -286,16 +321,19 @@ The Sync Group provider is:
 
 ## State Properties
 
-The SyncGroupPlayer delegates most state to the sync leader:
+The SyncGroupPlayer reads most state from the sync leader's **raw** attributes (deliberately not `.state.*`, see the leader-responsibilities note above):
 
 | Property | Source |
 |----------|--------|
-| `playback_state` | Sync leader (or IDLE if no leader) |
-| `elapsed_time` | Sync leader |
-| `elapsed_time_last_updated` | Sync leader |
-| `current_media` | Stored on group itself |
-| `group_members` | Sync leader's reported members (preferred) or internal list |
-| `can_group_with` | Computed from leader or first available member |
+| `powered` | `_attr_powered` — set by `power()`, the canonical "is this group active" signal |
+| `playback_state` | Sync leader's raw `state.playback_state` (or IDLE if no leader) |
+| `elapsed_time` | Sync leader's raw `state.elapsed_time` |
+| `elapsed_time_last_updated` | Sync leader's raw `state.elapsed_time_last_updated` |
+| `current_media` | Sync leader's raw `current_media` (set optimistically in `play_media`) |
+| `active_source` | Sync leader's raw `active_source` (set optimistically in `play_media`) |
+| `group_members` | Sync leader's reported `state.group_members` (preferred) or internal list |
+| `can_group_with` | Aggregated from all current members' `can_group_with` |
+| `supported_features` | Base features + features inherited from the active sync leader |
 
 ## Related Documentation
 

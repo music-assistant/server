@@ -10,6 +10,7 @@ FIXME skipping in non-live radio shows restarts the stream but keeps the seek ti
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
@@ -312,18 +313,21 @@ class BBCSoundsProvider(MusicProvider):
 
     async def _get_programme_segments(self, vpid: str) -> list[Segment] | None:
         """Get on demand segments from cache or API."""
-        segments = await self.mass.cache.get(
+        cached = await self.mass.cache.get(
             provider=self.domain, key=f"programme_segments_{vpid}", default=False
         )
-        if segments is False:
+        if cached is False:
             segments = await self.client.streaming.get_show_segments(vpid)
-            await self.mass.cache.set(
-                provider=self.domain,
-                key=f"programme_segments_{vpid}",
-                data=segments,
-            )
-        if isinstance(segments, list):
-            return segments
+            if isinstance(segments, list):
+                await self.mass.cache.set(
+                    provider=self.domain,
+                    key=f"programme_segments_{vpid}",
+                    data=[dataclasses.asdict(s) for s in segments],
+                )
+                return segments
+            return None
+        if isinstance(cached, list):
+            return [Segment(**item) for item in cached]
         return None
 
     async def _update_on_demand_stream_metadata(
@@ -414,12 +418,12 @@ class BBCSoundsProvider(MusicProvider):
         """Get list of stations as Radios."""
         radio_list: list[Radio] = []
         for station in await self.client.stations.get_stations(include_local=include_local):
-            if station and station.item_id:
+            if station and station.id:
                 station_info = await self._station_programme_display(station=station)
                 description = station_info.title if station_info else None
                 radio_list.append(
                     Radio(
-                        item_id=station.item_id,
+                        item_id=station.id,
                         name=(
                             station.network.short_title
                             if station.network and station.network.short_title
@@ -445,7 +449,7 @@ class BBCSoundsProvider(MusicProvider):
                         ),
                         provider_mappings={
                             ProviderMapping(
-                                item_id=station.item_id,
+                                item_id=station.id,
                                 provider_domain=self.domain,
                                 provider_instance=self.instance_id,
                             )

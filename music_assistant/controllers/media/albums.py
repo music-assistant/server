@@ -69,7 +69,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     'sort_name', artists.sort_name,
                     'media_type', 'artist'
                 )) FROM artists JOIN album_artists on album_artists.album_id = albums.item_id  WHERE artists.item_id = album_artists.artist_id) AS artists
-            FROM albums"""  # noqa: E501
+            FROM albums"""
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)

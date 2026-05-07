@@ -66,6 +66,7 @@
 # ---
 # name: test_parse_artist_snapshot[minimal]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -127,6 +128,7 @@
 # ---
 # name: test_parse_artist_snapshot[with_cover]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -469,6 +471,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),

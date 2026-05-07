@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -35,6 +36,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat, MediaItemType, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
@@ -508,7 +510,9 @@ class GPodder(MusicProvider):
                 return mass_episode
         raise MediaNotFoundError("Did not find episode.")
 
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
         podcast_id, guid_or_stream_url = item_id.split(" ")
@@ -526,16 +530,18 @@ class GPodder(MusicProvider):
             if action.podcast == podcast_id and (
                 guid_or_stream_url in _test or stream_url in _test
             ):
+                dt_timestamp: datetime | None = None
                 if timestamp is not None:
                     self.timestamp_actions = timestamp
                     await self._cache_set_timestamps()
+                    dt_timestamp = from_utc_timestamp(timestamp)
                 if isinstance(action, EpisodeActionNew | EpisodeActionDelete):
                     # no progress, it might have been actively reset
                     # in case of delete, we start from start.
-                    return False, 0
+                    return False, 0, None
                 _progress = (action.position >= action.total, max(action.position * 1000, 0))
                 self.logger.debug("Found an updated external resume position.")
-                return action.position >= action.total, max(action.position * 1000, 0)
+                return action.position >= action.total, max(action.position * 1000, 0), dt_timestamp
         self.logger.debug("Did not find an updated resume position, falling back to stored.")
         # If we did not find a resume position, nothing changed since our last timestamp
         # we raise NotImplementedError, such that MA falls back to the already stored
@@ -654,5 +660,5 @@ class GPodder(MusicProvider):
             key=CACHE_KEY_FEEDS,
             provider=self.instance_id,
             category=CACHE_CATEGORY_OTHER,
-            data=self.feeds,
+            data=list(self.feeds),
         )

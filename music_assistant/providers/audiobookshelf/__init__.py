@@ -8,6 +8,7 @@ import itertools
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import suppress
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
@@ -95,6 +96,7 @@ from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
@@ -959,14 +961,31 @@ for more details.
         raise web.HTTPFound(location=stream_url)
 
     @handle_refresh_token
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Return finished:bool, position_ms: int."""
         # this method is called _before_ get_stream_details, so the playback session
         # is created here.
         session = await self._get_playback_session(mass_item_id=item_id)
         finished = session.current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
-        self.logger.debug("Resume position: obtained.")
-        return finished, int(session.current_time * 1000)
+
+        item_ids = item_id.split(" ")
+        abs_item_id = item_ids[0]
+        episode_id = item_ids[1] if len(item_ids) == 2 else None
+        timestamp = None
+        if progress := await self._client.get_my_media_progress(
+            item_id=abs_item_id, episode_id=episode_id
+        ):
+            # only the progress object has a timestamp of the progress (not the session)
+            # last_update is in ms epoch
+            timestamp = from_utc_timestamp(progress.last_update / 1000)
+        self.logger.debug("Resume position %s: obtained.", session.current_time)
+        return (
+            finished,
+            int(session.current_time * 1000),
+            timestamp,
+        )
 
     @handle_refresh_token
     async def recommendations(self) -> list[RecommendationFolder]:

@@ -11,13 +11,17 @@ import platform
 import re
 import shutil
 import socket
+import sys
+import unicodedata
 import urllib.error
 import urllib.request
+import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
@@ -26,7 +30,7 @@ from urllib.parse import urlparse
 import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
-from zeroconf import IPVersion
+from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -147,11 +151,21 @@ VERSION_PARTS = (
     "instrumental",
     "karaoke",
     "remaster",
+    "remastered",
     "versie",
     "unplugged",
     "disco",
     "akoestisch",
     "deluxe",
+    "video",
+    "radio",
+    "extended",
+    "single",
+    "edition",
+    "anniversary",
+    "stereo",
+    "album",
+    "bonus",
 )
 IGNORE_TITLE_PARTS = (
     # strings that may be stripped off a title part
@@ -170,6 +184,37 @@ WITH_TITLE_WORDS = (
     "u",
     "you",
     "no",
+)
+
+# Keywords for aggressive search cleaning (includes featuring).
+_VERSION_PATTERN = "|".join(re.escape(v) for v in VERSION_PARTS)
+_FEAT_PATTERN = r"feat(?:uring)?|ft"
+_SEARCH_PATTERN = rf"{_VERSION_PATTERN}|{_FEAT_PATTERN}"
+
+_SEARCH_PAREN_PATTERN = re.compile(
+    rf"[\(\[][^\)\]]*\b({_SEARCH_PATTERN})\b[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+_SEARCH_HYPHEN_PATTERN = re.compile(
+    rf"(\s*-\s*(\d{{4}}|{_SEARCH_PATTERN}).*)$",
+    re.IGNORECASE,
+)
+
+# Superfluous suffixes to strip for display (video/audio markers, etc.)
+_DISPLAY_STRIP_PATTERN = re.compile(
+    r"\s*[\(\[]"
+    r"(official\s+)?(lyric\s+|music\s+)?(video|audio|visualizer|clip)"
+    r"[\)\]]$",
+    re.IGNORECASE,
+)
+
+# Featuring patterns for stripping from titles (not in parentheses).
+_FEATURING_PATTERNS = (
+    " featuring ",
+    " feat. ",
+    " feat ",
+    " ft. ",
+    " ft ",
 )
 
 
@@ -204,8 +249,10 @@ def try_parse_bool(possible_bool: Any) -> bool:
 
 def try_parse_duration(duration_str: str) -> float:
     """Try to parse a duration in seconds from a duration (HH:MM:SS) string."""
-    milliseconds = float("0." + duration_str.split(".")[-1]) if "." in duration_str else 0.0
-    duration_parts = duration_str.split(".")[0].split(",")[0].split(":")
+    milliseconds = (
+        float("0." + duration_str.rsplit(".", maxsplit=1)[-1]) if "." in duration_str else 0.0
+    )
+    duration_parts = duration_str.split(".", maxsplit=1)[0].split(",", maxsplit=1)[0].split(":")
     if len(duration_parts) == 3:
         seconds = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts, strict=False))
     elif len(duration_parts) == 2:
@@ -215,9 +262,58 @@ def try_parse_duration(duration_str: str) -> float:
     return seconds + milliseconds
 
 
-def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
-    """Try to parse version from the title."""
+def normalize_unicode(value: str | None) -> str | None:
+    """Normalize Unicode strings to NFC form for consistent handling.
+
+    This ensures that Unicode characters like "é" are stored as single
+    codepoints rather than "e" + combining accent mark, which prevents
+    issues with string comparisons and memory bloat.
+
+    :param value: String to normalize, or None.
+    """
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", value)
+
+
+def parse_title_and_version(
+    title: str,
+    track_version: str | None = None,
+    strip_for_search: bool = False,
+    strip_for_display: bool = False,
+) -> tuple[str, str]:
+    """
+    Parse version from the title and optionally clean for search or display.
+
+    :param title: The title to parse.
+    :param track_version: Optional existing version string.
+    :param strip_for_search: Aggressively strip for search matching.
+    :param strip_for_display: Strip superfluous suffixes for display.
+    """
     version = track_version or ""
+
+    # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
+    if strip_for_search:
+        title = _SEARCH_PAREN_PATTERN.sub("", title)
+        title = _SEARCH_HYPHEN_PATTERN.sub("", title)
+        # Strip bare featuring credits (not in parentheses)
+        title_lower = title.lower()
+        for pattern in _FEATURING_PATTERNS:
+            if pattern in title_lower:
+                idx = title_lower.find(pattern)
+                title = title[:idx]
+                break
+        # Clean up dangling hyphens and extra spaces
+        title = re.sub(r"\s*-\s*$", "", title)
+        title = re.sub(r"\s+", " ", title).strip()
+        return title, version
+
+    # Strip video/audio suffixes like "(Official Video)"
+    if strip_for_display:
+        title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
+        return title, version
+
+    # Standard version parsing
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
             # Extract the content without brackets/dashes for checking
@@ -347,6 +443,8 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
         result: list[tuple[int, str]] = []
         # try to get the primary IP address
         # this is the IP address of the default route
+        primary_ip = ""
+        # try IPv4 first
         _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         _sock.settimeout(0)
         try:
@@ -357,6 +455,17 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
             primary_ip = ""
         finally:
             _sock.close()
+        # fall back to IPv6 if no IPv4 primary found (e.g. IPv6-only networks)
+        if not primary_ip:
+            _sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            _sock6.settimeout(0)
+            try:
+                _sock6.connect(("2001:db8::1", 1))
+                primary_ip = _sock6.getsockname()[0]
+            except Exception:
+                primary_ip = ""
+            finally:
+                _sock6.close()
         # get all IP addresses of all network interfaces
         adapters = ifaddr.get_adapters()
         for adapter in adapters:
@@ -429,10 +538,14 @@ async def get_ip_from_host(dns_name: str) -> str | None:
 
     def _resolve() -> str | None:
         try:
-            return socket.gethostbyname(dns_name)
+            # use getaddrinfo to support both IPv4 and IPv6 resolution
+            results = socket.getaddrinfo(dns_name, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            if results:
+                return str(results[0][4][0])
         except Exception:
             # fail gracefully!
             return None
+        return None
 
     return await asyncio.to_thread(_resolve)
 
@@ -691,28 +804,94 @@ async def remove_file(file_path: str) -> None:
     LOGGER.log(VERBOSE_LOG_LEVEL, "Removed file: %s", file_path)
 
 
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
-    # fall back to IPv6 addresses if no usable IPv4 address found
-    for address in discovery_info.parsed_addresses(IPVersion.V6Only):
-        if address.startswith(("::1", "fe80")):
-            # filter out loopback and link-local addresses
-            continue
-        return address
+def get_primary_ip_address_from_zeroconf(
+    discovery_info: AsyncServiceInfo,
+    prefer_ipv6: bool = False,
+) -> str | None:
+    """Get primary IP address from zeroconf discovery info.
+
+    :param discovery_info: The zeroconf service info to extract the address from.
+    :param prefer_ipv6: If True, prefer IPv6 addresses over IPv4.
+    """
+    if prefer_ipv6:
+        order = [IPVersion.V6Only, IPVersion.V4Only]
+    else:
+        order = [IPVersion.V4Only, IPVersion.V6Only]
+    for version in order:
+        for addr in discovery_info.ip_addresses_by_version(version):
+            if addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+                continue
+            return str(addr)
     return None
 
 
 def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> int | None:
     """Get port from zeroconf discovery info."""
     return discovery_info.port
+
+
+def get_zeroconf_args(
+    use_all_interfaces: bool = False,
+) -> dict[str, Any]:
+    """Determine optimal zeroconf IPVersion and interfaces from system adapters.
+
+    Inspects available network adapters to determine the correct IP version
+    and interface configuration, similar to Home Assistant's approach.
+
+    :param use_all_interfaces: If True, use all interfaces (user override).
+    """
+    adapters = ifaddr.get_adapters()
+    has_ipv4 = False
+    has_ipv6 = False
+    interface_ips: list[str] = []
+    for adapter in adapters:
+        for ip_config in adapter.ips:
+            if ip_config.is_IPv6:
+                ip_tuple = cast("tuple[str, int, int]", ip_config.ip)
+                addr = ip_address(ip_tuple[0])
+                if (
+                    isinstance(addr, IPv6Address)
+                    and not addr.is_loopback
+                    and not addr.is_link_local
+                ):
+                    has_ipv6 = True
+                    if not addr.is_global:
+                        interface_ips.append(f"{ip_tuple[0]}%{ip_tuple[2]}")
+            else:
+                ip_str = cast("str", ip_config.ip)
+                addr = ip_address(ip_str)
+                if isinstance(addr, IPv4Address) and not addr.is_loopback:
+                    has_ipv4 = True
+                    interface_ips.append(ip_str)
+
+    # Determine IP version based on available addresses.
+    # On macOS/FreeBSD, zeroconf's IPVersion.All creates an AF_INET6 listen socket
+    # that cannot join IPv4 multicast groups, silently breaking discovery of
+    # IPv4-only devices. Fall back to V4Only on those platforms.
+    has_functional_dual_stack = not sys.platform.startswith(("freebsd", "darwin"))
+    if has_ipv4 and has_ipv6 and has_functional_dual_stack:
+        ip_version = IPVersion.All
+    elif has_ipv4:
+        ip_version = IPVersion.V4Only
+    elif has_ipv6:
+        ip_version = IPVersion.V6Only
+    else:
+        ip_version = IPVersion.V4Only
+
+    if use_all_interfaces:
+        # User explicitly requested all interfaces — pass explicit IP list
+        # to avoid issues with InterfaceChoice.Default on multi-interface hosts.
+        if interface_ips:
+            return {"ip_version": ip_version, "interfaces": interface_ips}
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
+
+    # Default mode: use InterfaceChoice.Default for IPv4-only single-interface,
+    # otherwise pass explicit interface list for reliability.
+    if ip_version == IPVersion.V4Only:
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.Default}
+    if interface_ips:
+        return {"ip_version": ip_version, "interfaces": interface_ips}
+    return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
 
 
 async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
@@ -1087,14 +1266,33 @@ _P = ParamSpec("_P")
 def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
-    """Call async function using a Lock."""
+    """Call async function using a per-instance Lock.
+
+    Each instance gets its own lock so that e.g. SyncGroupPlayer A
+    does not block SyncGroupPlayer B when both call set_members().
+    """
+    # Per-instance lock storage (weak refs so locks are GC'd with their instance)
+    instance_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+    # Fallback lock for non-method (no self) usage
+    fallback_lock: asyncio.Lock | None = None
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using a Lock."""
-        if not (func_lock := getattr(func, "lock", None)):
-            func_lock = asyncio.Lock()
-            func.lock = func_lock  # type: ignore[attr-defined]
+        """Call async function using a per-instance Lock."""
+        nonlocal fallback_lock
+        instance = args[0] if args else None
+        if instance is not None:
+            try:
+                func_lock = instance_locks.setdefault(instance, asyncio.Lock())
+            except TypeError:
+                # instance is not weakly referenceable, use fallback
+                if fallback_lock is None:
+                    fallback_lock = asyncio.Lock()
+                func_lock = fallback_lock
+        else:
+            if fallback_lock is None:
+                fallback_lock = asyncio.Lock()
+            func_lock = fallback_lock
         async with func_lock:
             return await func(*args, **kwargs)
 

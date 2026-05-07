@@ -13,6 +13,7 @@ from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.musiccast.constants import (
@@ -124,7 +125,8 @@ class MusicCastProvider(PlayerProvider):
             return
         try:
             device_info = await self.mass.http_session.get(
-                f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}", raise_for_status=True
+                f"http://{format_ip_for_url(device_ip)}/{MC_DEVICE_INFO_ENDPOINT}",
+                raise_for_status=True,
             )
             device_info_json = await device_info.json()
         except ClientError:
@@ -138,7 +140,9 @@ class MusicCastProvider(PlayerProvider):
         device_id = device_info_json.get("device_id")
         if device_id is None:
             return
-        description_url = f"http://{device_ip}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_ENDPOINT}"
+        description_url = (
+            f"http://{format_ip_for_url(device_ip)}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_ENDPOINT}"
+        )
 
         _check = await self.mass.http_session.get(description_url)
         if _check.status == 404:

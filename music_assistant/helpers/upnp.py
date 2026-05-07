@@ -14,9 +14,6 @@ if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
 
 
-# ruff: noqa: E501
-
-
 # XML
 def _get_soap_action(command: str) -> str:
     return f"urn:schemas-upnp-org:service:AVTransport:1#{command}"
