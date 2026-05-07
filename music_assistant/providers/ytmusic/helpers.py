@@ -37,7 +37,9 @@ async def get_artist(
     return await asyncio.to_thread(_get_artist)
 
 
-async def get_album(headers: dict[str, str], prov_album_id: str, language: str = "en", user: str | None = None) -> dict[str, str]:
+async def get_album(
+    headers: dict[str, str], prov_album_id: str, language: str = "en", user: str | None = None
+) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_album function."""
 
     def _get_album():
