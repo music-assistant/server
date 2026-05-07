@@ -422,12 +422,18 @@ class SendspinChromecastBridge:
             fut.set_exception(error)
 
     def on_cast_status_changed(self, app_id: str | None) -> None:
-        """Handle Cast app id change / connection loss.
+        """Handle Cast app id change / connection loss (called from socket thread).
 
         :param app_id: The current Cast app id, or None if the device disconnected.
         """
         if app_id == SENDSPIN_CAST_APP_ID:
             return
+        if not self._cast_app_was_active:
+            return
+        self.mass.loop.call_soon_threadsafe(self._handle_cast_app_gone, app_id)
+
+    def _handle_cast_app_gone(self, app_id: str | None) -> None:
+        """Process Cast app disappearance on the event loop."""
         if not self._cast_app_was_active:
             return
         self._cast_app_was_active = False
