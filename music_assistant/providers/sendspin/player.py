@@ -49,6 +49,7 @@ from music_assistant_models.enums import (
     PlayerType,
     RepeatMode,
 )
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
@@ -658,12 +659,11 @@ class SendspinPlayer(SendspinBasePlayer):
         try:
             await asyncio.wait_for(asyncio.shield(cast_ready_future), timeout=30.0)
         except TimeoutError:
-            self.logger.warning(
-                "Timed out waiting for Cast app on %s to report ready",
-                self.display_name,
-            )
             if not cast_ready_future.done():
                 cast_ready_future.cancel()
+            raise PlayerCommandFailed(
+                f"Cast app on {self.display_name} did not report ready within 30s"
+            ) from None
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -768,12 +768,11 @@ class SendspinPlayer(SendspinBasePlayer):
             try:
                 await asyncio.wait_for(asyncio.shield(cast_ready_future), timeout=30.0)
             except TimeoutError:
-                self.logger.warning(
-                    "Timed out waiting for Cast app on %s to report ready",
-                    member_player.display_name,
-                )
                 if not cast_ready_future.done():
                     cast_ready_future.cancel()
+                raise PlayerCommandFailed(
+                    f"Cast app on {member_player.display_name} did not report ready within 30s"
+                ) from None
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
