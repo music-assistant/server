@@ -1,12 +1,14 @@
 """Unit tests for the _pcm_bytes_to_audio decoder."""
 
 import struct
+from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.providers.sonic_analysis import _pcm_bytes_to_audio
+from music_assistant.providers.sonic_analysis import SonicAnalysisProvider, _pcm_bytes_to_audio
 
 
 def _af(content_type: ContentType, channels: int = 1) -> AudioFormat:
@@ -79,3 +81,21 @@ def test_pcm_24bit_mono() -> None:
     assert abs(audio[0]) < 1e-6
     assert abs(audio[1] - 1.0) < 0.001
     assert abs(audio[2] + (1.0 / 8388608.0)) < 0.001
+
+
+@pytest.mark.asyncio
+async def test_get_provider_status_reports_clap_model_loaded_true() -> None:
+    """When _clap_model is set, get_provider_status reports clap_model_loaded=True."""
+    p = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
+    p._clap_model = MagicMock()
+    result = await p.get_provider_status()
+    assert result == {"clap_model_loaded": True}
+
+
+@pytest.mark.asyncio
+async def test_get_provider_status_reports_clap_model_loaded_false() -> None:
+    """When _clap_model is None, get_provider_status reports clap_model_loaded=False."""
+    p = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
+    p._clap_model = None
+    result = await p.get_provider_status()
+    assert result == {"clap_model_loaded": False}
