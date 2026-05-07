@@ -165,7 +165,9 @@ class AudioAnalysisProvider(Provider):
         Provider-specific status fields merged into the audio_analysis/status response.
 
         Default returns an empty dict; override to surface internal state
-        (e.g., model-loaded flags) without touching the controller.
+        (e.g., model-loaded flags) without touching the controller. Keys
+        ``provider_loaded``, ``analyzed_tracks_count``, and ``analysis_version``
+        are reserved by the controller and must not be returned here.
         """
         return {}
 
