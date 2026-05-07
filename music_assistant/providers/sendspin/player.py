@@ -747,15 +747,16 @@ class SendspinPlayer(SendspinBasePlayer):
                         self.playback_session = SendspinPlaybackSession(self)
 
             await self.api.group.remove_client(member_player.api)
+        # Reset the cast-ready future *before* group add so a fatal error
+        # on a Cast-bridged member (e.g. AudioContext unsupported) raises
+        # PlayerCommandFailed out of set_members → frontend toast.
+        bridge_manager = self._get_cast_bridge_manager()
+        pending_cast: list[tuple[SendspinPlayer, asyncio.Future[None]]] = []
         for player_id in player_ids_to_add or []:
             member_player = self.mass.players.get_player(player_id, True)
             member_player = cast("SendspinPlayer", member_player)
 
-            # Reset the cast-ready future *before* group add so a fatal error
-            # on a Cast-bridged member (e.g. AudioContext unsupported) raises
-            # PlayerCommandFailed out of set_members → frontend toast.
             cast_ready_future: asyncio.Future[None] | None = None
-            bridge_manager = self._get_cast_bridge_manager()
             if bridge_manager is not None:
                 bridge = bridge_manager.get_bridge_by_client_id(player_id)
                 if bridge is not None:
@@ -763,16 +764,28 @@ class SendspinPlayer(SendspinBasePlayer):
 
             await self.api.group.add_client(member_player.api)
 
-            if cast_ready_future is None:
-                continue
+            if cast_ready_future is not None:
+                pending_cast.append((member_player, cast_ready_future))
+
+        if pending_cast:
             try:
-                await asyncio.wait_for(asyncio.shield(cast_ready_future), timeout=30.0)
+                await asyncio.wait_for(
+                    asyncio.gather(*(asyncio.shield(f) for _, f in pending_cast)),
+                    timeout=30.0,
+                )
             except TimeoutError:
-                if not cast_ready_future.done():
-                    cast_ready_future.cancel()
+                stuck = [m.display_name for m, f in pending_cast if not f.done()]
+                for _, f in pending_cast:
+                    if not f.done():
+                        f.cancel()
                 raise PlayerCommandFailed(
-                    f"Cast app on {member_player.display_name} did not report ready within 30s"
+                    f"Cast app on {', '.join(stuck)} did not report ready within 30s"
                 ) from None
+            except BaseException:
+                for _, f in pending_cast:
+                    if not f.done():
+                        f.cancel()
+                raise
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
