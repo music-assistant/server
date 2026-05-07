@@ -8,7 +8,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
@@ -732,3 +733,64 @@ async def test_get_merged_audio_analysis_rows_drops_groups_with_only_corrupt_row
     result = await c.get_merged_audio_analysis_rows("sonic_analysis")
     assert len(result) == 1
     assert result[0][0] == "good"
+
+
+def _make_aa_provider_with_domain(
+    domain: str,
+    *,
+    available: bool = True,
+    provider_status: dict[str, Any] | None = None,
+    analysis_version: int = 1,
+) -> MagicMock:
+    """AA provider mock with domain, get_provider_status, and analysis_version set."""
+    provider = MagicMock(spec=AudioAnalysisProvider)
+    provider.domain = domain
+    provider.available = available
+    provider.analysis_version = analysis_version
+    provider.get_provider_status = AsyncMock(return_value=provider_status or {})
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_status_returns_common_fields_for_known_aa_domain() -> None:
+    """status() returns provider_loaded, analyzed_tracks_count, analysis_version."""
+    c, _ = _stub_controller(count_result=42)
+    p = _make_aa_provider_with_domain("loudness_analysis", analysis_version=2)
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    result = await c.status(aa_domain="loudness_analysis")
+
+    assert result["provider_loaded"] is True
+    assert result["analyzed_tracks_count"] == 42
+    assert result["analysis_version"] == 2
+    c.mass.get_provider.assert_called_once_with(
+        "loudness_analysis", provider_type=ProviderType.AUDIO_ANALYSIS
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_merges_provider_status_extras() -> None:
+    """status() merges the provider's get_provider_status extras into the response."""
+    c, _ = _stub_controller(count_result=10)
+    p = _make_aa_provider_with_domain(
+        "sonic_analysis",
+        provider_status={"clap_model_loaded": True},
+        analysis_version=3,
+    )
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    result = await c.status(aa_domain="sonic_analysis")
+
+    assert result["clap_model_loaded"] is True
+    assert result["analyzed_tracks_count"] == 10
+    assert result["analysis_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_status_raises_for_unknown_aa_domain() -> None:
+    """Unknown aa_domain raises ProviderUnavailableError."""
+    c, _ = _stub_controller()
+    c.mass.get_provider = MagicMock(return_value=None)
+
+    with pytest.raises(ProviderUnavailableError):
+        await c.status(aa_domain="nope")

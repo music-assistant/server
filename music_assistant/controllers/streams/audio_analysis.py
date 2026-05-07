@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
+from music_assistant_models.errors import ProviderUnavailableError
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
@@ -22,6 +23,7 @@ from music_assistant.constants import (
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
 )
+from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -452,6 +454,24 @@ class AudioAnalysisController:
             results.append((current_key[0], current_key[1], current_merged))
 
         return results
+
+    @api_command("audio_analysis/status")
+    async def status(self, aa_domain: str) -> dict[str, Any]:
+        """
+        Return runtime state for an AA provider.
+
+        :param aa_domain: AA provider domain to query.
+        """
+        provider = self.mass.get_provider(aa_domain, provider_type=ProviderType.AUDIO_ANALYSIS)
+        if provider is None:
+            raise ProviderUnavailableError(f"{aa_domain} is not available")
+        extras = await provider.get_provider_status()
+        return {
+            "provider_loaded": True,
+            "analyzed_tracks_count": await self.get_audio_analysis_count(aa_domain),
+            "analysis_version": provider.analysis_version,
+            **extras,
+        }
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
