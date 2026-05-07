@@ -210,6 +210,27 @@ def _build_bridge_hello(cast_player: ChromecastPlayer, bridge_client_id: str) ->
     )
 
 
+async def _apply_fatal_disconnect(client: SendspinClient, logger: logging.Logger) -> None:
+    """Tear down playback for a Cast device that has died unrecoverably.
+
+    aiosendspin's `detach_connection` does not auto-apply DisconnectBehaviour
+    for SHUTDOWN. The behaviour pref (auto-computed in `SendspinPlayer`) maps
+    UNGROUP to a no-op when the client is already solo, leaving the queue
+    running on a dead device. For fatal Cast errors we want a deterministic
+    outcome: solo → stop the queue, grouped → remove only the dead member.
+
+    :param client: The Sendspin client representing the dead Cast device.
+    :param logger: Logger for recording failures.
+    """
+    try:
+        if len(client.group.clients) > 1:
+            await client.ungroup()
+        else:
+            await client.group.stop()
+    except Exception:
+        logger.exception("Failed to tear down dead Cast client %s", client.client_id)
+
+
 class SendspinChromecastBridge:
     """Manages the Sendspin to Chromecast bridge for a single player.
 
@@ -248,14 +269,26 @@ class SendspinChromecastBridge:
         self._launch_task: asyncio.Task[None] | None = None
         self._log_controller: SendspinCastController | None = None
         self._cast_app_was_active: bool = False
+        self._cast_app_connected: bool = False
         self._cast_ready_future: asyncio.Future[None] | None = None
 
     def reset_cast_ready_future(self) -> asyncio.Future[None]:
-        """Return a fresh cast-ready future, cancelling any prior pending one."""
+        """Return a fresh cast-ready future, cancelling any prior pending one.
+
+        If the Sendspin Cast app is already running (either previously
+        connected this session, or running from before MA restart), return a
+        future that's already resolved so callers don't wait 30s for a
+        "connected" status that won't fire again.
+        """
         prior = self._cast_ready_future
         if prior is not None and not prior.done():
             prior.cancel()
         fut: asyncio.Future[None] = self.mass.loop.create_future()
+        already_running = self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
+        if self._cast_app_connected or already_running:
+            fut.set_result(None)
+            self._cast_ready_future = fut
+            return fut
         self._cast_ready_future = fut
         return fut
 
@@ -320,6 +353,7 @@ class SendspinChromecastBridge:
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         self.cast_player.on_app_status_changed = None
+        self._cast_app_connected = False
 
         if self._cast_ready_future is not None and not self._cast_ready_future.done():
             self._cast_ready_future.cancel()
@@ -360,13 +394,19 @@ class SendspinChromecastBridge:
         )
         self._resolve_cast_ready_future(
             PlayerCommandFailed(
-                "This Cast device does not support audio playback (AudioContext unavailable)."
+                f"{self.cast_player.display_name} has incompatible Cast firmware that "
+                "doesn't support Sendspin. Use the Native Cast protocol for this device."
             )
         )
 
     def _on_cast_connected(self) -> None:
         """Handle Cast app "connected" status (called from socket thread)."""
-        self.mass.loop.call_soon_threadsafe(self._resolve_cast_ready_future, None)
+        self.mass.loop.call_soon_threadsafe(self._mark_cast_app_connected)
+
+    def _mark_cast_app_connected(self) -> None:
+        """Mark the Cast app as connected and resolve any pending future."""
+        self._cast_app_connected = True
+        self._resolve_cast_ready_future(None)
 
     def _resolve_cast_ready_future(self, error: BaseException | None) -> None:
         """Resolve the cast-ready future if still pending.
@@ -391,16 +431,21 @@ class SendspinChromecastBridge:
         if not self._cast_app_was_active:
             return
         self._cast_app_was_active = False
+        self._cast_app_connected = False
         self.logger.info(
             "Sendspin Cast app no longer active on %s (app_id=%s) — detaching client",
             self.cast_player.display_name,
             app_id,
         )
         client = self._sendspin_client
-        if client is not None and client.is_connected:
-            client.detach_connection(GoodbyeReason.SHUTDOWN)
+        if client is not None:
+            if client.is_connected:
+                client.detach_connection(GoodbyeReason.SHUTDOWN)
+            self.mass.create_task(_apply_fatal_disconnect(client, self.logger))
         self._resolve_cast_ready_future(
-            PlayerCommandFailed("Cast app stopped before reporting ready.")
+            PlayerCommandFailed(
+                f"Cast app on {self.cast_player.display_name} stopped before reporting ready."
+            )
         )
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
@@ -530,7 +575,9 @@ class SendspinChromecastBridge:
         # The Sendspin server runs on its own port (8927), NOT through
         # the MA webserver or streams server. Use publish_ip directly.
         publish_ip = cast("str", self.mass.streams.publish_ip)
-        server_url = f"ws://{format_ip_for_url(publish_ip)}:8927/sendspin"
+        # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
+        # the WebSocket URL. Send the bare server URL here so it ends up correct.
+        server_url = f"ws://{format_ip_for_url(publish_ip)}:8927"
         raw_delay = self.mass.config.get_raw_player_config_value(
             self._bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
         )
@@ -834,8 +881,10 @@ class SendspinBridgeManager:
                 app_id,
             )
             client = server_api.get_client(client_id)
-            if client is not None and client.is_connected:
-                client.detach_connection(GoodbyeReason.SHUTDOWN)
+            if client is not None:
+                if client.is_connected:
+                    client.detach_connection(GoodbyeReason.SHUTDOWN)
+                self.mass.create_task(_apply_fatal_disconnect(client, self.logger))
             if cast_player.on_app_status_changed is _on_cast_status_changed:
                 cast_player.on_app_status_changed = None
 
