@@ -29,6 +29,7 @@ from music_assistant.constants import (
     CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
 )
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -52,17 +53,6 @@ DEFAULT_SENDSPIN_CLIENT_PORT = 8928
 DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
 
 
-def _format_manual_client_host(host: str) -> str:
-    """Format a configured host for use in a WebSocket URL."""
-    try:
-        parsed_ip = ip_address(host)
-    except ValueError:
-        return host
-    if parsed_ip.version == 6:
-        return f"[{parsed_ip}]"
-    return str(parsed_ip)
-
-
 def _manual_client_url(address: str) -> str:
     """Convert a manually configured Sendspin host/IP to a client WebSocket URL."""
     stripped_address = address.strip()
@@ -78,7 +68,7 @@ def _manual_client_url(address: str) -> str:
         pass
     else:
         return (
-            f"ws://{_format_manual_client_host(str(parsed_ip))}:"
+            f"ws://{format_ip_for_url(str(parsed_ip))}:"
             f"{DEFAULT_SENDSPIN_CLIENT_PORT}{DEFAULT_SENDSPIN_CLIENT_PATH}"
         )
 
@@ -87,7 +77,7 @@ def _manual_client_url(address: str) -> str:
         raise ValueError("Address does not contain a host")
 
     return (
-        f"ws://{_format_manual_client_host(parsed_address.hostname)}:"
+        f"ws://{format_ip_for_url(parsed_address.hostname)}:"
         f"{parsed_address.port or DEFAULT_SENDSPIN_CLIENT_PORT}"
         f"{parsed_address.path or DEFAULT_SENDSPIN_CLIENT_PATH}"
     )
