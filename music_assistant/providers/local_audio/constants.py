@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import uuid
 
-# UUID namespace for generating stable player IDs from device name + host API.
+# Stable namespace for generating player IDs from device name + host API.
+# IMPORTANT: This exact value is part of the persisted player_id contract for
+# local_audio devices and must never change after release, otherwise existing
+# users will lose stored state and any links keyed by the old player IDs.
 DEVICE_UUID_NAMESPACE = uuid.UUID("a7d68578-af81-4e3e-a8b8-df8f9d6d1f05")
 
 # Category for caching previous player state (volume/mute).
