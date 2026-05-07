@@ -684,7 +684,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         assert isinstance(session, SonicSessionData)
         session.pcm_buffer.extend(pcm_chunk)
         af = session.audio_format
-        while len(session.pcm_buffer) >= session.block_bytes:
+        if len(session.pcm_buffer) >= session.block_bytes:
             block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
             del session.pcm_buffer[: session.block_bytes]
             pre_audio, post_audio, bf = await asyncio.to_thread(
