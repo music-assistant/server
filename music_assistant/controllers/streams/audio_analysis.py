@@ -473,6 +473,54 @@ class AudioAnalysisController:
             **extras,
         }
 
+    @api_command("audio_analysis/analyzed_tracks")
+    async def analyzed_tracks(
+        self,
+        aa_domain: str,
+        search: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """
+        Return a paginated list of tracks analyzed by the given AA provider.
+
+        :param aa_domain: AA provider domain to query.
+        :param search: Case-insensitive substring filter on item_id within the current page.
+        :param limit: Max results per page.
+        :param offset: Pagination offset (in DB rows).
+        """
+        provider = self.mass.get_provider(aa_domain, provider_type=ProviderType.AUDIO_ANALYSIS)
+        if provider is None:
+            raise ProviderUnavailableError(f"{aa_domain} is not available")
+
+        total = await self.get_audio_analysis_count(aa_domain)
+        rows = await self.get_audio_analysis_rows(aa_domain, limit=limit, offset=offset)
+
+        seen: set[tuple[str, str]] = set()
+        entries: list[tuple[str, str]] = []
+        for row in rows:
+            key = (row["item_id"], row["provider"])
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(key)
+
+        if search:
+            q = search.lower()
+            entries = [(iid, prov) for iid, prov in entries if q in iid.lower()]
+
+        async def _resolve(item_id: str, provider_id: str) -> dict[str, Any]:
+            try:
+                t = await self.mass.music.tracks.get(item_id, provider_id)
+                artists = ", ".join(a.name for a in getattr(t, "artists", []) or [])
+                return {"item_id": item_id, "name": t.name, "artist": artists}
+            except Exception as err:
+                self.logger.debug("Failed to resolve track %s/%s: %s", provider_id, item_id, err)
+                return {"item_id": item_id, "name": "(unknown)", "artist": ""}
+
+        items = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries]))
+        return {"total": total, "offset": offset, "limit": limit, "items": items}
+
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
         providers = self.providers

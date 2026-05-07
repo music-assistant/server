@@ -794,3 +794,77 @@ async def test_status_raises_for_unknown_aa_domain() -> None:
 
     with pytest.raises(ProviderUnavailableError):
         await c.status(aa_domain="nope")
+
+
+@pytest.mark.asyncio
+async def test_analyzed_tracks_passes_limit_and_offset_to_db() -> None:
+    """analyzed_tracks() passes limit/offset to the row helper."""
+    c, _ = _stub_controller(count_result=0, list_result=[])
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+    c.mass.music.tracks = MagicMock()
+    c.mass.music.tracks.get = AsyncMock(side_effect=Exception("not used; no rows"))
+
+    result = await c.analyzed_tracks(aa_domain="sonic_analysis", limit=10, offset=20)
+
+    assert result == {"total": 0, "offset": 20, "limit": 10, "items": []}
+
+
+@pytest.mark.asyncio
+async def test_analyzed_tracks_dedupes_within_page_and_resolves_metadata() -> None:
+    """Rows duplicated by (item_id, provider) are deduped; surviving entries get track lookup."""
+    rows = [
+        {"item_id": "a", "provider": "filesystem_local"},
+        {"item_id": "a", "provider": "filesystem_local"},
+        {"item_id": "b", "provider": "filesystem_local"},
+    ]
+    c, _ = _stub_controller(count_result=3, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    fake_track = MagicMock(name="t")
+    fake_track.name = "Track Name"
+    fake_track.artists = []
+    c.mass.music.tracks = MagicMock()
+    c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
+
+    result = await c.analyzed_tracks(aa_domain="sonic_analysis", limit=50, offset=0)
+
+    assert result["total"] == 3
+    assert len(result["items"]) == 2
+    assert {item["item_id"] for item in result["items"]} == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_analyzed_tracks_search_is_page_scoped_substring() -> None:
+    """Search filters page rows on item_id substring (case-insensitive)."""
+    rows = [
+        {"item_id": "rock_track_1", "provider": "filesystem_local"},
+        {"item_id": "jazz_track_2", "provider": "filesystem_local"},
+        {"item_id": "ROCK_track_3", "provider": "filesystem_local"},
+        {"item_id": "pop_track_4", "provider": "filesystem_local"},
+    ]
+    c, _ = _stub_controller(count_result=4, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    fake_track = MagicMock(name="t")
+    fake_track.name = "n"
+    fake_track.artists = []
+    c.mass.music.tracks = MagicMock()
+    c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
+
+    result = await c.analyzed_tracks(aa_domain="sonic_analysis", search="rock", limit=10, offset=0)
+
+    assert result["total"] == 4
+    assert {item["item_id"] for item in result["items"]} == {"rock_track_1", "ROCK_track_3"}
+    assert c.mass.music.tracks.get.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_analyzed_tracks_raises_for_unknown_aa_domain() -> None:
+    """Unknown aa_domain raises ProviderUnavailableError."""
+    c, _ = _stub_controller()
+    c.mass.get_provider = MagicMock(return_value=None)
+    with pytest.raises(ProviderUnavailableError):
+        await c.analyzed_tracks(aa_domain="nope")
