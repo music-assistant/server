@@ -171,12 +171,17 @@ class GWClient:
             song_data = song_data["FALLBACK"]
 
         track_token = song_data["TRACK_TOKEN"]
+        # Personal songs (user uploads) only support MP3_MISC format
+        is_personal = int(track_id) < 0
+        formats = (
+            [{"cipher": "BF_CBC_STRIPE", "format": "MP3_MISC"}] if is_personal else self.formats
+        )
         url_data = {
             "license_token": dz_license,
             "media": [
                 {
                     "type": "FULL",
-                    "formats": self.formats,
+                    "formats": formats,
                 }
             ],
             "track_tokens": [track_token],
