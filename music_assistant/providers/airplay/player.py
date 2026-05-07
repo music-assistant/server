@@ -944,12 +944,7 @@ class AirPlayPlayer(Player):
         await super().on_config_updated()
         prov = cast("AirPlayProvider", self.provider)
         bridge_manager = prov.bridge_manager
-        has_bridge = bridge_manager.get_bridge(self.player_id) is not None
-        if self.protocol == StreamingProtocol.AIRPLAY2 and has_bridge:
-            # AP2 doesn't support sync — tear down the Sendspin bridge
-            await bridge_manager.remove_bridge(self.player_id)
-        elif self.protocol != StreamingProtocol.AIRPLAY2 and not has_bridge:
-            # Switched back to RAOP — set up the Sendspin bridge
+        if bridge_manager.get_bridge(self.player_id) is None:
             await bridge_manager.setup_bridge(self)
 
     async def on_unload(self) -> None:
