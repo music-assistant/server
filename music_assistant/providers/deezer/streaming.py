@@ -117,7 +117,11 @@ class DeezerStreamingManager:
             ),
             stream_type=StreamType.CUSTOM,
             duration=int(song_data["DURATION"]),
-            data={"url": url, "format": url_details["format"], "track_id": song_data["SNG_ID"]},
+            data={
+                "url": url,
+                "format": url_details["format"],
+                "track_id": str(song_data["SNG_ID"]),
+            },
             size=size,
             can_seek=True,
             allow_seek=True,
