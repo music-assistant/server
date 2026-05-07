@@ -752,40 +752,37 @@ class SendspinPlayer(SendspinBasePlayer):
         # PlayerCommandFailed out of set_members → frontend toast.
         bridge_manager = self._get_cast_bridge_manager()
         pending_cast: list[tuple[SendspinPlayer, asyncio.Future[None]]] = []
-        for player_id in player_ids_to_add or []:
-            member_player = self.mass.players.get_player(player_id, True)
-            member_player = cast("SendspinPlayer", member_player)
+        try:
+            for player_id in player_ids_to_add or []:
+                member_player = self.mass.players.get_player(player_id, True)
+                member_player = cast("SendspinPlayer", member_player)
 
-            cast_ready_future: asyncio.Future[None] | None = None
-            if bridge_manager is not None:
-                bridge = bridge_manager.get_bridge_by_client_id(player_id)
-                if bridge is not None:
-                    cast_ready_future = bridge.reset_cast_ready_future()
+                cast_ready_future: asyncio.Future[None] | None = None
+                if bridge_manager is not None:
+                    bridge = bridge_manager.get_bridge_by_client_id(player_id)
+                    if bridge is not None:
+                        cast_ready_future = bridge.reset_cast_ready_future()
 
-            await self.api.group.add_client(member_player.api)
+                await self.api.group.add_client(member_player.api)
 
-            if cast_ready_future is not None:
-                pending_cast.append((member_player, cast_ready_future))
+                if cast_ready_future is not None:
+                    pending_cast.append((member_player, cast_ready_future))
 
-        if pending_cast:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*(asyncio.shield(f) for _, f in pending_cast)),
-                    timeout=30.0,
-                )
-            except TimeoutError:
-                stuck = [m.display_name for m, f in pending_cast if not f.done()]
-                for _, f in pending_cast:
-                    if not f.done():
-                        f.cancel()
-                raise PlayerCommandFailed(
-                    f"Cast app on {', '.join(stuck)} did not report ready within 30s"
-                ) from None
-            except BaseException:
-                for _, f in pending_cast:
-                    if not f.done():
-                        f.cancel()
-                raise
+            if pending_cast:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*(asyncio.shield(f) for _, f in pending_cast)),
+                        timeout=30.0,
+                    )
+                except TimeoutError:
+                    stuck = [m.display_name for m, f in pending_cast if not f.done()]
+                    raise PlayerCommandFailed(
+                        f"Cast app on {', '.join(stuck)} did not report ready within 30s"
+                    ) from None
+        finally:
+            for _, f in pending_cast:
+                if not f.done():
+                    f.cancel()
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
