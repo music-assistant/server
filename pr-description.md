@@ -1,44 +1,55 @@
 ## Summary
 
-Full rewrite of the Deezer provider, replacing the REST-based `deezer-python` dependency with `deezer-python-gql` — a typed async GraphQL client for Deezer's Pipe API.
+Full rewrite of the Deezer provider, replacing the REST-based `deezer-python` dependency with [`deezer-python-gql`](https://github.com/music-assistant/deezer-python-gql) — a typed async GraphQL client for Deezer's Pipe API.
 
-### What changed
+### Core architecture
 
-**Core architecture**
-- All metadata (tracks, albums, artists, playlists) now fetched via typed GraphQL queries instead of REST
+- All metadata (tracks, albums, artists, playlists, podcasts, audiobooks) now fetched via typed GraphQL queries with Pydantic response models
 - Shared GraphQL fragments provide consistent field coverage across all item types
 - Cursor-based pagination for nested collections (album tracks, playlist tracks, artist albums, audiobook chapters)
+- Self-managed `httpx.AsyncClient` pool with JWT auto-refresh (replaces `aiohttp`-based REST client)
 
-**New capabilities**
-- Podcasts: full library sync, episode browsing, bookmark/resume state sync (read + write via `on_played`)
-- Audiobooks: library sync, chapter navigation with cumulative position calculation
-- Livestreams (radio): search, playback via external stream URLs
-- Lyrics: synchronized (LRC) and plain text from GraphQL
-- Music Together (Shaker): group discovery, suggested and curated playlists in browse/recommendations
-- Flow variants: mood and genre Flows discovered dynamically via GraphQL flow config queries
-- Smart Tracklists and "Made for Me" mixes surfaced in recommendations
+### New capabilities
 
-**Dependency change**
-- Removed: `deezer-python` (REST)
-- Added: `deezer-python-gql` (async GraphQL, Pydantic response models)
+- **Podcasts**: full library sync, episode browsing, bookmark/resume state sync (read + write via `on_played`)
+- **Audiobooks**: library sync, chapter navigation with cumulative position calculation
+- **Livestreams (radio)**: search and playback via external stream URLs
+- **Lyrics**: synchronized (LRC) and plain text from GraphQL
+- **Music Together (Shaker)**: group discovery, suggested and curated playlists in browse/recommendations
+- **Flow variants**: mood and genre Flows discovered dynamically via flow config queries
+- **Smart Tracklists**: "Made for Me" mixes surfaced in browse and recommendations
+- **Dynamic playlists** (`is_dynamic`): Flow, FlowConfig, SmartTracklist, recommended tracks, and Shaker playlists return fresh tracks on each playback — enables endless radio-style queue refill
+- **Share URL parsing**: Deezer URLs (`deezer.com/{type}/{id}`) are now resolved from search/paste, with Deezer added to `PROVIDERS_WITH_SHAREABLE_URLS`
+- **Personal songs**: user-uploaded tracks accessible via "My Uploads" virtual playlist (GW API `personal_song.getList`)
+- **Browse folders**: Made For You, Explore (charts, new releases, editorial playlists), Recently Played (including SmartTracklist items), Shaker, Discover Audiobooks
 
-**GW client changes**
-- Retained for track streaming (URL + Blowfish decryption), listen logging, audiobook channel browsing, and country code
+### Dependency change
+
+- **Removed**: `deezer-python` (REST, unmaintained)
+- **Added**: `deezer-python-gql==0.10.0` (async GraphQL, Pydantic models, auto-generated typed client)
+
+### GW client changes
+
+- Retained for: track streaming (URL + Blowfish decryption), listen logging, audiobook channel browsing, country code, personal songs
 - Non-streaming REST calls removed
+- Streaming size calculation made robust for personal tracks (`FILESIZE_MP3_MISC` fallback)
 
 ### Breaking changes
 
-None. This is a drop-in replacement. Existing ARL token configuration is unchanged.
+None. Drop-in replacement. Existing ARL token configuration is unchanged.
 
-## Test Plan
+## Test plan
 
-- Verified library sync for all media types (artists, albums, tracks, playlists, podcasts, audiobooks)
-- Tested search across all entity types including livestreams
-- Tested playback: tracks (FLAC/MP3), podcasts, livestreams, audiobooks
-- Tested playlist CRUD: create, add/remove tracks, delete
-- Tested podcast resume: play → pause → resume picks up position from Deezer bookmarks
-- Tested browse navigation: recommendations, Shaker groups, Flow configs, recently played
-- Tested lyrics display (synced + plain text)
-- Verified radio stations are searchable and can be favorited in MA
+- Library sync for all media types (artists, albums, tracks, playlists, podcasts, audiobooks)
+- Search across all entity types including livestreams
+- Playback: tracks (FLAC/MP3), podcasts, livestreams, audiobooks
+- Playlist CRUD: create, add/remove tracks, delete
+- Podcast resume: play → pause → resume picks up position from Deezer bookmarks
+- Browse navigation: recommendations, Shaker groups, Flow configs, recently played
+- Lyrics display (synced + plain text)
+- Share URL resolution (`https://deezer.com/track/123` → resolved in search)
+- Dynamic playlists: Flow queue refills with fresh tracks on each play
 
-Suggested label: `new feature`
+## Related
+
+- Library: https://github.com/music-assistant/deezer-python-gql

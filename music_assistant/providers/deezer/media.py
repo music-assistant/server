@@ -1,0 +1,601 @@
+"""Media operations manager for the Deezer provider.
+
+Handles library retrieval, search, item getters, content getters,
+library mutations, and playlist CRUD operations.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
+
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    Audiobook,
+    ItemMapping,
+    MediaItemType,
+    Playlist,
+    Podcast,
+    PodcastEpisode,
+    Radio,
+    SearchResults,
+    Track,
+)
+
+from music_assistant.controllers.cache import use_cache
+
+from .parsers import (
+    apply_web_url,
+    parse_album,
+    parse_artist,
+    parse_audiobook,
+    parse_audiobook_chapters,
+    parse_audiobook_from_album,
+    parse_date,
+    parse_playlist,
+    parse_podcast,
+    parse_podcast_episode,
+    parse_radio,
+    parse_track,
+)
+
+if TYPE_CHECKING:
+    from .provider import DeezerProvider
+
+# Page size for cursor-based pagination
+FAVORITES_PAGE_SIZE = 50
+
+
+class DeezerMediaManager:
+    """Handles library sync, search, item getters, and mutations."""
+
+    def __init__(self, provider: DeezerProvider) -> None:
+        """Initialize media manager."""
+        self.provider = provider
+        self.mass = provider.mass
+        self.instance_id = provider.instance_id
+        self.domain = provider.domain
+        self.logger = provider.logger
+
+    # -- Pagination helper --
+
+    async def _iter_paged(
+        self,
+        fetch: Callable[..., Awaitable[Any]],
+        extract: Callable[..., Any],
+    ) -> AsyncGenerator[Any, None]:
+        """Iterate a cursor-paginated connection, yielding edges."""
+        cursor: str | None = None
+        while True:
+            result = await fetch(first=FAVORITES_PAGE_SIZE, after=cursor)
+            if result is None:
+                break
+            connection = extract(result)
+            if connection is None:
+                break
+            for edge in connection.edges:
+                if edge.node is not None:
+                    yield edge
+            if not connection.page_info.has_next_page:
+                break
+            cursor = connection.page_info.end_cursor
+
+    # -- Library retrieval --
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+        """Retrieve all library artists from Deezer."""
+        async for edge in self._iter_paged(
+            self.provider.gql_client.get_favorite_artists,
+            lambda r: r.user_favorites.artists,
+        ):
+            item = parse_artist(self.provider, edge.node)
+            if edge.favorited_at:
+                item.date_added = parse_date(edge.favorited_at)
+            yield item
+
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+        """Retrieve all library albums from Deezer."""
+        async for edge in self._iter_paged(
+            self.provider.gql_client.get_favorite_albums,
+            lambda r: r.user_favorites.albums,
+        ):
+            item = parse_album(self.provider, edge.node)
+            if edge.favorited_at:
+                item.date_added = parse_date(edge.favorited_at)
+            yield item
+
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+        """Retrieve all library playlists from Deezer."""
+        # User-owned playlists first
+        seen_ids: set[str] = set()
+        async for edge in self._iter_paged(
+            self.provider.gql_client.get_user_playlists,
+            lambda r: r.playlists,
+        ):
+            seen_ids.add(edge.node.id)
+            yield parse_playlist(self.provider, edge.node, is_editable=True)
+        # Favorited playlists (other users' playlists)
+        async for edge in self._iter_paged(
+            self.provider.gql_client.get_favorite_playlists,
+            lambda r: r.user_favorites.playlists,
+        ):
+            if edge.node.id in seen_ids:
+                continue
+            item = parse_playlist(self.provider, edge.node)
+            if edge.favorited_at:
+                item.date_added = parse_date(edge.favorited_at)
+            yield item
+
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+        """Retrieve all library tracks from Deezer."""
+        async for edge in self._iter_paged(
+            self.provider.gql_client.get_favorite_tracks,
+            lambda r: r.user_favorites.tracks,
+        ):
+            item = parse_track(self.provider, edge.node)
+            if edge.favorited_at:
+                item.date_added = parse_date(edge.favorited_at)
+            yield item
+
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+        """Retrieve library/subscribed podcasts from Deezer."""
+        async for edge in self._iter_paged(
+            self.provider.gql_client.get_favorite_podcasts,
+            lambda r: r.user_favorites.podcasts,
+        ):
+            item = parse_podcast(self.provider, edge.node)
+            if edge.favorited_at:
+                item.date_added = parse_date(edge.favorited_at)
+            yield item
+
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+        """Retrieve library/subscribed audiobooks from Deezer."""
+        result = await self.provider.gql_client.get_favorite_audiobooks()
+        if result is None or result.favorites.raw_audiobooks is None:
+            return
+        for raw in result.favorites.raw_audiobooks:
+            try:
+                item = await self.get_audiobook(raw.id)
+            except MediaNotFoundError:
+                continue
+            if raw.favorited_at:
+                item.date_added = parse_date(raw.favorited_at)
+            yield item
+
+    # -- Search --
+
+    @use_cache(3600 * 24 * 7)
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
+    ) -> SearchResults:
+        """Perform search on music provider."""
+        self.logger.debug("search called with media_types=%s", media_types)
+        need_albums = MediaType.ALBUM in media_types
+        need_audiobooks = MediaType.AUDIOBOOK in media_types
+        albums_limit = limit if (need_albums or need_audiobooks) else 0
+
+        result = await self.provider.gql_client.search(
+            query=search_query,
+            tracks_first=limit if MediaType.TRACK in media_types else 0,
+            albums_first=albums_limit,
+            artists_first=limit if MediaType.ARTIST in media_types else 0,
+            playlists_first=limit if MediaType.PLAYLIST in media_types else 0,
+            livestreams_first=limit if MediaType.RADIO in media_types else 0,
+            podcasts_first=limit if MediaType.PODCAST in media_types else 0,
+        )
+        search_results = SearchResults()
+        if result is None:
+            return search_results
+        if MediaType.TRACK in media_types:
+            search_results.tracks = [
+                parse_track(self.provider, edge.node)
+                for edge in result.results.tracks.edges
+                if edge.node is not None
+            ]
+        if need_albums or need_audiobooks:
+            album_nodes = [e.node for e in result.results.albums.edges if e.node is not None]
+            if album_nodes and need_audiobooks:
+                album_ids = [n.id for n in album_nodes]
+                audiobook_ids = await self.provider.gql_client.check_audiobook_ids(album_ids)
+                if need_albums:
+                    search_results.albums = [
+                        parse_album(self.provider, n)
+                        for n in album_nodes
+                        if n.id not in audiobook_ids
+                    ]
+                search_results.audiobooks = [
+                    parse_audiobook_from_album(self.provider, n)
+                    for n in album_nodes
+                    if n.id in audiobook_ids
+                ]
+            elif need_albums:
+                search_results.albums = [parse_album(self.provider, n) for n in album_nodes]
+        if MediaType.ARTIST in media_types:
+            search_results.artists = [
+                parse_artist(self.provider, edge.node)
+                for edge in result.results.artists.edges
+                if edge.node is not None
+            ]
+        if MediaType.PLAYLIST in media_types:
+            search_results.playlists = [
+                parse_playlist(self.provider, edge.node)
+                for edge in result.results.playlists.edges
+                if edge.node is not None
+            ]
+        if MediaType.RADIO in media_types:
+            search_results.radio = [
+                parse_radio(self.provider, edge.node)
+                for edge in result.results.livestreams.edges
+                if edge.node is not None
+            ]
+        if MediaType.PODCAST in media_types:
+            search_results.podcasts = [
+                parse_podcast(self.provider, edge.node)
+                for edge in result.results.podcasts.edges
+                if edge.node is not None
+            ]
+        return search_results
+
+    # -- Item getters --
+
+    @use_cache(3600 * 24 * 30)
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """Get full artist details by id."""
+        result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
+        if result is None:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Deezer")
+        item = parse_artist(self.provider, result)
+        apply_web_url(item, result)
+        return item
+
+    @use_cache(3600 * 24 * 30)
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Get full album details by id."""
+        result = await self.provider.gql_client.get_album(album_id=prov_album_id)
+        if result is None:
+            raise MediaNotFoundError(f"Album {prov_album_id} not found on Deezer")
+        item = parse_album(self.provider, result)
+        apply_web_url(item, result)
+        return item
+
+    @use_cache(3600 * 24 * 30)
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id."""
+        result = await self.provider.gql_client.get_track(track_id=prov_track_id)
+        if result is None:
+            raise MediaNotFoundError(f"Track {prov_track_id} not found on Deezer")
+        return parse_track(self.provider, result)
+
+    @use_cache(3600 * 24 * 30)
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details by id."""
+        if virtual := await self.provider.browse_manager.get_virtual_playlist(prov_playlist_id):
+            return virtual
+        result = await self.provider.gql_client.get_playlist(playlist_id=prov_playlist_id)
+        if result is None:
+            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found on Deezer")
+        is_editable = result.owner is not None and result.owner.id == self.provider._user_id
+        return parse_playlist(self.provider, result, is_editable=is_editable)
+
+    @use_cache(3600 * 24 * 30)
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full radio/livestream details by id."""
+        result = await self.provider.gql_client.get_livestream(livestream_id=prov_radio_id)
+        if result is None:
+            raise MediaNotFoundError(f"Radio {prov_radio_id} not found on Deezer")
+        return parse_radio(self.provider, result)
+
+    @use_cache(3600 * 24 * 30)
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get full podcast details by id."""
+        result = await self.provider.gql_client.get_podcast(podcast_id=prov_podcast_id)
+        if result is None:
+            raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found on Deezer")
+        podcast = parse_podcast(self.provider, result)
+        if hasattr(result, "raw_episodes"):
+            podcast.total_episodes = len(result.raw_episodes)
+        return podcast
+
+    @use_cache(3600 * 24 * 30)
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get (full) podcast episode details by id."""
+        result = await self.provider.gql_client.get_podcast_episode(
+            podcast_episode_id=prov_episode_id,
+        )
+        if result is None:
+            raise MediaNotFoundError(f"Podcast episode {prov_episode_id} not found on Deezer")
+        podcast_mapping = ItemMapping(
+            media_type=MediaType.PODCAST,
+            item_id=result.podcast.id,
+            provider=self.instance_id,
+            name=result.podcast.display_title,
+        )
+        podcast_image_url = (
+            result.podcast.cover.urls[0]
+            if result.podcast.cover and result.podcast.cover.urls
+            else None
+        )
+        return parse_podcast_episode(self.provider, result, podcast_mapping, 0, podcast_image_url)
+
+    @use_cache(3600 * 24 * 30)
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details by id."""
+        result = await self.provider.gql_client.get_audiobook(
+            audiobook_id=prov_audiobook_id, chapters_first=200
+        )
+        if result is None:
+            raise MediaNotFoundError(f"Audiobook {prov_audiobook_id} not found on Deezer")
+        item = parse_audiobook(self.provider, result)
+        all_edges = list(result.chapters.edges)
+        page_info = result.chapters.page_info
+        while page_info.has_next_page:
+            next_page = await self.provider.gql_client.get_audiobook(
+                audiobook_id=prov_audiobook_id,
+                chapters_first=200,
+                chapters_after=page_info.end_cursor,
+            )
+            if next_page is None:
+                break
+            all_edges.extend(next_page.chapters.edges)
+            page_info = next_page.chapters.page_info
+        item.metadata.chapters = parse_audiobook_chapters(all_edges)
+        return item
+
+    # -- Content getters --
+
+    @use_cache(3600 * 24 * 30)
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get all tracks in an album."""
+        result = await self.provider.gql_client.get_album(album_id=prov_album_id)
+        if result is None:
+            return []
+        all_edges = list(result.tracks.edges)
+        while result.tracks.page_info.has_next_page:
+            result = await self.provider.gql_client.get_album(
+                album_id=prov_album_id,
+                tracks_after=result.tracks.page_info.end_cursor,
+            )
+            if result is None:
+                break
+            all_edges.extend(result.tracks.edges)
+        return [
+            parse_track(self.provider, edge.node, position=idx)
+            for idx, edge in enumerate(all_edges, 1)
+            if edge.node is not None
+        ]
+
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
+        """Get all episodes for a given podcast.
+
+        Episode metadata is cached for 3 hours. Bookmark/resume state is
+        applied on top of the cached data so it stays fresh.
+        """
+        episodes = await self._fetch_podcast_episodes(prov_podcast_id)
+        if not episodes:
+            return
+        bookmarks = await self._fetch_all_bookmarks()
+        for ep in episodes:
+            ep.fully_played = False
+            ep.resume_position_ms = 0
+            if ep.item_id in bookmarks:
+                ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
+            yield ep
+
+    async def _fetch_all_bookmarks(self) -> dict[str, tuple[bool, int]]:
+        """Fetch all podcast episode bookmarks, paginating until exhausted."""
+        bookmarks: dict[str, tuple[bool, int]] = {}
+        cursor: str | None = None
+        while True:
+            result = await self.provider.gql_client.get_podcast_episode_bookmarks(
+                first=50, after=cursor
+            )
+            if not result:
+                break
+            for edge in result.podcast_episode_bookmarks.edges:
+                if edge.node is not None:
+                    bookmarks[edge.node.episode.id] = (
+                        edge.node.is_played,
+                        edge.node.position * 1000,
+                    )
+            if not result.podcast_episode_bookmarks.page_info.has_next_page:
+                break
+            cursor = result.podcast_episode_bookmarks.page_info.end_cursor
+        return bookmarks
+
+    @use_cache(3600 * 24)
+    async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
+        """Fetch and cache all episodes for a podcast.
+
+        Uses rawEpisodes (full ID list) + batch fetch because Deezer's cursor
+        pagination on episodes is broken when using an order other than NONE.
+        """
+        result = await self.provider.gql_client.get_podcast(
+            podcast_id=prov_podcast_id, episodes_first=0
+        )
+        if result is None:
+            return []
+        podcast_mapping = ItemMapping(
+            media_type=MediaType.PODCAST,
+            item_id=result.id,
+            provider=self.instance_id,
+            name=result.display_title,
+        )
+        podcast_image_url: str | None = None
+        if result.cover and result.cover.urls:
+            podcast_image_url = result.cover.urls[0]
+        episode_ids = result.raw_episodes
+        if not episode_ids:
+            return []
+
+        cache = self.mass.cache
+        episode_cache_ttl = 3600 * 24 * 30  # 30 days
+
+        # Resolve cached vs uncached episode IDs
+        cached_episodes: dict[str, PodcastEpisode] = {}
+        uncached_ids: list[str] = []
+        for eid in episode_ids:
+            cache_key = f"podcast_episode.{eid}"
+            cached = await cache.get(cache_key, provider=self.instance_id)
+            if cached is not None:
+                cached_episodes[eid] = PodcastEpisode(**cached)
+            else:
+                uncached_ids.append(eid)
+
+        # Batch-fetch only uncached episodes
+        batch_size = 50
+        for i in range(0, len(uncached_ids), batch_size):
+            batch = uncached_ids[i : i + batch_size]
+            fetched = await self.provider.gql_client.get_podcast_episodes_by_ids(ids=batch)
+            for ep in fetched:
+                if ep is not None:
+                    parsed = parse_podcast_episode(
+                        self.provider, ep, podcast_mapping, 0, podcast_image_url
+                    )
+                    cached_episodes[ep.id] = parsed
+                    self.mass.create_task(
+                        cache.set(
+                            key=f"podcast_episode.{ep.id}",
+                            data=parsed.to_dict(),
+                            expiration=episode_cache_ttl,
+                            provider=self.instance_id,
+                        )
+                    )
+
+        # Build final list in original order with correct positions
+        episodes: list[PodcastEpisode] = []
+        position = 0
+        for eid in episode_ids:
+            if eid in cached_episodes:
+                position += 1
+                cached_ep = cached_episodes[eid]
+                cached_ep.position = position
+                episodes.append(cached_ep)
+        return episodes
+
+    @use_cache(3600 * 24 * 7)
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
+        """Get albums by an artist."""
+        result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
+        if result is None:
+            return []
+        all_edges = list(result.albums.edges)
+        while result.albums.page_info.has_next_page:
+            result = await self.provider.gql_client.get_artist(
+                artist_id=prov_artist_id,
+                albums_after=result.albums.page_info.end_cursor,
+            )
+            if result is None:
+                break
+            all_edges.extend(result.albums.edges)
+        return [
+            parse_album(self.provider, edge.node) for edge in all_edges if edge.node is not None
+        ]
+
+    @use_cache(3600 * 24 * 7)
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get top tracks of an artist."""
+        result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
+        if result is None or result.top_tracks is None:
+            return []
+        all_edges = list(result.top_tracks.edges)
+        while result.top_tracks is not None and result.top_tracks.page_info.has_next_page:
+            result = await self.provider.gql_client.get_artist(
+                artist_id=prov_artist_id,
+                top_tracks_after=result.top_tracks.page_info.end_cursor,
+            )
+            if result is None or result.top_tracks is None:
+                break
+            all_edges.extend(result.top_tracks.edges)
+        return [
+            parse_track(self.provider, edge.node) for edge in all_edges if edge.node is not None
+        ]
+
+    @use_cache(3600 * 24)
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Retrieve a dynamic list of tracks based on the provided item."""
+        result = await self.provider.gql_client.get_similar_tracks(track_id=prov_track_id, nb=limit)
+        if result is None:
+            return []
+        return [parse_track(self.provider, t) for t in result.recommended_tracks if t is not None]
+
+    # -- Library mutations --
+
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Add an item to the provider's library/favorites."""
+        if item.media_type == MediaType.ARTIST:
+            await self.provider.gql_client.add_artist_to_favorite(artist_id=item.item_id)
+        elif item.media_type == MediaType.ALBUM:
+            await self.provider.gql_client.add_album_to_favorite(album_id=item.item_id)
+        elif item.media_type == MediaType.TRACK:
+            await self.provider.gql_client.add_track_to_favorite(track_id=item.item_id)
+        elif item.media_type == MediaType.PLAYLIST:
+            await self.provider.gql_client.add_playlist_to_favorite(playlist_id=item.item_id)
+        elif item.media_type == MediaType.PODCAST:
+            await self.provider.gql_client.add_podcast_to_favorite(podcast_id=item.item_id)
+        elif item.media_type == MediaType.AUDIOBOOK:
+            await self.provider.gql_client.add_audiobook_to_favorite(audiobook_id=item.item_id)
+        else:
+            raise NotImplementedError
+        return True
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove an item from the provider's library/favorites."""
+        if media_type == MediaType.ARTIST:
+            await self.provider.gql_client.remove_artist_from_favorite(artist_id=prov_item_id)
+        elif media_type == MediaType.ALBUM:
+            await self.provider.gql_client.remove_album_from_favorite(album_id=prov_item_id)
+        elif media_type == MediaType.TRACK:
+            await self.provider.gql_client.remove_track_from_favorite(track_id=prov_item_id)
+        elif media_type == MediaType.PLAYLIST:
+            await self.provider.gql_client.remove_playlist_from_favorite(playlist_id=prov_item_id)
+        elif media_type == MediaType.PODCAST:
+            await self.provider.gql_client.remove_podcast_from_favorite(podcast_id=prov_item_id)
+        elif media_type == MediaType.AUDIOBOOK:
+            await self.provider.gql_client.remove_audiobook_from_favorite(audiobook_id=prov_item_id)
+        else:
+            raise NotImplementedError
+        return True
+
+    # -- Playlist CRUD --
+
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
+        """Add track(s) to playlist."""
+        await self.provider.gql_client.add_tracks_to_playlist(
+            playlist_id=prov_playlist_id, track_ids=prov_track_ids
+        )
+        await self.provider.browse_manager.invalidate_playlist_cache(prov_playlist_id)
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
+        """Remove track(s) from playlist."""
+        playlist_tracks = await self.provider.browse_manager.get_playlist_tracks(
+            prov_playlist_id, 0
+        )
+        track_ids = [
+            track.item_id for track in playlist_tracks if track.position in positions_to_remove
+        ]
+        if track_ids:
+            await self.provider.gql_client.remove_tracks_from_playlist(
+                playlist_id=prov_playlist_id, track_ids=track_ids
+            )
+            await self.provider.browse_manager.invalidate_playlist_cache(prov_playlist_id)
+
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+        """Create a new playlist on provider with given name."""
+        result = await self.provider.gql_client.create_playlist(
+            title=name, is_private=False, is_collaborative=False
+        )
+        if result.playlist is None:
+            msg = f"Failed to create playlist '{name}' on Deezer"
+            raise MediaNotFoundError(msg)
+        playlist = await self.provider.gql_client.get_playlist(playlist_id=result.playlist.id)
+        if playlist is None:
+            msg = f"Created playlist {result.playlist.id} not found on Deezer"
+            raise MediaNotFoundError(msg)
+        return parse_playlist(self.provider, playlist, is_editable=True)

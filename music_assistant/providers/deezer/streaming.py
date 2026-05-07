@@ -1,0 +1,243 @@
+"""Streaming, decryption, and playback callbacks for the Deezer provider.
+
+Handles stream URL resolution, Blowfish decryption for track audio,
+radio/podcast stream details, and listen logging callbacks.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import uuid
+from collections.abc import AsyncGenerator
+from datetime import datetime
+from math import ceil
+from typing import TYPE_CHECKING
+
+from aiohttp import ClientTimeout
+from Crypto.Cipher import Blowfish
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import AudioFormat, MediaItemType
+from music_assistant_models.streamdetails import StreamDetails
+
+from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+from music_assistant.helpers.datetime import utc_timestamp
+
+if TYPE_CHECKING:
+    from .provider import DeezerProvider
+
+
+class DeezerStreamingManager:
+    """Handles streaming, decryption, and playback lifecycle for Deezer."""
+
+    def __init__(self, provider: DeezerProvider) -> None:
+        """Initialize streaming manager."""
+        self.provider = provider
+        self.mass = provider.mass
+        self.instance_id = provider.instance_id
+        self.domain = provider.domain
+        self.logger = provider.logger
+
+    # -- Resume position --
+
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """Get the resume position for a podcast episode.
+
+        :param item_id: The provider-specific episode ID.
+        :param media_type: The media type (only PODCAST_EPISODE is supported).
+        :returns: Tuple of (fully_played, resume_position_ms, timestamp).
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            return (False, 0, None)
+        cursor: str | None = None
+        while True:
+            result = await self.provider.gql_client.get_podcast_episode_bookmarks(
+                first=50, after=cursor
+            )
+            if not result:
+                break
+            for edge in result.podcast_episode_bookmarks.edges:
+                if edge.node is None:
+                    continue
+                if edge.node.episode.id == item_id:
+                    return (edge.node.is_played, edge.node.position * 1000, None)
+            if not result.podcast_episode_bookmarks.page_info.has_next_page:
+                break
+            cursor = result.podcast_episode_bookmarks.page_info.end_cursor
+        return (False, 0, None)
+
+    # -- Playback callbacks --
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Handle callback when a podcast episode has been played or is playing.
+
+        Syncs playback progress back to Deezer's bookmark/play-state system.
+        Only handles podcast episodes — Deezer's Pipe API has no track listen logging.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+        if fully_played:
+            await self.provider.gql_client.mark_as_played_podcast_episode(episode_id=prov_item_id)
+        elif position == 0 and not is_playing:
+            await self.provider.gql_client.mark_as_not_played_podcast_episode(
+                episode_id=prov_item_id
+            )
+        elif is_playing or position > 0:
+            await self.provider.gql_client.bookmark_podcast_episode(
+                episode_id=prov_item_id, offset=position
+            )
+
+    # -- Stream details --
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return the content details for the given track when it will be streamed."""
+        if media_type == MediaType.RADIO:
+            return await self._get_radio_stream_details(item_id)
+        if media_type == MediaType.PODCAST_EPISODE:
+            return await self._get_podcast_episode_stream_details(item_id)
+        url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(item_id)
+        url = url_details["sources"][0]["url"]
+        size_key = f"FILESIZE_{url_details['format']}"
+        size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
+        return StreamDetails(
+            item_id=item_id,
+            provider=self.instance_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(url_details["format"].split("_")[0])
+            ),
+            stream_type=StreamType.CUSTOM,
+            duration=int(song_data["DURATION"]),
+            data={"url": url, "format": url_details["format"], "track_id": song_data["SNG_ID"]},
+            size=size,
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    async def _get_radio_stream_details(self, item_id: str) -> StreamDetails:
+        """Return stream details for a Deezer livestream (radio station)."""
+        result = await self.provider.gql_client.get_livestream(livestream_id=item_id)
+        if result is None or not result.media:
+            raise MediaNotFoundError(f"Radio {item_id} has no stream URL")
+        # Prefer HLS, then AAC, then MP3
+        best_media = result.media[0]
+        for media in result.media:
+            if media.codec and media.codec.type_ == "hls":
+                best_media = media
+                break
+        content_type = ContentType.UNKNOWN
+        if best_media.codec:
+            content_type = ContentType.try_parse(best_media.codec.type_)
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=content_type,
+                bit_rate=best_media.codec.bitrate if best_media.codec else None,
+            ),
+            media_type=MediaType.RADIO,
+            stream_type=StreamType.HTTP,
+            path=best_media.url,
+            can_seek=False,
+            allow_seek=False,
+        )
+
+    async def _get_podcast_episode_stream_details(self, item_id: str) -> StreamDetails:
+        """Return stream details for a Deezer podcast episode."""
+        result = await self.provider.gql_client.get_podcast_episode(podcast_episode_id=item_id)
+        if result is None or not result.media:
+            raise MediaNotFoundError(f"Podcast episode {item_id} has no stream URL")
+        content_type = ContentType.UNKNOWN
+        if result.media.codec:
+            content_type = ContentType.try_parse(result.media.codec.type_)
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=content_type,
+                bit_rate=result.media.codec.bitrate if result.media.codec else None,
+            ),
+            media_type=MediaType.PODCAST_EPISODE,
+            stream_type=StreamType.HTTP,
+            path=result.media.url,
+            duration=result.duration,
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    # -- Audio stream (Blowfish decryption) --
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        blowfish_key = self._get_blowfish_key(streamdetails.data["track_id"])
+        chunk_index = 0
+        timeout = ClientTimeout(total=None, connect=30, sock_read=600)
+        headers: dict[str, str] = {}
+
+        # Seek by skipping chunks (Range header causes malformed audio)
+        if seek_position and streamdetails.size and streamdetails.duration:
+            chunk_count = ceil(streamdetails.size / 2048)
+            skip_chunks = int(chunk_count / streamdetails.duration) * seek_position
+        else:
+            skip_chunks = 0
+
+        buffer = bytearray()
+        streamdetails.data["start_ts"] = utc_timestamp()
+        streamdetails.data["stream_id"] = uuid.uuid1()
+        self.mass.create_task(self.provider.gw_client.log_listen(next_track=streamdetails.item_id))
+        async with self.mass.http_session.get(
+            streamdetails.data["url"], headers=headers, timeout=timeout
+        ) as resp:
+            async for chunk in resp.content.iter_chunked(2048):
+                buffer += chunk
+                if len(buffer) >= 2048:
+                    if chunk_index >= skip_chunks or chunk_index == 0:
+                        if chunk_index % 3 > 0:
+                            yield bytes(buffer[:2048])
+                        else:
+                            yield self._decrypt_chunk(bytes(buffer[:2048]), blowfish_key)
+
+                    chunk_index += 1
+                    del buffer[:2048]
+        yield bytes(buffer)
+
+    async def on_streamed(self, streamdetails: StreamDetails) -> None:
+        """Handle callback when an item completed streaming."""
+        await self.provider.gw_client.log_listen(last_track=streamdetails)
+
+    # -- Decryption helpers --
+
+    @staticmethod
+    def _md5(data: str, data_type: str = "ascii") -> str:
+        md5sum = hashlib.md5()
+        md5sum.update(data.encode(data_type))
+        return md5sum.hexdigest()
+
+    def _get_blowfish_key(self, track_id: str) -> str:
+        """Get blowfish key to decrypt a chunk of a track."""
+        secret = app_var(5)
+        id_md5 = self._md5(track_id)
+        return "".join(
+            chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i])) for i in range(16)
+        )
+
+    @staticmethod
+    def _decrypt_chunk(chunk: bytes, blowfish_key: str) -> bytes:
+        """Decrypt a given chunk using the blow fish key."""
+        cipher = Blowfish.new(
+            blowfish_key.encode("ascii"),
+            Blowfish.MODE_CBC,
+            b"\x00\x01\x02\x03\x04\x05\x06\x07",
+        )
+        return cipher.decrypt(chunk)  # type: ignore[no-any-return,unused-ignore]
