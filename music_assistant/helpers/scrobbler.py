@@ -138,7 +138,9 @@ class ScrobblerConfig:
         self.mass_playerids = mass_playerids or []
 
     @staticmethod
-    def get_shared_config_entries(values: dict[str, ConfigValueType] | None) -> list[ConfigEntry]:
+    async def get_shared_config_entries(
+        mass: MusicAssistant, values: dict[str, ConfigValueType] | None
+    ) -> list[ConfigEntry]:
         """Shared config entries."""
         return [
             ConfigEntry(
@@ -150,7 +152,10 @@ class ScrobblerConfig:
                 "e.g. 'Amazing Track (Live)'.",
                 default_value=True,
                 value=values.get(CONF_VERSION_SUFFIX) if values else None,
-            )
+            ),
+            # User and player filter options for scrobbling providers
+            await create_scrobble_users_config_entry(mass),
+            create_scrobble_players_config_entry(mass),
         ]
 
     @staticmethod
@@ -185,7 +190,7 @@ async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntr
     )
 
 
-async def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
+def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
     """Create a reusable configentry to specify a player list for scrobbling providers."""
     ma_player_list = sorted(
         mass.players.all_players(return_unavailable=True, return_disabled=False),

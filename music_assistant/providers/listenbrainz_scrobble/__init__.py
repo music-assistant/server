@@ -17,12 +17,7 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.helpers.scrobbler import (
-    ScrobblerConfig,
-    ScrobblerHelper,
-    create_scrobble_players_config_entry,
-    create_scrobble_users_config_entry,
-)
+from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -152,7 +147,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
-        *ScrobblerConfig.get_shared_config_entries(values),
+        *await ScrobblerConfig.get_shared_config_entries(mass, values),
         ConfigEntry(
             key=CONF_USER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
@@ -170,7 +165,4 @@ async def get_config_entries(
             "to the public listenbrainz API.",
             advanced=True,
         ),
-        # add scrobble filter options
-        await create_scrobble_users_config_entry(mass),
-        await create_scrobble_players_config_entry(mass),
     )
