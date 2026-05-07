@@ -148,11 +148,6 @@ class AirPlayPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of this player."""
         features = set(BASE_PLAYER_FEATURES)
-        if self.protocol == StreamingProtocol.AIRPLAY2:
-            # AP2 sync is broken — cliap2 doesn't respect the NTP start time
-            # correctly, so grouping produces multi-second sync offsets.
-            # See https://github.com/music-assistant/cliairplay/issues/102
-            features.discard(PlayerFeature.SET_MEMBERS)
         if not (self.group_members or self.synced_to):
             # we only support pause when the player is not synced,
             # because we don't want to deal with the complexity of pausing a group of players
@@ -165,18 +160,11 @@ class AirPlayPlayer(Player):
     def can_group_with(self) -> set[str]:
         """Return player IDs this player can group with.
 
-        AP2 players cannot group (broken NTP sync in cliap2).
-        RAOP players can group with other RAOP players only.
+        RAOP and AP2 players can group with other RAOP and/or AP2 players.
         """
-        if self.protocol == StreamingProtocol.AIRPLAY2:
-            return set()
         prov = cast("AirPlayProvider", self.provider)
         return {
-            p.player_id
-            for p in prov.get_players()
-            if p.available
-            and p.player_id != self.player_id
-            and p.protocol != StreamingProtocol.AIRPLAY2
+            p.player_id for p in prov.get_players() if p.available and p.player_id != self.player_id
         }
 
     @property
@@ -316,9 +304,7 @@ class AirPlayPlayer(Player):
                 ),
                 label="Expected milliseconds to establish streaming session with the AirPlay device.",
                 description="Adjust this value only if playback is out of sync or does not work.\n"
-                "The log will contain an INFO entry showing the actual time "
-                "taken to establish the session. Set your config value somewhere in the window "
-                "of 600ms less than and no more than 100ms greater than the actual time.",
+                "The log will contain a WARNING entry showing a recommendation.",
                 hidden=is_raop,
                 category="protocol_generic",
                 advanced=True,
@@ -958,12 +944,7 @@ class AirPlayPlayer(Player):
         await super().on_config_updated()
         prov = cast("AirPlayProvider", self.provider)
         bridge_manager = prov.bridge_manager
-        has_bridge = bridge_manager.get_bridge(self.player_id) is not None
-        if self.protocol == StreamingProtocol.AIRPLAY2 and has_bridge:
-            # AP2 doesn't support sync — tear down the Sendspin bridge
-            await bridge_manager.remove_bridge(self.player_id)
-        elif self.protocol != StreamingProtocol.AIRPLAY2 and not has_bridge:
-            # Switched back to RAOP — set up the Sendspin bridge
+        if bridge_manager.get_bridge(self.player_id) is None:
             await bridge_manager.setup_bridge(self)
 
     async def on_unload(self) -> None:
