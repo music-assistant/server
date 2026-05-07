@@ -577,8 +577,12 @@ class AudioAnalysisController:
                 "provider": row["provider"],
             }
             for field_name in self._EXPORT_SCALAR_FIELDS:
-                if field_name in data:
-                    item[field_name] = data[field_name]
+                val = data.get(field_name)
+                if val is None:
+                    continue
+                if isinstance(val, float):
+                    val = round(val, 4)
+                item[field_name] = val
             extras = data.get("extra_data") or {}
             if isinstance(extras, dict):
                 stripped = {

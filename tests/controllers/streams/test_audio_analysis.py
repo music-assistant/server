@@ -968,3 +968,57 @@ async def test_export_raises_for_unknown_aa_domain() -> None:
     c.mass.get_provider = MagicMock(return_value=None)
     with pytest.raises(ProviderUnavailableError):
         await c.export(aa_domain="nope")
+
+
+@pytest.mark.asyncio
+async def test_export_omits_null_fields() -> None:
+    """Fields with null values in analysis_data are omitted from the response."""
+    rows = [
+        {
+            "item_id": "track1",
+            "provider": "filesystem_local",
+            "analysis_data": json.dumps(
+                {
+                    "bpm": 120.5,
+                    "key": None,
+                    "mode": None,
+                    "energy": 0.8,
+                }
+            ),
+        }
+    ]
+    c, _ = _stub_controller(count_result=1, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    item = result["items"][0]
+    assert "bpm" in item
+    assert "energy" in item
+    assert "key" not in item
+    assert "mode" not in item
+
+
+@pytest.mark.asyncio
+async def test_export_rounds_float_fields_to_four_decimals() -> None:
+    """Float values are rounded to 4 decimal places (matches legacy contract)."""
+    rows = [
+        {
+            "item_id": "track1",
+            "provider": "filesystem_local",
+            "analysis_data": json.dumps(
+                {
+                    "energy": 0.123456789,
+                    "danceability": 0.987654321,
+                }
+            ),
+        }
+    ]
+    c, _ = _stub_controller(count_result=1, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    item = result["items"][0]
+    assert item["energy"] == 0.1235
+    assert item["danceability"] == 0.9877
