@@ -19,4 +19,4 @@ VOLUME_CONTROL_SOFTWARE = "software"
 
 # Defaults
 DEFAULT_PLAYER_VOLUME = 25  # initial volume for new players (percent)
-DEFAULT_BUFFER_FRAMES = 1024  # sounddevice blocksize (frames)
+DEFAULT_BUFFER_FRAMES = 1024  # sounddevice blocksize for macOS PortAudio output (frames)
