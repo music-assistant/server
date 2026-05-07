@@ -42,7 +42,6 @@ def _make_provider() -> SonicAnalysisProvider:
     p._clap_model = None
     p._clap_text_embeddings = None
     p._clap_prompt_order = []
-    p._unregister_handles = []
     p._clap_load_task = None
     p.analysis_version = 1
     return p

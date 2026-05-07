@@ -179,7 +179,6 @@ async def test_handle_async_init_calls_validate_calibration_freshness() -> None:
     p._clap_model = None
     p._clap_text_embeddings = None
     p._clap_prompt_order = []
-    p._unregister_handles = []
     p._clap_load_task = None
     p.mass = SimpleNamespace(  # type: ignore[assignment]
         create_task=MagicMock(side_effect=lambda coro: coro.close() or MagicMock())
