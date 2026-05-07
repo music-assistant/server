@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -868,3 +869,102 @@ async def test_analyzed_tracks_raises_for_unknown_aa_domain() -> None:
     c.mass.get_provider = MagicMock(return_value=None)
     with pytest.raises(ProviderUnavailableError):
         await c.analyzed_tracks(aa_domain="nope")
+
+
+@pytest.mark.asyncio
+async def test_export_returns_fixed_scalar_field_set() -> None:
+    """export() returns the canonical scalar fields from analysis_data."""
+    rows = [
+        {
+            "item_id": "track1",
+            "provider": "filesystem_local",
+            "analysis_data": json.dumps(
+                {
+                    "bpm": 120.5,
+                    "key": "C",
+                    "danceability": 0.7,
+                    "energy": 0.8,
+                    "loudness_integrated": -8.4,
+                    "duration": 213.7,
+                }
+            ),
+        }
+    ]
+    c, _ = _stub_controller(count_result=1, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+
+    assert result["total"] == 1
+    assert len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["bpm"] == 120.5
+    assert item["key"] == "C"
+    assert item["danceability"] == 0.7
+    assert item["loudness_integrated"] == -8.4
+
+
+@pytest.mark.asyncio
+async def test_export_strips_clap_embedding_from_extra_data() -> None:
+    """The 1024-dim CLAP embedding is removed from the response; other extra_data keys survive."""
+    rows = [
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "analysis_data": json.dumps(
+                {
+                    "bpm": 100.0,
+                    "extra_data": {"clap_embedding": [0.0] * 1024, "other_key": "kept"},
+                }
+            ),
+        }
+    ]
+    c, _ = _stub_controller(count_result=1, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    item = result["items"][0]
+    assert "clap_embedding" not in item.get("extra_data", {})
+    assert item["extra_data"] == {"other_key": "kept"}
+
+
+@pytest.mark.asyncio
+async def test_export_skips_unparseable_rows() -> None:
+    """Rows with corrupt JSON are skipped from items but counted in total."""
+    rows = [
+        {"item_id": "a", "provider": "filesystem_local", "analysis_data": "not json"},
+        {
+            "item_id": "b",
+            "provider": "filesystem_local",
+            "analysis_data": json.dumps({"bpm": 100.0}),
+        },
+    ]
+    c, _ = _stub_controller(count_result=5, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+
+    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    assert result["total"] == 5
+    assert len(result["items"]) == 1
+    assert result["items"][0]["bpm"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_export_passes_limit_and_offset_to_db() -> None:
+    """export() forwards limit/offset to the row helper and returns an empty page when there are no rows."""
+    c, _ = _stub_controller(count_result=0, list_result=[])
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)
+    result = await c.export(aa_domain="sonic_analysis", limit=25, offset=50)
+    assert result == {"total": 0, "offset": 50, "limit": 25, "items": []}
+
+
+@pytest.mark.asyncio
+async def test_export_raises_for_unknown_aa_domain() -> None:
+    """Unknown aa_domain raises ProviderUnavailableError."""
+    c, _ = _stub_controller()
+    c.mass.get_provider = MagicMock(return_value=None)
+    with pytest.raises(ProviderUnavailableError):
+        await c.export(aa_domain="nope")

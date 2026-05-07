@@ -521,6 +521,75 @@ class AudioAnalysisController:
         items = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries]))
         return {"total": total, "offset": offset, "limit": limit, "items": items}
 
+    _EXPORT_SCALAR_FIELDS: tuple[str, ...] = (
+        "bpm",
+        "key",
+        "mode",
+        "energy",
+        "danceability",
+        "loudness_integrated",
+        "loudness_range",
+        "true_peak",
+        "brightness",
+        "harmonic_complexity",
+        "roughness",
+        "rhythmic_regularity",
+        "duration",
+        "instrumentalness",
+        "valence",
+        "arousal",
+        "acousticness",
+    )
+    _EXPORT_STRIP_EXTRA_DATA_KEYS: frozenset[str] = frozenset({"clap_embedding"})
+
+    @api_command("audio_analysis/export")
+    async def export(
+        self,
+        aa_domain: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """
+        Return a paginated dump of canonical scalar fields for analyzed tracks.
+
+        Strips known-oversized extra_data keys (e.g., clap_embedding) from the
+        response to keep payloads bounded.
+
+        :param aa_domain: AA provider domain to query.
+        :param limit: Max items per page.
+        :param offset: Pagination offset.
+        """
+        provider = self.mass.get_provider(aa_domain, provider_type=ProviderType.AUDIO_ANALYSIS)
+        if provider is None:
+            raise ProviderUnavailableError(f"{aa_domain} is not available")
+
+        total = await self.get_audio_analysis_count(aa_domain)
+        rows = await self.get_audio_analysis_rows(aa_domain, limit=limit, offset=offset)
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                data = json_loads(row["analysis_data"])
+            except (ValueError, TypeError, KeyError):
+                continue
+            item: dict[str, Any] = {
+                "item_id": row["item_id"],
+                "provider": row["provider"],
+            }
+            for field_name in self._EXPORT_SCALAR_FIELDS:
+                if field_name in data:
+                    item[field_name] = data[field_name]
+            extras = data.get("extra_data") or {}
+            if isinstance(extras, dict):
+                stripped = {
+                    k: v for k, v in extras.items() if k not in self._EXPORT_STRIP_EXTRA_DATA_KEYS
+                }
+                if stripped:
+                    item["extra_data"] = stripped
+            items.append(item)
+
+        return {"total": total, "offset": offset, "limit": limit, "items": items}
+
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
         providers = self.providers
