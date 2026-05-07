@@ -65,16 +65,17 @@ METADATA_REFRESH_INTERVAL = 60
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 # NTS source images are landscape; their CDN exposes /resize/ (preserves aspect)
-# and /crop/ (square center-crop). Rewrite to /crop/1000x1000/ so UIs that expect
-# square thumbnails don't get a stretched/letterboxed result.
+# and /crop/ (center-crop) endpoints. Rewriting picks the square variant so UIs
+# that expect square thumbnails don't get a letterboxed result.
+IMAGE_CROP_SIZE = 1000
 _NTS_IMAGE_OP_RE = re.compile(r"/(?:resize|crop)/\d+x\d+/")
 
 
 def _square_image_url(url: str | None) -> str | None:
-    """Rewrite an NTS image URL to a square 1000x1000 center-crop."""
+    """Rewrite an NTS image URL to a square center-crop."""
     if not url:
         return None
-    return _NTS_IMAGE_OP_RE.sub("/crop/1000x1000/", url, count=1)
+    return _NTS_IMAGE_OP_RE.sub(f"/crop/{IMAGE_CROP_SIZE}x{IMAGE_CROP_SIZE}/", url, count=1)
 
 
 async def setup(
