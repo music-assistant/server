@@ -42,7 +42,6 @@ from music_assistant.providers.sendspin.bridge_role import (
 from music_assistant.providers.sendspin.constants import (
     BRIDGE_PREFIX,
     CONF_SENDSPIN_STATIC_DELAY,
-    DEFAULT_SENDSPIN_STATIC_DELAY,
 )
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
@@ -61,7 +60,6 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from pychromecast.generated.cast_channel_pb2 import CastMessage
 
-    from music_assistant.mass import MusicAssistant
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .player import ChromecastPlayer
@@ -195,22 +193,6 @@ def _build_bridge_hello(cast_player: ChromecastPlayer, bridge_client_id: str) ->
             supported_commands=[],
         ),
     )
-
-
-def _write_default_static_delay(
-    mass: MusicAssistant, bridge_client_id: str, manufacturer: str, model: str
-) -> None:
-    """Persist the model-specific default static delay if no user value exists."""
-    raw_delay = mass.config.get_raw_player_config_value(
-        bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
-    )
-    if raw_delay is not None:
-        return
-    model_default = get_cast_model_static_delay(manufacturer, model)
-    if model_default != DEFAULT_SENDSPIN_STATIC_DELAY:
-        mass.config.set_raw_player_config_value(
-            bridge_client_id, CONF_SENDSPIN_STATIC_DELAY, model_default
-        )
 
 
 class SendspinChromecastBridge:
@@ -439,13 +421,16 @@ class SendspinChromecastBridge:
         # the MA webserver or streams server. Use publish_ip directly.
         publish_ip = cast("str", self.mass.streams.publish_ip)
         server_url = f"ws://{format_ip_for_url(publish_ip)}:8927/sendspin"
-        sync_delay = int(
-            self.mass.config.get_raw_player_config_value(
-                self._bridge_client_id,
-                CONF_SENDSPIN_STATIC_DELAY,
-                DEFAULT_SENDSPIN_STATIC_DELAY,
-            )
+        raw_delay = self.mass.config.get_raw_player_config_value(
+            self._bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
         )
+        if raw_delay is None:
+            sync_delay = get_cast_model_static_delay(
+                self.cast_player.device_info.manufacturer or "",
+                self.cast_player.device_info.model or "",
+            )
+        else:
+            sync_delay = int(cast("int", raw_delay))
         # The Cast receiver JS reads playerId (not clientId) from the config.
         # It uses this as the client_id in its hello message to the Sendspin server,
         # allowing the server to match it to the bridge's pre-registered external client.
@@ -579,6 +564,9 @@ class SendspinBridgeManager:
                 if sendspin_provider is not None:
                     bridge_hello = _build_bridge_hello(cast_player, existing_client_id)
                     identifiers = {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)}
+                    sendspin_provider.register_bridge_static_delay_default(
+                        existing_client_id, get_cast_model_static_delay(manufacturer, model)
+                    )
                     if not await sendspin_provider.apply_bridge_claim(
                         existing_client_id, identifiers, bridge_hello
                     ):
@@ -589,7 +577,6 @@ class SendspinBridgeManager:
                         sendspin_provider.register_bridge_identifiers(
                             existing_client_id, identifiers
                         )
-                    _write_default_static_delay(self.mass, existing_client_id, manufacturer, model)
                     self._claimed_clients[player_id] = existing_client_id
                     self._subscribe_rebridge_on_disconnect(cast_player, existing_client_id)
                 return
@@ -605,7 +592,9 @@ class SendspinBridgeManager:
                     bridge_client_id,
                     {IdentifierType.CAST_UUID: str(cast_player.cast_info.uuid)},
                 )
-                _write_default_static_delay(self.mass, bridge_client_id, manufacturer, model)
+                sendspin_provider.register_bridge_static_delay_default(
+                    bridge_client_id, get_cast_model_static_delay(manufacturer, model)
+                )
 
             try:
                 await bridge.start()

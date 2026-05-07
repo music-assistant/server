@@ -13,6 +13,8 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
+    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
+    AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_AP2PASSWORD,
 )
@@ -28,9 +30,46 @@ class AirPlay2Stream(AirPlayProtocol):
     """
     AirPlay 2 Audio Streamer.
 
-    Uses cliap2 (C executable based on owntone) for timestamped playback.
+    Uses cliap2 (C executable based on OwnTone) for timestamped playback.
     Audio is fed via stdin, commands via a named pipe.
     """
+
+    @property
+    def _session_establishment_ms(self) -> int | None:
+        """
+        Return the actual number of milliseconds taken to establish a streaming session with the device.
+
+        Will return None if session establishment has not yet happened.
+        """
+        if self._cli_start_ts is None:
+            return None
+        if self._connected_ts is None:
+            return None
+        return int((self._connected_ts - self._cli_start_ts) * 1000)
+
+    @property
+    def _recommended_session_establishment_latency(self) -> tuple[int, int] | None:
+        """
+        Return the suggested value window for session establishment latency configuration.
+
+        Will return None if a recommended window cannot be determined.
+        Empirical testing has found that a value in the range of no less than 700ms
+        less than and no more than 100ms more than the actual session establishment time
+        provides a reliable window. The exact reasoning for this is not yet understood and
+        it seems counter intuitive to have a value less than the actual. A more robust
+        solution for ensuring synchronised playback needs to be implemented into the AirPlay2
+        binary and once done, there will be no need for the complexity of a session establishment
+        latency concept to exist in MA.
+        """
+        if self._session_establishment_ms is None:
+            return None
+        high = min(
+            ((self._session_establishment_ms + 99) // 100) * 100,
+            AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
+        )
+        # 600 used to provide protection against hitting the 700ms boundary mentioned in docstring above.
+        low = max(high - 600, AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS)
+        return (low, high)
 
     @property
     def _cli_loglevel(self) -> int:
@@ -55,23 +94,55 @@ class AirPlay2Stream(AirPlayProtocol):
             mass_level = 5
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
+    def _session_established(self) -> None:
+        """
+        Streaming session is now established.
+
+        Log the actual session establishment duration and check against configured value.
+        """
+        if self._connected_ts is not None:
+            """We have previously connected, so we ignore this call"""
+            return
+        self._connected_ts = time.time()
+        assert self._session_establishment_ms is not None  # for type checker
+        self.logger.debug(
+            f"Streaming session established in {self._session_establishment_ms}ms for player {self.player.name}"
+        )
+        window = self._recommended_session_establishment_latency
+        if window is None:  # guard
+            return
+        low, high = window
+        if (self.player.session_establishment_latency_ms < low) or (
+            self.player.session_establishment_latency_ms > high
+        ):
+            self.logger.warning(
+                f"Configured value of {self.player.session_establishment_latency_ms}ms for session establishment latency "
+                f"is outside the recommended range for player {self.player.name}. The recommended range is between "
+                f"{low} and {high} ms. Please adjust this advanced configuration value accordingly."
+            )
+
     @staticmethod
     def _log_cli_output(logger: logging.Logger, line: str) -> None:
-        """Route a cliap2 stderr line to the appropriate log level."""
+        """
+        Route a cliap2 stderr line to the appropriate log level.
+
+        Strips the leading timestamp and log level info to eliminate duplication
+        of MA logging output and improve readability.
+        """
         if "[FATAL]" in line:
-            logger.critical(line)
+            logger.critical(line[31:])
         elif "[  LOG]" in line:
-            logger.error(line)
+            logger.error(line[31:])
         elif "[ INFO]" in line:
-            logger.info(line)
+            logger.info(line[31:])
         elif "[ WARN]" in line:
-            logger.warning(line)
-        elif "[DEBUG]" in line and "mass_timer_cb" in line:
-            logger.log(VERBOSE_LOG_LEVEL, line)
+            logger.warning(line[31:])
+        elif "[DEBUG]" in line and "player: Player status: playing" in line:
+            logger.log(VERBOSE_LOG_LEVEL, line[31:])
         elif "[DEBUG]" in line:
-            logger.debug(line)
+            logger.debug(line[31:])
         elif "[ SPAM]" in line:
-            logger.log(VERBOSE_LOG_LEVEL, line)
+            logger.log(VERBOSE_LOG_LEVEL, line[31:])
         else:
             logger.error(line)
 
@@ -128,6 +199,8 @@ class AirPlay2Stream(AirPlayProtocol):
             self.commands_pipe.path,
             "--latency",
             str(self.player.output_buffer_duration_ms),
+            "--session_establishment_latency",
+            str(self.player.session_establishment_latency_ms),
         ]
 
         # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
@@ -163,10 +236,16 @@ class AirPlay2Stream(AirPlayProtocol):
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
-            if "player: event_play_start()" in line:
+            if "main: DACP ID set to:" in line:
+                self._cli_start_ts = time.time()
+            elif (
+                f"player: Callback from AirPlay 2 device {self.player.display_name} to device_activate_cb (status 2)"
+                in line
+            ):
                 # successfully connected
                 self._connected.set()
-            if "Pause at" in line:
+                self._session_established()
+            elif "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
             elif "Restarted at" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
@@ -180,7 +259,7 @@ class AirPlay2Stream(AirPlayProtocol):
                 player.set_state_from_stream(
                     state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
                 )
-            if "put delay detected" in line:
+            elif "put delay detected" in line:
                 if "resetting all outputs" in line:
                     logger.error(
                         "Repeated output buffer low level detected, restarting playback..."
@@ -192,7 +271,7 @@ class AirPlay2Stream(AirPlayProtocol):
                     self.mass.create_task(self.mass.players.cmd_resume(self.player.player_id))
                 else:
                     logger.warning("Output buffer low level detected!")
-            if "end of stream reached" in line:
+            elif "end of stream reached" in line:
                 logger.debug("End of stream reached")
                 expected_eof = True
                 break

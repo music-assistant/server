@@ -27,6 +27,7 @@ from music_assistant.constants import CONF_ENABLED
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
@@ -49,6 +50,7 @@ class SendspinProvider(PlayerProvider):
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
+    _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
     _unloading: bool
@@ -63,6 +65,7 @@ class SendspinProvider(PlayerProvider):
         )
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
+        self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
         self._client_event_task_counts = {}
@@ -121,6 +124,28 @@ class SendspinProvider(PlayerProvider):
         :param identifiers: Extra identifiers to attach to the SendspinPlayer.
         """
         self._bridge_identifiers[client_id] = identifiers
+
+    def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
+        """Register a protocol-specific default static delay for a bridge client.
+
+        If the SendspinPlayer already exists, the default is applied immediately;
+        otherwise it is stashed and picked up when the player is created.
+
+        :param client_id: The bridge client_id for which the default applies.
+        :param default_ms: Model-specific default static delay in milliseconds.
+        """
+        existing = self.mass.players.get_player(client_id)
+        if isinstance(existing, SendspinPlayer):
+            existing.static_delay_default_ms = default_ms
+            # If no user-set value exists, push the new default to the device now
+            # so already-connected clients pick it up without a config edit.
+            if (
+                self.mass.config.get_raw_player_config_value(client_id, CONF_SENDSPIN_STATIC_DELAY)
+                is None
+            ):
+                self.mass.create_task(existing._apply_static_delay())
+            return
+        self._bridge_static_delay_defaults[client_id] = default_ms
 
     def register_bridge_player_type(self, client_id: str, player_type: PlayerType) -> None:
         """
@@ -212,6 +237,9 @@ class SendspinProvider(PlayerProvider):
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
+        static_delay_default_ms = self._bridge_static_delay_defaults.pop(client_id, None)
+        if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
+            static_delay_default_ms = existing_player.static_delay_default_ms
 
         has_player_role = bool(sendspin_client.roles_by_family("player"))
         has_metadata_role = bool(sendspin_client.roles_by_family("metadata"))
@@ -236,6 +264,8 @@ class SendspinProvider(PlayerProvider):
         if extra_ids:
             for id_type, id_value in extra_ids.items():
                 player.device_info.add_identifier(id_type, id_value)
+        if static_delay_default_ms is not None and isinstance(player, SendspinPlayer):
+            player.static_delay_default_ms = static_delay_default_ms
         return player
 
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
