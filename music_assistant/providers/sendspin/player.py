@@ -640,27 +640,24 @@ class SendspinPlayer(SendspinBasePlayer):
 
         await self.playback_session.cancel("new media requested")
 
-        # Reset the cast-ready future *before* starting playback so it cannot
-        # race with `_on_stream_start`, and so a stale pending future from a
-        # previous timed-out attempt is cancelled and replaced. Non-Cast
-        # Sendspin players have no bridge and skip this entirely.
-        cast_ready_future: asyncio.Future[None] | None = None
-        bridge_manager = self._get_cast_bridge_manager()
-        if bridge_manager is not None:
-            bridge = bridge_manager.get_bridge_by_client_id(self.player_id)
-            if bridge is not None:
-                cast_ready_future = bridge.reset_cast_ready_future()
+        # Cast-only: reset future before start() to avoid racing _on_stream_start
+        # and to cancel any stale pending future from a previous timed-out attempt.
+        cast_app_ready: asyncio.Future[None] | None = None
+        if (mgr := self._get_cast_bridge_manager()) and (
+            bridge := mgr.get_bridge_by_client_id(self.player_id)
+        ):
+            cast_app_ready = bridge.reset_cast_app_ready()
 
         await self.playback_session.start(media)
         self.update_state()
 
-        if cast_ready_future is None:
+        if cast_app_ready is None:
             return
         try:
-            await asyncio.wait_for(asyncio.shield(cast_ready_future), timeout=30.0)
+            await asyncio.wait_for(asyncio.shield(cast_app_ready), timeout=30.0)
         except TimeoutError:
-            if not cast_ready_future.done():
-                cast_ready_future.cancel()
+            if not cast_app_ready.done():
+                cast_app_ready.cancel()
             raise PlayerCommandFailed(
                 f"Cast app on {self.display_name} did not report ready within 30s"
             ) from None
@@ -747,26 +744,18 @@ class SendspinPlayer(SendspinBasePlayer):
                         self.playback_session = SendspinPlaybackSession(self)
 
             await self.api.group.remove_client(member_player.api)
-        # Reset the cast-ready future *before* group add so a fatal error
-        # on a Cast-bridged member (e.g. AudioContext unsupported) raises
-        # PlayerCommandFailed out of set_members → frontend toast.
+        # Cast-only: reset futures before add so a fatal error on a Cast-bridged
+        # member (e.g. AudioContext unsupported) raises PlayerCommandFailed.
         bridge_manager = self._get_cast_bridge_manager()
         pending_cast: list[tuple[SendspinPlayer, asyncio.Future[None]]] = []
         try:
             for player_id in player_ids_to_add or []:
-                member_player = self.mass.players.get_player(player_id, True)
-                member_player = cast("SendspinPlayer", member_player)
-
-                cast_ready_future: asyncio.Future[None] | None = None
-                if bridge_manager is not None:
-                    bridge = bridge_manager.get_bridge_by_client_id(player_id)
-                    if bridge is not None:
-                        cast_ready_future = bridge.reset_cast_ready_future()
-
+                member_player = cast(
+                    "SendspinPlayer", self.mass.players.get_player(player_id, True)
+                )
+                if bridge_manager and (bridge := bridge_manager.get_bridge_by_client_id(player_id)):
+                    pending_cast.append((member_player, bridge.reset_cast_app_ready()))
                 await self.api.group.add_client(member_player.api)
-
-                if cast_ready_future is not None:
-                    pending_cast.append((member_player, cast_ready_future))
 
             if pending_cast:
                 try:
@@ -964,8 +953,8 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key="cast_audio_unsupported",
                     type=ConfigEntryType.ALERT,
-                    label="This device has incompatible Cast firmware that doesn't "
-                    "support Sendspin. Use the Native Cast protocol for this device.",
+                    label="Sendspin isn't supported on this Cast device. "
+                    "Use the standard Cast protocol instead.",
                     required=False,
                 )
             )

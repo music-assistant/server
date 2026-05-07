@@ -211,17 +211,7 @@ def _build_bridge_hello(cast_player: ChromecastPlayer, bridge_client_id: str) ->
 
 
 async def _apply_fatal_disconnect(client: SendspinClient, logger: logging.Logger) -> None:
-    """Tear down playback for a Cast device that has died unrecoverably.
-
-    aiosendspin's `detach_connection` does not auto-apply DisconnectBehaviour
-    for SHUTDOWN. The behaviour pref (auto-computed in `SendspinPlayer`) maps
-    UNGROUP to a no-op when the client is already solo, leaving the queue
-    running on a dead device. For fatal Cast errors we want a deterministic
-    outcome: solo → stop the queue, grouped → remove only the dead member.
-
-    :param client: The Sendspin client representing the dead Cast device.
-    :param logger: Logger for recording failures.
-    """
+    """Tear down playback for a dead Cast client: solo → stop, grouped → ungroup."""
     try:
         if len(client.group.clients) > 1:
             await client.ungroup()
@@ -270,9 +260,9 @@ class SendspinChromecastBridge:
         self._log_controller: SendspinCastController | None = None
         self._cast_app_was_active: bool = False
         self._cast_app_connected: bool = False
-        self._cast_ready_future: asyncio.Future[None] | None = None
+        self._cast_app_ready: asyncio.Future[None] | None = None
 
-    def reset_cast_ready_future(self) -> asyncio.Future[None]:
+    def reset_cast_app_ready(self) -> asyncio.Future[None]:
         """Return a fresh cast-ready future, cancelling any prior pending one.
 
         If the Sendspin Cast app is already running (either previously
@@ -280,29 +270,29 @@ class SendspinChromecastBridge:
         future that's already resolved so callers don't wait 30s for a
         "connected" status that won't fire again.
         """
-        prior = self._cast_ready_future
+        prior = self._cast_app_ready
         if prior is not None and not prior.done():
             prior.cancel()
         fut: asyncio.Future[None] = self.mass.loop.create_future()
         already_running = self.cast_player.cc.app_id == SENDSPIN_CAST_APP_ID
         if self._cast_app_connected or already_running:
             fut.set_result(None)
-            self._cast_ready_future = fut
+            self._cast_app_ready = fut
             return fut
-        self._cast_ready_future = fut
+        self._cast_app_ready = fut
         return fut
 
-    def ensure_cast_ready_future(self) -> asyncio.Future[None]:
+    def ensure_cast_app_ready(self) -> asyncio.Future[None]:
         """Return the current future, creating one only if missing.
 
         Leaves a resolved future intact so a stream-start fired after a
         successful connect doesn't replace it with a pending one that
         nothing will resolve.
         """
-        fut = self._cast_ready_future
+        fut = self._cast_app_ready
         if fut is None:
             fut = self.mass.loop.create_future()
-            self._cast_ready_future = fut
+            self._cast_app_ready = fut
         return fut
 
     @property
@@ -360,9 +350,9 @@ class SendspinChromecastBridge:
         self.cast_player.on_app_status_changed = None
         self._cast_app_connected = False
 
-        if self._cast_ready_future is not None and not self._cast_ready_future.done():
-            self._cast_ready_future.cancel()
-        self._cast_ready_future = None
+        if self._cast_app_ready is not None and not self._cast_app_ready.done():
+            self._cast_app_ready.cancel()
+        self._cast_app_ready = None
 
         if self._log_controller is not None:
             self.cast_player.cc.unregister_handler(self._log_controller)
@@ -397,10 +387,11 @@ class SendspinChromecastBridge:
         self.mass.config.set_raw_player_config_value(
             self._bridge_client_id, CONF_CAST_AUDIO_UNSUPPORTED, True
         )
-        self._resolve_cast_ready_future(
+        # Bubbles up to the frontend toast via play_media / set_members awaiting this future.
+        self._resolve_cast_app_ready(
             PlayerCommandFailed(
-                f"{self.cast_player.display_name} has incompatible Cast firmware that "
-                "doesn't support Sendspin. Use the Native Cast protocol for this device."
+                f"Sendspin isn't supported on {self.cast_player.display_name}. "
+                "Use the standard Cast protocol instead."
             )
         )
 
@@ -411,14 +402,14 @@ class SendspinChromecastBridge:
     def _mark_cast_app_connected(self) -> None:
         """Mark the Cast app as connected and resolve any pending future."""
         self._cast_app_connected = True
-        self._resolve_cast_ready_future(None)
+        self._resolve_cast_app_ready(None)
 
-    def _resolve_cast_ready_future(self, error: BaseException | None) -> None:
+    def _resolve_cast_app_ready(self, error: BaseException | None) -> None:
         """Resolve the cast-ready future if still pending.
 
         :param error: Exception to set on the future, or None for success.
         """
-        fut = self._cast_ready_future
+        fut = self._cast_app_ready
         if fut is None or fut.done():
             return
         if error is None:
@@ -453,7 +444,8 @@ class SendspinChromecastBridge:
             if client.is_connected:
                 client.detach_connection(GoodbyeReason.SHUTDOWN)
             self.mass.create_task(_apply_fatal_disconnect(client, self.logger))
-        self._resolve_cast_ready_future(
+        # Bubbles up to the frontend toast via play_media / set_members awaiting this future.
+        self._resolve_cast_app_ready(
             PlayerCommandFailed(
                 f"Cast app on {self.cast_player.display_name} stopped before reporting ready."
             )
@@ -472,7 +464,7 @@ class SendspinChromecastBridge:
             self.cast_player.display_name,
             request.connection_reason,
         )
-        self.ensure_cast_ready_future()
+        self.ensure_cast_app_ready()
         if not self.cast_player.available:
             self.logger.warning("Cannot start Sendspin stream for %s: player not available")
             return
