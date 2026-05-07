@@ -284,6 +284,15 @@ class PluginProvider(Provider):
             return await self.get_playlist(prov_item_id)
         raise NotImplementedError
 
+    async def on_item_updated(self, item: MediaItemType) -> None:
+        """
+        Handle callback when a library item's metadata has been updated.
+
+        Plugins can implement this to sync changes to their own storage.
+
+        :param item: The updated library item.
+        """
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.

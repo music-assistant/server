@@ -208,7 +208,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # notify providers of the update so they can sync their own storage
         for prov_mapping in library_item.provider_mappings:
             if provider := self.mass.get_provider(prov_mapping.provider_instance):
-                provider = cast("MusicProvider", provider)
+                provider = cast("MusicProvider | PluginProvider", provider)
                 await provider.on_item_updated(library_item)
         return library_item
 
@@ -389,7 +389,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         prov = cast("MusicProvider", prov)
         if ProviderFeature.SEARCH not in prov.supported_features:
             return []
-        if not prov.library_supported(self.media_type):
+        if not self.mass.music.library_supported(prov, self.media_type):
             # assume library supported also means that this mediatype is supported
             return []
         searchresult = await prov.search(

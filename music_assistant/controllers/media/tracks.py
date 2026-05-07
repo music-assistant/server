@@ -260,7 +260,7 @@ class TracksController(MediaControllerBase[Track]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not provider.library_supported(MediaType.TRACK):
+            if not self.mass.music.library_supported(provider, MediaType.TRACK):
                 continue
             result.extend(
                 prov_item
@@ -505,7 +505,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.TRACK):
+            if not self.mass.music.library_supported(provider, MediaType.TRACK):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
