@@ -462,7 +462,10 @@ class AudioAnalysisController:
 
         :param aa_domain: AA provider domain to query.
         """
-        provider = self.mass.get_provider(aa_domain, provider_type=ProviderType.AUDIO_ANALYSIS)
+        provider = self.mass.get_provider(
+            aa_domain,
+            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
+        )
         if provider is None:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
         extras = await provider.get_provider_status()
@@ -489,7 +492,10 @@ class AudioAnalysisController:
         :param limit: Max results per page.
         :param offset: Pagination offset (in DB rows).
         """
-        provider = self.mass.get_provider(aa_domain, provider_type=ProviderType.AUDIO_ANALYSIS)
+        provider = self.mass.get_provider(
+            aa_domain,
+            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
+        )
         if provider is None:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
@@ -559,7 +565,10 @@ class AudioAnalysisController:
         :param limit: Max items per page.
         :param offset: Pagination offset.
         """
-        provider = self.mass.get_provider(aa_domain, provider_type=ProviderType.AUDIO_ANALYSIS)
+        provider = self.mass.get_provider(
+            aa_domain,
+            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
+        )
         if provider is None:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
