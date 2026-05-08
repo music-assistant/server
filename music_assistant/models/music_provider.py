@@ -398,7 +398,8 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
-        """Retrieve a dynamic list of similar artists based on the provided artist.
+        """
+        Retrieve a dynamic list of similar artists based on the provided artist.
 
         Only called if provider supports ProviderFeature.SIMILAR_ARTISTS.
         """
