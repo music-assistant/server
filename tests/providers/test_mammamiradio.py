@@ -48,7 +48,6 @@ def mass_mock() -> MagicMock:
     mass.http_session = MagicMock()
     # default: every request succeeds with HTTP 200
     mass.http_session.get = MagicMock(return_value=_make_response_ctx(200))
-    mass.http_session.head = MagicMock(return_value=_make_response_ctx(200))
     return mass
 
 
@@ -270,27 +269,27 @@ async def test_get_stream_details_uses_get_not_head_for_reachability(
 ) -> None:
     """Reachability check uses GET so Icecast/uvicorn (which 405 on HEAD) works."""
     mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    mass_mock.http_session.head = MagicMock()
     details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
     assert details.path == "http://localhost:8000/stream"
     mass_mock.http_session.get.assert_called_once()
     mass_mock.http_session.head.assert_not_called()
 
 
-async def test_get_stream_details_tolerates_head_405_regression(
+async def test_get_stream_details_tolerates_405_from_stream_endpoint(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Regression: a HEAD-405 server (Icecast/uvicorn) must not raise.
+    """Regression: a 405 from the stream endpoint must not raise.
 
-    Locks codex bot's PR #3836 P1 finding: prior HEAD probe false-positived
-    on valid streams that respond 200 to GET but 405 to HEAD. The fix uses
-    GET; this test simulates a 405-on-HEAD server by configuring HEAD to
-    return 405 while GET returns 200, and asserts playback succeeds.
+    Locks codex bot's PR #3836 P1 finding plus the independent review that
+    flagged the original >=400 condition would still false-positive on a
+    valid Icecast mount that rejects bare GET (expecting Icy headers). The
+    provider must treat 405 as reachable so ffmpeg can connect with the
+    correct headers and play the stream.
     """
-    mass_mock.http_session.head = MagicMock(return_value=_make_response_ctx(405))
-    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(405))
     details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
     assert details.path == "http://localhost:8000/stream"
-    mass_mock.http_session.head.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

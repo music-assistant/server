@@ -190,7 +190,10 @@ class MammamiradioProvider(MusicProvider):
             async with self.mass.http_session.get(
                 stream_path, timeout=timeout, allow_redirects=True
             ) as response:
-                if response.status >= 400:
+                # 405 is treated as reachable: some Icecast configurations reject
+                # plain GET on the stream mount (expecting Icy headers) and reply
+                # 405; ffmpeg will still play the stream correctly.
+                if response.status >= 400 and response.status != 405:
                     msg = (
                         f"mammamiradio: stream endpoint returned HTTP "
                         f"{response.status} at {stream_path}"
