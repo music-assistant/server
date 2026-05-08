@@ -16,6 +16,7 @@ from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
+    CONF_ENABLE_UI_INTEGRATION,
     CONF_HANDOFF_HEARTBEAT_INTERVAL,
     CONF_MASS_PLAYER_ID,
     CONF_OUTPUT_BIT_DEPTH,
@@ -170,6 +171,11 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
 
     # Own-mode-only entries are hidden when borrowing.
     own_hidden = borrowing
+    # Stream-only UI integration toggle: hide in handoff (it would have no
+    # effect there). The form re-renders when CONF_PLAYBACK_MODE changes,
+    # so reading values[CONF_PLAYBACK_MODE] gives the live selection.
+    selected_mode = cast("str | None", values.get(CONF_PLAYBACK_MODE)) or PLAYBACK_MODE_STREAM
+    ui_integration_hidden = selected_mode == PLAYBACK_MODE_HANDOFF
     # Token field requirement: in own mode it's only required when there's no
     # alternative path (no stored x_token to refresh from).
     token_required = not borrowing and not bool(values.get(CONF_X_TOKEN))
@@ -319,7 +325,6 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
             label="Device name in Yandex Music",
             description="How this device appears in the Yandex Music app.",
             default_value=DEFAULT_DISPLAY_NAME,
-            advanced=True,
         ),
         ConfigEntry(
             key=CONF_PLAYBACK_MODE,
@@ -352,6 +357,28 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
                 ConfigValueOption("Stream (recommended)", PLAYBACK_MODE_STREAM),
                 ConfigValueOption("Handoff (experimental)", PLAYBACK_MODE_HANDOFF),
             ],
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_UI_INTEGRATION,
+            type=ConfigEntryType.BOOLEAN,
+            label="Show full player card in MA UI (experimental)",
+            description=(
+                "Stream mode only. When enabled, the plugin publishes a "
+                "frontend-only fake queue under its own id and stamps the "
+                "player's output_format so MA's UI renders the seek bar, "
+                "signal-chain panel, and quality indicator — the same player "
+                "card you get when MA streams its own queue.\n\n"
+                "Off by default because the integration relies on private "
+                "frontend behaviours that may break across MA versions, can "
+                "interfere with 'Play Now' on local content while this source "
+                "is active (the click is routed to a queue id the backend "
+                "doesn't own, and errors), and may cause brief signal-chain "
+                "flicker at track start before the source format is known.\n\n"
+                "Ignored in handoff mode — MA already owns a real queue there."
+            ),
+            default_value=False,
+            advanced=True,
+            hidden=ui_integration_hidden,
         ),
         ConfigEntry(
             key=CONF_HANDOFF_HEARTBEAT_INTERVAL,

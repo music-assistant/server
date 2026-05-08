@@ -27,6 +27,7 @@ CONF_OUTPUT_SAMPLE_RATE: Final[str] = "output_sample_rate"
 CONF_OUTPUT_BIT_DEPTH: Final[str] = "output_bit_depth"
 CONF_PLAYBACK_MODE: Final[str] = "playback_mode"
 CONF_HANDOFF_HEARTBEAT_INTERVAL: Final[str] = "handoff_heartbeat_interval"
+CONF_ENABLE_UI_INTEGRATION: Final[str] = "enable_ui_integration"
 
 # Playback mode values
 # - stream: default — plugin owns the audio source and streams PCM via PluginSource
