@@ -7,7 +7,6 @@ import contextlib
 import dataclasses
 import os
 import time
-from collections.abc import Mapping
 from math import inf
 from typing import TYPE_CHECKING, Any
 
@@ -339,119 +338,6 @@ class AudioAnalysisController:
         if not row:
             return None
         return int(row["analysis_version"])
-
-    async def get_audio_analysis_count(
-        self,
-        aa_provider_domain: str,
-        media_type: MediaType = MediaType.TRACK,
-    ) -> int:
-        """
-        Count audio_analysis rows for a given aa_provider_domain.
-
-        :param aa_provider_domain: Domain of the AA provider whose rows to count.
-        :param media_type: The media type to count rows for.
-        """
-        return await self.mass.music.database.get_count_from_query(
-            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
-            {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
-        )
-
-    async def get_audio_analysis_rows(
-        self,
-        aa_provider_domain: str,
-        media_type: MediaType = MediaType.TRACK,
-        limit: int = 0,
-        offset: int = 0,
-    ) -> list[Mapping[str, Any]]:
-        """
-        Return audio_analysis rows for a given aa_provider_domain.
-
-        :param aa_provider_domain: Domain of the AA provider whose rows to return.
-        :param media_type: The media type to filter rows by.
-        :param limit: Max rows to return. 0 (default) means unbounded.
-        :param offset: Pagination offset.
-        """
-        return await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS,
-            {
-                "aa_provider_domain": aa_provider_domain,
-                "media_type": media_type.value,
-            },
-            limit=limit,
-            offset=offset,
-        )
-
-    async def get_merged_audio_analysis_rows(
-        self,
-        primary_aa_domain: str,
-        media_type: MediaType = MediaType.TRACK,
-    ) -> list[tuple[str, str, AudioAnalysisData]]:
-        """
-        Return one merged AudioAnalysisData per track present in primary_aa_domain.
-
-        :param primary_aa_domain: AA provider domain that defines the universe of
-            tracks to return. Only (item_id, provider) pairs with at least one
-            row in this domain are emitted. Rows from currently-unavailable AA
-            providers are skipped during the merge (matches `get_audio_analysis`).
-        :param media_type: The media type to filter on.
-        :returns: List of (item_id, provider, merged_analysis) tuples. Order is
-            grouped by (item_id, provider) but otherwise unspecified.
-        """
-        # EXISTS subquery filters at SQL level so we never load rows for tracks
-        # the primary AA domain doesn't track. ORDER BY (item_id, provider, ts)
-        # lets us group-and-merge in one pass.
-        query = (
-            f"SELECT item_id, provider, aa_provider_domain, analysis_data "
-            f"FROM {DB_TABLE_AUDIO_ANALYSIS} aa1 "
-            f"WHERE aa1.media_type = :media_type "
-            f"AND EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa2 "
-            f"    WHERE aa2.item_id = aa1.item_id "
-            f"    AND aa2.provider = aa1.provider "
-            f"    AND aa2.aa_provider_domain = :primary_aa_domain "
-            f"    AND aa2.media_type = :media_type"
-            f") "
-            f"ORDER BY aa1.item_id, aa1.provider, aa1.timestamp_created ASC"
-        )
-        rows = await self.mass.music.database.get_rows_from_query(
-            query,
-            params={"media_type": media_type.value, "primary_aa_domain": primary_aa_domain},
-            limit=0,
-        )
-
-        available_aa_domains = {
-            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
-        }
-
-        results: list[tuple[str, str, AudioAnalysisData]] = []
-        current_key: tuple[str, str] | None = None
-        current_merged = AudioAnalysisData()
-        current_dirty = False
-
-        # Invariant: rows are ordered by (item_id, provider, timestamp_created ASC) per the SQL above.
-        # The continue-before-key-update pattern below relies on contiguous (item_id, provider) groups.
-        for row in rows:
-            if row["aa_provider_domain"] not in available_aa_domains:
-                continue
-            key = (row["item_id"], row["provider"])
-            if key != current_key:
-                if current_dirty and current_key is not None:
-                    results.append((current_key[0], current_key[1], current_merged))
-                current_key = key
-                current_merged = AudioAnalysisData()
-                current_dirty = False
-            try:
-                row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-            except (ValueError, TypeError, KeyError):
-                continue
-            current_merged.update(row_data)
-            current_dirty = True
-
-        if current_dirty and current_key is not None:
-            results.append((current_key[0], current_key[1], current_merged))
-
-        return results
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""

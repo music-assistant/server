@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import math
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -16,7 +15,6 @@ import torch
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
-from music_assistant.helpers.json import json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -358,7 +356,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_model: Any = None
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
-        self._unregister_handles: list[Callable[[], None]] = []
         self._clap_load_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
@@ -389,18 +386,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             "CLAP model loaded; %d prompt pairs ready",
             len(self._clap_prompt_order),
         )
-
-    async def loaded_in_mass(self) -> None:
-        """Register API commands once the provider is live."""
-        self._unregister_handles = [
-            self.mass.register_api_command("sonic_analysis/status", self._handle_status),
-            self.mass.register_api_command(
-                "sonic_analysis/analyzed_tracks", self._handle_analyzed_tracks
-            ),
-            self.mass.register_api_command(
-                "sonic_analysis/export_analysis", self._handle_export_analysis
-            ),
-        ]
 
     def _load_clap(
         self,
@@ -446,151 +431,15 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         return cached_embeddings
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Release the CLAP model and unregister API handlers."""
+        """Release the CLAP model."""
         if self._clap_load_task is not None and not self._clap_load_task.done():
             self._clap_load_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._clap_load_task
         self._clap_load_task = None
-        for unregister in self._unregister_handles:
-            try:
-                unregister()
-            except Exception as err:
-                self.logger.debug("API command unregister failed: %s", err)
-        self._unregister_handles.clear()
         self._clap_model = None
         self._clap_text_embeddings = None
         await super().unload(is_removed)
-
-    async def _handle_status(self) -> dict[str, Any]:
-        """Return a snapshot of the provider's runtime state."""
-        analyzed_tracks_count = await self.mass.streams.audio_analysis.get_audio_analysis_count(
-            self.domain
-        )
-        return {
-            "provider_loaded": True,
-            "clap_model_loaded": self._clap_model is not None,
-            "analyzed_tracks_count": analyzed_tracks_count,
-            "analysis_version": self.analysis_version,
-        }
-
-    async def _handle_analyzed_tracks(
-        self,
-        search: str = "",
-        limit: int = 50,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        """Return a paginated list of tracks analyzed by this provider.
-
-        :param search: Optional case-insensitive substring filter on item_id.
-            Filtering is page-scoped: only rows in the current DB page are searched.
-        :param limit: Max results per page.
-        :param offset: Pagination offset.
-        """
-        aa = self.mass.streams.audio_analysis
-        total = await aa.get_audio_analysis_count(self.domain)
-        # Fetch only the rows for this page; dedup on (item_id, provider) handles
-        # the rare case of multiple analysis versions per track within the page.
-        rows = await aa.get_audio_analysis_rows(self.domain, limit=limit, offset=offset)
-        seen: set[tuple[str, str]] = set()
-        entries: list[tuple[str, str]] = []
-        for row in rows:
-            key = (row["item_id"], row["provider"])
-            if key in seen:
-                continue
-            seen.add(key)
-            entries.append(key)
-
-        if search:
-            q = search.lower()
-            entries = [(iid, prov) for iid, prov in entries if q in iid.lower()]
-
-        async def _resolve(item_id: str, provider: str) -> dict[str, Any]:
-            try:
-                t = await self.mass.music.tracks.get(item_id, provider)
-                artists = ", ".join(a.name for a in getattr(t, "artists", []) or [])
-                return {"item_id": item_id, "name": t.name, "artist": artists}
-            except Exception as err:
-                self.logger.debug("Failed to resolve track %s/%s: %s", provider, item_id, err)
-                return {"item_id": item_id, "name": "(unknown)", "artist": ""}
-
-        items = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries]))
-        return {"total": total, "offset": offset, "limit": limit, "items": items}
-
-    async def _handle_export_analysis(
-        self,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        """Return a paginated dump of analyzed tracks with their scalar fields.
-
-        :param limit: Max tracks per page.
-        :param offset: Pagination offset.
-        """
-        aa = self.mass.streams.audio_analysis
-        total = await aa.get_audio_analysis_count(self.domain)
-        rows = await aa.get_audio_analysis_rows(self.domain, limit=limit, offset=offset)
-
-        export_fields = [
-            "bpm",
-            "key",
-            "mode",
-            "energy",
-            "danceability",
-            "loudness_integrated",
-            "loudness_range",
-            "true_peak",
-            "brightness",
-            "harmonic_complexity",
-            "roughness",
-            "rhythmic_regularity",
-            "duration",
-            "instrumentalness",
-            "valence",
-            "arousal",
-            "acousticness",
-        ]
-
-        page_entries: list[tuple[str, str, dict[str, Any]]] = []
-        for row in rows:
-            try:
-                data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-            except (ValueError, TypeError, KeyError):
-                continue
-            fields: dict[str, Any] = {}
-            for field_name in export_fields:
-                val = getattr(data, field_name, None)
-                if val is not None:
-                    fields[field_name] = round(val, 4) if isinstance(val, float) else val
-            extra_data = data.extra_data or {}
-            fields["has_clap_embedding"] = isinstance(
-                extra_data.get(EXTRA_DATA_CLAP_EMBEDDING), list
-            )
-            stripped = {k: v for k, v in extra_data.items() if k != EXTRA_DATA_CLAP_EMBEDDING}
-            if stripped:
-                fields["extra_data"] = stripped
-            page_entries.append((row["item_id"], row["provider"], fields))
-
-        async def _resolve(item_id: str, provider: str, fields: dict[str, Any]) -> dict[str, Any]:
-            entry: dict[str, Any] = {
-                "item_id": item_id,
-                "provider": provider,
-                "name": "(unknown)",
-                "artist": "",
-            }
-            try:
-                track = await self.mass.music.tracks.get(item_id, provider)
-                entry["name"] = track.name
-                entry["artist"] = ", ".join(a.name for a in getattr(track, "artists", []) or [])
-            except Exception as err:
-                self.logger.debug("Failed to resolve track %s/%s: %s", provider, item_id, err)
-            entry.update(fields)
-            return entry
-
-        items = list(
-            await asyncio.gather(*[_resolve(iid, prov, f) for iid, prov, f in page_entries])
-        )
-        return {"total": total, "offset": offset, "limit": limit, "items": items}
 
     async def _start_analysis(
         self,
