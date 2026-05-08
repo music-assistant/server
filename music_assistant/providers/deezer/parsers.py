@@ -48,7 +48,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
-from .helpers import create_virtual_playlist
+from .helpers import (
+    FLOW_CONFIG_PREFIX,
+    FLOW_PLAYLIST_ID,
+    SMART_TRACKLIST_PREFIX,
+    create_virtual_playlist,
+)
 
 if TYPE_CHECKING:
     from deezer_python_gql.generated.fragments import (
@@ -79,11 +84,6 @@ if TYPE_CHECKING:
 
 # Deezer CDN image URL pattern
 DEEZER_CDN_IMAGE = "https://e-cdns-images.dzcdn.net/images"
-
-# Virtual playlist ID prefixes (imported by other modules)
-FLOW_PLAYLIST_ID = "flow"
-FLOW_CONFIG_PREFIX = "flow_config_"
-SMART_TRACKLIST_PREFIX = "smart_tracklist_"
 
 
 # -- GQL model parsers --
@@ -648,16 +648,14 @@ def parse_recently_played_edges(
         elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow):
             cover = node.cover.urls[0] if node.cover and node.cover.urls else None
             items.append(
-                create_virtual_playlist(
-                    provider, FLOW_PLAYLIST_ID, node.title, image_url=cover, is_dynamic=True
-                )
+                create_virtual_playlist(provider, FLOW_PLAYLIST_ID, node.title, image_url=cover)
             )
         elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlowConfig):
             cover = get_flow_config_image(node)
             playlist_id = f"{FLOW_CONFIG_PREFIX}{node.id}"
             items.append(
                 create_virtual_playlist(
-                    provider, playlist_id, f"Flow: {node.title}", image_url=cover, is_dynamic=True
+                    provider, playlist_id, f"Flow: {node.title}", image_url=cover
                 )
             )
         elif isinstance(node, GetRecentlyPlayedMeRecentlyPlayedEdgesNodeSmartTracklist):
@@ -668,7 +666,6 @@ def parse_recently_played_edges(
                     f"{SMART_TRACKLIST_PREFIX}{node.id}",
                     node.title,
                     image_url=cover,
-                    is_dynamic=True,
                 )
             )
     return items

@@ -25,11 +25,20 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
-from .helpers import create_virtual_playlist
-from .parsers import (
+from .helpers import (
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
+    PERSONAL_SONGS_PLAYLIST_ID,
+    RECOMMENDED_TRACKS_PLAYLIST_ID,
+    SHAKER_CURATED_PREFIX,
+    SHAKER_MIX_COVER,
+    SHAKER_PREFIX,
     SMART_TRACKLIST_PREFIX,
+    TOP_CHARTS_PLAYLIST_ID,
+    USER_TOP_TRACKS_PLAYLIST_ID,
+    create_virtual_playlist,
+)
+from .parsers import (
     get_flow_config_image,
     get_gw_item_image,
     parse_album,
@@ -52,15 +61,6 @@ if TYPE_CHECKING:
     )
 
     from .provider import DeezerProvider
-
-# Virtual playlist IDs
-RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
-TOP_CHARTS_PLAYLIST_ID = "top_charts"
-USER_TOP_TRACKS_PLAYLIST_ID = "user_top_tracks"
-SHAKER_PREFIX = "shaker_"
-SHAKER_CURATED_PREFIX = "shaker_curated_"
-SHAKER_MIX_COVER = "https://cdn-assets.dzcdn.net/shaker/_next/static/media/group_mix.d986951b.svg"
-PERSONAL_SONGS_PLAYLIST_ID = "personal_songs"
 
 AUDIOBOOKS_CHANNEL = "channels/audiobooks"
 
@@ -204,9 +204,7 @@ class DeezerBrowseManager:
                 name="Genres",
             ),
             create_virtual_playlist(self.provider, USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks"),
-            create_virtual_playlist(
-                self.provider, RECOMMENDED_TRACKS_PLAYLIST_ID, "Hot Tracks", is_dynamic=True
-            ),
+            create_virtual_playlist(self.provider, RECOMMENDED_TRACKS_PLAYLIST_ID, "Hot Tracks"),
             BrowseFolder(
                 item_id="your_top_artists",
                 provider=self.instance_id,
@@ -291,7 +289,6 @@ class DeezerBrowseManager:
                 f"{FLOW_CONFIG_PREFIX}{edge.node.id}",
                 f"Flow: {edge.node.title}",
                 image_url=get_flow_config_image(edge.node),
-                is_dynamic=True,
             )
             for edge in edges
             if edge.node is not None
@@ -338,7 +335,7 @@ class DeezerBrowseManager:
                     break
         return [
             create_virtual_playlist(
-                self.provider, TOP_CHARTS_PLAYLIST_ID, "Top Tracks", image_url=charts_cover
+                self.provider, TOP_CHARTS_PLAYLIST_ID, "Top Charts", image_url=charts_cover
             ),
             BrowseFolder(
                 item_id="top_albums",
@@ -451,7 +448,6 @@ class DeezerBrowseManager:
                     f"{SHAKER_PREFIX}{group_id}",
                     f"{group.name} - Mix",
                     image_url=SHAKER_MIX_COVER,
-                    is_dynamic=True,
                 )
             )
         if group.curated_tracklist:
@@ -466,7 +462,6 @@ class DeezerBrowseManager:
                     f"{SHAKER_CURATED_PREFIX}{group_id}",
                     f"{group.name} - Playlist",
                     image_url=cover_url,
-                    is_dynamic=True,
                 )
             )
         return items
@@ -581,9 +576,7 @@ class DeezerBrowseManager:
                 else None
             )
             made_for_me_items.append(
-                create_virtual_playlist(
-                    self.provider, FLOW_PLAYLIST_ID, "Flow", image_url=cover, is_dynamic=True
-                )
+                create_virtual_playlist(self.provider, FLOW_PLAYLIST_ID, "Flow", image_url=cover)
             )
         made_for_me_items.extend(await self._get_smart_tracklist_playlists())
         if made_for_me_items:
@@ -723,12 +716,10 @@ class DeezerBrowseManager:
         """Return a virtual playlist, or None if the ID is not virtual."""
         if prov_playlist_id == FLOW_PLAYLIST_ID:
             cover = await self._get_flow_cover()
-            return create_virtual_playlist(
-                self.provider, FLOW_PLAYLIST_ID, "Flow", image_url=cover, is_dynamic=True
-            )
+            return create_virtual_playlist(self.provider, FLOW_PLAYLIST_ID, "Flow", image_url=cover)
         if prov_playlist_id == RECOMMENDED_TRACKS_PLAYLIST_ID:
             return create_virtual_playlist(
-                self.provider, RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended Tracks", is_dynamic=True
+                self.provider, RECOMMENDED_TRACKS_PLAYLIST_ID, "Hot Tracks"
             )
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             return create_virtual_playlist(self.provider, TOP_CHARTS_PLAYLIST_ID, "Top Charts")
@@ -745,9 +736,7 @@ class DeezerBrowseManager:
             )
             name = f"Flow: {flow_config.title}" if flow_config else f"Flow: {config_id}"
             cover = get_flow_config_image(flow_config) if flow_config else None
-            return create_virtual_playlist(
-                self.provider, prov_playlist_id, name, image_url=cover, is_dynamic=True
-            )
+            return create_virtual_playlist(self.provider, prov_playlist_id, name, image_url=cover)
         if prov_playlist_id.startswith(SMART_TRACKLIST_PREFIX):
             tracklist_id = prov_playlist_id.removeprefix(SMART_TRACKLIST_PREFIX)
             tracklist = await self.provider.gql_client.get_smart_tracklist(
@@ -760,7 +749,10 @@ class DeezerBrowseManager:
                 else None
             )
             return create_virtual_playlist(
-                self.provider, prov_playlist_id, name, image_url=cover, is_dynamic=True
+                self.provider,
+                prov_playlist_id,
+                name,
+                image_url=cover,
             )
         if prov_playlist_id.startswith(SHAKER_CURATED_PREFIX):
             group_id = prov_playlist_id.removeprefix(SHAKER_CURATED_PREFIX)
@@ -779,7 +771,10 @@ class DeezerBrowseManager:
             ):
                 cover_url = group.curated_tracklist.picture.urls[0]
             return create_virtual_playlist(
-                self.provider, prov_playlist_id, name, image_url=cover_url, is_dynamic=True
+                self.provider,
+                prov_playlist_id,
+                name,
+                image_url=cover_url,
             )
         if prov_playlist_id.startswith(SHAKER_PREFIX):
             group_id = prov_playlist_id.removeprefix(SHAKER_PREFIX)
@@ -790,7 +785,7 @@ class DeezerBrowseManager:
             )
             name = f"{group.name} - Mix" if group else f"Shaker {group_id}"
             return create_virtual_playlist(
-                self.provider, prov_playlist_id, name, image_url=SHAKER_MIX_COVER, is_dynamic=True
+                self.provider, prov_playlist_id, name, image_url=SHAKER_MIX_COVER
             )
         return None
 
@@ -848,7 +843,6 @@ class DeezerBrowseManager:
                         f"{SMART_TRACKLIST_PREFIX}{edge.node.id}",
                         edge.node.title,
                         image_url=cover,
-                        is_dynamic=True,
                     )
                 )
         return playlists
