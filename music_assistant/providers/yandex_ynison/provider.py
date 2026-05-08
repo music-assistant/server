@@ -25,6 +25,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from ya_passport_auth import SecretStr
 
@@ -79,7 +80,6 @@ from .ynison_client import (
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -1168,23 +1168,29 @@ class YandexYnisonProvider(PluginProvider):
         bypass that controller (audio comes from `PluginSource.get_audio_stream`),
         so MA never gets a chance to fill it in. Without this, the panel
         either shows nothing useful or stale info from a previous source.
+
+        MA core stores an `AudioFormat` instance here (see
+        `controllers/streams/audio.py:get_player_filter_params`), and
+        `DSPDetails.output_format` is typed `AudioFormat | None`, so we
+        store a real `AudioFormat` too — a plain dict would silently
+        violate the typed contract on the downstream readers
+        (`controllers/streams/audio.py`, `player_queues.py`).
+        Use a fresh copy because `AudioFormat` is mutable and MA's
+        FFmpeg can mutate `codec_type` in place.
         """
         if not self._ui_integration_active:
             return
         player = self.mass.players.get_player(player_id)
         if player is None:
             return
-        # Use a fresh AudioFormat copy — `extra_data` may end up shared
-        # with downstream code that mutates `codec_type`, just like
-        # `PluginSource.audio_format` itself.
         fmt = self._normalized_format
-        player.extra_data["output_format"] = {
-            "content_type": fmt.content_type.value,
-            "codec_type": fmt.content_type.value,
-            "sample_rate": fmt.sample_rate,
-            "bit_depth": fmt.bit_depth,
-            "channels": fmt.channels,
-        }
+        player.extra_data["output_format"] = AudioFormat(
+            content_type=fmt.content_type,
+            codec_type=fmt.content_type,
+            sample_rate=fmt.sample_rate,
+            bit_depth=fmt.bit_depth,
+            channels=fmt.channels,
+        )
         self.mass.players.trigger_player_update(player_id)
 
     def _clear_player_output_format(self, player_id: str | None) -> None:
