@@ -67,7 +67,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         # Try music providers mapped to the reference artist first.
         for prov_mapping in ref_item.provider_mappings:
             prov = self.mass.get_provider(prov_mapping.provider_instance)
-            if prov is None or not isinstance(prov, MusicProvider):
+            if not prov or not prov.available or not isinstance(prov, MusicProvider):
                 continue
             if ProviderFeature.SIMILAR_ARTISTS not in prov.supported_features:
                 continue
