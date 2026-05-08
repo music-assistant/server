@@ -63,11 +63,15 @@ VIRTUAL_PLAYLIST_TYPES: dict[str, VirtualPlaylistMeta] = {
 def get_virtual_playlist_meta(item_id: str) -> VirtualPlaylistMeta | None:
     """Look up canonical metadata for a virtual playlist by its item_id.
 
-    Tries exact match first, then prefix match.
+    Tries exact match first, then longest prefix match.
     """
     if item_id in VIRTUAL_PLAYLIST_TYPES:
         return VIRTUAL_PLAYLIST_TYPES[item_id]
-    for prefix, meta in VIRTUAL_PLAYLIST_TYPES.items():
+    # Sort by prefix length descending so longer prefixes match first
+    # (e.g. "shaker_curated_" before "shaker_")
+    for prefix, meta in sorted(
+        VIRTUAL_PLAYLIST_TYPES.items(), key=lambda x: len(x[0]), reverse=True
+    ):
         if prefix.endswith("_") and item_id.startswith(prefix):
             return meta
     return None

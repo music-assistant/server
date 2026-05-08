@@ -6,10 +6,13 @@ infrastructure, and all track-fetching methods for virtual playlists.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Coroutine, Sequence
+from typing import TYPE_CHECKING
 
-from deezer_python_gql.generated.enums import MusicTogetherSuggestedTracklistMoodInput
+from deezer_python_gql.generated.enums import (
+    MusicTogetherRefreshSuggestedTracklistMoodInput,
+    MusicTogetherSuggestedTracklistMoodInput,
+)
 from deezer_python_gql.generated.get_made_for_me import (
     GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist,
 )
@@ -80,7 +83,11 @@ class DeezerBrowseManager:
     # -- Browse routing --
 
     async def browse(
-        self, path: str, base_browse: Any
+        self,
+        path: str,
+        base_browse: Callable[
+            [str], Coroutine[None, None, Sequence[MediaItemType | ItemMapping | BrowseFolder]]
+        ],
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse Deezer content.
 
@@ -300,25 +307,44 @@ class DeezerBrowseManager:
         :param category: Either "moods" or "genres".
         """
         is_moods = category == "moods"
-        flow_configs = await self.provider.gql_client.get_flow_configs(
-            moods_first=50 if is_moods else 0,
-            genres_first=0 if is_moods else 50,
-        )
-        if not flow_configs or not flow_configs.flow_configs:
-            return []
-        edges = (
-            flow_configs.flow_configs.moods.edges
-            if is_moods
-            else flow_configs.flow_configs.genres.edges
-        )
-        return self._flow_configs_to_playlists(edges)
+        all_edges: list[
+            GetFlowConfigsMeFlowConfigsMoodsEdges | GetFlowConfigsMeFlowConfigsGenresEdges
+        ] = []
+        cursor: str | None = None
+        while True:
+            flow_configs = await self.provider.gql_client.get_flow_configs(
+                moods_first=50 if is_moods else 0,
+                moods_after=cursor if is_moods else None,
+                genres_first=0 if is_moods else 50,
+                genres_after=None if is_moods else cursor,
+            )
+            if not flow_configs or not flow_configs.flow_configs:
+                break
+            connection = (
+                flow_configs.flow_configs.moods if is_moods else flow_configs.flow_configs.genres
+            )
+            all_edges.extend(connection.edges)
+            if not connection.page_info.has_next_page:
+                break
+            cursor = connection.page_info.end_cursor
+        return self._flow_configs_to_playlists(all_edges)
 
     async def _browse_all_flows(self) -> list[Playlist]:
         """Fetch all available Deezer flows via search and return as virtual playlists."""
-        result = await self.provider.gql_client.search_flows(query="flow", first=100)
-        if not result:
-            return []
-        return self._flow_configs_to_playlists(result.results.flow_configs.edges)
+        all_edges: list[SearchFlowsSearchResultsFlowConfigsEdges] = []
+        cursor: str | None = None
+        while True:
+            result = await self.provider.gql_client.search_flows(
+                query="flow", first=100, after=cursor
+            )
+            if not result:
+                break
+            edges = result.results.flow_configs.edges
+            all_edges.extend(edges)
+            if not result.results.flow_configs.page_info.has_next_page:
+                break
+            cursor = result.results.flow_configs.page_info.end_cursor
+        return self._flow_configs_to_playlists(all_edges)
 
     # -- Explore --
 
@@ -408,27 +434,34 @@ class DeezerBrowseManager:
 
     async def _browse_shaker_root(self, path: str) -> list[BrowseFolder]:
         """Return Shaker (Music Together) groups as browse folders."""
-        result = await self.provider.gql_client.get_music_together_groups(first=50)
-        if not result:
-            return []
         base = path if path.endswith("/") else path + "/"
         folders: list[BrowseFolder] = []
-        for edge in result.music_together_groups.edges:
-            if edge.node is None:
-                continue
-            group = edge.node
-            members = group.estimated_members_count
-            name = f"{group.name} ({members} member{'s' if members != 1 else ''})"
-            path_name = group.name.replace("/", "-")
-            self._browse_slug_cache[f"shaker/{path_name}"] = group.id
-            folders.append(
-                BrowseFolder(
-                    item_id=f"shaker_{group.id}",
-                    provider=self.instance_id,
-                    path=f"{base}{path_name}",
-                    name=name,
-                )
+        cursor: str | None = None
+        while True:
+            result = await self.provider.gql_client.get_music_together_groups(
+                first=50, after=cursor
             )
+            if not result:
+                break
+            for edge in result.music_together_groups.edges:
+                if edge.node is None:
+                    continue
+                group = edge.node
+                members = group.estimated_members_count
+                name = f"{group.name} ({members} member{'s' if members != 1 else ''})"
+                path_name = group.name.replace("/", "-")
+                self._browse_slug_cache[f"shaker/{path_name}"] = group.id
+                folders.append(
+                    BrowseFolder(
+                        item_id=f"shaker_{group.id}",
+                        provider=self.instance_id,
+                        path=f"{base}{path_name}",
+                        name=name,
+                    )
+                )
+            if not result.music_together_groups.page_info.has_next_page:
+                break
+            cursor = result.music_together_groups.page_info.end_cursor
         return folders
 
     async def _browse_shaker_group(self, group_id: str) -> list[MediaItemType]:
@@ -937,22 +970,34 @@ class DeezerBrowseManager:
 
         :param tracklist_id: The SmartTracklist identifier.
         """
-        result = await self.provider.gql_client.get_smart_tracklist(
-            smart_tracklist_id=tracklist_id, first=50
-        )
-        if result is None:
-            return []
-        return [
-            parse_track(self.provider, edge.node)
-            for edge in result.tracks.edges
-            if edge.node is not None
-        ]
+        all_tracks: list[Track] = []
+        cursor: str | None = None
+        while True:
+            result = await self.provider.gql_client.get_smart_tracklist(
+                smart_tracklist_id=tracklist_id, first=50, after=cursor
+            )
+            if result is None:
+                break
+            all_tracks.extend(
+                parse_track(self.provider, edge.node)
+                for edge in result.tracks.edges
+                if edge.node is not None
+            )
+            if not result.tracks.page_info.has_next_page:
+                break
+            cursor = result.tracks.page_info.end_cursor
+        return all_tracks
 
     async def _get_shaker_tracks(self, group_id: str) -> list[Track]:
         """Get suggested tracks for a Shaker (Music Together) group.
 
         :param group_id: The Music Together group identifier.
         """
+        # Refresh the suggested tracklist to get a fresh set of tracks
+        await self.provider.gql_client.music_together_refresh_suggested_tracklist(
+            group_id=group_id,
+            mood=MusicTogetherRefreshSuggestedTracklistMoodInput.NONE,
+        )
         group = await self.provider.gql_client.get_music_together_group(
             group_id=group_id,
             mood=MusicTogetherSuggestedTracklistMoodInput.NONE,
@@ -972,18 +1017,25 @@ class DeezerBrowseManager:
 
         :param group_id: The Music Together group identifier.
         """
-        group = await self.provider.gql_client.get_music_together_group(
-            group_id=group_id,
-            mood=MusicTogetherSuggestedTracklistMoodInput.NONE,
-            tracks_first=50,
-        )
-        if group is None or group.curated_tracklist is None:
-            return []
-        return [
-            parse_track(self.provider, edge.node)
-            for edge in group.curated_tracklist.tracks.edges
-            if edge.node
-        ]
+        all_tracks: list[Track] = []
+        cursor: str | None = None
+        while True:
+            group = await self.provider.gql_client.get_music_together_group(
+                group_id=group_id,
+                mood=MusicTogetherSuggestedTracklistMoodInput.NONE,
+                tracks_first=50,
+                tracks_after=cursor,
+            )
+            if group is None or group.curated_tracklist is None:
+                break
+            tracks_conn = group.curated_tracklist.tracks
+            all_tracks.extend(
+                parse_track(self.provider, edge.node) for edge in tracks_conn.edges if edge.node
+            )
+            if not tracks_conn.page_info.has_next_page:
+                break
+            cursor = tracks_conn.page_info.end_cursor
+        return all_tracks
 
     @use_cache(3600)  # type: ignore[type-var]
     async def _get_user_chart_tracks(self) -> list[Track]:
