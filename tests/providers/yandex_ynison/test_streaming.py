@@ -20,11 +20,11 @@ class TestMakePcmFormat:
     """Tests for the AudioFormat factory."""
 
     def test_lossless_format(self) -> None:
-        """Lossless params produce s24le/48kHz/24bit/stereo."""
+        """Lossless params produce s24le/44.1kHz/24bit/stereo."""
         fmt = make_pcm_format(PCM_LOSSLESS_PARAMS)
         assert isinstance(fmt, AudioFormat)
         assert fmt.content_type == ContentType.PCM_S24LE
-        assert fmt.sample_rate == 48000
+        assert fmt.sample_rate == 44100
         assert fmt.bit_depth == 24
         assert fmt.channels == 2
 

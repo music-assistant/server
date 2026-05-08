@@ -184,10 +184,27 @@ class YnisonClient:
         # Latest state from server
         self.state = YnisonState()
 
+        # Reconnect settle window — first inbound state after reconnect can
+        # be our own stale broadcast (server retains state across reconnects
+        # and re-sends it). Provider-level handlers consult this watermark
+        # to discard the first ≤2s of post-reconnect state changes.
+        self._post_reconnect_settle_until: float = 0.0
+
     @property
     def connected(self) -> bool:
         """Return True if connected to Ynison state service."""
         return self._connected
+
+    @property
+    def in_post_reconnect_settle(self) -> bool:
+        """True iff we're inside the 2 s post-reconnect settle window.
+
+        Provider handlers consult this to skip the first inbound state right
+        after a reconnect — that state can be a stale broadcast of our own
+        last-known view (server retained it across the WS hop) and acting on
+        it would re-fire pause/play commands the user never issued.
+        """
+        return time.monotonic() < self._post_reconnect_settle_until
 
     @property
     def device_id(self) -> str:
@@ -303,6 +320,25 @@ class YnisonClient:
         }
         await self._send(msg)
 
+    async def update_session_params(self, mute_events_if_passive: bool = True) -> None:
+        """Configure session params on the Ynison server.
+
+        `mute_events_if_passive=True` tells Ynison not to forward peer
+        state updates while we're not the active device. Reduces inbound
+        WS noise (and CPU) when running in `borrow` mode alongside other
+        active subscribers, and removes a class of false positives in
+        echo detection — fewer messages means fewer chances to misclassify.
+        """
+        msg = {
+            "update_session_params": {
+                "mute_events_if_passive": mute_events_if_passive,
+            },
+        }
+        self._logger.info(
+            "→ update_session_params: mute_events_if_passive=%s", mute_events_if_passive
+        )
+        await self._send(msg)
+
     async def sync_state_from_eov(self, actual_queue_id: str = "") -> None:
         """Request queue sync from the EOV (Unified Playback Queue) backend.
 
@@ -359,6 +395,30 @@ class YnisonClient:
         }
         self._logger.debug("Sending full state: %s", json.dumps(msg)[:500])
         await self._send(msg)
+
+    def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> bool:
+        """Return True iff `incoming_ps` is our own broadcast round-tripping.
+
+        Uses author check on BOTH queue.version.device_id and
+        status.version.device_id — only an update where every block was
+        authored by us is treated as echo. AND-logic is critical: a peer
+        queue change combined with our own status echo would otherwise
+        be silently swallowed (RC-1 in v1.9.1 live testing).
+
+        Why only `device_id` and not `version` value: Ynison's protobuf
+        comment marks `version.version` as `random(int64)`. The server
+        re-stamps it after every `update_playing_status` (we send blank,
+        server fills in). Comparing inbound `version` against an outbound
+        watermark is therefore meaningless — our own restamped echo can
+        carry any value. `device_id` is unique and preserved end-to-end,
+        so authorship is the only reliable echo signal.
+        """
+        own_id = self._device_info.device_id
+        queue_block = (incoming_ps.get("player_queue") or {}).get("version") or {}
+        status_block = (incoming_ps.get("status") or {}).get("version") or {}
+        queue_is_ours = queue_block.get("device_id") == own_id
+        status_is_ours = status_block.get("device_id") == own_id
+        return queue_is_ours and status_is_ours
 
     # ------------------------------------------------------------------
     # Connection internals
@@ -487,17 +547,24 @@ class YnisonClient:
         self._connected = True
         self._logger.info("Connected to Ynison state service at %s", host)
 
-        # On reconnect, send last known state to avoid blank-state reset.
-        # On cold start, send initial (empty/paused) state.
-        if self._has_connected_once and self.state.player_state:
-            self._logger.info(
-                "Reconnect: restoring last known state (track=%s paused=%s)",
-                self.state.current_track_id,
-                self.state.is_paused,
-            )
-            await self.send_full_state(player_state=self.state.player_state)
-        else:
-            await self.send_full_state()
+        # Always send a fresh initial state (empty/paused) — both on cold
+        # start and reconnect (v2.0). The previous behaviour replayed
+        # `self.state.player_state`, which after a heartbeat could carry
+        # `paused=True` and trigger an unintended pause on the still-running
+        # player when Ynison broadcast it back to us.
+        # If a player is already active (handoff in progress), the provider
+        # will reclaim ownership via `update_active_device` after the
+        # post-reconnect settle window expires.
+        if self._has_connected_once:
+            self._logger.info("Reconnect: sending fresh initial state (no stale replay)")
+            self._post_reconnect_settle_until = time.monotonic() + 2.0
+        await self.send_full_state()
+        # Best-effort: ask the server not to forward peer events while we
+        # are passive. Failure is non-fatal — we just receive more events.
+        try:
+            await self.update_session_params(mute_events_if_passive=True)
+        except Exception:
+            self._logger.debug("update_session_params failed", exc_info=True)
 
         self._has_connected_once = True
 
@@ -614,17 +681,12 @@ class YnisonClient:
             existing_ps = self.state.player_state
             for key, value in incoming_ps.items():
                 existing_ps[key] = value
-            # Echo detection via version.device_id: Ynison preserves the
-            # `version` block we authored, so a broadcast whose version
-            # author matches us is our own update round-tripping back.
-            # Check both player_queue and status so status-only echoes
-            # (e.g. of update_playing_status) are caught too.
-            own_id = self._device_info.device_id
-            queue_author = (
-                (incoming_ps.get("player_queue") or {}).get("version", {}).get("device_id")
-            )
-            status_author = (incoming_ps.get("status") or {}).get("version", {}).get("device_id")
-            self.state.last_update_is_echo = own_id in (queue_author, status_author)
+            # Echo detection: a state is our echo iff BOTH the queue and
+            # status version-blocks are authored by our `device_id`. See
+            # `_classify_state_as_echo` for why version values are not
+            # part of the check (Ynison documents `version.version` as
+            # `random(int64)` and the server re-stamps it).
+            self.state.last_update_is_echo = self._classify_state_as_echo(incoming_ps)
         else:
             self.state.last_update_is_echo = False
         self.state.active_device_id = data.get(

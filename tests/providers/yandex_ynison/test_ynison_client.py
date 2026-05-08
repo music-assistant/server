@@ -252,8 +252,8 @@ class TestYnisonClientParseState:
         client._parse_state({"player_state": {"status": {"paused": True}}})
         assert client.state.active_device_id == "old-device"
 
-    def test_echo_flag_true_on_own_authored_queue(self, client: YnisonClient) -> None:
-        """player_queue.version.device_id == own → last_update_is_echo True."""
+    def test_echo_flag_true_only_when_both_authors_ours(self, client: YnisonClient) -> None:
+        """AND-logic (1.9.1): both queue.version AND status.version must be ours."""
         client._parse_state(
             {
                 "player_state": {
@@ -266,13 +266,91 @@ class TestYnisonClientParseState:
                             "timestamp_ms": "0",
                         },
                     },
+                    "status": {
+                        "paused": False,
+                        "progress_ms": "1000",
+                        "duration_ms": "5000",
+                        "version": {
+                            "device_id": "test-device-id",
+                            "version": "43",
+                            "timestamp_ms": "0",
+                        },
+                    },
                 },
             }
         )
         assert client.state.last_update_is_echo is True
 
+    def test_echo_flag_false_when_only_queue_is_ours(self, client: YnisonClient) -> None:
+        """Status authored by peer → NOT echo, even if queue.version is ours.
+
+        Regression for the OR-logic bug: a peer toggling pause produced
+        status.version=peer + our stale queue.version=ours, which the old
+        OR-rule wrongly classified as echo and silenced the user action.
+        """
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "playable_list": [{"playable_id": "t1"}],
+                        "current_playable_index": 0,
+                        "version": {
+                            "device_id": "test-device-id",
+                            "version": "42",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                    "status": {
+                        "paused": True,
+                        "progress_ms": "1000",
+                        "duration_ms": "5000",
+                        "version": {
+                            "device_id": "peer-device",
+                            "version": "44",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                },
+            }
+        )
+        assert client.state.last_update_is_echo is False
+
+    def test_echo_flag_false_when_only_status_is_ours(self, client: YnisonClient) -> None:
+        """Queue authored by peer → NOT echo, even if status.version is ours.
+
+        The mirror case: our heartbeat just stamped status.version=ours, but
+        the peer changed the queue. Under AND-logic the peer change is not
+        silenced.
+        """
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "playable_list": [{"playable_id": "new-track"}],
+                        "current_playable_index": 0,
+                        "version": {
+                            "device_id": "peer-device",
+                            "version": "100",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                    "status": {
+                        "paused": False,
+                        "progress_ms": "0",
+                        "duration_ms": "5000",
+                        "version": {
+                            "device_id": "test-device-id",
+                            "version": "99",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                },
+            }
+        )
+        assert client.state.last_update_is_echo is False
+
     def test_echo_flag_false_on_foreign_author(self, client: YnisonClient) -> None:
-        """player_queue.version.device_id != own → not an echo."""
+        """Both authors are peer → not an echo."""
         client._parse_state(
             {
                 "player_state": {
@@ -291,7 +369,12 @@ class TestYnisonClientParseState:
         assert client.state.last_update_is_echo is False
 
     def test_echo_flag_false_when_version_missing(self, client: YnisonClient) -> None:
-        """No version block in player_queue → not an echo (safe default)."""
+        """No version block at all → not an echo (safe default).
+
+        AND-logic treats missing version-block as "not ours" — matches the
+        previous safe default. Without a version-block we can't claim
+        ownership, so we let the update reach handlers.
+        """
         client._parse_state(
             {
                 "player_state": {
@@ -306,26 +389,6 @@ class TestYnisonClientParseState:
         client.state.last_update_is_echo = True  # sticky from a prior update
         client._parse_state({"active_device_id_optional": "some-device"})
         assert client.state.last_update_is_echo is False
-
-    def test_echo_flag_true_on_own_authored_status(self, client: YnisonClient) -> None:
-        """status.version.device_id == own → echo True even without player_queue version."""
-        client._parse_state(
-            {
-                "player_state": {
-                    "status": {
-                        "paused": False,
-                        "progress_ms": "1000",
-                        "duration_ms": "5000",
-                        "version": {
-                            "device_id": "test-device-id",
-                            "version": "42",
-                            "timestamp_ms": "0",
-                        },
-                    },
-                },
-            }
-        )
-        assert client.state.last_update_is_echo is True
 
     def test_parse_state_coerces_int_timestamps_to_strings(self, client: YnisonClient) -> None:
         """Inbound int timestamps are stringified so outbound echoes stay safe.
@@ -880,17 +943,22 @@ class TestConnectState:
         with suppress(asyncio.CancelledError):
             await client._message_task
 
-    async def test_reconnect_sends_last_known_state(self, client: YnisonClient) -> None:
-        """On reconnect, send_full_state is called with the preserved player state."""
+    async def test_reconnect_sends_fresh_state_no_stale_replay(self, client: YnisonClient) -> None:
+        """v2.0: reconnect sends a fresh initial state — no stale replay.
+
+        Replaying the last known state (which after a heartbeat could carry
+        `paused=True`) caused the server to broadcast it back and trigger
+        an unintended pause on the still-running player.
+        """
         mock_ws = AsyncMock()
         mock_session = AsyncMock()
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
         client._session = mock_session
 
-        # Simulate prior connection: set flag and populate state
+        # Simulate prior connection with stale paused state cached.
         client._has_connected_once = True
         client.state.player_state = {
-            "status": {"paused": False, "progress_ms": 120000, "duration_ms": 300000},
+            "status": {"paused": True, "progress_ms": 120000, "duration_ms": 300000},
             "player_queue": {
                 "current_playable_index": 3,
                 "playable_list": [{"playable_id": "t1"}],
@@ -900,29 +968,28 @@ class TestConnectState:
         with patch.object(client, "send_full_state", new_callable=AsyncMock) as mock_sfs:
             await client._connect_state("host.yandex.net", "ticket", 42)
 
-        mock_sfs.assert_awaited_once_with(player_state=client.state.player_state)
+        # send_full_state must be called WITHOUT player_state — it falls
+        # back to a fresh _build_initial_state() internally.
+        mock_sfs.assert_awaited_once_with()
+        # Settle window armed for ~2 s.
+        assert client.in_post_reconnect_settle is True
         # Clean up
         assert client._message_task is not None
         client._message_task.cancel()
         with suppress(asyncio.CancelledError):
             await client._message_task
 
-    async def test_reconnect_empty_state_falls_back(self, client: YnisonClient) -> None:
-        """On reconnect with empty player_state, falls back to blank initial state."""
+    async def test_cold_start_does_not_arm_settle_window(self, client: YnisonClient) -> None:
+        """First-ever connect skips the settle window — nothing stale to swallow."""
         mock_ws = AsyncMock()
         mock_session = AsyncMock()
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
         client._session = mock_session
 
-        client._has_connected_once = True
-        client.state.player_state = {}  # empty — no prior state received
-
-        with patch.object(client, "send_full_state", new_callable=AsyncMock) as mock_sfs:
+        with patch.object(client, "send_full_state", new_callable=AsyncMock):
             await client._connect_state("host.yandex.net", "ticket", 42)
 
-        # Falls back to no-arg call (blank initial state)
-        mock_sfs.assert_awaited_once_with()
-        # Clean up
+        assert client.in_post_reconnect_settle is False
         assert client._message_task is not None
         client._message_task.cancel()
         with suppress(asyncio.CancelledError):

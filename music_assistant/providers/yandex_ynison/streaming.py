@@ -18,7 +18,7 @@ from music_assistant_models.media_items import AudioFormat
 # ffmpeg output_format) so that mutation of one doesn't corrupt the others.
 PCM_LOSSLESS_PARAMS: dict[str, Any] = {
     "content_type": ContentType.PCM_S24LE,
-    "sample_rate": 48000,
+    "sample_rate": 44100,
     "bit_depth": 24,
     "channels": 2,
 }

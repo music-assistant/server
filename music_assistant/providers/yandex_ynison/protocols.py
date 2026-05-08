@@ -20,6 +20,16 @@ class YandexMusicProviderLike(Protocol):
     Only the subset of methods/properties used by the Ynison plugin.
     """
 
+    @property
+    def instance_id(self) -> str:
+        """The MA instance_id of this provider.
+
+        Used by handoff mode to build URIs that target the exact yandex_music
+        instance we borrow from, rather than the first one that matches by
+        domain (matters when borrow + own coexist).
+        """
+        ...
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Resolve stream details for a track."""
         ...
