@@ -883,6 +883,7 @@ class SpotifyConnectProvider(PluginProvider):
 
     def _register_plugin_queue(self, player_id: str) -> None:
         """Register a queue in the frontend under our instance_id.
+        
         The frontend resolves activePlayerQueue via active_source (our instance_id).
         We fire QUEUE_ADDED frontend-only (no backend _queues entry) so the frontend
         can render the seek bar correctly, without causing the backend to route
