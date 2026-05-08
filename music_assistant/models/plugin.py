@@ -293,6 +293,21 @@ class PluginProvider(Provider):
         :param item: The updated library item.
         """
 
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Handle callback when a (playable) media item owned by this plugin has been played.
+
+        Plugins can implement this to react to playback of their items.
+        """
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
