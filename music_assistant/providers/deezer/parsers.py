@@ -105,8 +105,8 @@ def _provider_mapping(
     provider: DeezerProvider,
     item_id: str,
     *,
-    available: bool = False,
-    is_unique: bool = False,
+    available: bool = True,
+    is_unique: bool | None = None,
 ) -> ProviderMapping:
     """Create a ProviderMapping for the given item."""
     return ProviderMapping(
