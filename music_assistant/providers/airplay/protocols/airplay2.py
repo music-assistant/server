@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
@@ -151,8 +151,6 @@ class AirPlay2Stream(AirPlayProtocol):
         assert self.player.airplay_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         player_id = self.player.player_id
-        sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST)
-        assert isinstance(sync_adjust, int)  # for type checker
 
         txt_kv: str = ""
         for key, value in self.player.airplay_discovery_info.decoded_properties.items():
