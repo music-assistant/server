@@ -183,9 +183,10 @@ class ProtocolLinkingMixin:
             # Link was refused (domain already active on parent) - fall through
             return False
 
-        # Parent not registered yet - set parent and skip evaluation
-        protocol_player.set_protocol_parent_id(cached_parent_id)
-        return True
+        # Parent is not registered yet. Leave the protocol player unparented
+        # so the caller schedules delayed evaluation, which can wait for the
+        # cached parent without stranding the protocol player on a dangling id.
+        return False
 
     def _try_link_to_existing_player(self, protocol_player: Player, protocol_domain: str) -> bool:
         """
