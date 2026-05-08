@@ -1,4 +1,12 @@
-"""Tests for handoff playback mode."""
+# mypy: disable-error-code="attr-defined,method-assign"
+"""Tests for handoff playback mode.
+
+`mass` and `player_queues` are heavily mocked here via MagicMock —
+runtime attributes (`assert_awaited_once_with`, `return_value`,
+`call_args`, etc.) don't exist on the typed protocol. Disable the
+two relevant mypy error codes for the whole file rather than
+sprinkling per-line `type: ignore` annotations.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +22,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
 )
 
-from provider import _features_for_mode
+from music_assistant.providers.yandex_ynison import _features_for_mode
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,

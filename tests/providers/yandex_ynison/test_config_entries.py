@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.errors import LoginFailed
 
-from provider import get_config_entries
+from music_assistant.providers.yandex_ynison import get_config_entries
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ACCOUNT_LOGIN,
     CONF_ACTION_AUTH_QR,
@@ -217,7 +217,9 @@ async def test_qr_action_in_borrow_mode_is_refused() -> None:
     values: dict[str, Any] = {CONF_YM_INSTANCE: "ym-a", "session_id": "sess-1"}
 
     with (
-        mock.patch("music_assistant.providers.yandex_ynison.perform_qr_auth", new=mock.AsyncMock()) as mocked,
+        mock.patch(
+            "music_assistant.providers.yandex_ynison.perform_qr_auth", new=mock.AsyncMock()
+        ) as mocked,
         pytest.raises(LoginFailed, match="own-mode action"),
     ):
         await get_config_entries(mass, action=CONF_ACTION_AUTH_QR, values=values)
@@ -295,7 +297,7 @@ async def test_stale_ym_selection_normalizes_to_own() -> None:
     """
     mass = _make_mock_mass({"ym-b": {"domain": "yandex_music", "name": "B"}})
     values: dict[str, object] = {CONF_YM_INSTANCE: "ym-removed"}
-    entries = await get_config_entries(mass, values=values)  # type: ignore[arg-type]
+    entries = await get_config_entries(mass, values=values)
     by_key = _entries_by_key(entries)
 
     ym_source = by_key[CONF_YM_INSTANCE]

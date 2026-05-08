@@ -1276,7 +1276,9 @@ class TestPCMNormalization:
             return MagicMock()  # never reached
 
         # Use a tiny timeout so the test runs fast.
-        with patch("music_assistant.providers.yandex_ynison.provider._PREFETCH_FORMAT_TIMEOUT", 0.05):
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider._PREFETCH_FORMAT_TIMEOUT", 0.05
+        ):
             _stub_attr(provider, "_get_stream_details_with_retry", _hang)
             await provider._prefetch_format_for_track("track:slow")
 
@@ -2171,7 +2173,9 @@ class TestGetStreamDetailsWithRetry:
         mock_yp.get_stream_details = AsyncMock(side_effect=[RuntimeError("transient"), sd])
         provider._yandex_provider = mock_yp
 
-        with patch("music_assistant.providers.yandex_ynison.provider.asyncio.sleep", new_callable=AsyncMock):
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.asyncio.sleep", new_callable=AsyncMock
+        ):
             result = await provider._get_stream_details_with_retry("t1")
         assert result is sd
         assert mock_yp.get_stream_details.await_count == 2
@@ -2184,7 +2188,10 @@ class TestGetStreamDetailsWithRetry:
         provider._yandex_provider = mock_yp
 
         with (
-            patch("music_assistant.providers.yandex_ynison.provider.asyncio.sleep", new_callable=AsyncMock),
+            patch(
+                "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
             pytest.raises(RuntimeError, match="failed after"),
         ):
             await provider._get_stream_details_with_retry("t1")
