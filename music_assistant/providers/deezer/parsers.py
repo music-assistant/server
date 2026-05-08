@@ -108,13 +108,30 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
                 )
             )
 
-    album_mapping: ItemMapping | None = None
+    album: Album | None = None
     if track.album is not None:
-        album_mapping = ItemMapping(
-            media_type=MediaType.ALBUM,
+        album_images: UniqueList[MediaItemImage] = UniqueList()
+        if track.album.cover and track.album.cover.urls:
+            album_images.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=track.album.cover.urls[0],
+                    provider=provider.instance_id,
+                    remotely_accessible=True,
+                )
+            )
+        album = Album(
             item_id=track.album.id,
             provider=provider.instance_id,
             name=track.album.display_title,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track.album.id,
+                    provider_domain=provider.domain,
+                    provider_instance=provider.instance_id,
+                )
+            },
+            metadata=MediaItemMetadata(images=album_images) if album_images else None,
         )
 
     name, version = parse_title_and_version(track.title)
@@ -131,7 +148,7 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
         version=version,
         duration=track.duration,
         artists=artists,
-        album=album_mapping,
+        album=album,
         provider_mappings={
             ProviderMapping(
                 item_id=track.id,
