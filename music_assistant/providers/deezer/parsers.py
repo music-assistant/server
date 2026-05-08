@@ -768,29 +768,71 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
     :param position: Position in a track list.
     """
     song_id = str(song["SNG_ID"])
+    is_personal = int(song_id) < 0
     artists: UniqueList[Artist | ItemMapping] = UniqueList()
     art_name = song.get("ART_NAME", "")
-    art_id = song.get("ART_ID", "0")
-    if art_name and art_id != "0":
-        artists.append(
-            ItemMapping(
-                media_type=MediaType.ARTIST,
-                item_id=str(art_id),
-                provider=provider.instance_id,
-                name=art_name,
+    art_id = str(song.get("ART_ID", "0"))
+    if art_name:
+        if is_personal or art_id == "0":
+            # Personal tracks have ART_ID=0 which doesn't exist on Deezer.
+            # Create a full Artist object so MA doesn't try to resolve it.
+            # Use a prefixed ID to avoid collisions with the track's provider mapping.
+            personal_art_id = f"personal_artist_{song_id}"
+            artists.append(
+                Artist(
+                    item_id=personal_art_id,
+                    provider=provider.instance_id,
+                    name=art_name,
+                    favorite=True,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=personal_art_id,
+                            provider_domain=provider.domain,
+                            provider_instance=provider.instance_id,
+                        )
+                    },
+                )
             )
-        )
+        else:
+            artists.append(
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=art_id,
+                    provider=provider.instance_id,
+                    name=art_name,
+                )
+            )
 
-    album_mapping: ItemMapping | None = None
+    album: Album | ItemMapping | None = None
     alb_title = song.get("ALB_TITLE", "")
-    alb_id = song.get("ALB_ID", 0)
-    if alb_title and alb_id:
-        album_mapping = ItemMapping(
-            media_type=MediaType.ALBUM,
-            item_id=str(alb_id),
-            provider=provider.instance_id,
-            name=alb_title,
-        )
+    alb_id = str(song.get("ALB_ID", 0))
+    if alb_title:
+        if is_personal or alb_id == "0":
+            # Personal tracks have ALB_ID=0 which doesn't exist on Deezer.
+            # Create a full Album object so MA doesn't try to resolve it.
+            # Use a prefixed ID to avoid collisions with the track's provider mapping.
+            personal_alb_id = f"personal_album_{song_id}"
+            album = Album(
+                item_id=personal_alb_id,
+                provider=provider.instance_id,
+                name=alb_title,
+                favorite=True,
+                artists=artists,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=personal_alb_id,
+                        provider_domain=provider.domain,
+                        provider_instance=provider.instance_id,
+                    )
+                },
+            )
+        else:
+            album = ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id=alb_id,
+                provider=provider.instance_id,
+                name=alb_title,
+            )
 
     name, version = parse_title_and_version(song.get("SNG_TITLE", ""))
     return Track(
@@ -799,8 +841,9 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
         name=name,
         version=version,
         duration=int(song.get("DURATION", 0)),
+        favorite=is_personal,
         artists=artists,
-        album=album_mapping,
+        album=album,
         provider_mappings={
             ProviderMapping(
                 item_id=song_id,

@@ -20,9 +20,11 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     PodcastEpisode,
+    ProviderMapping,
     Radio,
     SearchResults,
     Track,
+    UniqueList,
 )
 
 from music_assistant.controllers.cache import use_cache
@@ -35,6 +37,7 @@ from .parsers import (
     parse_audiobook_chapters,
     parse_audiobook_from_album,
     parse_date,
+    parse_gw_track,
     parse_playlist,
     parse_podcast,
     parse_podcast_episode,
@@ -95,6 +98,15 @@ class DeezerMediaManager:
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
+        # Also include artists from user-uploaded personal songs
+        results = await self.provider.gw_client.get_personal_songs(start=0, nb=500)
+        seen_artist_names: set[str] = set()
+        for song in results.get("data", []):
+            track = parse_gw_track(self.provider, song)
+            for artist in track.artists:
+                if isinstance(artist, Artist) and artist.name not in seen_artist_names:
+                    seen_artist_names.add(artist.name)
+                    yield artist
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
@@ -106,6 +118,14 @@ class DeezerMediaManager:
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
+        # Also include albums from user-uploaded personal songs
+        results = await self.provider.gw_client.get_personal_songs(start=0, nb=500)
+        seen_album_names: set[str] = set()
+        for song in results.get("data", []):
+            track = parse_gw_track(self.provider, song)
+            if isinstance(track.album, Album) and track.album.name not in seen_album_names:
+                seen_album_names.add(track.album.name)
+                yield track.album
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Deezer."""
@@ -130,7 +150,7 @@ class DeezerMediaManager:
             yield item
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
-        """Retrieve all library tracks from Deezer."""
+        """Retrieve all library tracks from Deezer (favorites + personal uploads)."""
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_tracks,
             lambda r: r.user_favorites.tracks,
@@ -139,6 +159,10 @@ class DeezerMediaManager:
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
+        # Also include user-uploaded personal songs
+        results = await self.provider.gw_client.get_personal_songs(start=0, nb=500)
+        for idx, song in enumerate(results.get("data", []), 1):
+            yield parse_gw_track(self.provider, song, position=idx)
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from Deezer."""
@@ -244,6 +268,25 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        if prov_artist_id.startswith("personal_artist_"):
+            # Personal track artist — reconstruct from GW data
+            song_id = prov_artist_id.removeprefix("personal_artist_")
+            results = await self.provider.gw_client.get_personal_songs(start=0, nb=500)
+            for song in results.get("data", []):
+                if str(song["SNG_ID"]) == song_id:
+                    return Artist(
+                        item_id=prov_artist_id,
+                        provider=self.provider.instance_id,
+                        name=song.get("ART_NAME", ""),
+                        provider_mappings={
+                            ProviderMapping(
+                                item_id=prov_artist_id,
+                                provider_domain=self.provider.domain,
+                                provider_instance=self.provider.instance_id,
+                            )
+                        },
+                    )
+            raise MediaNotFoundError(f"Personal artist {prov_artist_id} not found")
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Deezer")
@@ -254,6 +297,38 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30)
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
+        if prov_album_id.startswith("personal_album_"):
+            # Personal track album — reconstruct from GW data
+            song_id = prov_album_id.removeprefix("personal_album_")
+            results = await self.provider.gw_client.get_personal_songs(start=0, nb=500)
+            for song in results.get("data", []):
+                if str(song["SNG_ID"]) == song_id:
+                    art_name = song.get("ART_NAME", "")
+                    personal_art_id = f"personal_artist_{song_id}"
+                    artists: UniqueList[Artist | ItemMapping] = UniqueList()
+                    if art_name:
+                        artists.append(
+                            ItemMapping(
+                                media_type=MediaType.ARTIST,
+                                item_id=personal_art_id,
+                                provider=self.provider.instance_id,
+                                name=art_name,
+                            )
+                        )
+                    return Album(
+                        item_id=prov_album_id,
+                        provider=self.provider.instance_id,
+                        name=song.get("ALB_TITLE", ""),
+                        artists=artists,
+                        provider_mappings={
+                            ProviderMapping(
+                                item_id=prov_album_id,
+                                provider_domain=self.provider.domain,
+                                provider_instance=self.provider.instance_id,
+                            )
+                        },
+                    )
+            raise MediaNotFoundError(f"Personal album {prov_album_id} not found")
         result = await self.provider.gql_client.get_album(album_id=prov_album_id)
         if result is None:
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Deezer")
@@ -264,6 +339,13 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
+        # Personal tracks (negative IDs) don't exist in the GQL API
+        if int(prov_track_id) < 0:
+            results = await self.provider.gw_client.get_personal_songs(start=0, nb=500)
+            for song in results.get("data", []):
+                if str(song["SNG_ID"]) == prov_track_id:
+                    return parse_gw_track(self.provider, song)
+            raise MediaNotFoundError(f"Personal track {prov_track_id} not found")
         result = await self.provider.gql_client.get_track(track_id=prov_track_id)
         if result is None:
             raise MediaNotFoundError(f"Track {prov_track_id} not found on Deezer")
@@ -349,6 +431,9 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
+        if prov_album_id.startswith("personal_album_"):
+            # Personal album has no real Deezer album page
+            return []
         result = await self.provider.gql_client.get_album(album_id=prov_album_id)
         if result is None:
             return []
@@ -480,6 +565,9 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 7)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
+        if prov_artist_id.startswith("personal_artist_"):
+            # Personal artist has no real Deezer artist page
+            return []
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None:
             return []
@@ -499,6 +587,9 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 7)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
+        if prov_artist_id.startswith("personal_artist_"):
+            # Personal artist has no real Deezer artist page
+            return []
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None or result.top_tracks is None:
             return []
