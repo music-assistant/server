@@ -655,12 +655,18 @@ class SendspinPlayer(SendspinBasePlayer):
             return
         try:
             await asyncio.wait_for(asyncio.shield(cast_app_ready), timeout=30.0)
-        except TimeoutError:
+        except BaseException as exc:
             if not cast_app_ready.done():
                 cast_app_ready.cancel()
-            raise PlayerCommandFailed(
-                f"Cast app on {self.display_name} did not report ready within 30s"
-            ) from None
+            # Cancel the playback session so we don't keep streaming to a
+            # device that never reported ready.
+            with suppress(Exception):
+                await self.playback_session.cancel("cast app readiness failed")
+            if isinstance(exc, TimeoutError):
+                raise PlayerCommandFailed(
+                    f"Cast app on {self.display_name} did not report ready within 30s"
+                ) from None
+            raise
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -768,6 +774,13 @@ class SendspinPlayer(SendspinBasePlayer):
                     raise PlayerCommandFailed(
                         f"Cast app on {', '.join(stuck)} did not report ready within 30s"
                     ) from None
+        except BaseException:
+            # Roll back Cast members we just added so a failed group operation
+            # doesn't leave dead members in the Sendspin group.
+            for member, _ in pending_cast:
+                with suppress(Exception):
+                    await self.api.group.remove_client(member.api)
+            raise
         finally:
             for _, f in pending_cast:
                 if not f.done():
