@@ -475,6 +475,13 @@ class SendspinBridgeManager:
         self._unsub_config_updated = self.mass.subscribe(
             self._on_player_config_updated, EventType.PLAYER_CONFIG_UPDATED
         )
+        self._unsub_player_updated = self.mass.subscribe(
+            self._on_player_updated, EventType.PLAYER_UPDATED
+        )
+        self._airplay_was_available = self.mass.get_provider("airplay") is not None
+        self._unsub_providers_updated = self.mass.subscribe(
+            self._on_providers_updated, EventType.PROVIDERS_UPDATED
+        )
 
     @property
     def sendspin_provider(self) -> SendspinProvider | None:
@@ -490,6 +497,73 @@ class SendspinBridgeManager:
         if provider := self.sendspin_provider:
             return provider.server_api
         return None
+
+    def _should_have_bridge(self, cast_player: ChromecastPlayer) -> bool:
+        """
+        Return whether this cast player should have a Sendspin bridge.
+
+        :param cast_player: The Chromecast player to evaluate.
+        """
+        # Audio groups (non-stereo-pair) have their own playback mechanism
+        if cast_player.cast_info.is_audio_group and not cast_player.cast_info.is_multichannel_group:
+            return False
+
+        if not get_bridge_client_id(cast_player):
+            return False
+
+        manufacturer = cast_player.device_info.manufacturer or ""
+        model = cast_player.device_info.model or ""
+        if is_sendspin_cast_blocked(manufacturer, model):
+            self.logger.debug(
+                "Skipping Sendspin Cast bridge for %s (%s / %s) — device is blocklisted",
+                cast_player.display_name,
+                manufacturer,
+                model,
+            )
+            return False
+
+        if not self.sendspin_server:
+            self.logger.debug(
+                "Sendspin provider not available, skipping bridge for %s",
+                cast_player.display_name,
+            )
+            return False
+
+        # Prefer the airplay bridge over the cast bridge (better sync performance)
+        # when the cast player shares a parent with an airplay protocol player.
+        if cast_player.protocol_parent_id:
+            parent_player = self.mass.players.get_player(cast_player.protocol_parent_id)
+            if parent_player:
+                for protocol in parent_player.linked_output_protocols:
+                    if protocol.protocol_domain != "airplay":
+                        continue
+                    airplay_player = self.mass.players.get_player(protocol.output_protocol_id)
+                    if airplay_player and airplay_player.available:
+                        return False
+
+        return True
+
+    async def evaluate_bridge(self, cast_player: ChromecastPlayer) -> None:
+        """
+        Reconcile the Sendspin bridge state for this cast player.
+
+        Creates or removes the bridge to match the desired state derived from
+        the current player graph. Idempotent and safe to call repeatedly.
+
+        :param cast_player: The Chromecast player to evaluate.
+        """
+        player_id = cast_player.player_id
+        desired = self._should_have_bridge(cast_player)
+        has_bridge = player_id in self._bridges or player_id in self._claimed_clients
+
+        if desired and not has_bridge:
+            await self.setup_bridge(cast_player)
+        elif not desired and has_bridge:
+            self.logger.info(
+                "Removing redundant Sendspin Cast bridge for %s",
+                cast_player.display_name,
+            )
+            await self.remove_bridge(player_id)
 
     async def setup_bridge(self, cast_player: ChromecastPlayer) -> None:
         """
@@ -511,45 +585,15 @@ class SendspinBridgeManager:
                 )
                 return
 
-            # Skip audio groups (non-stereo-pair) — they have their own playback mechanism
-            if (
-                cast_player.cast_info.is_audio_group
-                and not cast_player.cast_info.is_multichannel_group
-            ):
+            if not self._should_have_bridge(cast_player):
                 return
-
-            # skip if the cast player's parent also has airplay linked
-            # (we prefer the airplay bridge due to better sync performance)
-            if cast_player.protocol_parent_id:
-                parent_player = self.mass.players.get_player(cast_player.protocol_parent_id)
-                if parent_player:
-                    for protocol in parent_player.linked_output_protocols:
-                        if protocol.protocol_domain == "airplay":
-                            return
 
             bridge_client_id = get_bridge_client_id(cast_player)
-            if not bridge_client_id:
-                return
-
-            # Skip devices on the blocklist
+            assert bridge_client_id is not None  # validated by _should_have_bridge
             manufacturer = cast_player.device_info.manufacturer or ""
             model = cast_player.device_info.model or ""
-            if is_sendspin_cast_blocked(manufacturer, model):
-                self.logger.debug(
-                    "Skipping Sendspin Cast bridge for %s (%s / %s) — device is blocklisted",
-                    cast_player.display_name,
-                    manufacturer,
-                    model,
-                )
-                return
-
             sendspin_server = self.sendspin_server
-            if not sendspin_server:
-                self.logger.debug(
-                    "Sendspin provider not available, skipping bridge for %s",
-                    cast_player.display_name,
-                )
-                return
+            assert sendspin_server is not None  # validated by _should_have_bridge
 
             existing_client_id = self._find_existing_sendspin_client(
                 sendspin_server, bridge_client_id, cast_player
@@ -616,12 +660,17 @@ class SendspinBridgeManager:
         :param cast_player_id: The player ID to remove the bridge for.
         """
         async with self._lock:
-            if bridge := self._bridges.pop(cast_player_id, None):
-                await bridge.stop()
+            bridge = self._bridges.pop(cast_player_id, None)
+            client_id = bridge.bridge_client_id if bridge else None
             claimed_client_id = self._claimed_clients.pop(cast_player_id, None)
             if claimed_client_id and (unsub := self._rebridge_unsubs.pop(claimed_client_id, None)):
                 with suppress(Exception):
                     unsub()
+            target_id = client_id or claimed_client_id
+            if target_id:
+                await self.mass.players.unregister(target_id, permanent=True)
+            if bridge:
+                await bridge.stop()
 
             self.logger.debug("Sendspin bridge removed for Chromecast player %s", cast_player_id)
 
@@ -638,6 +687,8 @@ class SendspinBridgeManager:
     async def close(self) -> None:
         """Stop all bridges and unsubscribe event listeners."""
         self._unsub_config_updated()
+        self._unsub_player_updated()
+        self._unsub_providers_updated()
         for unsub in list(self._rebridge_unsubs.values()):
             with suppress(Exception):
                 unsub()
@@ -715,6 +766,27 @@ class SendspinBridgeManager:
         :param cast_player_id: The player ID to look up.
         """
         return self._bridges.get(cast_player_id)
+
+    async def _on_player_updated(self, event: MassEvent) -> None:
+        """Re-evaluate bridge state for cast players affected by a player update."""
+        if not event.object_id:
+            return
+        affected: list[ChromecastPlayer] = []
+        for player in self.provider.players:
+            cast_player = cast("ChromecastPlayer", player)
+            if event.object_id in {cast_player.player_id, cast_player.protocol_parent_id}:
+                affected.append(cast_player)
+        for cast_player in affected:
+            await self.evaluate_bridge(cast_player)
+
+    async def _on_providers_updated(self, event: MassEvent) -> None:
+        """Re-evaluate cast bridges when the airplay provider availability flips."""
+        airplay_available = self.mass.get_provider("airplay") is not None
+        if airplay_available == self._airplay_was_available:
+            return
+        self._airplay_was_available = airplay_available
+        for player in self.provider.players:
+            await self.evaluate_bridge(cast("ChromecastPlayer", player))
 
     async def _on_player_config_updated(self, event: MassEvent) -> None:
         """Handle player config updates for bridged Sendspin Chromecast players."""
