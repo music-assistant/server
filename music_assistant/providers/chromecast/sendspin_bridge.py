@@ -671,6 +671,9 @@ class SendspinBridgeManager:
                 await self.mass.players.unregister(target_id, permanent=True)
             if bridge:
                 await bridge.stop()
+            elif claimed_client_id and (sendspin_server := self.sendspin_server):
+                with suppress(Exception):
+                    await sendspin_server.remove_client(claimed_client_id)
 
             self.logger.debug("Sendspin bridge removed for Chromecast player %s", cast_player_id)
 
