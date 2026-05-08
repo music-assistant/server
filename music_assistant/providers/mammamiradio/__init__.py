@@ -10,6 +10,7 @@ See: https://github.com/florianhorner/mammamiradio
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
@@ -52,7 +53,7 @@ SUPPORTED_FEATURES = {
 }
 
 CONF_MAMMAMIRADIO_URL = "mammamiradio_url"
-DEFAULT_URL = "http://localhost:8100"
+DEFAULT_URL = "http://localhost:8000"
 RADIO_ITEM_ID = "mammamiradio"
 RADIO_NAME = "mammamiradio"
 RADIO_DESCRIPTION = (
@@ -113,9 +114,7 @@ class MammamiradioProvider(MusicProvider):
         url = self._stream_url_root()
         try:
             timeout = aiohttp.ClientTimeout(total=REACHABILITY_TIMEOUT)
-            async with self.mass.http_session.get(
-                f"{url}/api/capabilities", timeout=timeout
-            ) as response:
+            async with self.mass.http_session.get(f"{url}/healthz", timeout=timeout) as response:
                 if response.status >= 400:
                     self.logger.warning(
                         "mammamiradio reachability check returned HTTP %s for %s; "
@@ -182,10 +181,13 @@ class MammamiradioProvider(MusicProvider):
 
         # Verify the stream endpoint is reachable; raise a clean
         # ProviderUnavailableError so MA reports "source unavailable"
-        # rather than crashing inside ffmpeg.
+        # rather than crashing inside ffmpeg. We use GET because Icecast and
+        # FastAPI/uvicorn-based stream endpoints commonly do not implement HEAD
+        # (returning 405); the response body is never read — the connection is
+        # released as soon as we exit the context manager.
         try:
             timeout = aiohttp.ClientTimeout(total=REACHABILITY_TIMEOUT)
-            async with self.mass.http_session.head(
+            async with self.mass.http_session.get(
                 stream_path, timeout=timeout, allow_redirects=True
             ) as response:
                 if response.status >= 400:
@@ -213,9 +215,10 @@ class MammamiradioProvider(MusicProvider):
         )
 
     def _stream_url_root(self) -> str:
-        """Return the configured mammamiradio URL with any trailing slash trimmed."""
-        url = str(self.config.get_value(CONF_MAMMAMIRADIO_URL) or DEFAULT_URL).strip()
-        return url.rstrip("/")
+        """Return the configured mammamiradio URL stripped of query, fragment, and trailing slash."""
+        raw = str(self.config.get_value(CONF_MAMMAMIRADIO_URL) or DEFAULT_URL).strip()
+        parts = urlsplit(raw)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
     def _build_radio(self) -> Radio:
         """Construct the single Radio object for mammamiradio."""
