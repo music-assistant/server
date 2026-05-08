@@ -106,33 +106,29 @@ class MammamiradioProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider.
 
-        Performs a non-fatal reachability check against the configured URL.
-        If the addon is unreachable, the provider stays loaded so the user
-        can fix the URL in the UI; the error is surfaced when the user
-        actually tries to play the stream (see ``get_stream_details``).
+        Performs a reachability check against ``${url}/healthz`` and raises
+        ``ProviderUnavailableError`` on failure. This is the canonical place
+        for liveness detection in Music Assistant providers — matches the
+        pattern in RadioBrowser (``stats()`` call) and surfaces a clean
+        unavailable error to MA at provider load time rather than letting the
+        stream URL fail silently inside ffmpeg later.
+
+        Stream-time probing is intentionally absent (see ``get_stream_details``).
         """
         url = self._stream_url_root()
         try:
             timeout = aiohttp.ClientTimeout(total=REACHABILITY_TIMEOUT)
             async with self.mass.http_session.get(f"{url}/healthz", timeout=timeout) as response:
                 if response.status >= 400:
-                    self.logger.warning(
-                        "mammamiradio reachability check returned HTTP %s for %s; "
-                        "the provider is loaded but playback may fail until the "
-                        "addon is reachable.",
-                        response.status,
-                        url,
+                    msg = (
+                        f"mammamiradio addon at {url} returned HTTP {response.status} "
+                        f"on /healthz; the addon is reachable but unhealthy."
                     )
-                else:
-                    self.logger.info("mammamiradio addon reachable at %s", url)
+                    raise ProviderUnavailableError(msg)
+                self.logger.info("mammamiradio addon reachable at %s", url)
         except (aiohttp.ClientError, TimeoutError) as err:
-            self.logger.warning(
-                "mammamiradio addon unreachable at %s: %s; "
-                "the provider is loaded but playback may fail until the "
-                "addon is reachable.",
-                url,
-                err,
-            )
+            msg = f"mammamiradio addon unreachable at {url}: {err}"
+            raise ProviderUnavailableError(msg) from err
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
@@ -171,37 +167,27 @@ class MammamiradioProvider(MusicProvider):
         return self._build_radio()
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get stream details for the mammamiradio radio entry."""
+        """Get stream details for the mammamiradio radio entry.
+
+        No stream-time HTTP probe. Liveness is checked at provider init via
+        ``handle_async_init`` (probes ``/healthz``); stream failures from a
+        running-but-broken addon surface naturally via MA's ffmpeg pipeline.
+        This matches the dominant pattern across MA's live-radio providers
+        (NTS, RadioBrowser, ORF Radiothek): probe at init, pass through at
+        stream-details time.
+
+        Probing the stream URL itself is counterproductive here: GET on an
+        Icecast stream immediately starts pushing audio bytes which we never
+        consume; HEAD returns 200 even when the source is offline (a known
+        Icecast quirk). A dedicated ``/healthz`` endpoint is the only reliable
+        liveness signal, and that check belongs at init.
+        """
         if item_id != RADIO_ITEM_ID:
             msg = f"mammamiradio: radio station {item_id} not found"
             raise MediaNotFoundError(msg)
 
         url_root = self._stream_url_root()
         stream_path = f"{url_root}/stream"
-
-        # Verify the stream endpoint is reachable; raise a clean
-        # ProviderUnavailableError so MA reports "source unavailable"
-        # rather than crashing inside ffmpeg. We use GET because Icecast and
-        # FastAPI/uvicorn-based stream endpoints commonly do not implement HEAD
-        # (returning 405); the response body is never read — the connection is
-        # released as soon as we exit the context manager.
-        try:
-            timeout = aiohttp.ClientTimeout(total=REACHABILITY_TIMEOUT)
-            async with self.mass.http_session.get(
-                stream_path, timeout=timeout, allow_redirects=True
-            ) as response:
-                # 405 is treated as reachable: some Icecast configurations reject
-                # plain GET on the stream mount (expecting Icy headers) and reply
-                # 405; ffmpeg will still play the stream correctly.
-                if response.status >= 400 and response.status != 405:
-                    msg = (
-                        f"mammamiradio: stream endpoint returned HTTP "
-                        f"{response.status} at {stream_path}"
-                    )
-                    raise ProviderUnavailableError(msg)
-        except (aiohttp.ClientError, TimeoutError) as err:
-            msg = f"mammamiradio: addon unreachable at {stream_path}: {err}"
-            raise ProviderUnavailableError(msg) from err
 
         return StreamDetails(
             provider=self.instance_id,

@@ -105,20 +105,35 @@ async def test_handle_async_init_passes_when_reachable(
     assert called_url == "http://localhost:8000/healthz"
 
 
-async def test_handle_async_init_logs_but_does_not_raise_when_unreachable(
-    provider: MammamiradioProvider,
-    mass_mock: MagicMock,
-    caplog: pytest.LogCaptureFixture,
+async def test_handle_async_init_raises_when_unreachable(
+    provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Path 2 — unreachable addon: init logs a clean warning and does NOT raise."""
+    """Path 2 — unreachable addon: init raises ProviderUnavailableError.
+
+    The provider is the canonical place for liveness detection (matches
+    RadioBrowser's pattern). Raising here prevents MA from loading a
+    non-functional provider and surfaces a clean unavailable error to the
+    user instead of letting the stream URL fail silently inside ffmpeg.
+    """
     mass_mock.http_session.get = MagicMock(
         return_value=_make_failing_ctx(aiohttp.ClientConnectionError("nope"))
     )
-    # Must not raise even though the addon is offline.
-    await provider.handle_async_init()
-    assert any("unreachable" in rec.message.lower() for rec in caplog.records), (
-        "expected a warning about the addon being unreachable"
-    )
+    with pytest.raises(ProviderUnavailableError):
+        await provider.handle_async_init()
+
+
+async def test_handle_async_init_raises_on_http_error(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """5xx (or any >=400) from /healthz raises ProviderUnavailableError.
+
+    Distinct from the unreachable case: the addon process is up enough to
+    respond, but reports unhealthy. Surfaces as ProviderUnavailableError
+    same as the unreachable case so MA treats both consistently.
+    """
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(503))
+    with pytest.raises(ProviderUnavailableError):
+        await provider.handle_async_init()
 
 
 # ---------------------------------------------------------------------------
@@ -236,24 +251,23 @@ async def test_get_stream_details_uses_configured_url_with_stream_suffix(
     assert details.can_seek is False
 
 
-async def test_get_stream_details_raises_provider_unavailable_when_offline(
+async def test_get_stream_details_does_not_probe_at_stream_time(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Path 11 — addon offline at stream time raises ProviderUnavailableError."""
-    mass_mock.http_session.get = MagicMock(
-        return_value=_make_failing_ctx(aiohttp.ClientConnectionError("offline"))
-    )
-    with pytest.raises(ProviderUnavailableError):
-        await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    """Stream-time has no HTTP probe; liveness is checked at init only.
 
-
-async def test_get_stream_details_raises_provider_unavailable_on_http_error(
-    provider: MammamiradioProvider, mass_mock: MagicMock
-) -> None:
-    """5xx from the addon raises ProviderUnavailableError too (sibling of Path 11)."""
-    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(503))
-    with pytest.raises(ProviderUnavailableError):
-        await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    This is intentional per MA convention — NTS/RadioBrowser/ORF Radiothek
+    all do the same. ``get_stream_details`` returns a passthrough
+    ``StreamDetails``; failures at the actual stream URL surface naturally
+    via MA's ffmpeg pipeline. Locks the contract that no http_session calls
+    happen during stream-details resolution.
+    """
+    mass_mock.http_session.get = MagicMock()
+    mass_mock.http_session.head = MagicMock()
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+    mass_mock.http_session.get.assert_not_called()
+    mass_mock.http_session.head.assert_not_called()
 
 
 async def test_get_stream_details_with_invalid_id_raises_media_not_found(
@@ -262,34 +276,6 @@ async def test_get_stream_details_with_invalid_id_raises_media_not_found(
     """Unknown item id at stream time raises MediaNotFoundError, not unavailable."""
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details("does-not-exist", MediaType.RADIO)
-
-
-async def test_get_stream_details_uses_get_not_head_for_reachability(
-    provider: MammamiradioProvider, mass_mock: MagicMock
-) -> None:
-    """Reachability check uses GET so Icecast/uvicorn (which 405 on HEAD) works."""
-    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
-    mass_mock.http_session.head = MagicMock()
-    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
-    assert details.path == "http://localhost:8000/stream"
-    mass_mock.http_session.get.assert_called_once()
-    mass_mock.http_session.head.assert_not_called()
-
-
-async def test_get_stream_details_tolerates_405_from_stream_endpoint(
-    provider: MammamiradioProvider, mass_mock: MagicMock
-) -> None:
-    """Regression: a 405 from the stream endpoint must not raise.
-
-    Locks codex bot's PR #3836 P1 finding plus the independent review that
-    flagged the original >=400 condition would still false-positive on a
-    valid Icecast mount that rejects bare GET (expecting Icy headers). The
-    provider must treat 405 as reachable so ffmpeg can connect with the
-    correct headers and play the stream.
-    """
-    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(405))
-    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
-    assert details.path == "http://localhost:8000/stream"
 
 
 # ---------------------------------------------------------------------------
