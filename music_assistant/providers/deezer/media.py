@@ -62,6 +62,7 @@ class DeezerMediaManager:
         self.instance_id = provider.instance_id
         self.domain = provider.domain
         self.logger = provider.logger
+        self._audiobook_ids_cache: set[str] | None = None
 
     # -- Pagination helper --
 
@@ -108,12 +109,42 @@ class DeezerMediaManager:
                     seen_artist_names.add(artist.name)
                     yield artist
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve all library albums from Deezer."""
+    async def _get_audiobook_ids_in_albums(self) -> set[str]:
+        """Identify which favorite album IDs are actually audiobooks.
+
+        Deezer stores audiobook favorites in the albums list, not in the
+        dedicated (deprecated) audiobook favorites endpoint.  We use
+        check_audiobook_ids to tell them apart.  Result is cached for the
+        lifetime of this manager instance so both get_library_albums and
+        get_library_audiobooks can share it without extra API calls.
+        """
+        if self._audiobook_ids_cache is not None:
+            return self._audiobook_ids_cache
+        album_ids: list[str] = []
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_albums,
             lambda r: r.user_favorites.albums,
         ):
+            album_ids.append(edge.node.id)
+        if not album_ids:
+            self._audiobook_ids_cache = set()
+        else:
+            self._audiobook_ids_cache = await self.provider.gql_client.check_audiobook_ids(
+                album_ids
+            )
+        return self._audiobook_ids_cache
+
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+        """Retrieve all library albums from Deezer."""
+        # Deezer returns audiobooks mixed into the favorite albums list.
+        # Use check_audiobook_ids to identify and exclude them.
+        audiobook_ids = await self._get_audiobook_ids_in_albums()
+        async for edge in self._iter_paged(
+            self.provider.gql_client.get_favorite_albums,
+            lambda r: r.user_favorites.albums,
+        ):
+            if edge.node.id in audiobook_ids:
+                continue
             item = parse_album(self.provider, edge.node)
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
@@ -176,18 +207,34 @@ class DeezerMediaManager:
             yield item
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
-        """Retrieve library/subscribed audiobooks from Deezer."""
+        """Retrieve library/subscribed audiobooks from Deezer.
+
+        Checks both the dedicated (deprecated) audiobook favorites endpoint
+        and the regular favorite albums list, since Deezer stores audiobook
+        favorites in the albums list.
+        """
+        seen_ids: set[str] = set()
+        # 1. Dedicated audiobook favorites (deprecated but may still have entries)
         result = await self.provider.gql_client.get_favorite_audiobooks()
-        if result is None or result.favorites.raw_audiobooks is None:
-            return
-        for raw in result.favorites.raw_audiobooks:
+        if result is not None and result.favorites.raw_audiobooks is not None:
+            for raw in result.favorites.raw_audiobooks:
+                try:
+                    item = await self.get_audiobook(raw.id)
+                except MediaNotFoundError:
+                    continue
+                seen_ids.add(raw.id)
+                if raw.favorited_at:
+                    item.date_added = parse_date(raw.favorited_at)
+                yield item
+        # 2. Audiobooks stored as favorite albums
+        audiobook_ids = await self._get_audiobook_ids_in_albums()
+        for ab_id in audiobook_ids:
+            if ab_id in seen_ids:
+                continue
             try:
-                item = await self.get_audiobook(raw.id)
+                yield await self.get_audiobook(ab_id)
             except MediaNotFoundError:
                 continue
-            if raw.favorited_at:
-                item.date_added = parse_date(raw.favorited_at)
-            yield item
 
     # -- Search --
 
@@ -629,7 +676,7 @@ class DeezerMediaManager:
         elif item.media_type == MediaType.PODCAST:
             await self.provider.gql_client.add_podcast_to_favorite(podcast_id=item.item_id)
         elif item.media_type == MediaType.AUDIOBOOK:
-            await self.provider.gql_client.add_audiobook_to_favorite(audiobook_id=item.item_id)
+            await self.provider.gql_client.add_album_to_favorite(album_id=item.item_id)
         else:
             raise NotImplementedError
         return True
@@ -647,7 +694,7 @@ class DeezerMediaManager:
         elif media_type == MediaType.PODCAST:
             await self.provider.gql_client.remove_podcast_from_favorite(podcast_id=prov_item_id)
         elif media_type == MediaType.AUDIOBOOK:
-            await self.provider.gql_client.remove_audiobook_from_favorite(audiobook_id=prov_item_id)
+            await self.provider.gql_client.remove_album_from_favorite(album_id=prov_item_id)
         else:
             raise NotImplementedError
         return True

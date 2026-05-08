@@ -120,10 +120,25 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
                     remotely_accessible=True,
                 )
             )
+        # Use track contributors as album artists since the track-level album
+        # sub-query doesn't include its own contributors.  This ensures the
+        # album gets stored with artist references when added to the library.
+        album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
+        for edge in track.contributors.edges:
+            if edge.node is not None and edge.roles and "MAIN" in edge.roles:
+                album_artists.append(
+                    ItemMapping(
+                        media_type=MediaType.ARTIST,
+                        item_id=edge.node.id,
+                        provider=provider.instance_id,
+                        name=edge.node.name,
+                    )
+                )
         album = Album(
             item_id=track.album.id,
             provider=provider.instance_id,
             name=track.album.display_title,
+            artists=album_artists,
             provider_mappings={
                 ProviderMapping(
                     item_id=track.album.id,

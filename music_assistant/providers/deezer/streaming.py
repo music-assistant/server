@@ -105,6 +105,12 @@ class DeezerStreamingManager:
             return await self._get_radio_stream_details(item_id)
         if media_type == MediaType.PODCAST_EPISODE:
             return await self._get_podcast_episode_stream_details(item_id)
+        if media_type == MediaType.AUDIOBOOK:
+            return await self._get_audiobook_stream_details(item_id)
+        return await self._get_track_stream_details(item_id)
+
+    async def _get_track_stream_details(self, item_id: str) -> StreamDetails:
+        """Return stream details for a regular Deezer track."""
         url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(item_id)
         url = url_details["sources"][0]["url"]
         size_key = f"FILESIZE_{url_details['format']}"
@@ -123,6 +129,62 @@ class DeezerStreamingManager:
                 "track_id": str(song_data["SNG_ID"]),
             },
             size=size,
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    async def _get_audiobook_stream_details(self, item_id: str) -> StreamDetails:
+        """Return stream details for a Deezer audiobook.
+
+        Resolves all chapter IDs and durations. Each chapter is streamed
+        as a regular encrypted track via get_audio_stream.
+        """
+        result = await self.provider.gql_client.get_audiobook(
+            audiobook_id=item_id, chapters_first=200
+        )
+        if result is None:
+            raise MediaNotFoundError(f"Audiobook {item_id} not found on Deezer")
+        all_edges = list(result.chapters.edges)
+        page_info = result.chapters.page_info
+        while page_info.has_next_page:
+            next_page = await self.provider.gql_client.get_audiobook(
+                audiobook_id=item_id,
+                chapters_first=200,
+                chapters_after=page_info.end_cursor,
+            )
+            if next_page is None:
+                break
+            all_edges.extend(next_page.chapters.edges)
+            page_info = next_page.chapters.page_info
+
+        chapter_ids: list[str] = []
+        chapter_durations_ms: list[int] = []
+        for edge in all_edges:
+            if edge.node is None:
+                continue
+            chapter_ids.append(edge.node.id)
+            chapter_durations_ms.append(edge.node.duration * 1000)
+
+        if not chapter_ids:
+            raise MediaNotFoundError(f"No chapters found for audiobook {item_id}")
+
+        # Probe the first chapter to determine audio format
+        first_url_details, _ = await self.provider.gw_client.get_deezer_track_urls(chapter_ids[0])
+        total_duration = sum(chapter_durations_ms) // 1000
+
+        return StreamDetails(
+            item_id=item_id,
+            provider=self.instance_id,
+            media_type=MediaType.AUDIOBOOK,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(first_url_details["format"].split("_")[0])
+            ),
+            stream_type=StreamType.CUSTOM,
+            duration=total_duration,
+            data={
+                "chapter_ids": chapter_ids,
+                "chapter_durations_ms": chapter_durations_ms,
+            },
             can_seek=True,
             allow_seek=True,
         )
@@ -184,6 +246,70 @@ class DeezerStreamingManager:
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
+        if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
+            async for chunk in self._stream_audiobook_chapters(streamdetails, seek_position):
+                yield chunk
+            return
+        async for chunk in self._stream_encrypted_track(streamdetails, seek_position):
+            yield chunk
+
+    async def _stream_audiobook_chapters(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream audiobook by iterating through encrypted chapter tracks."""
+        chapter_ids: list[str] = streamdetails.data["chapter_ids"]
+        chapter_durations_ms: list[int] = streamdetails.data["chapter_durations_ms"]
+
+        # Resolve which chapter to start from based on seek_position
+        start_chapter = 0
+        chapter_seek = 0
+        if seek_position > 0:
+            seek_ms = seek_position * 1000
+            accumulated_ms = 0
+            for i, dur_ms in enumerate(chapter_durations_ms):
+                if accumulated_ms + dur_ms > seek_ms:
+                    start_chapter = i
+                    chapter_seek = (seek_ms - accumulated_ms) // 1000
+                    break
+                accumulated_ms += dur_ms
+            else:
+                start_chapter = max(len(chapter_ids) - 1, 0)
+                chapter_seek = 0
+
+        for i in range(start_chapter, len(chapter_ids)):
+            chapter_id = chapter_ids[i]
+            try:
+                url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(
+                    chapter_id
+                )
+            except Exception:
+                self.logger.warning("Failed to get URL for audiobook chapter %s", chapter_id)
+                continue
+            url = url_details["sources"][0]["url"]
+            size_key = f"FILESIZE_{url_details['format']}"
+            size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
+            duration = int(song_data["DURATION"])
+            chapter_details = StreamDetails(
+                item_id=chapter_id,
+                provider=self.instance_id,
+                audio_format=streamdetails.audio_format,
+                stream_type=StreamType.CUSTOM,
+                duration=duration,
+                data={
+                    "url": url,
+                    "format": url_details["format"],
+                    "track_id": str(song_data["SNG_ID"]),
+                },
+                size=size,
+            )
+            seek = chapter_seek if i == start_chapter else 0
+            async for chunk in self._stream_encrypted_track(chapter_details, seek):
+                yield chunk
+
+    async def _stream_encrypted_track(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream and decrypt a single encrypted Deezer track."""
         blowfish_key = self._get_blowfish_key(streamdetails.data["track_id"])
         chunk_index = 0
         timeout = ClientTimeout(total=None, connect=30, sock_read=600)
