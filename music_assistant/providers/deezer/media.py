@@ -238,7 +238,7 @@ class DeezerMediaManager:
 
     # -- Search --
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7)  # type: ignore[type-var]
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -312,7 +312,7 @@ class DeezerMediaManager:
 
     # -- Item getters --
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if prov_artist_id.startswith("personal_artist_"):
@@ -341,7 +341,7 @@ class DeezerMediaManager:
         apply_web_url(item, result)
         return item
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if prov_album_id.startswith("personal_album_"):
@@ -383,7 +383,7 @@ class DeezerMediaManager:
         apply_web_url(item, result)
         return item
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         # Personal tracks (negative IDs) don't exist in the GQL API
@@ -398,7 +398,7 @@ class DeezerMediaManager:
             raise MediaNotFoundError(f"Track {prov_track_id} not found on Deezer")
         return parse_track(self.provider, result)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if virtual := await self.provider.browse_manager.get_virtual_playlist(prov_playlist_id):
@@ -409,7 +409,7 @@ class DeezerMediaManager:
         is_editable = result.owner is not None and result.owner.id == self.provider._user_id
         return parse_playlist(self.provider, result, is_editable=is_editable)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio/livestream details by id."""
         result = await self.provider.gql_client.get_livestream(livestream_id=prov_radio_id)
@@ -417,7 +417,7 @@ class DeezerMediaManager:
             raise MediaNotFoundError(f"Radio {prov_radio_id} not found on Deezer")
         return parse_radio(self.provider, result)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         result = await self.provider.gql_client.get_podcast(podcast_id=prov_podcast_id)
@@ -428,7 +428,7 @@ class DeezerMediaManager:
             podcast.total_episodes = len(result.raw_episodes)
         return podcast
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         result = await self.provider.gql_client.get_podcast_episode(
@@ -449,7 +449,7 @@ class DeezerMediaManager:
         )
         return parse_podcast_episode(self.provider, result, podcast_mapping, 0, podcast_image_url)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         result = await self.provider.gql_client.get_audiobook(
@@ -475,7 +475,7 @@ class DeezerMediaManager:
 
     # -- Content getters --
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30)  # type: ignore[type-var]
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
         if prov_album_id.startswith("personal_album_"):
@@ -539,7 +539,7 @@ class DeezerMediaManager:
             cursor = result.podcast_episode_bookmarks.page_info.end_cursor
         return bookmarks
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24)  # type: ignore[type-var]
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
         """Fetch and cache all episodes for a podcast.
 
@@ -609,7 +609,7 @@ class DeezerMediaManager:
                 episodes.append(cached_ep)
         return episodes
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7)  # type: ignore[type-var]
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
         if prov_artist_id.startswith("personal_artist_"):
@@ -631,7 +631,7 @@ class DeezerMediaManager:
             parse_album(self.provider, edge.node) for edge in all_edges if edge.node is not None
         ]
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7)  # type: ignore[type-var]
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
         if prov_artist_id.startswith("personal_artist_"):
@@ -653,7 +653,7 @@ class DeezerMediaManager:
             parse_track(self.provider, edge.node) for edge in all_edges if edge.node is not None
         ]
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24)  # type: ignore[type-var]
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         result = await self.provider.gql_client.get_similar_tracks(track_id=prov_track_id, nb=limit)

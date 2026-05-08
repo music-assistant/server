@@ -537,7 +537,7 @@ class DeezerBrowseManager:
 
     # -- Recommendations --
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get Deezer's recommendations including Flow and personalized content."""
         result: list[RecommendationFolder] = []
@@ -709,7 +709,7 @@ class DeezerBrowseManager:
 
     # -- Recently played (shared by browse and recommendations) --
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_recently_played_items(self) -> list[MediaItemType]:
         """Get recently played items (cached)."""
         result = await self.provider.gql_client.get_recently_played(first=50)
@@ -825,7 +825,7 @@ class DeezerBrowseManager:
             return await self._get_shaker_tracks(shaker_id)
         return await self._get_regular_playlist_tracks(prov_playlist_id)
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_smart_tracklist_playlists(self) -> list[Playlist]:
         """Get SmartTracklist items from Made For Me as virtual playlists (cached).
 
@@ -853,7 +853,7 @@ class DeezerBrowseManager:
                 )
         return playlists
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_flow_tracks(self) -> list[Track]:
         """Get Flow tracks by fetching 4 batches in a single request.
 
@@ -877,7 +877,7 @@ class DeezerBrowseManager:
                     tracks.append(parse_track(self.provider, ft.track))
         return tracks
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_recommended_tracks(self) -> list[Track]:
         """Get cached recommended tracks (hot tracks)."""
         recs = await self.provider.gql_client.get_recommendations(
@@ -891,7 +891,7 @@ class DeezerBrowseManager:
             return []
         return [parse_track(self.provider, ht) for ht in recs.recommendations.hot_tracks]
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_chart_tracks(self) -> list[Track]:
         """Get cached chart tracks."""
         charts = await self.provider.gql_client.get_charts(
@@ -906,7 +906,7 @@ class DeezerBrowseManager:
             if edge.node is not None
         ]
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_flow_config_tracks(self, config_id: str) -> list[Track]:
         """Get tracks for a mood/genre Flow config.
 
@@ -927,7 +927,7 @@ class DeezerBrowseManager:
                     tracks.append(parse_track(self.provider, ft.track))
         return tracks
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_smart_tracklist_tracks(self, tracklist_id: str) -> list[Track]:
         """Get tracks for a SmartTracklist.
 
@@ -981,7 +981,7 @@ class DeezerBrowseManager:
             if edge.node
         ]
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_user_chart_tracks(self) -> list[Track]:
         """Get the user's most listened tracks."""
         result = await self.provider.gql_client.get_user_charts(tracks_first=50)
@@ -1006,7 +1006,7 @@ class DeezerBrowseManager:
         cache_key = f"_get_regular_playlist_tracks.{prov_playlist_id}"
         await self.mass.cache.delete(key=cache_key, provider=self.instance_id)
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3)  # type: ignore[type-var]
     async def _get_regular_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
         """Get tracks for regular Deezer playlists (cached)."""
         result = await self.provider.gql_client.get_playlist(playlist_id=prov_playlist_id)
@@ -1027,7 +1027,7 @@ class DeezerBrowseManager:
             if edge.node is not None
         ]
 
-    @use_cache(3600)
+    @use_cache(3600)  # type: ignore[type-var]
     async def _get_flow_cover(self) -> str | None:
         """Get the cover URL for the user's Flow."""
         result = await self.provider.gql_client.get_flow()

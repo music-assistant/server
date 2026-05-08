@@ -146,7 +146,9 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
                     provider_instance=provider.instance_id,
                 )
             },
-            metadata=MediaItemMetadata(images=album_images) if album_images else None,
+            metadata=MediaItemMetadata(images=album_images)
+            if album_images
+            else MediaItemMetadata(),
         )
 
     name, version = parse_title_and_version(track.title)
