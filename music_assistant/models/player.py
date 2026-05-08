@@ -1678,7 +1678,8 @@ class Player(ABC):
         ):
             return PlayerMedia(
                 uri=source.metadata.uri or source.id,
-                media_type=MediaType.PLUGIN_SOURCE,
+                # fallback for providers using StreamMetadata which lacks media_type
+                media_type=getattr(source.metadata, 'media_type', MediaType.PLUGIN_SOURCE),
                 title=source.metadata.title,
                 artist=source.metadata.artist,
                 album=source.metadata.album,
