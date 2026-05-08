@@ -888,8 +888,7 @@ class SpotifyConnectProvider(PluginProvider):
         We fire QUEUE_ADDED frontend-only (no backend _queues entry) so the frontend
         can render the seek bar correctly, without causing the backend to route
         play/pause/play_media commands to us.
-        """
-        
+        """        
         player = self.mass.players.get_player(player_id)
         metadata = self._source_details.metadata
 
