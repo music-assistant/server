@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
+from .helpers import fetch_all_audiobook_chapter_edges
 from .parsers import (
     apply_web_url,
     parse_album,
@@ -458,18 +459,9 @@ class DeezerMediaManager:
         if result is None:
             raise MediaNotFoundError(f"Audiobook {prov_audiobook_id} not found on Deezer")
         item = parse_audiobook(self.provider, result)
-        all_edges = list(result.chapters.edges)
-        page_info = result.chapters.page_info
-        while page_info.has_next_page:
-            next_page = await self.provider.gql_client.get_audiobook(
-                audiobook_id=prov_audiobook_id,
-                chapters_first=200,
-                chapters_after=page_info.end_cursor,
-            )
-            if next_page is None:
-                break
-            all_edges.extend(next_page.chapters.edges)
-            page_info = next_page.chapters.page_info
+        all_edges = await fetch_all_audiobook_chapter_edges(
+            self.provider.gql_client, prov_audiobook_id
+        )
         item.metadata.chapters = parse_audiobook_chapters(all_edges)
         return item
 

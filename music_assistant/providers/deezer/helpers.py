@@ -18,6 +18,9 @@ from music_assistant_models.media_items import (
 )
 
 if TYPE_CHECKING:
+    from deezer_python_gql import DeezerGQLClient
+    from deezer_python_gql.generated.get_audiobook import GetAudiobookAudiobookChaptersEdges
+
     from .provider import DeezerProvider
 
 # -- Virtual playlist IDs --
@@ -116,3 +119,32 @@ def create_virtual_playlist(
         is_dynamic=is_dynamic,
         owner="Deezer",
     )
+
+
+async def fetch_all_audiobook_chapter_edges(
+    gql_client: DeezerGQLClient,
+    audiobook_id: str,
+    page_size: int = 200,
+) -> list[GetAudiobookAudiobookChaptersEdges]:
+    """Paginate through all chapters of an audiobook and return the full edge list.
+
+    :param gql_client: The Deezer GQL client to use.
+    :param audiobook_id: The audiobook ID to fetch chapters for.
+    :param page_size: Number of chapters per page.
+    """
+    result = await gql_client.get_audiobook(audiobook_id=audiobook_id, chapters_first=page_size)
+    if result is None:
+        return []
+    all_edges = list(result.chapters.edges)
+    page_info = result.chapters.page_info
+    while page_info.has_next_page:
+        next_page = await gql_client.get_audiobook(
+            audiobook_id=audiobook_id,
+            chapters_first=page_size,
+            chapters_after=page_info.end_cursor,
+        )
+        if next_page is None:
+            break
+        all_edges.extend(next_page.chapters.edges)
+        page_info = next_page.chapters.page_info
+    return all_edges

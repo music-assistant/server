@@ -24,7 +24,7 @@ USER_AGENT_HEADER = (
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
 
 
-class DeezerGWError(BaseException):
+class DeezerGWError(Exception):
     """Exception type for GWClient related exceptions."""
 
 

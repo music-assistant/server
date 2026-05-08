@@ -86,6 +86,38 @@ if TYPE_CHECKING:
 DEEZER_CDN_IMAGE = "https://e-cdns-images.dzcdn.net/images"
 
 
+def _cover_image(provider: DeezerProvider, cover: object | None) -> MediaItemImage | None:
+    """Create a THUMB image from a GQL cover/picture object with a `.urls` list.
+
+    Returns None when the cover is absent or has no URLs.
+    """
+    if cover and hasattr(cover, "urls") and cover.urls:
+        return MediaItemImage(
+            type=ImageType.THUMB,
+            path=cover.urls[0],
+            provider=provider.instance_id,
+            remotely_accessible=True,
+        )
+    return None
+
+
+def _provider_mapping(
+    provider: DeezerProvider,
+    item_id: str,
+    *,
+    available: bool = False,
+    is_unique: bool = False,
+) -> ProviderMapping:
+    """Create a ProviderMapping for the given item."""
+    return ProviderMapping(
+        item_id=item_id,
+        provider_domain=provider.domain,
+        provider_instance=provider.instance_id,
+        available=available,
+        is_unique=is_unique,
+    )
+
+
 # -- GQL model parsers --
 
 
@@ -111,15 +143,8 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
     album: Album | None = None
     if track.album is not None:
         album_images: UniqueList[MediaItemImage] = UniqueList()
-        if track.album.cover and track.album.cover.urls:
-            album_images.append(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=track.album.cover.urls[0],
-                    provider=provider.instance_id,
-                    remotely_accessible=True,
-                )
-            )
+        if img := _cover_image(provider, track.album.cover):
+            album_images.append(img)
         # Use track contributors as album artists since the track-level album
         # sub-query doesn't include its own contributors.  This ensures the
         # album gets stored with artist references when added to the library.
@@ -139,13 +164,7 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
             provider=provider.instance_id,
             name=track.album.display_title,
             artists=album_artists,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=track.album.id,
-                    provider_domain=provider.domain,
-                    provider_instance=provider.instance_id,
-                )
-            },
+            provider_mappings={_provider_mapping(provider, track.album.id)},
             metadata=MediaItemMetadata(images=album_images)
             if album_images
             else MediaItemMetadata(),
@@ -166,14 +185,7 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
         duration=track.duration,
         artists=artists,
         album=album,
-        provider_mappings={
-            ProviderMapping(
-                item_id=track.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-                available=True,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, track.id, available=True)},
         metadata=_parse_track_metadata(provider, track),
         track_number=track_number,
         position=position,
@@ -191,15 +203,9 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
 def _parse_track_metadata(provider: DeezerProvider, track: TrackFields) -> MediaItemMetadata:
     """Parse track metadata (images, explicit flag, lyrics) from a GQL track model."""
     metadata = MediaItemMetadata(explicit=track.is_explicit)
-    if track.album is not None and track.album.cover and track.album.cover.urls:
-        metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=track.album.cover.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if track.album is not None:
+        if img := _cover_image(provider, track.album.cover):
+            metadata.add_image(img)
     # Lyrics (only present on GetTrackTrack, not on fragment-based models)
     if hasattr(track, "lyrics") and track.lyrics is not None:
         if track.lyrics.text:
@@ -218,15 +224,8 @@ def _parse_track_metadata(provider: DeezerProvider, track: TrackFields) -> Media
 def parse_artist(provider: DeezerProvider, artist: ArtistFields) -> Artist:
     """Parse a GQL artist model to Music Assistant Artist."""
     images: UniqueList[MediaItemImage] = UniqueList()
-    if artist.picture and artist.picture.urls:
-        images.append(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=artist.picture.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if img := _cover_image(provider, artist.picture):
+        images.append(img)
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
     if artist.bio:
         metadata.description = artist.bio.summary or artist.bio.full
@@ -237,13 +236,7 @@ def parse_artist(provider: DeezerProvider, artist: ArtistFields) -> Artist:
         provider=provider.instance_id,
         name=artist.name,
         media_type=MediaType.ARTIST,
-        provider_mappings={
-            ProviderMapping(
-                item_id=artist.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, artist.id)},
         metadata=metadata,
     )
     if artist.is_favorite:
@@ -267,15 +260,8 @@ def parse_album(provider: DeezerProvider, album: AlbumFields) -> Album:
             )
 
     images: UniqueList[MediaItemImage] = UniqueList()
-    if album.cover and album.cover.urls:
-        images.append(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=album.cover.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if img := _cover_image(provider, album.cover):
+        images.append(img)
 
     deezer_type = album.type_
     album_type = map_album_type(deezer_type, name)
@@ -283,7 +269,7 @@ def parse_album(provider: DeezerProvider, album: AlbumFields) -> Album:
     year: int | None = None
     if album.release_date:
         with contextlib.suppress(ValueError, TypeError):
-            year = datetime.fromisoformat(str(album.release_date)).year
+            year = parse_date(str(album.release_date)).year
 
     item = Album(
         album_type=album_type,
@@ -294,13 +280,7 @@ def parse_album(provider: DeezerProvider, album: AlbumFields) -> Album:
         year=year,
         artists=artists,
         media_type=MediaType.ALBUM,
-        provider_mappings={
-            ProviderMapping(
-                item_id=album.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, album.id)},
         metadata=MediaItemMetadata(
             explicit=album.is_explicit,
             images=images,
@@ -325,15 +305,8 @@ def parse_playlist(
     :param is_editable: Whether the current user owns this playlist.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
-    if playlist.picture and playlist.picture.urls:
-        images.append(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=playlist.picture.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if img := _cover_image(provider, playlist.picture):
+        images.append(img)
     owner_name = "Unknown"
     if playlist.owner:
         owner_name = playlist.owner.name
@@ -350,14 +323,7 @@ def parse_playlist(
         provider=provider.instance_id,
         name=playlist.title,
         media_type=MediaType.PLAYLIST,
-        provider_mappings={
-            ProviderMapping(
-                item_id=playlist.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-                is_unique=is_editable,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, playlist.id, is_unique=is_editable)},
         metadata=metadata,
         is_editable=is_editable,
         owner=owner_name,
@@ -374,15 +340,8 @@ def parse_radio(provider: DeezerProvider, livestream: LivestreamFields) -> Radio
     :param livestream: A GQL livestream model inheriting from LivestreamFields.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
-    if livestream.cover and livestream.cover.urls:
-        images.append(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=livestream.cover.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if img := _cover_image(provider, livestream.cover):
+        images.append(img)
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
     if livestream.description:
         metadata.description = livestream.description
@@ -391,13 +350,7 @@ def parse_radio(provider: DeezerProvider, livestream: LivestreamFields) -> Radio
         provider=provider.instance_id,
         name=livestream.name,
         media_type=MediaType.RADIO,
-        provider_mappings={
-            ProviderMapping(
-                item_id=livestream.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, livestream.id)},
         metadata=metadata,
     )
 
@@ -409,15 +362,8 @@ def parse_podcast(provider: DeezerProvider, podcast: PodcastFields) -> Podcast:
     :param podcast: A GQL podcast model inheriting from PodcastFields.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
-    if podcast.cover and podcast.cover.urls:
-        images.append(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=podcast.cover.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if img := _cover_image(provider, podcast.cover):
+        images.append(img)
     metadata = MediaItemMetadata(
         images=images,
         explicit=podcast.is_explicit,
@@ -429,13 +375,7 @@ def parse_podcast(provider: DeezerProvider, podcast: PodcastFields) -> Podcast:
         provider=provider.instance_id,
         name=podcast.display_title,
         media_type=MediaType.PODCAST,
-        provider_mappings={
-            ProviderMapping(
-                item_id=podcast.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, podcast.id)},
         metadata=metadata,
     )
     if podcast.is_favorite:
@@ -459,16 +399,13 @@ def parse_podcast_episode(
     :param podcast_image_url: Fallback image from parent podcast if episode has none.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
-    thumb_url = None
-    if episode.cover and episode.cover.urls:
-        thumb_url = episode.cover.urls[0]
+    if img := _cover_image(provider, episode.cover):
+        images.append(img)
     elif podcast_image_url:
-        thumb_url = podcast_image_url
-    if thumb_url:
         images.append(
             MediaItemImage(
                 type=ImageType.THUMB,
-                path=thumb_url,
+                path=podcast_image_url,
                 provider=provider.instance_id,
                 remotely_accessible=True,
             )
@@ -479,7 +416,7 @@ def parse_podcast_episode(
     episode_name = episode.title
     if episode.publication_date:
         with contextlib.suppress(ValueError, TypeError):
-            pub_date = datetime.fromisoformat(str(episode.publication_date))
+            pub_date = parse_date(str(episode.publication_date))
             metadata.release_date = pub_date
             episode_name = f"{pub_date.strftime('%Y-%m-%d')} - {episode.title}"
     return PodcastEpisode(
@@ -490,13 +427,7 @@ def parse_podcast_episode(
         podcast=podcast,
         position=position,
         media_type=MediaType.PODCAST_EPISODE,
-        provider_mappings={
-            ProviderMapping(
-                item_id=episode.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, episode.id)},
         metadata=metadata,
     )
 
@@ -508,15 +439,8 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     :param audiobook: A GQL audiobook model inheriting from AudiobookFields.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
-    if audiobook.cover and audiobook.cover.urls:
-        images.append(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=audiobook.cover.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if img := _cover_image(provider, audiobook.cover):
+        images.append(img)
     metadata = MediaItemMetadata(
         images=images,
         explicit=audiobook.is_explicit,
@@ -543,13 +467,7 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
         authors=authors,
         narrators=narrators,
         media_type=MediaType.AUDIOBOOK,
-        provider_mappings={
-            ProviderMapping(
-                item_id=audiobook.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, audiobook.id)},
         metadata=metadata,
     )
     if audiobook.is_favorite:
@@ -567,15 +485,8 @@ def parse_audiobook_from_album(provider: DeezerProvider, album: AlbumFields) -> 
     :param album: A GQL album model inheriting from AlbumFields.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
-    if album.cover and album.cover.urls:
-        images.append(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=album.cover.urls[0],
-                provider=provider.instance_id,
-                remotely_accessible=True,
-            )
-        )
+    if img := _cover_image(provider, album.cover):
+        images.append(img)
 
     authors: UniqueList[str | Artist] = UniqueList()
     for edge in album.contributors.edges:
@@ -588,13 +499,7 @@ def parse_audiobook_from_album(provider: DeezerProvider, album: AlbumFields) -> 
         name=album.display_title,
         authors=authors,
         media_type=MediaType.AUDIOBOOK,
-        provider_mappings={
-            ProviderMapping(
-                item_id=album.id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, album.id)},
         metadata=MediaItemMetadata(
             images=images,
             explicit=album.is_explicit,
@@ -713,13 +618,7 @@ def parse_gw_audiobook(provider: DeezerProvider, data: dict[str, Any]) -> Audiob
         name=title,
         authors=authors,
         media_type=MediaType.AUDIOBOOK,
-        provider_mappings={
-            ProviderMapping(
-                item_id=album_id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, album_id)},
         metadata=MediaItemMetadata(images=images),
     )
 
@@ -748,13 +647,7 @@ def parse_gw_playlist(provider: DeezerProvider, data: dict[str, Any]) -> Playlis
         provider=provider.instance_id,
         name=data.get("TITLE", ""),
         media_type=MediaType.PLAYLIST,
-        provider_mappings={
-            ProviderMapping(
-                item_id=playlist_id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, playlist_id)},
         metadata=metadata,
         owner=data.get("PARENT_USERNAME", "Deezer"),
     )
@@ -780,13 +673,7 @@ def parse_gw_artist(provider: DeezerProvider, data: dict[str, Any]) -> Artist:
         provider=provider.instance_id,
         name=data.get("ART_NAME", ""),
         media_type=MediaType.ARTIST,
-        provider_mappings={
-            ProviderMapping(
-                item_id=artist_id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, artist_id)},
         metadata=MediaItemMetadata(images=images),
     )
 
@@ -815,13 +702,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
                     provider=provider.instance_id,
                     name=art_name,
                     favorite=True,
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id=personal_art_id,
-                            provider_domain=provider.domain,
-                            provider_instance=provider.instance_id,
-                        )
-                    },
+                    provider_mappings={_provider_mapping(provider, personal_art_id)},
                 )
             )
         else:
@@ -849,13 +730,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
                 name=alb_title,
                 favorite=True,
                 artists=artists,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=personal_alb_id,
-                        provider_domain=provider.domain,
-                        provider_instance=provider.instance_id,
-                    )
-                },
+                provider_mappings={_provider_mapping(provider, personal_alb_id)},
             )
         else:
             album = ItemMapping(
@@ -875,14 +750,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
         favorite=is_personal,
         artists=artists,
         album=album,
-        provider_mappings={
-            ProviderMapping(
-                item_id=song_id,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-                available=True,
-            )
-        },
+        provider_mappings={_provider_mapping(provider, song_id, available=True)},
         position=position,
     )
 

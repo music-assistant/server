@@ -23,6 +23,9 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.datetime import utc_timestamp
 
+from .gw_client import DeezerGWError
+from .helpers import fetch_all_audiobook_chapter_edges
+
 if TYPE_CHECKING:
     from .provider import DeezerProvider
 
@@ -139,23 +142,7 @@ class DeezerStreamingManager:
         Resolves all chapter IDs and durations. Each chapter is streamed
         as a regular encrypted track via get_audio_stream.
         """
-        result = await self.provider.gql_client.get_audiobook(
-            audiobook_id=item_id, chapters_first=200
-        )
-        if result is None:
-            raise MediaNotFoundError(f"Audiobook {item_id} not found on Deezer")
-        all_edges = list(result.chapters.edges)
-        page_info = result.chapters.page_info
-        while page_info.has_next_page:
-            next_page = await self.provider.gql_client.get_audiobook(
-                audiobook_id=item_id,
-                chapters_first=200,
-                chapters_after=page_info.end_cursor,
-            )
-            if next_page is None:
-                break
-            all_edges.extend(next_page.chapters.edges)
-            page_info = next_page.chapters.page_info
+        all_edges = await fetch_all_audiobook_chapter_edges(self.provider.gql_client, item_id)
 
         chapter_ids: list[str] = []
         chapter_durations_ms: list[int] = []
@@ -285,7 +272,7 @@ class DeezerStreamingManager:
                     url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(
                         chapter_id
                     )
-                except Exception:
+                except (DeezerGWError, MediaNotFoundError, KeyError):
                     self.logger.warning("Failed to get URL for audiobook chapter %s", chapter_id)
                     continue
                 url = url_details["sources"][0]["url"]
