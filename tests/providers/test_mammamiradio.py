@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -63,7 +64,7 @@ def provider(mass_mock: MagicMock) -> MammamiradioProvider:
 
     def _get_value(key: str, default: Any = None) -> Any:
         if key == CONF_MAMMAMIRADIO_URL:
-            return "http://localhost:8100"
+            return "http://localhost:8000"
         if key == "log_level":
             return "GLOBAL"
         return default
@@ -102,7 +103,7 @@ async def test_handle_async_init_passes_when_reachable(
     await provider.handle_async_init()
     mass_mock.http_session.get.assert_called_once()
     called_url = mass_mock.http_session.get.call_args.args[0]
-    assert called_url == "http://localhost:8100/api/capabilities"
+    assert called_url == "http://localhost:8000/healthz"
 
 
 async def test_handle_async_init_logs_but_does_not_raise_when_unreachable(
@@ -218,7 +219,7 @@ async def test_get_stream_details_returns_mp3_format(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
     """Path 9 — StreamDetails declares ContentType.MP3 with hard-coded 128k bitrate."""
-    mass_mock.http_session.head = MagicMock(return_value=_make_response_ctx(200))
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
     details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
     assert details.audio_format.content_type == ContentType.MP3
     assert details.audio_format.bit_rate == 128
@@ -229,9 +230,9 @@ async def test_get_stream_details_uses_configured_url_with_stream_suffix(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
     """Path 10 — stream path is hard-coded as ``${url}/stream``."""
-    mass_mock.http_session.head = MagicMock(return_value=_make_response_ctx(200))
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
     details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
-    assert details.path == "http://localhost:8100/stream"
+    assert details.path == "http://localhost:8000/stream"
     assert details.allow_seek is False
     assert details.can_seek is False
 
@@ -240,7 +241,7 @@ async def test_get_stream_details_raises_provider_unavailable_when_offline(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
     """Path 11 — addon offline at stream time raises ProviderUnavailableError."""
-    mass_mock.http_session.head = MagicMock(
+    mass_mock.http_session.get = MagicMock(
         return_value=_make_failing_ctx(aiohttp.ClientConnectionError("offline"))
     )
     with pytest.raises(ProviderUnavailableError):
@@ -251,7 +252,7 @@ async def test_get_stream_details_raises_provider_unavailable_on_http_error(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
     """5xx from the addon raises ProviderUnavailableError too (sibling of Path 11)."""
-    mass_mock.http_session.head = MagicMock(return_value=_make_response_ctx(503))
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(503))
     with pytest.raises(ProviderUnavailableError):
         await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
 
@@ -264,6 +265,34 @@ async def test_get_stream_details_with_invalid_id_raises_media_not_found(
         await provider.get_stream_details("does-not-exist", MediaType.RADIO)
 
 
+async def test_get_stream_details_uses_get_not_head_for_reachability(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """Reachability check uses GET so Icecast/uvicorn (which 405 on HEAD) works."""
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+    mass_mock.http_session.get.assert_called_once()
+    mass_mock.http_session.head.assert_not_called()
+
+
+async def test_get_stream_details_tolerates_head_405_regression(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """Regression: a HEAD-405 server (Icecast/uvicorn) must not raise.
+
+    Locks codex bot's PR #3836 P1 finding: prior HEAD probe false-positived
+    on valid streams that respond 200 to GET but 405 to HEAD. The fix uses
+    GET; this test simulates a 405-on-HEAD server by configuring HEAD to
+    return 405 while GET returns 200, and asserts playback succeeds.
+    """
+    mass_mock.http_session.head = MagicMock(return_value=_make_response_ctx(405))
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+    mass_mock.http_session.head.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # URL hygiene + supported features (locks the contract for the discovery flow)
 # ---------------------------------------------------------------------------
@@ -274,10 +303,8 @@ async def test_supported_features_are_browse_and_search_only() -> None:
     assert {ProviderFeature.BROWSE, ProviderFeature.SEARCH} == SUPPORTED_FEATURES
 
 
-async def test_trailing_slash_in_configured_url_does_not_double_up(
-    mass_mock: MagicMock,
-) -> None:
-    """A configured URL with a trailing slash should still produce ``${url}/stream``."""
+def _build_provider_with_url(mass_mock: MagicMock, configured_url: str) -> MammamiradioProvider:
+    """Build a fresh provider instance configured with ``configured_url``."""
     manifest = MagicMock()
     manifest.domain = "mammamiradio"
     manifest.name = "mammamiradio"
@@ -286,13 +313,82 @@ async def test_trailing_slash_in_configured_url_does_not_double_up(
 
     def _get_value(key: str, default: Any = None) -> Any:
         if key == CONF_MAMMAMIRADIO_URL:
-            return "http://localhost:8100/"
+            return configured_url
         if key == "log_level":
             return "GLOBAL"
         return default
 
     config.get_value.side_effect = _get_value
-    prov = MammamiradioProvider(mass_mock, manifest, config, SUPPORTED_FEATURES)
-    mass_mock.http_session.head = MagicMock(return_value=_make_response_ctx(200))
+    return MammamiradioProvider(mass_mock, manifest, config, SUPPORTED_FEATURES)
+
+
+async def test_trailing_slash_in_configured_url_does_not_double_up(
+    mass_mock: MagicMock,
+) -> None:
+    """A configured URL with a trailing slash should still produce ``${url}/stream``."""
+    prov = _build_provider_with_url(mass_mock, "http://localhost:8000/")
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
     details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
-    assert details.path == "http://localhost:8100/stream"
+    assert details.path == "http://localhost:8000/stream"
+
+
+async def test_query_string_in_configured_url_is_stripped(
+    mass_mock: MagicMock,
+) -> None:
+    """A configured URL with a query string must not corrupt the stream URL."""
+    prov = _build_provider_with_url(mass_mock, "http://localhost:8000?foo=bar")
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+
+
+async def test_fragment_in_configured_url_is_stripped(
+    mass_mock: MagicMock,
+) -> None:
+    """A configured URL with a fragment must not corrupt the stream URL."""
+    prov = _build_provider_with_url(mass_mock, "http://localhost:8000#frag")
+    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+
+
+async def test_search_empty_query_returns_empty(
+    provider: MammamiradioProvider,
+) -> None:
+    """Empty search string must return no results (not match-all)."""
+    results = await provider.search("", [MediaType.RADIO])
+    assert results.radio == []
+
+
+# ---------------------------------------------------------------------------
+# Live integration smoke (opt-in via MAMMAMIRADIO_LIVE_URL)
+# ---------------------------------------------------------------------------
+
+
+async def test_live_stream_smoke() -> None:
+    """Live smoke test against a running mammamiradio addon. Skipped by default.
+
+    Opt in by setting ``MAMMAMIRADIO_LIVE_URL`` (e.g. ``http://localhost:8000``).
+    Verifies handle_async_init, browse, and get_stream_details against a real
+    Icecast endpoint.
+    """
+    live_url = os.environ.get("MAMMAMIRADIO_LIVE_URL")
+    if not live_url:
+        pytest.skip("MAMMAMIRADIO_LIVE_URL not set")
+
+    async with aiohttp.ClientSession() as session:
+        mass = MagicMock()
+        mass.http_session = session
+        prov = _build_provider_with_url(mass, live_url)
+
+        # Init must not raise even if /healthz is missing.
+        await prov.handle_async_init()
+        # Browse returns exactly one Radio entry.
+        items = await prov.browse("mammamiradio://")
+        assert len(items) == 1
+        assert isinstance(items[0], Radio)
+        # Stream details succeed against the live addon.
+        details = await prov.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+        assert isinstance(details.path, str)
+        assert details.path.endswith("/stream")
+        assert details.audio_format.content_type == ContentType.MP3
