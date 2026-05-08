@@ -408,9 +408,7 @@ class TestHandoffActivateExtended:
         ym = MagicMock()
         ym.instance_id = "ym-borrow-A"
         provider._yandex_provider = ym
-        provider._get_stream_details_with_retry = AsyncMock(  # type: ignore[method-assign]
-            side_effect=Exception("ignored")
-        )
+        provider._get_stream_details_with_retry = AsyncMock(side_effect=Exception("ignored"))
 
         await provider._handoff_activate(_make_state("track-X"), "player-A")
 
@@ -538,9 +536,7 @@ class TestHandoffActivateExtended:
         provider._yandex_provider = None
         provider.mass.player_queues.play_media = AsyncMock(side_effect=Exception("boom"))
         ensure_calls: list[None] = []
-        provider._ensure_handoff_heartbeat = (  # type: ignore[method-assign]
-            lambda: ensure_calls.append(None)
-        )
+        provider._ensure_handoff_heartbeat = lambda: ensure_calls.append(None)
 
         await provider._handoff_activate(_make_state("new-track"), "player-A")
 
@@ -558,9 +554,7 @@ class TestHandoffActivateExtended:
         queue.current_item = MagicMock()
         queue.current_item.uri = "yandex_music://track/track-Z"
         ensure_calls: list[None] = []
-        provider._ensure_handoff_heartbeat = (  # type: ignore[method-assign]
-            lambda: ensure_calls.append(None)
-        )
+        provider._ensure_handoff_heartbeat = lambda: ensure_calls.append(None)
 
         await provider._handoff_activate(_make_state("track-Z"), "player-A")
 
@@ -585,7 +579,7 @@ class TestHandoffHeartbeat:
         queue.state = PlaybackState.PLAYING
         queue.corrected_elapsed_time = 30.0
         send_mock = AsyncMock()
-        provider._send_progress_to_ynison = send_mock  # type: ignore[method-assign]
+        provider._send_progress_to_ynison = send_mock
 
         task = asyncio.create_task(provider._handoff_heartbeat_loop())
         await asyncio.sleep(0.12)
@@ -607,7 +601,7 @@ class TestHandoffHeartbeat:
         ynison.connected = True
         provider._ynison = ynison
         send_mock = AsyncMock()
-        provider._send_progress_to_ynison = send_mock  # type: ignore[method-assign]
+        provider._send_progress_to_ynison = send_mock
 
         task = asyncio.create_task(provider._handoff_heartbeat_loop())
         await asyncio.sleep(0.12)
@@ -903,7 +897,7 @@ class TestHandoffFsmTransitions:
         ynison.state = MagicMock(duration_ms=200000)
         provider._ynison = ynison
         # Mock heartbeat-side helpers to simple stubs.
-        provider._send_progress_to_ynison = AsyncMock()  # type: ignore[method-assign]
+        provider._send_progress_to_ynison = AsyncMock()
 
         queue = provider.mass.player_queues.get.return_value
         queue.state = PlaybackState.PLAYING
