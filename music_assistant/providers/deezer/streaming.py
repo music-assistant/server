@@ -276,35 +276,51 @@ class DeezerStreamingManager:
                 start_chapter = max(len(chapter_ids) - 1, 0)
                 chapter_seek = 0
 
-        for i in range(start_chapter, len(chapter_ids)):
-            chapter_id = chapter_ids[i]
-            try:
-                url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(
-                    chapter_id
+        prev_chapter: StreamDetails | None = None
+        current_chapter: StreamDetails | None = None
+        try:
+            for i in range(start_chapter, len(chapter_ids)):
+                chapter_id = chapter_ids[i]
+                try:
+                    url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(
+                        chapter_id
+                    )
+                except Exception:
+                    self.logger.warning("Failed to get URL for audiobook chapter %s", chapter_id)
+                    continue
+                url = url_details["sources"][0]["url"]
+                size_key = f"FILESIZE_{url_details['format']}"
+                size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
+                duration = int(song_data["DURATION"])
+                chapter_details = StreamDetails(
+                    item_id=chapter_id,
+                    provider=self.instance_id,
+                    audio_format=streamdetails.audio_format,
+                    stream_type=StreamType.CUSTOM,
+                    duration=duration,
+                    data={
+                        "url": url,
+                        "format": url_details["format"],
+                        "track_id": str(song_data["SNG_ID"]),
+                    },
+                    size=size,
                 )
-            except Exception:
-                self.logger.warning("Failed to get URL for audiobook chapter %s", chapter_id)
-                continue
-            url = url_details["sources"][0]["url"]
-            size_key = f"FILESIZE_{url_details['format']}"
-            size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
-            duration = int(song_data["DURATION"])
-            chapter_details = StreamDetails(
-                item_id=chapter_id,
-                provider=self.instance_id,
-                audio_format=streamdetails.audio_format,
-                stream_type=StreamType.CUSTOM,
-                duration=duration,
-                data={
-                    "url": url,
-                    "format": url_details["format"],
-                    "track_id": str(song_data["SNG_ID"]),
-                },
-                size=size,
-            )
-            seek = chapter_seek if i == start_chapter else 0
-            async for chunk in self._stream_encrypted_track(chapter_details, seek):
-                yield chunk
+                # Log the previous chapter as fully played before starting the next
+                if prev_chapter and "start_ts" in prev_chapter.data:
+                    self.mass.create_task(
+                        self.provider.gw_client.log_listen(last_track=prev_chapter)
+                    )
+                current_chapter = chapter_details
+                seek = chapter_seek if i == start_chapter else 0
+                async for chunk in self._stream_encrypted_track(chapter_details, seek):
+                    yield chunk
+                prev_chapter = chapter_details
+                current_chapter = None
+        finally:
+            # Log the last chapter that was playing (completed or cancelled)
+            last = current_chapter or prev_chapter
+            if last and "start_ts" in last.data:
+                self.mass.create_task(self.provider.gw_client.log_listen(last_track=last))
 
     async def _stream_encrypted_track(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -344,6 +360,8 @@ class DeezerStreamingManager:
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Handle callback when an item completed streaming."""
+        if not isinstance(streamdetails.data, dict) or "start_ts" not in streamdetails.data:
+            return
         await self.provider.gw_client.log_listen(last_track=streamdetails)
 
     # -- Decryption helpers --

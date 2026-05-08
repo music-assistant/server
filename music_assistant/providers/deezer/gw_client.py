@@ -217,9 +217,11 @@ class GWClient:
             payload["next_media"] = {"media": {"id": next_track, "type": "song"}}
 
         if last_track:
-            seconds_streamed = min(
-                utc_timestamp() - last_track.data["start_ts"],
-                last_track.seconds_streamed,
+            elapsed = utc_timestamp() - last_track.data["start_ts"]
+            seconds_streamed = (
+                min(elapsed, last_track.seconds_streamed)
+                if last_track.seconds_streamed is not None
+                else elapsed
             )
 
             payload["params"] = {
