@@ -36,13 +36,15 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
 │  │  events.py Webservice         │  │  Receives:
 │  │  - Session events             │  │  - Connected/disconnected
 │  │  - Metadata updates           │  │  - Playback state changes
-│  │  - Volume changes             │  │  - Track metadata
+│  │  - Seek/position events       │  │  - Track metadata
+│  │  - Volume changes             │  │
 │  └───────────────────────────────┘  │
 │  ┌───────────────────────────────┐  │
 │  │  PluginSource                 │  │  Provides:
 │  │  - Dynamic capabilities       │  │  - Playback control
 │  │  - Callback routing           │  │  - Metadata display
 │  │  - Web API integration        │  │  - Source selection
+│  │  - Frontend queue registration│  │  - Seek bar / signal chain
 │  └───────────────────────────────┘  │
 └─────────────────┬───────────────────┘
                   │
@@ -62,9 +64,9 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
 - Runs as a subprocess managed by the provider
 - Handles all Spotify-specific communication:
   - Authentication using Spotify credentials
-  - Audio streaming and decoding to PCM
+  - Audio streaming and decoding to PCM S16LE at 44100Hz
   - Session management (connect/disconnect)
-- Outputs raw PCM audio to stdout (piped to ffmpeg)
+- Outputs raw PCM audio to stdout via a named pipe
 - Sends events to the custom webservice via HTTP
 
 #### 2. **events.py Webservice**
@@ -72,8 +74,9 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
 - Runs on a custom port for each provider instance
 - Provides an HTTP endpoint that librespot calls with:
   - Session connected/disconnected events
-  - Track metadata (title, artist, album, artwork)
+  - Track metadata (title, artist, album, artwork, duration)
   - Playback state changes (playing, paused, stopped)
+  - Seek and position events with `position_ms`
   - Volume changes from Spotify app
 
 #### 3. **PluginSource Model**
@@ -91,18 +94,71 @@ The provider creates a `PluginSource` that represents the Spotify Connect audio 
 
 **Metadata:**
 - Updated in real-time from librespot events
-- Includes URI, title, artist, album, artwork URL
+- Includes URI, title, artist, album, artwork URL, elapsed time
 
 #### 4. **Audio Pipeline**
+
 ```
-librespot → PCM audio → ffmpeg → format conversion → Music Assistant Player
+librespot → named pipe (PCM S16LE 44100Hz) → MA get_audio_stream() → player
 ```
 
-The provider streams audio through an async generator that:
-1. Starts librespot process
-2. Pipes audio through ffmpeg for format conversion
-3. Yields audio chunks to the player
-4. Handles cleanup on stream end
+The provider streams audio directly from librespot's stdout via a named pipe. This is a deliberate design choice — it bypasses MA's ffmpeg pipeline entirely, which means:
+
+- **Lower latency**: No transcoding stage between librespot and the player
+- **No resampling by MA**: Audio is delivered at librespot's native 44.1kHz/16bit. Downstream resampling (e.g. by PulseAudio) happens outside MA's pipeline and is not reflected in the signal chain display — this is correct behavior since MA only reports what it knows
+- **Simpler pipeline**: Fewer failure points between Spotify and the player
+
+The tradeoff is that MA cannot apply DSP processing (EQ, volume normalization, output limiting) to the Spotify Connect stream, as these are handled by MA's ffmpeg pipeline which is not in the audio path here.
+
+## MA Frontend Integration
+
+### The Frontend Queue Problem
+
+MA's frontend resolves the active player's seek bar, progress tracking, and signal chain display through a `PlayerQueue` object. It looks up the queue via `player.active_source` — when a plugin source is active, `active_source` equals the plugin's `instance_id`. If no queue exists with that ID, the frontend has nothing to render.
+
+The obvious solution — registering a real `PlayerQueue` in `player_queues._queues` — causes a serious side effect: the backend then routes all play/pause/play_media commands to that queue, which has no items and no stream, breaking playback control entirely.
+
+### Frontend-Only Queue Registration
+
+The solution is to fire a `QUEUE_ADDED` event with `queue_id=instance_id` that the frontend stores in its queue map, but deliberately never write to `player_queues._queues` on the backend. The frontend gets exactly what it needs to render the seek bar and signal chain, while the backend remains unaware of the queue and continues routing commands correctly through the plugin source callbacks.
+
+The `_register_plugin_queue()` method handles this registration. It is called:
+- When a player selects this source (`_on_source_selected`)
+- After each `track_changed` event delivers metadata (0.5s delayed to ensure frontend reactivity)
+
+The fake queue payload includes:
+- `current_item` with `duration` for seek bar rendering
+- `current_item.streamdetails.audio_format` (PCM S16LE 44100Hz/16bit) for signal chain display
+- `current_item.streamdetails.dsp` from `get_stream_dsp_details()` for downstream player format display
+- `elapsed_time` and `elapsed_time_last_updated` for progress tracking
+
+### Seek Bar
+
+Position tracking uses `elapsed_time` and `elapsed_time_last_updated` on `StreamMetadata`. These are updated by:
+- `playing` events (with `position_ms`)
+- `seeked` events (with `position_ms`)
+- `paused` events (with `position_ms`)
+
+On `seeked`, `QUEUE_TIME_UPDATED` is fired with `force_update=True` to bypass MA's change-detection guard (which filters out `elapsed_time`-only changes) and move the frontend seek bar to the seeked position.
+
+### Signal Chain Display
+
+The signal chain info button requires `output_format` in `player.extra_data`. Since Spotify Connect bypasses the streams controller (which normally sets this), the provider sets it manually on source select with the correct librespot output format (PCM S16LE 44100Hz/16bit). It is cleared when the player is released. `get_stream_dsp_details()` reads this value when building the DSP details included in the fake queue registration.
+
+### play_media Reroute
+
+When a user plays local MA content to a player while Spotify Connect is active, the frontend sends `play_media` with `queue_id=instance_id` (the fake queue ID). Since this ID is not in `_queues`, a `PlayerUnavailableError` would normally result.
+
+The `play_media` method in `player_queues.py` now detects this case: if `queue_id` is not found in `_queues`, it checks whether `queue_id` matches an active plugin source via `player.state.active_source` (the computed `__final_active_source`, not the raw `player.active_source` which returns the hardware-reported value). If matched, it reroutes to the real player queue, triggering normal source takeover — librespot receives a broken pipe, Spotify pauses gracefully, and MA takes over.
+
+Note: this reroute is general and benefits any plugin source provider, not just `spotify_connect`.
+
+## Pause Behavior
+
+The player stays assigned to Spotify Connect through pause. `in_use_by` is not cleared on `paused` events. This means:
+- The MA UI play button resumes Spotify via the `on_play` Web API callback
+- Playing local MA content while paused correctly triggers source takeover via the `play_media` reroute
+- The player is only released to MA when MA explicitly selects a different source, or when the Spotify session disconnects
 
 ## Multi-Instance Support
 
@@ -196,8 +252,8 @@ source.on_pause = self._on_pause
 **Web API Commands:**
 - `PUT /me/player/play` - Resume playback
 - `PUT /me/player/pause` - Pause playback
-- `POST /me/player/next` - Skip to next track
-- `POST /me/player/previous` - Skip to previous track
+- `POST /me/player/next` - Skip to next track (returns 204 No Content)
+- `POST /me/player/previous` - Skip to previous track (returns 204 No Content)
 - `PUT /me/player/seek?position_ms={ms}` - Seek to position
 
 ### Event-Driven Updates
@@ -252,32 +308,50 @@ def as_player_source(self) -> PlayerSource:
   - Clear username
   - Disable Web API control
   - Clear provider reference
+  - Release player back to MA
 
 ### Playback Events
 
 **`sink` / `playing`**
-- Indicates playback is starting
+- Indicates playback is starting or resuming
+- Payload includes `position_ms`
 - Actions:
   - Check for provider match (if not already matched)
   - Select this source on the player
   - Mark source as in use
+  - Update `metadata.elapsed_time` from `position_ms`
+
+**`paused`**
+- Indicates playback is paused
+- Payload includes `position_ms`
+- Actions:
+  - Update `metadata.elapsed_time` from `position_ms`
+  - Freeze `elapsed_time_last_updated` (stops auto-advance)
+  - Player stays assigned to Spotify Connect (`in_use_by` not cleared)
+
+**`seeked`**
+- Indicates user seeked to a new position
+- Payload includes `position_ms`
+- Actions:
+  - Update `metadata.elapsed_time` from `position_ms`
+  - Fire `QUEUE_TIME_UPDATED` with `force_update=True` to move seek bar
 
 ### Metadata Events
 
-**`common_metadata_fields`**
+**`track_changed` / `common_metadata_fields`**
 - Provides track information
 - Updates:
   - URI (spotify:track:...)
-  - Title
-  - Artist
-  - Album
+  - Title, artist, album
   - Album artwork URL
-- Triggers player update to refresh UI
+  - Duration
+- Re-registers frontend queue (0.5s delayed) to update seek bar duration and quality indicator
 
 **`volume_changed`**
 - Spotify app changed volume
 - Converts from Spotify scale (0-65535) to percentage (0-100)
 - Applies to linked Music Assistant player
+- Ignores initial event fired immediately after session connect
 
 ## Configuration
 
@@ -292,7 +366,6 @@ def as_player_source(self) -> PlayerSource:
 - Default: "Music Assistant"
 - Helps identify device when multiple instances exist
 
-
 ### Cache Directory
 - Location: `{data_path}/spotify_connect/{instance_id}/`
 - Contains:
@@ -306,11 +379,13 @@ def as_player_source(self) -> PlayerSource:
 - Process crashes: Automatically cleaned up
 - Authentication failures: Logged as warnings
 - Network issues: librespot handles reconnection
+- Broken pipe on source takeover: Expected behavior — MA grabs the named pipe, librespot loses its write end and pauses gracefully
 
 ### Web API Commands
 - All commands wrapped in try/except
 - Failures logged as warnings
 - Raises exception to notify player controller
+- next/previous use `want_result=False` since Spotify returns 204 No Content
 
 ### Volume Control
 - Unsupported on player: Logged at debug level
@@ -324,8 +399,10 @@ Inherits from `PluginProvider`
 **Key Methods:**
 - `handle_async_init()`: Setup provider, start webservice, load credentials
 - `unload()`: Cleanup, stop processes
-- `get_audio_stream()`: Provide audio to player
+- `get_audio_stream()`: Provide audio to player via named pipe
 - `get_source()`: Return PluginSource details
+- `_register_plugin_queue()`: Register frontend-only queue for seek bar and signal chain display
+- `_clear_active_player()`: Release player back to MA, clear output_format
 
 **Event Handlers:**
 - `_handle_session_connected()`: Process session connect
@@ -348,7 +425,7 @@ Inherits from `PluginProvider`
 
 ### External Binaries
 - **librespot**: Spotify Connect client implementation
-- **ffmpeg**: Audio format conversion
+- **ffmpeg**: Not used in the Spotify Connect audio path
 
 ### Python Packages
 - **aiohttp**: Async HTTP for webservice
@@ -358,6 +435,7 @@ Inherits from `PluginProvider`
 - Player controller for command routing
 - Provider framework for lifecycle management
 - Event system for state synchronization
+- `player_queues.play_media` reroute for source takeover
 
 ## Testing
 
@@ -366,6 +444,8 @@ Inherits from `PluginProvider`
 2. Open Spotify app and select the device
 3. Verify audio plays through the player
 4. Check metadata displays correctly
+5. Verify seek bar moves during playback
+6. Verify quality indicator (LQ) appears on player card immediately
 
 ### Web API Control
 1. Configure both Spotify Connect and Spotify music providers
@@ -374,6 +454,23 @@ Inherits from `PluginProvider`
 4. Look for "Found matching Spotify music provider" in logs
 5. Verify control buttons are enabled in Music Assistant UI
 6. Test play/pause/next/previous/seek from Music Assistant
+7. Seek from Spotify app and verify bar moves in MA UI
+
+### Pause and Resume
+1. Pause from MA UI — verify bar freezes at correct position
+2. Resume from MA UI — verify playback resumes at correct position
+3. Pause from Spotify app — verify MA UI shows paused state
+
+### Source Takeover
+1. While Spotify is playing, Play Now a local album to the same player
+2. Verify Spotify pauses and MA queue starts playing
+3. While Spotify is paused, Play Now a local album to the same player
+4. Verify MA queue starts playing correctly
+
+### Signal Chain
+1. Start Spotify Connect playback
+2. Click the info button on the player card
+3. Verify signal chain shows 44.1kHz/16bit input and correct downstream formats
 
 ### Multi-Instance
 1. Create multiple Spotify Connect providers
@@ -381,22 +478,24 @@ Inherits from `PluginProvider`
 3. Verify each appears as separate device in Spotify app
 4. Test simultaneous playback on different devices
 
+## Known Limitations
+
+1. Cannot control playback without matching Spotify music provider
+2. No access to user's Spotify playlists/library (use Spotify provider)
+3. Volume control only works if player supports it
+4. MA DSP processing (EQ, normalization, output limiting) is not applied to the Spotify Connect stream since it bypasses the ffmpeg pipeline
+5. No native gapless playback support
+6. Generic plugin icon shown in signal chain input (not Spotify logo)
+7. Quality indicator shows LQ — correct since source is 320kbps OGG regardless of PCM delivery format
+
 ## Future Enhancements
 
-### Potential Improvements
 1. **Queue Sync**: Sync Spotify queue with Music Assistant queue
 2. **Crossfade Support**: Enable crossfade if supported by player
 3. **Audio Quality**: Make bitrate configurable
 4. **Multi-Account**: Support multiple Spotify accounts per device
 5. **Enhanced Metadata**: Chapter markers, lyrics integration
 6. **Gapless Playback**: Improve transitions between tracks
-
-### Known Limitations
-1. Cannot control playback without matching Spotify provider
-2. No access to user's Spotify playlists/library (use Spotify provider)
-3. Volume control only works if player supports it
-4. Seek requires Web API (not available in passive mode)
-5. No native gapless playback support
 
 ## Related Documentation
 
