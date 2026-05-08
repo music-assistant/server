@@ -967,10 +967,10 @@ class TestCachedProtocolParentRestore:
             for link in native_player.linked_output_protocols
         )
 
-    def test_protocol_parent_id_prevents_universal_player_creation(
+    def test_missing_cached_parent_schedules_protocol_evaluation(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that cached protocol_parent_id prevents creating universal player."""
+        """Test that a missing cached parent does not block delayed protocol evaluation."""
         controller = PlayerController(mock_mass)
 
         # Mock config to return cached parent_id (parent not yet registered)
@@ -993,13 +993,72 @@ class TestCachedProtocolParentRestore:
         # No native player registered yet
         controller._players = {}
 
-        # Try to link protocol - should set parent_id and skip evaluation
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller._try_link_protocol_to_native(protocol_player)
+
+        # A cached parent that is not registered yet should be handled by the
+        # delayed evaluation path, not by assigning a dangling in-memory parent.
+        assert protocol_player.protocol_parent_id is None
+        mock_schedule.assert_called_once_with(protocol_player)
+
+    @pytest.mark.asyncio
+    async def test_cached_parent_registers_before_delayed_eval_links_without_universal(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test cached parent startup grace still links when native registers during delay."""
+        controller = PlayerController(mock_mass)
+
+        def mock_config_get(
+            key: str, default: str | list[str] | None = None
+        ) -> str | list[str] | None:
+            if "protocol_parent_id" in str(key):
+                return "native_player_id"
+            return default
+
+        mock_mass.config.get.side_effect = mock_config_get
+
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        protocol_player = MockPlayer(
+            dlna_provider,
+            "uuid:RINCON_AABBCCDDEEFF_MR",
+            "Sonos DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        protocol_player.set_initialized()
+        controller._players = {protocol_player.player_id: protocol_player}
+        controller._player_throttlers = {
+            protocol_player.player_id: Throttler(1, 0.05),
+        }
+
         controller._try_link_protocol_to_native(protocol_player)
 
-        # Verify protocol_parent_id was set
-        assert protocol_player.protocol_parent_id == "native_player_id"
+        assert protocol_player.protocol_parent_id is None
+        assert mock_mass.loop.call_later.call_args.args[0] == 45.0
 
-        # Since parent_id is set, delayed evaluation won't create a universal player
+        native_provider = MockProvider("sonos", mass=mock_mass)
+        native_player = MockPlayer(
+            native_provider,
+            "native_player_id",
+            "Sonos Speaker",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player.set_initialized()
+        controller._players[native_player.player_id] = native_player
+        controller._player_throttlers[native_player.player_id] = Throttler(1, 0.05)
+
+        controller._try_link_protocols_to_native(native_player)
+
+        assert protocol_player.protocol_parent_id == native_player.player_id
+        assert any(
+            link.output_protocol_id == protocol_player.player_id
+            for link in native_player.linked_output_protocols
+        )
+
+        with patch.object(controller, "_create_or_update_universal_player") as mock_create_up:
+            await controller._delayed_protocol_evaluation(protocol_player.player_id)
+
+        mock_create_up.assert_not_called()
 
 
 class TestSelectBestOutputProtocol:
