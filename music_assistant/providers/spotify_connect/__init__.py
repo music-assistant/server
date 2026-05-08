@@ -334,7 +334,6 @@ class SpotifyConnectProvider(PluginProvider):
                 self.logger.debug(
                     "Failed to stop previous player %s: %s", self._active_player_id, err
                 )
-
         # Update the active player
         self._active_player_id = new_player_id
         self.logger.debug("Active player set to: %s", new_player_id)
@@ -342,6 +341,21 @@ class SpotifyConnectProvider(PluginProvider):
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
             self._save_last_player_id(new_player_id)
+
+        # Set output_format on the player so the frontend can display signal chain info
+        if player := self.mass.players.get_player(new_player_id):
+            player.extra_data["output_format"] = AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                codec_type=ContentType.PCM_S16LE,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            )
+            self.mass.players.trigger_player_update(new_player_id)
+
+        self._register_plugin_queue(new_player_id)
+        # Signal the real player queue to pick up the output_format change
+        self.mass.call_later(1, self.mass.player_queues.signal_update, new_player_id)
 
     def _clear_active_player(self) -> None:
         """
@@ -355,6 +369,9 @@ class SpotifyConnectProvider(PluginProvider):
 
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
+            # Clear output_format so the signal chain display reverts to MA queue format
+            if player := self.mass.players.get_player(prev_player_id):
+                player.extra_data.pop("output_format", None)
             # Trigger update for the player that was using this source
             self.mass.players.trigger_player_update(prev_player_id)
 
@@ -471,7 +488,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "Playback control requires a matching Spotify music provider"
             )
         try:
-            await self._spotify_provider._post_data("me/player/previous")
+            await self._spotify_provider._post_data("me/player/previous", want_result=False)
         except Exception as err:
             self.logger.warning("Failed to send previous command via Spotify Web API: %s", err)
             raise
@@ -745,18 +762,6 @@ class SpotifyConnectProvider(PluginProvider):
             if prev_player_id:
                 self.mass.create_task(self.mass.players.deselect_source(prev_player_id))
 
-        # handle paused event - clear in_use_by so UI shows correct active source
-        # this happens when MA starts playing while Spotify Connect was active
-        # Note: we don't call _clear_active_player here because pause is temporary
-        # and we want to resume on the same player when playback resumes
-        if event_name == "paused" and self._source_details.in_use_by:
-            current_player = self._source_details.in_use_by
-            self.logger.debug(
-                "Spotify Connect paused, releasing player UI state for %s", current_player
-            )
-            self._source_details.in_use_by = None
-            self.mass.players.trigger_player_update(current_player)
-
         # handle session connected event
         # this player has become the active spotify connect player
         # we need to start the playback
@@ -818,6 +823,8 @@ class SpotifyConnectProvider(PluginProvider):
             # from previous track
             self._source_details.metadata.elapsed_time = 0
             self._source_details.metadata.elapsed_time_last_updated = int(time.time())
+            if self._source_details.in_use_by:
+                self._register_plugin_queue(self._source_details.in_use_by)
 
         if track_meta := json_data.get("track_metadata_fields", {}):
             if artists := track_meta.get("artists"):
@@ -834,6 +841,18 @@ class SpotifyConnectProvider(PluginProvider):
             if self._source_details.metadata is not None:
                 self._source_details.metadata.elapsed_time = int(json_data["position_ms"]) // 1000
                 self._source_details.metadata.elapsed_time_last_updated = int(time.time())
+
+        if event_name == "seeked" and self._source_details.in_use_by:
+            player = self.mass.players.get_player(self._source_details.in_use_by)
+            if player and self._source_details.metadata:
+                elapsed = self._source_details.metadata.elapsed_time or 0
+                player._attr_elapsed_time = elapsed
+                player.update_state(force_update=True)
+                self.mass.signal_event(
+                    EventType.QUEUE_TIME_UPDATED,
+                    object_id=self.instance_id,
+                    data=elapsed,
+                )
 
         if event_name == "volume_changed" and (volume := json_data.get("volume")):
             # Ignore volume_changed events that fire immediately after session_connect
@@ -858,6 +877,81 @@ class SpotifyConnectProvider(PluginProvider):
 
         # signal update to connected player
         if self._source_details.in_use_by:
-            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+            self.mass.call_later(0.5, self._register_plugin_queue, self._source_details.in_use_by)
 
         return Response()
+
+    def _register_plugin_queue(self, player_id: str) -> None:
+        """Register a queue in the frontend under our instance_id.
+        The frontend resolves activePlayerQueue via active_source (our instance_id).
+        We fire QUEUE_ADDED frontend-only (no backend _queues entry) so the frontend
+        can render the seek bar correctly, without causing the backend to route
+        play/pause/play_media commands to us.
+        """
+        player = self.mass.players.get_player(player_id)
+        metadata = self._source_details.metadata
+
+        # Build DSP details for signal chain display
+        dsp = None
+        try:
+            dsp = self.mass.streams.audio.get_stream_dsp_details(player_id)
+        except Exception:
+            pass
+
+        current_item = None
+        if metadata:
+            current_item = {
+                "queue_id": self.instance_id,
+                "queue_item_id": "spotify_connect_current",
+                "duration": int(metadata.duration) if metadata.duration else 0,
+                "name": metadata.title or "",
+                "streamdetails": {
+                    "audio_format": {
+                        "content_type": "pcm_s16le",
+                        "sample_rate": 44100,
+                        "bit_depth": 16,
+                        "channels": 2,
+                    },
+                    "dsp": dsp,
+                },
+            }
+        fake_queue = {
+            "queue_id": self.instance_id,
+            "active": True,
+            "display_name": player.display_name if player else player_id,
+            "available": True,
+            "items": 1 if current_item else 0,
+            "shuffle_enabled": False,
+            "repeat_mode": "off",
+            "dont_stop_the_music_enabled": False,
+            "current_index": 0,
+            "index_in_buffer": None,
+            "elapsed_time": metadata.elapsed_time if metadata else 0,
+            "elapsed_time_last_updated": time.time(),
+            "state": "playing",
+            "current_item": current_item,
+            "next_item": None,
+            "radio_source": [],
+            "flow_mode": False,
+            "resume_pos": 0,
+            "extra_attributes": {},
+        }
+        self.mass.signal_event(
+            EventType.QUEUE_ADDED,
+            object_id=self.instance_id,
+            data=fake_queue,
+        )
+        # Fire QUEUE_UPDATED to ensure the frontend refreshes current_item
+        # including streamdetails for the quality indicator display
+        if current_item:
+            self.mass.signal_event(
+                EventType.QUEUE_UPDATED,
+                object_id=self.instance_id,
+                data=fake_queue,
+            )
+        self.logger.debug(
+            "Registered frontend queue: instance_id=%s player=%s duration=%s",
+            self.instance_id,
+            player_id,
+            current_item["duration"] if current_item else None,
+        )
