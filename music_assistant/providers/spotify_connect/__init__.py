@@ -893,10 +893,8 @@ class SpotifyConnectProvider(PluginProvider):
 
         # Build DSP details for signal chain display
         dsp = None
-        try:
+        with suppress(Exception):
             dsp = self.mass.streams.audio.get_stream_dsp_details(player_id)
-        except Exception:
-            pass
 
         current_item = None
         if metadata:
