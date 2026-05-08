@@ -102,7 +102,10 @@ class UniversalPlayerProvider(PlayerProvider):
                     protocol_id,
                     player_id,
                 )
-                await self.mass.config.remove_player_config(protocol_id)
+                if self.mass.players.get_player(protocol_id):
+                    await self.mass.players.unregister(protocol_id, permanent=True)
+                else:
+                    self.mass.players.delete_player_config(protocol_id)
                 continue
             valid_protocol_ids.append(protocol_id)
 
