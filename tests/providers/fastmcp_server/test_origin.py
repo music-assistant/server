@@ -152,8 +152,16 @@ class _FakeMcp:
         return self._app
 
 
-async def _echo_asgi(scope: dict, receive: Any, send: Any) -> None:  # noqa: ARG001
-    """Minimal ASGI app that returns 200 with body 'OK'."""
+async def _echo_asgi(scope: dict, receive: Any, send: Any) -> None:
+    """Minimal ASGI app: handles lifespan events + returns 200 'OK' on http."""
+    if scope.get("type") == "lifespan":
+        while True:
+            msg = await receive()
+            if msg["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif msg["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
     await send({"type": "http.response.start", "status": 200, "headers": []})
     await send({"type": "http.response.body", "body": b"OK"})
 

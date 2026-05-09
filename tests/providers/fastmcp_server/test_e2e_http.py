@@ -20,8 +20,22 @@ from music_assistant.providers.fastmcp_server.http_bridge import mount_into_mass
 from .conftest import FakeWebserver, build_aiohttp_app
 
 
-async def _streaming_asgi(scope: dict, receive: Any, send: Any) -> None:  # noqa: ARG001
+async def _lifespan_loop(receive: Any, send: Any) -> None:
+    """Bare-minimum ASGI lifespan handler used by the test ASGI doubles."""
+    while True:
+        msg = await receive()
+        if msg["type"] == "lifespan.startup":
+            await send({"type": "lifespan.startup.complete"})
+        elif msg["type"] == "lifespan.shutdown":
+            await send({"type": "lifespan.shutdown.complete"})
+            return
+
+
+async def _streaming_asgi(scope: dict, receive: Any, send: Any) -> None:
     """ASGI app that emits three SSE-style chunks before closing the body."""
+    if scope.get("type") == "lifespan":
+        await _lifespan_loop(receive, send)
+        return
     # Drain the request body so the client write side can complete.
     while True:
         msg = await receive()
@@ -43,6 +57,9 @@ async def _streaming_asgi(scope: dict, receive: Any, send: Any) -> None:  # noqa
 
 async def _method_echo_asgi(scope: dict, receive: Any, send: Any) -> None:
     """ASGI app that echoes the HTTP method in the body."""
+    if scope.get("type") == "lifespan":
+        await _lifespan_loop(receive, send)
+        return
     while True:
         msg = await receive()
         if msg.get("type") == "http.request" and not msg.get("more_body"):

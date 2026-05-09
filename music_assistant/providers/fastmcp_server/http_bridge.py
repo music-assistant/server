@@ -150,7 +150,8 @@ async def mount_into_mass(
     :param extra_origins_csv: Comma-separated additional ``Origin`` values to
         accept beyond the auto-derived defaults (loopback + base_url +
         publish_ip). Use for reverse-proxy hostnames or HA ingress.
-    :return: Callable that, when invoked, unregisters the route.
+    :return: Callable that, when invoked, unregisters the route and shuts
+        down the FastMCP ASGI lifespan.
     """
     # Tell FastMCP that its streamable-HTTP endpoint lives at ``mount_path``
     # (not the SDK's default ``/mcp``), so the internal Starlette router
@@ -159,6 +160,12 @@ async def mount_into_mass(
     # router would 404 every request.
     asgi_app = _build_asgi_app(mcp, mount_path)
     allowlist = _compute_origin_allowlist(mass, extra_origins_csv)
+
+    # Drive the ASGI lifespan ourselves — without it FastMCP's
+    # StreamableHTTPSessionManager never enters its task group and the first
+    # request fails with "Task group is not initialized." The lifespan loop
+    # runs until shutdown is requested at unmount time.
+    lifespan_state = await _start_asgi_lifespan(asgi_app)
 
     async def handler(request: web.Request) -> web.StreamResponse:
         origin = request.headers.get("Origin")
@@ -171,7 +178,79 @@ async def mount_into_mass(
             return web.Response(status=403, text="Forbidden Origin")
         return await _asgi_to_aiohttp(asgi_app, request, strip_prefix="")
 
-    return mass.webserver.register_dynamic_route(f"{mount_path}/*", handler)
+    unregister = mass.webserver.register_dynamic_route(f"{mount_path}/*", handler)
+
+    def _unmount() -> None:
+        with contextlib.suppress(Exception):
+            unregister()
+        # Schedule the lifespan shutdown — caller may be sync (MA's
+        # ``unload``), so dispatch onto the running loop without blocking.
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_stop_asgi_lifespan(lifespan_state))
+        else:  # pragma: no cover - belt-and-braces for unit-test contexts
+            with contextlib.suppress(Exception):
+                loop.run_until_complete(_stop_asgi_lifespan(lifespan_state))
+
+    return _unmount
+
+
+async def _start_asgi_lifespan(asgi_app: Any) -> dict[str, Any]:
+    """Send ASGI ``lifespan.startup`` and keep the lifespan task running.
+
+    Returns a state dict carrying the running task and the queues used to
+    feed it ``lifespan.shutdown`` later. Re-raises a startup failure synchronously
+    so caller sees the underlying exception immediately.
+    """
+    receive_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    send_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def receive() -> dict[str, Any]:
+        return await receive_queue.get()
+
+    async def send(message: dict[str, Any]) -> None:
+        await send_queue.put(message)
+
+    task = asyncio.create_task(
+        asgi_app({"type": "lifespan", "asgi": {"version": "3.0"}}, receive, send),
+        name="mcp-asgi-lifespan",
+    )
+
+    # Trigger startup and wait for ack.
+    await receive_queue.put({"type": "lifespan.startup"})
+    ack = await asyncio.wait_for(send_queue.get(), timeout=30)
+    if ack.get("type") == "lifespan.startup.failed":
+        # Lifespan task aborted; surface its exception cleanly.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        msg = ack.get("message", "ASGI lifespan startup failed")
+        raise RuntimeError(msg)
+    if ack.get("type") != "lifespan.startup.complete":
+        msg = f"Unexpected ASGI lifespan event during startup: {ack!r}"
+        raise RuntimeError(msg)
+
+    return {"task": task, "receive_queue": receive_queue, "send_queue": send_queue}
+
+
+async def _stop_asgi_lifespan(state: dict[str, Any]) -> None:
+    """Send ASGI ``lifespan.shutdown`` and await the lifespan task to finish."""
+    receive_queue: asyncio.Queue[dict[str, Any]] = state["receive_queue"]
+    send_queue: asyncio.Queue[dict[str, Any]] = state["send_queue"]
+    task: asyncio.Task[Any] = state["task"]
+
+    with contextlib.suppress(Exception):
+        await receive_queue.put({"type": "lifespan.shutdown"})
+        with contextlib.suppress(asyncio.TimeoutError):
+            # Drain the shutdown ack but don't fail if the app skips it.
+            await asyncio.wait_for(send_queue.get(), timeout=10)
+
+    if not task.done():
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except (TimeoutError, asyncio.CancelledError):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 def build_protected_resource_metadata(
