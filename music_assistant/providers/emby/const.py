@@ -35,6 +35,7 @@ AUDIO_STREAM_CODEC = "Codec"
 AUDIO_STREAM_SAMPLE_RATE = "SampleRate"
 AUDIO_STREAM_BIT_DEPTH = "BitDepth"
 AUDIO_STREAM_CHANNELS = "Channels"
+AUDIO_STREAM_BIT_RATE = "BitRate"
 
 # Field lists for API requests
 TRACK_FIELDS = [
@@ -65,6 +66,3 @@ ARTIST_FIELDS = [
     "ImageTags",
     "DateCreated",
 ]
-
-# Supported audio containers for streaming
-SUPPORTED_CONTAINER_FORMATS = ["mp3", "flac", "aac", "opus", "wav", "m4a"]

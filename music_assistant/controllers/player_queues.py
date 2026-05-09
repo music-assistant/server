@@ -1062,6 +1062,9 @@ class PlayerQueuesController(CoreController):
                 # reset the play action in progress flag on restore
                 # this can happen if MA was killed while a play action was in progress
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                # from_cache reconstructs radio_source and enqueued_media_items,
+                # which mashumaro deserializes as plain dicts instead of MediaItemType objects.
+                queue.from_cache(prev_state)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1069,12 +1072,6 @@ class PlayerQueuesController(CoreController):
                     default=[],
                 )
                 queue_items = [QueueItem.from_cache(item_data) for item_data in prev_items]
-                if queue.enqueued_media_items:
-                    # after deserialization from cache, enqueued_media_items are dicts
-                    queue.enqueued_media_items = [
-                        cast("MediaItemType", media_from_dict(cast("dict[str, Any]", item)))
-                        for item in queue.enqueued_media_items
-                    ]
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",

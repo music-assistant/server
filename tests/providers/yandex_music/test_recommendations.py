@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Album, Playlist, RecommendationFolder, Track
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    Playlist,
+    RecommendationFolder,
+    Track,
+)
 
 from music_assistant.providers.yandex_music.constants import (
     BROWSE_NAMES_EN,
@@ -15,7 +21,7 @@ from music_assistant.providers.yandex_music.constants import (
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
 )
-from music_assistant.providers.yandex_music.provider import YandexMusicProvider
+from music_assistant.providers.yandex_music.provider import YandexMusicProvider, _WaveState
 
 
 @pytest.fixture
@@ -48,18 +54,26 @@ def provider_mock() -> Mock:
     return provider
 
 
+def _install_wave_state(provider_mock: Mock) -> _WaveState:
+    """Stub _get_wave_state to return a fresh in-memory _WaveState per provider_mock."""
+    wave = _WaveState()
+    provider_mock._get_wave_state = Mock(return_value=wave)
+    return wave
+
+
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations returns data when API provides tracks."""
-    # Create mock track with required attributes
+    """Test _get_my_wave_recommendations returns data when session API provides tracks."""
+    _install_wave_state(provider_mock)
     mock_track = Mock()
     mock_track.id = "12345"
     mock_track.track_id = "12345"
 
-    # Mock get_my_wave_tracks to return tracks
-    provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([mock_track], None))
+    # Mock the session-API helper; return the same track every time — matches
+    # the old single-track-per-batch test intent where the fake rotor returns
+    # the same shape across repeated batch calls.
+    provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([mock_track], "batch_a"))
 
-    # Mock _parse_my_wave_track to return a Track object with composite item_id
     mock_parsed_track = Mock(spec=Track)
     mock_parsed_track.item_id = f"12345{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
     mock_parsed_track.name = "Test Track"
@@ -79,8 +93,9 @@ async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_empty(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations returns None when API returns no tracks."""
-    provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([], None))
+    """Test _get_my_wave_recommendations returns None when session API yields no tracks."""
+    _install_wave_state(provider_mock)
+    provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([], None))
 
     result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
 
@@ -89,8 +104,8 @@ async def test_get_my_wave_recommendations_empty(provider_mock: Mock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations filters duplicate tracks."""
-    # Create mock tracks with same ID
+    """Test _get_my_wave_recommendations filters duplicate tracks across batches."""
+    _install_wave_state(provider_mock)
     mock_track1 = Mock()
     mock_track1.id = "12345"
     mock_track1.track_id = "12345"
@@ -99,11 +114,11 @@ async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mo
     mock_track2.id = "12345"  # Same ID
     mock_track2.track_id = "12345"
 
-    # First call returns track1, second call returns track2 (duplicate)
-    provider_mock.client.get_my_wave_tracks = AsyncMock(
+    # First batch returns track1, second batch returns track2 (duplicate)
+    provider_mock._fetch_rotor_session_batch = AsyncMock(
         side_effect=[
-            ([mock_track1], None),
-            ([mock_track2], None),
+            ([mock_track1], "batch_a"),
+            ([mock_track2], "batch_b"),
         ]
     )
 
@@ -124,12 +139,13 @@ async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mo
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_invalid_data_error(provider_mock: Mock) -> None:
-    """Test _get_my_wave_recommendations handles InvalidDataError gracefully."""
+    """Test _get_my_wave_recommendations handles parse failures gracefully."""
+    _install_wave_state(provider_mock)
     mock_track = Mock()
     mock_track.id = "12345"
     mock_track.track_id = "12345"
 
-    provider_mock.client.get_my_wave_tracks = AsyncMock(return_value=([mock_track], None))
+    provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([mock_track], "batch_a"))
 
     # _parse_my_wave_track returns None (simulates parse error handled internally)
     provider_mock._parse_my_wave_track = Mock(return_value=None)
@@ -849,5 +865,48 @@ async def test_recommendations_returns_empty_list_when_all_none(provider_mock: M
     provider_mock._pick_random_tag_for_category = return_no_tag
 
     result = await YandexMusicProvider.recommendations(provider_mock)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_similar_artists_returns_parsed(provider_mock: Mock) -> None:
+    """get_similar_artists parses each artist from the underlying client."""
+    yandex_artists = [Mock(), Mock(), Mock()]
+    provider_mock.client.get_similar_artists = AsyncMock(return_value=yandex_artists)
+
+    parsed = [Mock(spec=Artist) for _ in yandex_artists]
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_artist",
+        side_effect=parsed,
+    ):
+        result = await YandexMusicProvider.get_similar_artists(provider_mock, "42", limit=10)
+
+    provider_mock.client.get_similar_artists.assert_awaited_once_with("42", limit=10)
+    assert result == parsed
+
+
+@pytest.mark.asyncio
+async def test_get_similar_artists_skips_invalid(provider_mock: Mock) -> None:
+    """get_similar_artists skips artists that fail to parse."""
+    yandex_artists = [Mock(), Mock()]
+    provider_mock.client.get_similar_artists = AsyncMock(return_value=yandex_artists)
+
+    parsed_ok = Mock(spec=Artist)
+    with patch(
+        "music_assistant.providers.yandex_music.provider.parse_artist",
+        side_effect=[InvalidDataError("missing id"), parsed_ok],
+    ):
+        result = await YandexMusicProvider.get_similar_artists(provider_mock, "99")
+
+    assert result == [parsed_ok]
+
+
+@pytest.mark.asyncio
+async def test_get_similar_artists_empty(provider_mock: Mock) -> None:
+    """get_similar_artists returns [] when client returns no artists."""
+    provider_mock.client.get_similar_artists = AsyncMock(return_value=[])
+
+    result = await YandexMusicProvider.get_similar_artists(provider_mock, "42")
 
     assert result == []
