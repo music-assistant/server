@@ -6,12 +6,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from fastmcp import Client, FastMCP
 
-fastmcp = pytest.importorskip("fastmcp")
-
-from fastmcp import Client, FastMCP  # noqa: E402
-
-from music_assistant.providers.fastmcp_server.tools import (  # noqa: E402
+from music_assistant.providers.fastmcp_server.tools import (
     build_library_server,
     build_media_server,
     build_metadata_server,

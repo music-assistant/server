@@ -6,12 +6,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import Client, FastMCP
 
-fastmcp = pytest.importorskip("fastmcp")
-
-from fastmcp import Client, FastMCP  # noqa: E402
-
-from music_assistant.providers.fastmcp_server.tools import build_media_server, build_queue_server  # noqa: E402
+from music_assistant.providers.fastmcp_server.tools import build_media_server, build_queue_server
 
 
 def _server(mass: MagicMock, *, require_confirmation: bool) -> FastMCP:

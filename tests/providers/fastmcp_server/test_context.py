@@ -7,12 +7,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import Client, FastMCP
 
-fastmcp = pytest.importorskip("fastmcp")
-
-from fastmcp import Client, FastMCP  # noqa: E402
-
-from music_assistant.providers.fastmcp_server.tools import (  # noqa: E402
+from music_assistant.providers.fastmcp_server.tools import (
     build_library_server,
     build_metadata_server,
     build_playlists_server,

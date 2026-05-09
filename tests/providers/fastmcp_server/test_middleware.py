@@ -4,12 +4,9 @@
 from __future__ import annotations
 
 import pytest
+from fastmcp import Client, FastMCP
 
-fastmcp = pytest.importorskip("fastmcp")
-
-from fastmcp import Client, FastMCP  # noqa: E402
-
-from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware  # noqa: E402
+from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
 
 
 def _build_server(allowed: set[str]) -> FastMCP:
