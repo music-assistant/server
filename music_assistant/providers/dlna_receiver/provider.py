@@ -622,12 +622,17 @@ class DLNAReceiverProvider(PluginProvider):
         uri: str,
         metadata: str | None,
     ) -> None:
-        """Handle SetAVTransportURI for a specific renderer instance.
+        """
+        Handle SetAVTransportURI for a specific renderer instance.
 
-        Raises:
-            ValueError: if the URI is not a safe http(s) stream URL. The
-                renderer turns this into SOAP fault 716 so the control
-                point sees the rejection instead of a silent 200 OK.
+        :param inst: Renderer instance owning the transport.
+        :param uri: Stream URI received from the control point.
+        :param metadata: Optional DIDL-Lite metadata attached to the
+            transport URI.
+        :raises ValueError: If the URI is not a safe ``http(s)`` stream
+            URL. The renderer turns this into SOAP fault 716 so the
+            control point sees the rejection instead of a silent
+            200 OK.
         """
         safe_url = _validate_stream_url(uri)
         if safe_url is None:

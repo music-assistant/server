@@ -95,14 +95,14 @@ class EventingManager:
         callback_header: str,
         timeout_header: str | None = None,
     ) -> tuple[str, int]:
-        """Register a new subscription.
+        """
+        Register a new subscription.
 
-        Args:
-            callback_header: CALLBACK header value, e.g., '<http://host:port/path>'
-            timeout_header: TIMEOUT header value, e.g., 'Second-1800'
-
-        Returns:
-            Tuple of (SID, actual_timeout_seconds).
+        :param callback_header: CALLBACK header value, e.g.
+            ``<http://host:port/path>``.
+        :param timeout_header: TIMEOUT header value, e.g.
+            ``Second-1800``.
+        :returns: Tuple of (SID, actual timeout in seconds).
         """
         callback_urls = self._parse_callback_header(callback_header)
         if not callback_urls:
@@ -129,17 +129,13 @@ class EventingManager:
         sid: str,
         timeout_header: str | None = None,
     ) -> int:
-        """Renew an existing subscription.
+        """
+        Renew an existing subscription.
 
-        Args:
-            sid: Subscription ID to renew.
-            timeout_header: New TIMEOUT header value.
-
-        Returns:
-            Actual timeout seconds.
-
-        Raises:
-            KeyError: If SID not found.
+        :param sid: Subscription ID to renew.
+        :param timeout_header: New TIMEOUT header value.
+        :returns: Actual timeout in seconds.
+        :raises KeyError: If ``sid`` is not found.
         """
         sub = self._subscriptions.get(sid)
         if sub is None:
@@ -164,10 +160,11 @@ class EventingManager:
             LOGGER.debug("Unsubscribe for unknown SID: %s", sid)
 
     async def notify(self, changed_vars: dict[str, str]) -> None:
-        """Send NOTIFY to all active subscribers with changed state variables.
+        """
+        Send NOTIFY to all active subscribers with changed state variables.
 
-        Args:
-            changed_vars: Mapping of state variable name to new value.
+        :param changed_vars: Mapping of state variable name to new
+            value.
         """
         if not changed_vars or not self._subscriptions:
             return
