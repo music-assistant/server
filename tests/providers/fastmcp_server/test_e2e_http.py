@@ -56,7 +56,7 @@ class _Mcp:
     def __init__(self, asgi: Any) -> None:
         self._asgi = asgi
 
-    def http_app(self, transport: str = "streamable-http") -> Any:
+    def http_app(self, transport: str = "streamable-http", path: str = "/mcp") -> Any:
         return self._asgi
 
 

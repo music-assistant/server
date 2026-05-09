@@ -152,7 +152,12 @@ async def mount_into_mass(
         publish_ip). Use for reverse-proxy hostnames or HA ingress.
     :return: Callable that, when invoked, unregisters the route.
     """
-    asgi_app = _build_asgi_app(mcp)
+    # Tell FastMCP that its streamable-HTTP endpoint lives at ``mount_path``
+    # (not the SDK's default ``/mcp``), so the internal Starlette router
+    # matches the URL the request actually arrives with — without a prefix
+    # strip in the bridge. With strip we'd hand FastMCP a bare ``/`` and its
+    # router would 404 every request.
+    asgi_app = _build_asgi_app(mcp, mount_path)
     allowlist = _compute_origin_allowlist(mass, extra_origins_csv)
 
     async def handler(request: web.Request) -> web.StreamResponse:
@@ -164,7 +169,7 @@ async def mount_into_mass(
                 request.remote,
             )
             return web.Response(status=403, text="Forbidden Origin")
-        return await _asgi_to_aiohttp(asgi_app, request, strip_prefix=mount_path)
+        return await _asgi_to_aiohttp(asgi_app, request, strip_prefix="")
 
     return mass.webserver.register_dynamic_route(f"{mount_path}/*", handler)
 
@@ -263,10 +268,17 @@ async def mount_well_known(
     return _unregister_all
 
 
-def _build_asgi_app(mcp: Any) -> Any:
-    """Return the streamable-HTTP ASGI app from FastMCP, accommodating v3 minor renames."""
+def _build_asgi_app(mcp: Any, mount_path: str = "/mcp") -> Any:
+    """Return the streamable-HTTP ASGI app from FastMCP, accommodating v3 minor renames.
+
+    ``mount_path`` is propagated as ``http_app(path=...)`` so FastMCP's
+    Starlette router exposes the streamable endpoint at the same URL the
+    aiohttp bridge forwards to it — preventing 404s when our outer mount
+    differs from the SDK's default ``/mcp``. RFC 9728 metadata routes
+    advertised by FastMCP are likewise rooted at this path.
+    """
     if hasattr(mcp, "http_app"):
-        return mcp.http_app(transport="streamable-http")
+        return mcp.http_app(transport="streamable-http", path=mount_path)
     if hasattr(mcp, "streamable_http_app"):
         return mcp.streamable_http_app()
     if hasattr(mcp, "asgi_app"):

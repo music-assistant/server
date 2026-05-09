@@ -148,7 +148,7 @@ class _FakeMcp:
     def __init__(self, asgi_app: Any) -> None:
         self._app = asgi_app
 
-    def http_app(self, transport: str = "streamable-http") -> Any:
+    def http_app(self, transport: str = "streamable-http", path: str = "/mcp") -> Any:
         return self._app
 
 
