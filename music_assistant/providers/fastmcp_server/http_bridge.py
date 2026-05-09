@@ -387,44 +387,73 @@ async def _asgi_to_aiohttp(  # noqa: PLR0915 - single-purpose ASGI bridge, split
 
     async def send(message: dict[str, Any]) -> None:
         msg_type = message.get("type")
-        if msg_type == "http.response.start":
-            status = int(message.get("status", 200))
-            headers_list = message.get("headers", [])
-            response = web.StreamResponse(status=status)
-            for raw_name, raw_value in headers_list:
-                name = raw_name.decode("latin-1") if isinstance(raw_name, bytes) else str(raw_name)
-                value = (
-                    raw_value.decode("latin-1") if isinstance(raw_value, bytes) else str(raw_value)
-                )
-                if name.lower() in {"transfer-encoding", "content-length"}:
-                    continue
-                response.headers[name] = value
-            await response.prepare(request)
-            response_state["response"] = response
-            response_state["started"] = True
-        elif msg_type == "http.response.body":
-            response = response_state["response"]
-            if response is None:
-                msg = "ASGI app sent body before start"
-                raise RuntimeError(msg)
-            body = message.get("body", b"")
-            if body:
-                await response.write(body)
-            if not message.get("more_body", False):
-                await response.write_eof()
+        if response_state["disconnected"]:
+            # Client gave up; suppress further ASGI sends so the app can wind
+            # down without an exception cascade.
+            return
+        try:
+            if msg_type == "http.response.start":
+                status = int(message.get("status", 200))
+                headers_list = message.get("headers", [])
+                response = web.StreamResponse(status=status)
+                for raw_name, raw_value in headers_list:
+                    name = (
+                        raw_name.decode("latin-1") if isinstance(raw_name, bytes) else str(raw_name)
+                    )
+                    value = (
+                        raw_value.decode("latin-1")
+                        if isinstance(raw_value, bytes)
+                        else str(raw_value)
+                    )
+                    if name.lower() in {"transfer-encoding", "content-length"}:
+                        continue
+                    response.headers[name] = value
+                await response.prepare(request)
+                response_state["response"] = response
+                response_state["started"] = True
+            elif msg_type == "http.response.body":
+                response = response_state["response"]
+                if response is None:
+                    msg = "ASGI app sent body before start"
+                    raise RuntimeError(msg)
+                body = message.get("body", b"")
+                if body:
+                    await response.write(body)
+                if not message.get("more_body", False):
+                    await response.write_eof()
+        except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+            # The other side closed the (SSE) stream. Mark the response as
+            # disconnected and feed an ASGI ``http.disconnect`` upstream so
+            # the app's keep-alive / ping loops can wind down cleanly. Logged
+            # at debug because this is a normal, expected client behaviour
+            # for long-lived streams.
+            response_state["disconnected"] = True
+            with contextlib.suppress(Exception):
+                await body_queue.put({"type": "http.disconnect"})
+            LOGGER.debug("MCP bridge: client closed stream during send (path=%s)", request.path)
 
     async def pump_request_body() -> None:
         try:
             async for chunk in request.content.iter_chunked(64 * 1024):
                 await body_queue.put({"type": "http.request", "body": chunk, "more_body": True})
             await body_queue.put({"type": "http.request", "body": b"", "more_body": False})
+        except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+            response_state["disconnected"] = True
+            with contextlib.suppress(Exception):
+                await body_queue.put({"type": "http.disconnect"})
         except Exception:
             LOGGER.exception("MCP bridge: failed to pump request body")
-            await body_queue.put({"type": "http.disconnect"})
+            with contextlib.suppress(Exception):
+                await body_queue.put({"type": "http.disconnect"})
 
     pump_task = asyncio.create_task(pump_request_body())
     try:
         await asgi_app(scope, receive, send)
+    except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+        # Client-driven disconnect during streaming — normal flow; don't
+        # re-raise as 500.
+        response_state["disconnected"] = True
+        LOGGER.debug("MCP bridge: ASGI app cancelled by client disconnect")
     except Exception:
         LOGGER.exception("MCP bridge: ASGI app raised")
         if not response_state["started"]:
