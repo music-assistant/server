@@ -23,12 +23,12 @@ class GroupingCoordinator(WamProviderFeatureBase):
         :param provider: The SamsungWamProvider instance.
         """
         super().__init__(provider)
-        # Lock to ensure only one grouping command is processed at a time.
+        # Ensures only one grouping command runs at a time
         self._lock = asyncio.Lock()
 
-        # Primary Map (Leader -> Children): Used to quickly get all members of a specific group.
+        # leader → children; for looking up a group's members
         self.states: dict[str, set[str]] = {}
-        # Reverse Lookup Map (Child -> Leader): Used for O(1) lookups to see if a player is grouped.
+        # child → leader; for O(1) lookups of a player's leader
         self._child_to_leader: dict[str, str] = {}
 
     # --- Lifecycle & Synchronization ---
@@ -45,7 +45,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
         self.mass.cancel_task(GROUP_SYNC_TASK_ID)
 
     def synchronize_states(self) -> None:
-        """Rebuild internal maps entirely from the current reality of all physical players."""
+        """Rebuild internal membership maps from the current state of all registered players."""
         self.states.clear()
         self._child_to_leader.clear()
         for player in self.players:
@@ -74,7 +74,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
         if old_leader_id and (leader_player := self.provider.get_player(old_leader_id)):
             leader_player.state_sync.refresh_state()
 
-    # --- MA Initiated ---
+    # --- Provider Initiated ---
 
     async def set_members(
         self,
@@ -111,11 +111,11 @@ class GroupingCoordinator(WamProviderFeatureBase):
         if removes:
             target_children.difference_update(removes)
 
-        target_children.discard(leader_id)  # Sanity check: leader cannot be its own child
+        target_children.discard(leader_id)  # A player cannot be its own group member
         return target_children
 
     async def _apply_group(self, leader_id: str, target_children: set[str]) -> None:
-        """Apply absolute group membership changes.
+        """Apply the desired group membership update for a leader player.
 
         :param leader_id: The ID of the target group leader.
         :param target_children: The complete, desired set of child members.
@@ -133,7 +133,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
             children_after = [p for pid in target_children if (p := self.provider.get_player(pid))]
             children_to_remove = set(children_before) - set(children_after)
 
-            # Optimistically update state to prevent stale member lists leaking during transitions.
+            # Update state first to prevent stale member lists while the hardware commands run
             for pid in target_children:
                 self._update_player_membership(pid, leader_id)
             for child in children_to_remove:
@@ -149,18 +149,18 @@ class GroupingCoordinator(WamProviderFeatureBase):
                 else:
                     await leader.grouping.leave_group()
             except Exception as err:
-                self.logger.warning("Group command failed, synchronizing state: %s", err)
+                self.logger.warning("Group operation failed; resyncing state: %s", err)
                 self.synchronize_states()
                 leader.state_sync.refresh_state()
                 raise
 
-    # --- Hardware Initiated ---
+    # --- Speaker Initiated ---
 
     def on_player_state_changed(self, player: WamPlayer) -> None:
-        """Process a state broadcast from a speaker and detect external grouping changes.
+        """Detect and propagate external group membership changes for a player.
 
-        This handles scenarios where a speaker boots up into a previous group,
-        or a user changes groups via the official Samsung WAM mobile app.
+        Handles cases such as a speaker powering on already grouped, or groups
+        being changed externally.
 
         :param player: The WamPlayer whose state changed.
         """
@@ -181,10 +181,10 @@ class GroupingCoordinator(WamProviderFeatureBase):
     # --- Internal Helpers ---
 
     def _update_player_membership(self, player_id: str, new_leader_id: str | None) -> None:
-        """Update the dual-maps to reflect a player's new group status.
+        """Update the membership maps for a player's group change.
 
-        :param player_id: The child player ID.
-        :param new_leader_id: The new leader's ID (or None if ungrouped).
+        :param player_id: The player ID to update.
+        :param new_leader_id: The new leader's ID, or None if the player is ungrouped.
         """
         self._remove_player_from_all_groups(player_id)
         if new_leader_id:
@@ -192,7 +192,7 @@ class GroupingCoordinator(WamProviderFeatureBase):
             self._child_to_leader[player_id] = new_leader_id
 
     def _remove_player_from_all_groups(self, player_id: str) -> None:
-        """Scrub a player from the dual-maps completely.
+        """Remove a player from all membership maps.
 
         :param player_id: The player ID to remove.
         """

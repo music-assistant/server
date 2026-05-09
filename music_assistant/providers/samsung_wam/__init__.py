@@ -11,7 +11,7 @@ from .provider import SamsungWamProvider, get_config_entries
 
 
 class SpeakerStatusFilter(logging.Filter):
-    """Filter out spammy SpeakerStatus logs unless VERBOSE is enabled."""
+    """Suppress high-frequency SpeakerStatus events unless verbose logging is enabled."""
 
     def __init__(self, provider_logger: logging.Logger, name: str = "") -> None:
         """Initialize the filter.
@@ -47,21 +47,21 @@ if TYPE_CHECKING:
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Initialize the Samsung WAM provider instance with the given configuration.
+    """Set up and return a new Samsung WAM provider instance.
 
     :param mass: The MusicAssistant instance.
     :param manifest: The provider manifest.
-    :param config: The user configuration for this provider.
-    :return: An initialized ProviderInstanceType.
+    :param config: The provider configuration.
+    :return: The initialized provider instance.
     """
     prov = SamsungWamProvider(mass, manifest, config)
 
-    # Add a filter to suppress spammy SpeakerStatus logs from pywam.
+    # Suppress high-frequency SpeakerStatus events from pywam unless verbose logging is enabled
     pywam_events_logger = logging.getLogger("pywam.events")
     if not any(isinstance(f, SpeakerStatusFilter) for f in pywam_events_logger.filters):
         pywam_events_logger.addFilter(SpeakerStatusFilter(prov.logger))
 
-    # Configure dependency log levels to match the provider's configured verbosity.
+    # Configure dependency log levels to match the provider's configured verbosity
     if prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logging.getLogger("pywam").setLevel(logging.DEBUG)
         logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)

@@ -42,7 +42,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
         self._discovery_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
-        """Start discovery mechanisms."""
+        """Start speaker discovery."""
         manual_ips: list[str] = (
             cast("list[str]", self.provider.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
             or []
@@ -51,30 +51,30 @@ class DiscoveryHandler(WamProviderFeatureBase):
         self.mass.create_task(self._periodic_probe_task(), task_id=PROBE_TASK_ID)
 
     async def stop(self) -> None:
-        """Stop discovery mechanisms."""
+        """Stop speaker discovery."""
         self.mass.cancel_task(PROBE_TASK_ID)
 
     async def on_upnp_discovered(self, udn: str, ip_address: str) -> None:
-        """Handle a UPnP/SSDP presence notification from MA's discovery system.
+        """Handle a UPnP/SSDP presence notification.
 
-        :param udn: The Universal Device Name parsed from the SSDP advertisement.
+        :param udn: The Universal Device Name of the device.
         :param ip_address: The IP address of the discovered device.
         """
-        # Skip the probe entirely for already-registered, healthy players.
+        # Skip if the player is already registered and available
         existing = self._get_player_by_udn(udn)
         if existing and existing.available:
             return
 
         # Probe the device to confirm model compatibility and obtain its canonical UDN,
-        # which is sourced directly from the device description XML rather than SSDP headers.
+        # which is sourced directly from the device description XML rather than SSDP headers
         if canonical_udn := await self.probe_ip(ip_address):
             await self._handle_presence(canonical_udn, ip_address)
 
     async def probe_ip(self, ip_address: str) -> str | None:
-        """Probe a device to verify it is online and a supported WAM model.
+        """Probe a device to verify it is reachable and a supported WAM model.
 
         :param ip_address: The IP address to probe.
-        :return: The device UDN if the device is valid, else None.
+        :return: The device UDN, or None if the device is not reachable or unsupported.
         """
         location = f"http://{ip_address}:{UPNP_PORT}{UPNP_DEVICE_DESCRIPTION_PATH}"
         try:
@@ -121,12 +121,12 @@ class DiscoveryHandler(WamProviderFeatureBase):
         :param ips_to_probe: List of IP addresses to probe.
         """
         for ip in (ip for ip in ips_to_probe if ip):
-            self.logger.debug("Performing active probe for IP: %s", ip)
+            self.logger.debug("Probing %s", ip)
             if udn := await self.probe_ip(ip):
                 await self._handle_presence(udn, ip)
 
     async def _periodic_probe_task(self) -> None:
-        """Background task to periodically re-probe known manual IPs."""
+        """Periodically probe manually configured IP addresses."""
         while not self.mass.closing:
             try:
                 await asyncio.sleep(PROBE_INTERVAL)
@@ -142,7 +142,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
             except asyncio.CancelledError:
                 break
             except Exception as err:
-                self.logger.warning("Error in periodic probe task: %s", err, exc_info=err)
+                self.logger.warning("Periodic probe failed: %s", err, exc_info=err)
 
     async def _setup_player(self, udn: str, ip_address: str) -> None:
         """Initialize and register a newly discovered player.
@@ -150,7 +150,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
         :param udn: The Universal Device Name of the device.
         :param ip_address: The IP address of the device.
         """
-        self.logger.debug("Pre-flight connection to new player at %s", ip_address)
+        self.logger.debug("Connecting to new player at %s", ip_address)
 
         temp_speaker = Speaker(ip_address)
         try:
@@ -163,14 +163,14 @@ class DiscoveryHandler(WamProviderFeatureBase):
             await temp_speaker.update()
             attrs = StateSyncMapper.create_speaker_attributes(temp_speaker)
             if not attrs.mac:
-                raise ConnectionError("Failed to get MAC address during pre-flight.")
+                raise ConnectionError("Could not retrieve MAC address from speaker")
         except Exception as err:
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()
             return
 
         if not self.mass.config.get_raw_player_config_value(attrs.mac, "enabled", True):
-            self.logger.debug("Player at %s is disabled in configuration.", ip_address)
+            self.logger.debug("Player at %s is disabled in configuration", ip_address)
             await temp_speaker.disconnect()
             return
 
@@ -184,7 +184,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
 
             if attrs.source and attrs.source not in (WamSource.WIFI, "Unknown"):
                 # Set immediately if the speaker is already on an external input,
-                # so the UI is correct on first register.
+                # so the UI reflects the correct source on first register
                 player.set_active_mass_source(attrs.source)
         except Exception as err:
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)

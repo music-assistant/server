@@ -28,16 +28,16 @@ class PlaybackHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def stop(self) -> None:
-        """Send STOP command to player."""
-        # WAM does not have a discrete stop, so we treat pause as stop.
+        """Stop playback on the speaker."""
+        # WAM does not have a discrete stop, so we treat pause as stop
         self.player.stream_active = False
         await self.speaker.cmd_pause()
 
-        # Reset tracking properties entirely
+        # Clear elapsed time tracking
         self.player._attr_elapsed_time = None
         self.player._attr_elapsed_time_last_updated = None
 
-        # Force a refresh. This will likely map to PAUSED or IDLE depending on speaker response.
+        # Refresh state; the speaker will report either paused or idle after a pause command
         self.player.state_sync.refresh_state(notify_provider=True)
 
     @retry_command()
@@ -50,8 +50,7 @@ class PlaybackHandler(WamPlayerFeatureBase):
 
         await self.speaker.cmd_play()
 
-        # We are resuming from a pause on a non-queue source. Refresh the last_updated
-        # timestamp so corrected_elapsed_time doesn't count the pause time.
+        # Resuming from a pause — reset the elapsed time base so it doesn't include paused time
         if self.player.elapsed_time is not None:
             self.player._attr_elapsed_time = self.player.corrected_elapsed_time
             self.player._attr_elapsed_time_last_updated = time.time()
@@ -63,7 +62,7 @@ class PlaybackHandler(WamPlayerFeatureBase):
         """Pause playback on the speaker."""
         await self.speaker.cmd_pause()
 
-        # Request exact play time to ensure an accurate pause marker
+        # Fetch the exact play position to keep elapsed time accurate while paused
         await self.player.state_sync.update_play_time()
         self.player.update_state()
 
@@ -75,7 +74,9 @@ class PlaybackHandler(WamPlayerFeatureBase):
         :param media: The details of the media stream to play.
         """
         if self.player.synced_to:
-            raise PlayerCommandFailed(f"Player {self.player.log_name} is a group child.")
+            raise PlayerCommandFailed(
+                f"Cannot play media: {self.player.log_name} is a group member"
+            )
 
         if self.player.active_source != WamSource.WIFI:
             await self.select_source(WamSource.WIFI)
@@ -114,17 +115,17 @@ class PlaybackHandler(WamPlayerFeatureBase):
             target_source = WamSource.WIFI if source == self.player.player_id else WamSource(source)
         except ValueError as err:
             raise PlayerCommandFailed(
-                f"'{source}' is not a valid source for: {self.player.log_name}"
+                f"'{source}' is not a valid source for {self.player.log_name}"
             ) from err
 
         if target_source != WamSource.WIFI:
             self.player.stream_active = False
-            # The player will briefly be IDLE during the source switch; setting the active
-            # source here prevents the UI from momentarily falling back to the queue name.
+            # The player will briefly appear idle during the source switch; setting the active
+            # source here prevents the UI from momentarily reverting to the queue name
             self.player.set_active_mass_source(str(target_source))
 
         if self.player.active_source == str(target_source):
-            # Already on the target source; refresh to push current state through.
+            # Already on the target source; refresh to push current state through
             self.player.state_sync.refresh_state(notify_provider=True)
             return
 
@@ -135,5 +136,5 @@ class PlaybackHandler(WamPlayerFeatureBase):
 
         await self.player.await_state_change(check_source, SOURCE_CHANGE_TIMEOUT)
 
-        # Push final state regardless of whether the source change was confirmed.
+        # Push final state regardless of whether the source change was confirmed
         self.player.state_sync.refresh_state(notify_provider=True)

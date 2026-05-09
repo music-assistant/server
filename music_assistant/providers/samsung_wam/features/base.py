@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 class WamProviderFeatureBase:
-    """Base class for provider-scoped feature handlers."""
+    """Base class for provider feature handlers."""
 
     def __init__(self, provider: SamsungWamProvider) -> None:
         """Initialize the feature base with the parent provider instance.
@@ -51,7 +51,7 @@ class WamProviderFeatureBase:
 
 
 class WamPlayerFeatureBase:
-    """Base class for player-scoped feature handlers."""
+    """Base class for player feature handlers."""
 
     def __init__(self, player: WamPlayer) -> None:
         """Initialize the feature base with the parent player instance.
@@ -101,7 +101,7 @@ def retry_command(
 
                     if attempt > 0:
                         self.logger.debug(
-                            "Command '%s' successfully recovered on attempt %s/%s.",
+                            "Command '%s' recovered on attempt %s/%s",
                             func.__name__,
                             attempt + 1,
                             attempts,
@@ -112,7 +112,7 @@ def retry_command(
                     last_error = err
                     if attempt < attempts - 1:
                         self.logger.debug(
-                            "Command '%s' failed on attempt %s/%s. Retrying in %.1fs.",
+                            "Command '%s' failed on attempt %s/%s, retrying in %.1fs",
                             func.__name__,
                             attempt + 1,
                             attempts,
@@ -122,13 +122,13 @@ def retry_command(
                         backoff_delay *= 2
                     else:
                         self.logger.debug(
-                            "Command '%s' failed on final attempt %s/%s.",
+                            "Command '%s' failed on final attempt %s/%s",
                             func.__name__,
                             attempt + 1,
                             attempts,
                         )
 
-            self.logger.warning("Command '%s' failed after %s attempts.", func.__name__, attempts)
+            self.logger.warning("Command '%s' failed after %s attempts", func.__name__, attempts)
             raise PlayerCommandFailed(
                 f"Command '{func.__name__}' failed after {attempts} attempts"
             ) from last_error
@@ -141,14 +141,14 @@ def retry_command(
 def handle_pywam_errors(
     func: Callable[..., Coroutine[Any, Any, Any]],
 ) -> Callable[..., Coroutine[Any, Any, Any]]:
-    """Decorate a command to translate pywam exceptions into MA exceptions."""
+    """Decorate a command to translate pywam exceptions into player command errors."""
 
     @wraps(func)
     async def wrapper(self: WamPlayerFeatureBase, *args: Any, **kwargs: Any) -> Any:
         try:
             return await func(self, *args, **kwargs)
         except ConnectionError as err:
-            self.logger.warning("Command failed with ConnectionError.")
+            self.logger.warning("Command failed with a connection error")
             raise PlayerCommandFailed("Connection lost") from err
         except (ApiCallTimeoutError, TimeoutError, PywamError) as err:
             raise PlayerCommandFailed(str(err)) from err

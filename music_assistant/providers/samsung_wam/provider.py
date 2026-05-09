@@ -48,15 +48,13 @@ class SamsungWamProvider(PlayerProvider):
         return cast("WamPlayer | None", self.mass.players.get_player(player_id))
 
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider and its feature handlers."""
+        """Initialise the provider."""
         self.supported_models = SPEAKER_MODELS
-
-        # Wire up provider-level feature handlers
         self.groups = GroupingCoordinator(self)
         self.discovery = DiscoveryHandler(self)
 
     async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded and is ready to start."""
+        """Start discovery and initial group sync."""
         await self.discovery.start()
         self.groups.start_sync_task()
 
@@ -75,7 +73,7 @@ class SamsungWamProvider(PlayerProvider):
     async def on_upnp_service_discovered(
         self, search_target: str, discovery_info: Mapping[str, Any]
     ) -> None:
-        """Handle a UPnP/SSDP presence notification from Music Assistant.
+        """Handle a UPnP/SSDP presence notification.
 
         :param search_target: The SSDP service type that was matched.
         :param discovery_info: The raw SSDP response headers.

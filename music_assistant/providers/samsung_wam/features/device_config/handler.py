@@ -17,12 +17,12 @@ class DeviceConfigHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def set_name(self, name: str) -> None:
-        """Set the friendly hostname on the physical device.
+        """Set the friendly name on the device.
 
         :param name: The desired friendly name.
         """
         try:
             await self.speaker.set_name(name)
         except FeatureNotSupportedError:
-            # pywam raises this when the speaker is grouped or not yet fully initialised.
-            self.logger.debug("Cannot rename %s in its current mode.", self.player.log_name)
+            # pywam raises this when the speaker is grouped or not yet fully initialised
+            self.logger.debug("Cannot rename %s in its current mode", self.player.log_name)

@@ -45,9 +45,9 @@ class WamPlayer(Player):
         mac: str,
         speaker: Speaker,
     ) -> None:
-        """Initialize the WamPlayer and wire up feature handlers.
+        """Initialize the WamPlayer.
 
-        :param prov: The SamsungWamProvider instance managing this player.
+        :param prov: The parent provider instance.
         :param ip_address: The IP address of the speaker.
         :param udn: The Universal Device Name of the speaker.
         :param mac: The MAC address of the speaker.
@@ -76,7 +76,6 @@ class WamPlayer(Player):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.player_id)
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.ip_address)
 
-        # Wire up feature handlers
         self.state_sync = StateSyncHandler(self)
         self.playback = PlaybackHandler(self)
         self.grouping = GroupingHandler(self)
@@ -107,7 +106,7 @@ class WamPlayer(Player):
 
     @property
     def synced_to(self) -> str | None:
-        """Return the id of the player this player is synced to (sync leader)."""
+        """Return the ID of the player this player is synced to."""
         return self.synced_to_internal
 
     @property
@@ -129,7 +128,7 @@ class WamPlayer(Player):
         return [CONF_ENTRY_SAMPLE_RATES_WAM, CONF_ENTRY_HTTP_PROFILE_WAM]
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player config changes."""
+        """Handle player config updates."""
         if new_name := self.config.name:
             if self.connected and new_name != self._attr_name:
                 self.mass.create_task(self.device_config.set_name(new_name))
@@ -146,15 +145,15 @@ class WamPlayer(Player):
         await self.state_sync.unload()
 
     async def play(self) -> None:
-        """Send play command to player."""
+        """Resume playback."""
         await self.playback.play()
 
     async def pause(self) -> None:
-        """Send pause command to player."""
+        """Pause playback."""
         await self.playback.pause()
 
     async def stop(self) -> None:
-        """Send stop command to player."""
+        """Stop playback."""
         await self.playback.stop()
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -185,9 +184,8 @@ class WamPlayer(Player):
         if volume_level is not None and prev_volume is not None and volume_level != prev_volume:
             await self.volume.set_volume(volume_level)
 
-        # Determine announcement duration. Samsung speakers auto-resume after a URL stream
-        # ends rather than going idle, so we need to know when the announcement should be
-        # done in order to stop the speaker ourselves before the auto-resume kicks in.
+        # Samsung speakers auto-resume after a URL stream ends rather than going idle,
+        # so we stop the stream manually at the expected end of the announcement
         duration: float | None = None
         with contextlib.suppress(Exception):
             media_info = await async_parse_tags(announcement.uri, require_duration=True)
@@ -258,7 +256,7 @@ class WamPlayer(Player):
     # --- Helpers ---
 
     def signal_state_update_event(self) -> None:
-        """Signal internal event that state has been updated (for waiters)."""
+        """Signal that state has been updated."""
         self._state_update_event.set()
 
     async def await_state_change(self, check: Callable[[], bool], timeout: float) -> None:

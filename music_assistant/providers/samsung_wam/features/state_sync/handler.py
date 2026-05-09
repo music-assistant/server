@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 
 def get_speaker_status() -> ApiCall:
-    """(UIC) Get speaker status. Used for health checks."""
+    """(UIC) Get speaker status."""
     return ApiCall(api_type="UIC", method="GetSpeakerStatus", expected_response="SpeakerStatus")
 
 
@@ -47,9 +47,9 @@ class StateSyncHandler(WamPlayerFeatureBase):
     _terminating_wifi_stream: bool = False
 
     def apply_initial_state(self, attrs: WamSpeakerAttributes) -> None:
-        """Apply the initial state snapshot to the player during setup.
+        """Apply an initial state snapshot to the player.
 
-        :param attrs: The initial speaker attributes.
+        :param attrs: The speaker attributes to apply.
         """
         self.player._attr_device_info = DeviceInfo(
             model=attrs.model or "Unknown",
@@ -62,7 +62,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
         self.player._attr_available = True
 
     def subscribe_speaker_events(self) -> None:
-        """Register the event subscriber for the current speaker instance."""
+        """Register the speaker event subscriber."""
         if self.speaker:
             self.speaker.events.register_subscriber(partial(self.on_speaker_event), info_level=0)
 
@@ -71,7 +71,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
         try:
             async with self.player.connection_lock:
                 if not self.player.connected:
-                    self.logger.debug("Poller found disconnected speaker. Attempting reconnect.")
+                    self.logger.debug("Poller found disconnected speaker; attempting reconnect")
                     self._mark_player_unavailable()
                     await self._reconnect_speaker()
 
@@ -81,14 +81,14 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 await self.update_play_time()
 
             if not self.player.available:
-                self.logger.info("Player %s is back online.", self.player.log_name)
+                self.logger.info("Player %s is back online", self.player.log_name)
                 self.player._attr_available = True
 
             self.player.update_state()
 
         except (ConnectionError, PywamError, TimeoutError, PlayerCommandFailed) as err:
             self.logger.debug(
-                "Poll failed for %s (%s). Dropping connection.",
+                "Poll failed for %s (%s); dropping connection",
                 self.player.log_name,
                 err.__class__.__name__,
             )
@@ -107,16 +107,16 @@ class StateSyncHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def check_status(self) -> None:
-        """Verify device connectivity with a direct API call."""
+        """Check whether the speaker is reachable."""
         if not self.player.connected:
-            raise ConnectionError("The underlying pywam client is not connected.")
+            raise ConnectionError("Speaker is not connected")
         async with asyncio.timeout(HEALTH_CHECK_TIMEOUT):
             await self.speaker.client.request(get_speaker_status())
 
     @retry_command()
     @handle_pywam_errors
     async def update_play_time(self) -> None:
-        """Fetch the current play time and synchronize."""
+        """Fetch and apply the current play time from the speaker."""
         if not self.player.connected:
             return
 
@@ -138,8 +138,8 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
         :param event: The payload data emitted from the speaker.
         """
-        # Skip during announcements: the announcement stream's playtime events would
-        # corrupt elapsed_time tracking and cause the post-announcement resume to seek incorrectly.
+        # Skip during announcements: playtime events would corrupt elapsed time tracking
+        # and cause the resume after the announcement to seek to the wrong position
         if (
             event
             and hasattr(event, "data")
@@ -157,9 +157,9 @@ class StateSyncHandler(WamPlayerFeatureBase):
         self.refresh_state(notify_provider=True)
 
     def refresh_state(self, notify_provider: bool = False) -> None:
-        """Force a re-application of current state to the player object.
+        """Re-apply current speaker state to the player.
 
-        :param notify_provider: Trigger an event signal if true.
+        :param notify_provider: Trigger an event signal if True.
         """
         if not self.player.connected:
             return
@@ -168,7 +168,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
         group_children = self.player.prov.groups.states.get(self.player.player_id, set())
 
         # If the speaker has externally switched away from the Wi-Fi stream (e.g. a phone
-        # connecting via Bluetooth), clear the stream flag and capture the new source.
+        # connecting via Bluetooth), clear the stream flag and capture the new source
         external_source = None
         if (
             self.player.stream_active
@@ -191,12 +191,11 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
         self.player.update_state()
 
-        # Set the active source after update_state() to immediately cancel the timer
-        # it schedules, preventing the UI from reverting to the queue name.
+        # Must be set after the state update to prevent the source display from briefly reverting
         if external_source:
             self.player.set_active_mass_source(external_source)
             # Stopping the queue alone won't terminate the stream as the speaker keeps
-            # its HTTP connection alive in the background.
+            # its HTTP connection alive in the background
             if queue_id:
                 self.mass.create_task(self.mass.player_queues.stop(queue_id))
             self.mass.create_task(self._terminate_wifi_stream(external_source))
@@ -212,12 +211,12 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 await self._reconnect_speaker()
 
     async def _terminate_wifi_stream(self, target_source: str) -> None:
-        """Terminate the MA audio stream after an external source switch.
+        """Terminate the audio stream after an external source switch.
 
         :param target_source: The source the speaker should end up on (e.g. 'Bluetooth').
         """
-        # The speaker keeps its HTTP connection to the MA stream URL open as a background
-        # buffer even when on an external source — this sequence forces it to close.
+        # The speaker keeps its HTTP connection to the stream URL open in the background
+        # even when on an external source — this sequence forces it to close
         if self._terminating_wifi_stream:
             return
         if not self.player.connected or self.player.synced_to:
@@ -251,14 +250,14 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 )
             finally:
                 # Restore the target source to cancel any timer that fired while the
-                # speaker was briefly back on Wi-Fi.
+                # speaker was briefly back on Wi-Fi
                 self.player.set_active_mass_source(target_source)
         finally:
             self._terminating_wifi_stream = False
 
     @staticmethod
     def suppress_speaker_status_events(speaker: Speaker) -> None:
-        """Patch out the SpeakerStatus event handler to suppress log spam.
+        """Replace the SpeakerStatus event handler with a no-op to prevent log noise.
 
         :param speaker: The Speaker instance to patch.
         """
@@ -269,7 +268,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
         speaker.events.event_SpeakerStatus = _handle_speaker_status_event
 
     async def _reconnect_speaker(self) -> None:
-        """Swap the internal speaker object and re-establish the connection."""
+        """Reconnect to the speaker using a fresh client."""
         await self.disconnect_speaker()
 
         new_speaker = Speaker(self.player.ip_address)
@@ -280,13 +279,12 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
             attrs = StateSyncMapper.create_speaker_attributes(new_speaker)
             if not attrs.mac or attrs.mac != self.player.player_id:
-                raise ConnectionError("Reconnected to wrong MAC or failed to get MAC.")
+                raise ConnectionError("MAC address verification failed after reconnect")
 
-            # Guard against the case where this player instance has been replaced in the
-            # player controller (e.g. after a provider restart). Continuing would leave
-            # an orphaned pywam connection with a live event subscriber.
+            # Guard against the case where this player instance has been replaced (e.g. after
+            # a provider restart). Continuing would leave a dangling pywam connection open
             if self.mass.players.get_player(self.player.player_id) is not self.player:
-                raise ConnectionError("Player instance superseded; aborting reconnect.")
+                raise ConnectionError("Player instance superseded; aborting reconnect")
 
             self.suppress_speaker_status_events(new_speaker)
             self.player.speaker = new_speaker

@@ -37,7 +37,7 @@ PLAYER_SOURCE_MAP = {
 
 
 class StateSyncMapper:
-    """A stateless utility that maps data between pywam attributes and MA player state."""
+    """Maps pywam speaker attributes to player state."""
 
     @staticmethod
     def create_speaker_attributes(wam_speaker: Speaker) -> WamSpeakerAttributes:
@@ -70,12 +70,12 @@ class StateSyncMapper:
         group_children: set[str],
         stream_active: bool,
     ) -> None:
-        """Apply a full state update from the validated attributes to the player.
+        """Apply a full attribute snapshot to the player state.
 
         :param player: The WamPlayer to update.
-        :param speaker_attrs: The current attributes from the speaker.
+        :param speaker_attrs: The current speaker attributes.
         :param group_children: Known group children for this player.
-        :param stream_active: Flag indicating if the stream is active.
+        :param stream_active: Whether the audio stream is currently active.
         """
         player._attr_available = True
         player._attr_name = speaker_attrs.name
