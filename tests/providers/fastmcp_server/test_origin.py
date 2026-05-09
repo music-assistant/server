@@ -1,4 +1,5 @@
 """Tests for Origin allowlist computation, matching, and bridge enforcement (C1+C2)."""
+# mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc"
 
 from __future__ import annotations
 

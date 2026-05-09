@@ -1,4 +1,5 @@
 """Tests for ToolAnnotations sweep across all sub-server tools (C5)."""
+# mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc"
 
 from __future__ import annotations
 

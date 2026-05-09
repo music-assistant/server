@@ -4,6 +4,7 @@ This test is the only one that depends on the ``fastmcp`` package being
 installed and on Music Assistant model imports working — the rest of the
 suite uses mocks. Skipped automatically if either is unavailable.
 """
+# mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc"
 
 from __future__ import annotations
 

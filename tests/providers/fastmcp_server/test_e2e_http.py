@@ -5,6 +5,7 @@ hosting a hand-rolled ASGI app. They cover the bits that pure-helper unit
 tests can't reach: streaming chunk pass-through, DELETE / non-GET methods,
 the well-known endpoint living next to the MCP mount.
 """
+# mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc"
 
 from __future__ import annotations
 

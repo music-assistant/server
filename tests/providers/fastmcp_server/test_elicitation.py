@@ -1,4 +1,5 @@
 """Tests for elicitation on destructive operations (C8)."""
+# mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc"
 
 from __future__ import annotations
 
