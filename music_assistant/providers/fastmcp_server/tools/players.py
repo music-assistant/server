@@ -30,7 +30,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_FAST,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_players() -> list[PlayerBrief]:
         """List all players known to MA."""
         all_players = mass.players.all_players() if hasattr(mass.players, "all_players") else []
@@ -48,7 +48,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_FAST,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_player(player_id: str) -> PlayerBrief | None:
         """Return a single player by id, or ``None`` if it doesn't exist."""
         player = mass.players.get(player_id) if hasattr(mass.players, "get") else None
@@ -64,7 +64,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def set_power(player_id: str, powered: bool) -> None:
         """Power a player on or off."""
         await mass.players.cmd_power(player_id, powered)
@@ -79,7 +79,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def group_player(player_id: str, target_player_id: str) -> None:
         """Group ``player_id`` with ``target_player_id`` (sync group)."""
         await mass.players.cmd_group(player_id, target_player_id)

@@ -35,8 +35,13 @@ ComponentKind = Literal["tool", "resource", "prompt"]
 TagsLookup = Callable[[ComponentKind, str], Awaitable[set[str] | None]]
 
 
-class TagFilterMiddleware(Middleware):
-    """Hide tools, resources, and prompts whose tags are not in ``allowed_tags``."""
+class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
+    """Hide tools, resources, and prompts whose tags are not in ``allowed_tags``.
+
+    ``Middleware`` is typed as ``Any`` upstream; under
+    ``disallow_subclassing_any`` we suppress the misc-rule on the class
+    line rather than every method.
+    """
 
     def __init__(
         self,
@@ -159,7 +164,5 @@ class TagFilterMiddleware(Middleware):
             return  # untagged → always-on
         allowed = self._allowed()
         if not any(t in allowed for t in tags):
-            msg = (
-                f"{kind.capitalize()} {key!r} is currently disabled by configuration"
-            )
+            msg = f"{kind.capitalize()} {key!r} is currently disabled by configuration"
             raise self._ERROR_BY_KIND[kind](msg)

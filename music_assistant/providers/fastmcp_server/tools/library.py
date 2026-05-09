@@ -56,7 +56,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def search_tracks(
         query: str, limit: int = 25, ctx: Context | None = None
     ) -> list[TrackBrief]:
@@ -76,7 +76,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def search_albums(
         query: str, limit: int = 25, ctx: Context | None = None
     ) -> list[AlbumBrief]:
@@ -96,7 +96,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def search_artists(
         query: str, limit: int = 25, ctx: Context | None = None
     ) -> list[ArtistBrief]:
@@ -110,7 +110,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("List library tracks"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_library_tracks(offset: int = 0, limit: int = 50) -> list[TrackBrief]:
         """List tracks already in the user's library, paginated."""
         offset, limit = page_args(offset, limit)
@@ -121,7 +121,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("List library albums"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_library_albums(offset: int = 0, limit: int = 50) -> list[AlbumBrief]:
         """List albums already in the user's library, paginated."""
         offset, limit = page_args(offset, limit)
@@ -132,7 +132,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("List library artists"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_library_artists(offset: int = 0, limit: int = 50) -> list[ArtistBrief]:
         """List artists already in the user's library, paginated."""
         offset, limit = page_args(offset, limit)
@@ -143,7 +143,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("List library playlists"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_library_playlists(offset: int = 0, limit: int = 50) -> list[PlaylistBrief]:
         """List playlists already in the user's library, paginated."""
         offset, limit = page_args(offset, limit)
@@ -154,7 +154,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("List library radio"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_library_radio(offset: int = 0, limit: int = 50) -> list[RadioBrief]:
         """List radio stations already in the user's library, paginated."""
         offset, limit = page_args(offset, limit)
@@ -165,7 +165,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("Get track by URI"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_track_by_uri(uri: str) -> TrackBrief:
         """Resolve a track by its MA URI to a brief summary."""
         item = await mass.music.get_item_by_uri(uri)
@@ -175,7 +175,7 @@ def build_library_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_LIBRARY},
         annotations=_readonly("Recently added tracks"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def recently_added_tracks(limit: int = 10) -> list[TrackBrief]:
         """Return tracks recently added to the library."""
         items = await mass.music.recently_added_tracks(limit=limit)

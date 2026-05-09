@@ -21,7 +21,7 @@ def register_prompts(mcp: Any, config: ProviderConfig) -> None:
     if not config.get_value(CONF_RES_PROMPTS):
         return
 
-    @mcp.prompt(name="find_and_play")  # type: ignore[untyped-decorator]
+    @mcp.prompt(name="find_and_play")  # type: ignore[untyped-decorator, unused-ignore]
     def find_and_play(query: str = "", target_player: str = "") -> str:
         """Search and play media on a player."""
         target = target_player or "<the user's preferred player>"
@@ -36,7 +36,7 @@ def register_prompts(mcp: Any, config: ProviderConfig) -> None:
             "and report it back."
         )
 
-    @mcp.prompt(name="curate_party_playlist")  # type: ignore[untyped-decorator]
+    @mcp.prompt(name="curate_party_playlist")  # type: ignore[untyped-decorator, unused-ignore]
     def party_playlist(theme: str = "indie 2010s", length_minutes: int = 60) -> str:
         """Build a party playlist."""
         return (
@@ -51,7 +51,7 @@ def register_prompts(mcp: Any, config: ProviderConfig) -> None:
             "Report the playlist URI when done."
         )
 
-    @mcp.prompt(name="now_playing_summary")  # type: ignore[untyped-decorator]
+    @mcp.prompt(name="now_playing_summary")  # type: ignore[untyped-decorator, unused-ignore]
     def now_playing(player_id: str = "") -> str:
         """Summarise what's currently playing on a player (or all players)."""
         if player_id:

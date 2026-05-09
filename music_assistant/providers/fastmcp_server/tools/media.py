@@ -33,9 +33,7 @@ async def _resolve_uri(mass: MusicAssistant, uri: str) -> Any:
         raise ToolError(msg) from exc
 
 
-def build_media_server(
-    mass: MusicAssistant, *, require_confirmation: bool = True
-) -> FastMCP:
+def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
     """Construct the ``media/*`` sub-server."""
     sub: FastMCP = FastMCP(name="media")
 
@@ -49,7 +47,7 @@ def build_media_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def add_to_favorites(uri: str) -> None:
         """Add a media item (by URI) to favorites."""
         item = await _resolve_uri(mass, uri)
@@ -65,7 +63,7 @@ def build_media_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def remove_from_favorites(uri: str, ctx: Context | None = None) -> None:
         """Remove a media item (by URI) from favorites."""
         await confirm_or_raise(
@@ -86,7 +84,7 @@ def build_media_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def add_to_library(uri: str) -> None:
         """Add a media item (by URI) to the library."""
         item = await _resolve_uri(mass, uri)
@@ -102,7 +100,7 @@ def build_media_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def remove_from_library(uri: str, ctx: Context | None = None) -> None:
         """Remove a media item (by URI) from the library."""
         await confirm_or_raise(
@@ -123,7 +121,7 @@ def build_media_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def mark_played(uri: str) -> None:
         """Mark a media item as played (updates play history)."""
         item = await _resolve_uri(mass, uri)
@@ -139,7 +137,7 @@ def build_media_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def play_announcement(player_id: str, url: str, volume_level: int | None = None) -> None:
         """Play a one-shot announcement audio URL on a player."""
         await mass.players.play_announcement(player_id, url, volume_level=volume_level)

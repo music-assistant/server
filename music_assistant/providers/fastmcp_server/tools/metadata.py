@@ -41,7 +41,7 @@ def build_metadata_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def recommendations(
         ctx: Context | None = None,
     ) -> list[RecommendationFolderBrief]:
@@ -70,7 +70,7 @@ def build_metadata_server(mass: MusicAssistant) -> FastMCP:
             openWorldHint=False,
         ),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def recently_played(limit: int = 10) -> list[TrackBrief]:
         """Return the user's recently played tracks."""
         items = await mass.music.recently_played(limit=limit)
@@ -80,7 +80,7 @@ def build_metadata_server(mass: MusicAssistant) -> FastMCP:
         tags={Tag.QUERY_METADATA},
         annotations=_readonly("Get lyrics"),
         timeout=TIMEOUT_QUERY,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_lyrics(track_uri: str) -> str | None:
         """Return lyrics for a track URI (best-effort).
 

@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-def build_queue_server(
-    mass: MusicAssistant, *, require_confirmation: bool = True
-) -> FastMCP:
+def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
     """Construct the ``queue/*`` sub-server."""
     sub: FastMCP = FastMCP(name="queue")
 
@@ -32,10 +30,8 @@ def build_queue_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_FAST,
-    )
-    async def get_active_queue(
-        player_id: str, include_items: int = 25
-    ) -> QueueBrief | None:
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def get_active_queue(player_id: str, include_items: int = 25) -> QueueBrief | None:
         """Return the active queue for a player, or ``None`` if the player is idle."""
         queue = mass.player_queues.get_active_queue(player_id)
         if queue is None:
@@ -54,7 +50,7 @@ def build_queue_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def set_shuffle(queue_id: str, enabled: bool) -> None:
         """Enable or disable shuffle on the given queue."""
         await mass.player_queues.set_shuffle(queue_id, enabled)
@@ -69,7 +65,7 @@ def build_queue_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def clear_queue(queue_id: str, ctx: Context | None = None) -> None:
         """Clear all items from the given queue.
 
@@ -97,7 +93,7 @@ def build_queue_server(
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
-    )
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def transfer_queue(source_queue_id: str, target_queue_id: str) -> None:
         """Move a queue from one player to another."""
         await mass.player_queues.transfer_queue(source_queue_id, target_queue_id)

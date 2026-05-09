@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "domain": "mcp_server",
+  "domain": "fastmcp_server",
   "stage": "experimental",
   "name": "MCP Server",
   "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients.",

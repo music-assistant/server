@@ -15,27 +15,27 @@ def _build_server(allowed: set[str]) -> FastMCP:
     """Construct a FastMCP root with one tagged tool and the tag-filter middleware."""
     mcp: FastMCP = FastMCP(name="test-server")
 
-    @mcp.tool(tags={"query"})
+    @mcp.tool(tags={"query"})  # type: ignore[untyped-decorator, unused-ignore]
     async def reads() -> str:
         """Return a read-only result."""
         return "ok"
 
-    @mcp.tool(tags={"delete"})
+    @mcp.tool(tags={"delete"})  # type: ignore[untyped-decorator, unused-ignore]
     async def deletes() -> str:
         """Pretend to perform a destructive action."""
         return "deleted"
 
-    @mcp.tool
+    @mcp.tool  # type: ignore[untyped-decorator, unused-ignore]
     async def untagged() -> str:
         """Return a value from an untagged tool — always exposed."""
         return "untagged"
 
-    @mcp.resource("data://thing/{thing_id}", tags={"query"})
+    @mcp.resource("data://thing/{thing_id}", tags={"query"})  # type: ignore[untyped-decorator, unused-ignore]
     async def thing(thing_id: str) -> str:
         """Return a read-only resource value for the given id."""
         return f"thing:{thing_id}"
 
-    @mcp.prompt(name="suggest", tags={"query"})
+    @mcp.prompt(name="suggest", tags={"query"})  # type: ignore[untyped-decorator, unused-ignore]
     def suggest() -> str:
         """Return a sample prompt template."""
         return "Pick something."

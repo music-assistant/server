@@ -95,10 +95,6 @@ async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
     mcp = _server(mock_mass, require_confirmation=True)
 
     async with Client(mcp, elicitation_handler=_accepter()) as client:
-        await client.call_tool(
-            "media_remove_from_library", {"uri": "lib://t/42"}
-        )
+        await client.call_tool("media_remove_from_library", {"uri": "lib://t/42"})
     mock_mass.music.get_item_by_uri.assert_awaited_once_with("lib://t/42")
-    mock_mass.music.remove_item_from_library.assert_awaited_once_with(
-        resolved.media_type, 42
-    )
+    mock_mass.music.remove_item_from_library.assert_awaited_once_with(resolved.media_type, 42)

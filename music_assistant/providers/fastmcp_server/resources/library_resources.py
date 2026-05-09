@@ -14,27 +14,27 @@ if TYPE_CHECKING:
 def register_library_resources(mcp: Any, mass: MusicAssistant) -> None:
     """Register ``library://*`` resources on the given FastMCP root."""
 
-    @mcp.resource("library://artist/{artist_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator]
+    @mcp.resource("library://artist/{artist_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def artist_resource(artist_id: str) -> Any:
         """Full artist record by library id."""
         return await mass.music.artists.get_library_item(artist_id)
 
-    @mcp.resource("library://album/{album_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator]
+    @mcp.resource("library://album/{album_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def album_resource(album_id: str) -> Any:
         """Full album record by library id."""
         return await mass.music.albums.get_library_item(album_id)
 
-    @mcp.resource("library://track/{track_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator]
+    @mcp.resource("library://track/{track_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def track_resource(track_id: str) -> Any:
         """Full track record by library id."""
         return await mass.music.tracks.get_library_item(track_id)
 
-    @mcp.resource("library://playlist/{playlist_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator]
+    @mcp.resource("library://playlist/{playlist_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def playlist_resource(playlist_id: str) -> Any:
         """Full playlist record by library id."""
         return await mass.music.playlists.get_library_item(playlist_id)
 
-    @mcp.resource("library://radio/{radio_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator]
+    @mcp.resource("library://radio/{radio_id}", tags={Tag.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def radio_resource(radio_id: str) -> Any:
         """Full radio station record by library id."""
         return await mass.music.radio.get_library_item(radio_id)

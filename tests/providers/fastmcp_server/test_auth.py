@@ -84,14 +84,10 @@ _RESOURCE = "http://localhost:8095/mcp/v1"
 
 
 @pytest.mark.asyncio
-async def test_legacy_token_passes_in_soft_mode(
-    mock_mass: MagicMock, mock_user: MagicMock
-) -> None:
+async def test_legacy_token_passes_in_soft_mode(mock_mass: MagicMock, mock_user: MagicMock) -> None:
     """Non-JWT (legacy hash) tokens have no aud; soft mode accepts them."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
-    verifier = MASTokenVerifier(
-        mock_mass, public_resource_uri=_RESOURCE, enforce_audience=False
-    )
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=False)
     assert await verifier.verify_token("legacy-hash-token") is not None
 
 
@@ -101,9 +97,7 @@ async def test_legacy_token_rejected_in_strict_mode(
 ) -> None:
     """Strict mode rejects tokens that have no audience claim at all."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
-    verifier = MASTokenVerifier(
-        mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True
-    )
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True)
     assert await verifier.verify_token("legacy-hash-token") is None
 
 
@@ -113,9 +107,7 @@ async def test_jwt_with_matching_aud_accepted_in_strict_mode(
 ) -> None:
     """A JWT carrying ``aud == public_resource_uri`` passes strict enforcement."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
-    verifier = MASTokenVerifier(
-        mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True
-    )
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True)
     token = _make_jwt({"sub": "u1", "aud": _RESOURCE})
     assert await verifier.verify_token(token) is not None
 
@@ -126,21 +118,15 @@ async def test_jwt_with_mismatched_aud_rejected_in_strict_mode(
 ) -> None:
     """A JWT issued for a different audience is rejected in strict mode."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
-    verifier = MASTokenVerifier(
-        mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True
-    )
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True)
     token = _make_jwt({"sub": "u1", "aud": "http://other.example/api"})
     assert await verifier.verify_token(token) is None
 
 
 @pytest.mark.asyncio
-async def test_jwt_with_aud_list_accepted(
-    mock_mass: MagicMock, mock_user: MagicMock
-) -> None:
+async def test_jwt_with_aud_list_accepted(mock_mass: MagicMock, mock_user: MagicMock) -> None:
     """RFC 8707 allows ``aud`` to be a list — match is membership."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
-    verifier = MASTokenVerifier(
-        mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True
-    )
+    verifier = MASTokenVerifier(mock_mass, public_resource_uri=_RESOURCE, enforce_audience=True)
     token = _make_jwt({"sub": "u1", "aud": ["http://other.example", _RESOURCE]})
     assert await verifier.verify_token(token) is not None

@@ -15,13 +15,13 @@ if TYPE_CHECKING:
 def register_player_resources(mcp: Any, mass: MusicAssistant) -> None:
     """Register ``player://`` and ``queue://`` resources on the given FastMCP root."""
 
-    @mcp.resource("player://{player_id}", tags={Tag.QUERY_PLAYERS})  # type: ignore[untyped-decorator]
+    @mcp.resource("player://{player_id}", tags={Tag.QUERY_PLAYERS})  # type: ignore[untyped-decorator, unused-ignore]
     async def player_resource(player_id: str) -> Any:
         """Player snapshot by id."""
         player = mass.players.get(player_id) if hasattr(mass.players, "get") else None
         return to_brief_player(player) if player is not None else None
 
-    @mcp.resource("queue://{queue_id}", tags={Tag.QUERY_QUEUE})  # type: ignore[untyped-decorator]
+    @mcp.resource("queue://{queue_id}", tags={Tag.QUERY_QUEUE})  # type: ignore[untyped-decorator, unused-ignore]
     async def queue_resource(queue_id: str) -> Any:
         """Queue snapshot by id (includes all queue items)."""
         queue = mass.player_queues.get(queue_id) if hasattr(mass.player_queues, "get") else None

@@ -66,9 +66,7 @@ def _normalize_origin(origin: str) -> str | None:
     return f"{scheme}://{bracketed_host}:{port}"
 
 
-def _compute_origin_allowlist(
-    mass: MusicAssistant, extra_origins_csv: str = ""
-) -> frozenset[str]:
+def _compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "") -> frozenset[str]:
     """Build the set of accepted ``Origin`` values for the MCP endpoint.
 
     Always includes loopback variants (``http://localhost``, ``http://127.0.0.1``,
@@ -224,6 +222,7 @@ async def mount_well_known(
         runtime rebuild — the body is regenerated on each request.
     :return: Callable that unregisters both routes when invoked.
     """
+
     def _resolve_scopes() -> list[str] | None:
         if callable(scopes_supported):
             return scopes_supported()

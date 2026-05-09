@@ -35,9 +35,7 @@ TIMEOUT_QUERY = 30.0
 TIMEOUT_BULK = 60.0
 
 
-async def confirm_or_raise(
-    ctx: Context | None, prompt: str, *, enabled: bool
-) -> None:
+async def confirm_or_raise(ctx: Context | None, prompt: str, *, enabled: bool) -> None:
     """Ask the MCP client to confirm a destructive operation.
 
     If ``enabled`` is False, or there is no Context (direct unit-test
@@ -52,8 +50,10 @@ async def confirm_or_raise(
         return
     try:
         # ctx.elicit's overloads in older mypy stubs don't recognize ``bool``
-        # as a valid scalar response_type — runtime behaviour is fine.
-        result = await ctx.elicit(prompt, response_type=bool)  # type: ignore[arg-type]
+        # as a valid scalar response_type — runtime behaviour is fine. Newer
+        # upstream mypy resolves the overload correctly, so the unused-ignore
+        # is also suppressed.
+        result = await ctx.elicit(prompt, response_type=bool)  # type: ignore[arg-type, unused-ignore]
     except NotImplementedError:
         return
     action = getattr(result, "action", None)

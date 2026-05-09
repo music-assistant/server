@@ -116,9 +116,7 @@ class MCPServerRuntime:
             auth=verifier,
         )
 
-        require_confirmation = bool(
-            self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False
-        )
+        require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
         mcp.mount(build_library_server(self._mass), namespace="library")
         mcp.mount(
             build_queue_server(self._mass, require_confirmation=require_confirmation),
@@ -183,7 +181,7 @@ class MCPServerRuntime:
             self._unmount = None
         if getattr(self, "_unmount_well_known", None) is not None:
             try:
-                self._unmount_well_known()  # type: ignore[misc]
+                self._unmount_well_known()  # type: ignore[misc, unused-ignore]
             except Exception:
                 self._logger.exception("Failed to unregister well-known route")
             self._unmount_well_known = None

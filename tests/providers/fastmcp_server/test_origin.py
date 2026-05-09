@@ -16,7 +16,8 @@ from music_assistant.providers.fastmcp_server.http_bridge import (
     mount_into_mass,
     mount_well_known,
 )
-from tests.conftest import FakeWebserver, build_aiohttp_app
+
+from .conftest import FakeWebserver, build_aiohttp_app
 
 
 @pytest.mark.parametrize(
@@ -57,9 +58,7 @@ def test_compute_allowlist_ipv6_publish_ip() -> None:
 
 
 def _fake_mass(base_url: str = "http://localhost:8095", publish_ip: str = "127.0.0.1"):
-    return SimpleNamespace(
-        webserver=SimpleNamespace(base_url=base_url, publish_ip=publish_ip)
-    )
+    return SimpleNamespace(webserver=SimpleNamespace(base_url=base_url, publish_ip=publish_ip))
 
 
 def test_compute_allowlist_default() -> None:
@@ -172,17 +171,13 @@ async def bridge_client() -> Any:
 
 async def test_bridge_rejects_evil_origin(bridge_client: TestClient) -> None:
     """A non-allow-listed Origin is blocked with 403, ASGI never invoked."""
-    resp = await bridge_client.post(
-        "/mcp/v1/", headers={"Origin": "http://evil.example"}
-    )
+    resp = await bridge_client.post("/mcp/v1/", headers={"Origin": "http://evil.example"})
     assert resp.status == 403
 
 
 async def test_bridge_allows_localhost(bridge_client: TestClient) -> None:
     """Origin that matches base_url is forwarded to ASGI (200 from echo app)."""
-    resp = await bridge_client.post(
-        "/mcp/v1/", headers={"Origin": "http://localhost:8095"}
-    )
+    resp = await bridge_client.post("/mcp/v1/", headers={"Origin": "http://localhost:8095"})
     assert resp.status == 200
     assert (await resp.read()) == b"OK"
 
@@ -287,12 +282,8 @@ async def test_bridge_with_extra_origins() -> None:
     )
 
     async with TestClient(TestServer(build_aiohttp_app(fake_ws))) as client:
-        resp = await client.post(
-            "/mcp/v1/", headers={"Origin": "https://ha.example.com"}
-        )
+        resp = await client.post("/mcp/v1/", headers={"Origin": "https://ha.example.com"})
         assert resp.status == 200
         # An origin not in the extras stays rejected.
-        resp = await client.post(
-            "/mcp/v1/", headers={"Origin": "http://evil.example"}
-        )
+        resp = await client.post("/mcp/v1/", headers={"Origin": "http://evil.example"})
         assert resp.status == 403

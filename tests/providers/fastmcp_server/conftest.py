@@ -50,9 +50,7 @@ class FakeWebserver:
         self.base_url = base_url
         self.publish_ip = publish_ip
 
-    def register_dynamic_route(
-        self, path: str, handler: Any, method: str = "*"
-    ) -> Any:
+    def register_dynamic_route(self, path: str, handler: Any, method: str = "*") -> Any:
         """Mirror ``mass.webserver.register_dynamic_route``: store + return unregister."""
         import contextlib  # noqa: PLC0415 - keep stdlib import inside method to mirror runtime
 
