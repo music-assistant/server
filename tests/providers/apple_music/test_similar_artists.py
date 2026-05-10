@@ -36,10 +36,15 @@ def _make_api_response(artist_objects: list[dict[str, object]]) -> dict[str, obj
 
 
 @pytest.fixture
-def manager() -> AppleMusicRecommendationManager:
+def mock_api() -> MagicMock:
+    """Return a MagicMock representing the Apple Music API client."""
     api_client = MagicMock()
     api_client.get_data = AsyncMock()
+    return api_client
 
+
+@pytest.fixture
+def manager(mock_api: MagicMock) -> AppleMusicRecommendationManager:
     provider = MagicMock()
     provider.instance_id = "apple_music_test"
     provider.domain = "apple_music"
@@ -47,26 +52,27 @@ def manager() -> AppleMusicRecommendationManager:
     provider.logger = MagicMock()
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.set = AsyncMock()
-    provider.api_client = api_client
+    provider.api_client = mock_api
 
     return AppleMusicRecommendationManager(provider)
 
 
 @pytest.mark.asyncio
-async def test_get_similar_artists_returns_artists(manager: AppleMusicRecommendationManager) -> None:
+async def test_get_similar_artists_returns_artists(
+    manager: AppleMusicRecommendationManager,
+    mock_api: MagicMock,
+) -> None:
     """get_similar_artists parses artists from the views.similar-artists response."""
-    manager.api.get_data = AsyncMock(
-        return_value=_make_api_response(
-            [
-                _make_artist_obj("456", "Radiohead"),
-                _make_artist_obj("789", "Portishead"),
-            ]
-        )
+    mock_api.get_data.return_value = _make_api_response(
+        [
+            _make_artist_obj("456", "Radiohead"),
+            _make_artist_obj("789", "Portishead"),
+        ]
     )
 
     result = await manager.get_similar_artists("123", limit=25)
 
-    manager.api.get_data.assert_called_once_with(
+    mock_api.get_data.assert_called_once_with(
         "catalog/us/artists/123",
         views="similar-artists",
     )
@@ -78,10 +84,13 @@ async def test_get_similar_artists_returns_artists(manager: AppleMusicRecommenda
 
 
 @pytest.mark.asyncio
-async def test_get_similar_artists_respects_limit(manager: AppleMusicRecommendationManager) -> None:
+async def test_get_similar_artists_respects_limit(
+    manager: AppleMusicRecommendationManager,
+    mock_api: MagicMock,
+) -> None:
     """get_similar_artists truncates results to the requested limit."""
     many_artists = [_make_artist_obj(str(i), f"Artist {i}") for i in range(10)]
-    manager.api.get_data = AsyncMock(return_value=_make_api_response(many_artists))
+    mock_api.get_data.return_value = _make_api_response(many_artists)
 
     result = await manager.get_similar_artists("123", limit=3)
 
@@ -89,9 +98,12 @@ async def test_get_similar_artists_respects_limit(manager: AppleMusicRecommendat
 
 
 @pytest.mark.asyncio
-async def test_get_similar_artists_empty_data(manager: AppleMusicRecommendationManager) -> None:
+async def test_get_similar_artists_empty_data(
+    manager: AppleMusicRecommendationManager,
+    mock_api: MagicMock,
+) -> None:
     """get_similar_artists returns empty list when API returns no data."""
-    manager.api.get_data = AsyncMock(return_value={"data": []})
+    mock_api.get_data.return_value = {"data": []}
 
     result = await manager.get_similar_artists("123")
 
@@ -99,9 +111,12 @@ async def test_get_similar_artists_empty_data(manager: AppleMusicRecommendationM
 
 
 @pytest.mark.asyncio
-async def test_get_similar_artists_missing_view(manager: AppleMusicRecommendationManager) -> None:
+async def test_get_similar_artists_missing_view(
+    manager: AppleMusicRecommendationManager,
+    mock_api: MagicMock,
+) -> None:
     """get_similar_artists returns empty list when similar-artists view is absent."""
-    manager.api.get_data = AsyncMock(return_value={"data": [{"id": "123", "views": {}}]})
+    mock_api.get_data.return_value = {"data": [{"id": "123", "views": {}}]}
 
     result = await manager.get_similar_artists("123")
 
@@ -109,9 +124,12 @@ async def test_get_similar_artists_missing_view(manager: AppleMusicRecommendatio
 
 
 @pytest.mark.asyncio
-async def test_get_similar_artists_api_error(manager: AppleMusicRecommendationManager) -> None:
+async def test_get_similar_artists_api_error(
+    manager: AppleMusicRecommendationManager,
+    mock_api: MagicMock,
+) -> None:
     """get_similar_artists returns empty list when the API call raises."""
-    manager.api.get_data = AsyncMock(side_effect=Exception("API error"))
+    mock_api.get_data.side_effect = Exception("API error")
 
     result = await manager.get_similar_artists("123")
 
