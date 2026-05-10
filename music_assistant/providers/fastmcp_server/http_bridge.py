@@ -88,6 +88,15 @@ def _compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "")
         if base_norm.startswith("http://"):
             allow.add("https://" + base_norm[len("http://") :])
 
+    # Browsers send the MA port in Origin even for loopback access — add the
+    # loopback variants on the MA port so a Origin like ``http://localhost:8095``
+    # is accepted (the bare loopback entries above only match port 80).
+    base_port = _port_from_base_url(base_url)
+    if base_port:
+        for loopback in ("localhost", "127.0.0.1", "[::1]"):
+            allow.add(f"http://{loopback}:{base_port}")
+            allow.add(f"https://{loopback}:{base_port}")
+
     publish_ip = str(getattr(mass.webserver, "publish_ip", "") or "")
     if publish_ip:
         # Derive port from base_url; fallback: no port (browsers send port if non-default).

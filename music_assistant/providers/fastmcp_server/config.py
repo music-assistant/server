@@ -78,6 +78,20 @@ def build_config_entries(
             required=False,
         ),
         ConfigEntry(
+            key="open_connect",
+            type=ConfigEntryType.ACTION,
+            label="Open Connect Wizard",
+            description=(
+                "One-click setup for Claude Desktop, Claude Code, Cursor, "
+                "Windsurf, VSCode, ChatGPT and other MCP clients. Mints a "
+                "per-client token labelled `MCP — <Client>` (revocable in "
+                "Settings → Security → Tokens) and copies the ready-to-paste "
+                "snippet for you."
+            ),
+            action="open_connect",
+            required=False,
+        ),
+        ConfigEntry(
             key=CONF_REQUIRE_AUTH,
             type=ConfigEntryType.BOOLEAN,
             label="Require authentication",

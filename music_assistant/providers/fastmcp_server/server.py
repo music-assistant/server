@@ -59,6 +59,7 @@ class MCPServerRuntime:
         self._mcp: Any = None
         self._unmount: Callable[[], None] | None = None
         self._unmount_well_known: Callable[[], None] | None = None
+        self._unmount_connect: Callable[[], None] | None = None
         # Mutable so apply_permission_change can hot-swap the allowed-tag set
         # without re-instantiating the TagFilterMiddleware closure.
         self._allowed_tags: set[str] = set()
@@ -164,6 +165,22 @@ class MCPServerRuntime:
                 resource_name="Music Assistant MCP",
             )
 
+        # Mount the Connect Wizard. Failure here is non-fatal — the MCP server
+        # itself is unaffected; the user just falls back to manual onboarding.
+        try:
+            from . import __version__  # noqa: PLC0415
+            from .connect import mount_connect_wizard  # noqa: PLC0415
+
+            self._unmount_connect = await mount_connect_wizard(
+                self._mass,
+                self._mount_path,
+                version=__version__,
+                enabled_tags_provider=lambda: [str(t) for t in enabled_tags(self._config)],
+                extra_origins_csv=extra_origins,
+            )
+        except Exception:
+            self._logger.warning("Connect Wizard: mount failed", exc_info=True)
+
         self._logger.debug(
             "MCP runtime started: mount=%s, auth=%s, tags=%d",
             self._mount_path,
@@ -185,6 +202,12 @@ class MCPServerRuntime:
             except Exception:
                 self._logger.exception("Failed to unregister well-known route")
             self._unmount_well_known = None
+        if getattr(self, "_unmount_connect", None) is not None:
+            try:
+                self._unmount_connect()  # type: ignore[misc, unused-ignore]
+            except Exception:
+                self._logger.exception("Failed to unregister Connect Wizard route")
+            self._unmount_connect = None
         self._mcp = None
 
     async def apply_permission_change(self, new_config: ProviderConfig) -> None:
