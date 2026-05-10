@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 import time as _time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -465,13 +464,13 @@ async def test_dedup_removes_recently_played() -> None:
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
     recent = _make_mock_track("1", "library://track/1")
-    recent.last_played = datetime.datetime.fromtimestamp(_time.time() - 60)  # 1 minute ago
+    recent.last_played = int(_time.time() - 60)  # 1 minute ago
 
     old = _make_mock_track("2", "library://track/2")
-    old.last_played = datetime.datetime.fromtimestamp(_time.time() - 7200)  # 2 hours ago
+    old.last_played = int(_time.time() - 7200)  # 2 hours ago
 
     never = _make_mock_track("3", "library://track/3")
-    never.last_played = None
+    never.last_played = 0  # never played
 
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[recent, old, never])
 
@@ -496,7 +495,7 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
     tracks = []
     for i in range(5):
         t = _make_mock_track(str(i), f"library://track/{i}")
-        t.last_played = datetime.datetime.fromtimestamp(_time.time() - 30)  # 30 sec ago
+        t.last_played = int(_time.time() - 30)  # 30 sec ago
         tracks.append(t)
 
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
@@ -568,7 +567,7 @@ async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
     for i in range(3):
         t = _make_mock_track(str(i), f"library://track/{i}")
         t.duration = 200
-        t.last_played = None
+        t.last_played = 0  # never played
         tracks.append(t)
 
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)

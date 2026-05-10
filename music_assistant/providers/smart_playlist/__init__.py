@@ -478,9 +478,10 @@ class SmartPlaylistProvider(PluginProvider):
             if rules.seed_track_uri:
                 tracks = await self._get_similar_tracks(rules.seed_track_uri, MAX_SIMILAR_TRACKS)
             else:
+                assert rules.seed_artist_uri is not None  # guaranteed by outer condition
                 tracks = await self._get_similar_artists_tracks(
                     rules.seed_artist_uri,
-                    MAX_SIMILAR_TRACKS,  # type: ignore[arg-type]
+                    MAX_SIMILAR_TRACKS,
                     library_only=rules.seed_artist_library_only,
                 )
             tracks = await self._apply_seed_post_filters(tracks, rules, has_genre_filter)
@@ -600,11 +601,13 @@ class SmartPlaylistProvider(PluginProvider):
         for track in tracks:
             if track.uri and track.uri in excl_uris:
                 continue
-            if excl_artists and {
-                int(a.item_id)
-                for a in track.artists
-                if a.item_id and str(a.item_id).isdigit()
-            } & excl_artists:
+            if (
+                excl_artists
+                and {
+                    int(a.item_id) for a in track.artists if a.item_id and str(a.item_id).isdigit()
+                }
+                & excl_artists
+            ):
                 continue
             if (
                 excl_albums
@@ -620,17 +623,8 @@ class SmartPlaylistProvider(PluginProvider):
     def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
         """Filter out tracks last played within dedup_hours hours."""
         cutoff_ts = time.time() - dedup_hours * 3600
-        result = []
-        for track in tracks:
-            if track.last_played is None:
-                result.append(track)
-                continue
-            try:
-                if track.last_played.timestamp() < cutoff_ts:
-                    result.append(track)
-            except (OSError, OverflowError):
-                result.append(track)
-        return result
+        # last_played is a Unix timestamp (int); 0 means never played.
+        return [t for t in tracks if t.last_played == 0 or t.last_played < cutoff_ts]
 
     async def _evaluate_and(self, rules: SmartPlaylistRules) -> list[Track]:
         """Evaluate rules with AND logic: track must match ALL active filters."""
