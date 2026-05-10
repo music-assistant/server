@@ -58,13 +58,10 @@ class AppleMusicRecommendationManager:
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Retrieve a list of artists similar to the provided artist via Apple Music similar-artists view."""
         storefront = self.provider._storefront
-        try:
-            response = await self.api.get_data(
-                f"catalog/{storefront}/artists/{prov_artist_id}",
-                views="similar-artists",
-            )
-        except Exception:
-            return []
+        response = await self.api.get_data(
+            f"catalog/{storefront}/artists/{prov_artist_id}",
+            views="similar-artists",
+        )
         data = response.get("data", [])
         if not data:
             return []

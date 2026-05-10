@@ -128,9 +128,8 @@ async def test_get_similar_artists_api_error(
     manager: AppleMusicRecommendationManager,
     mock_api: MagicMock,
 ) -> None:
-    """get_similar_artists returns empty list when the API call raises."""
+    """get_similar_artists propagates exceptions so they are not cached."""
     mock_api.get_data.side_effect = Exception("API error")
 
-    result = await manager.get_similar_artists("123")
-
-    assert result == []
+    with pytest.raises(Exception, match="API error"):
+        await manager.get_similar_artists("123")
