@@ -62,7 +62,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param limit: Maximum number of similar artists to return.
         """
         ref_item = await self.get(item_id, provider_instance_id_or_domain)
-        for prov_mapping in ref_item.provider_mappings:
+        # Sort mappings so the requested provider comes first, then deterministically by instance/id.
+        sorted_mappings = sorted(
+            ref_item.provider_mappings,
+            key=lambda m: (
+                provider_instance_id_or_domain
+                not in {m.provider_instance, m.provider_domain},
+                m.provider_instance,
+                m.item_id,
+            ),
+        )
+        for prov_mapping in sorted_mappings:
             prov = self.mass.get_provider(prov_mapping.provider_instance)
             if prov is None or not prov.available:
                 continue
