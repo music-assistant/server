@@ -398,6 +398,13 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist.
+
+        Only called if provider supports ProviderFeature.SIMILAR_ARTISTS.
+        """
+        raise NotImplementedError
+
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
