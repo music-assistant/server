@@ -17,6 +17,22 @@ MAX_SIMILAR_TRACKS = 50
 RULES_FILENAME = "smart_playlist_rules.json"
 
 
+def _coerce_int(value: Any, field_name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as err:
+        raise InvalidDataError(f"Invalid value for {field_name}: {value!r}") from err
+
+
+def _coerce_optional_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as err:
+        raise InvalidDataError(f"Invalid value for {field_name}: {value!r}") from err
+
+
 @dataclass
 class SmartPlaylistRules:
     """Rules that define which tracks are included in a smart playlist."""
@@ -88,15 +104,15 @@ class SmartPlaylistRules:
             favorites_only=data.get("favorites_only", False),
             seed_track_uri=data.get("seed_track_uri"),
             seed_track_name=data.get("seed_track_name"),
-            min_popularity=data.get("min_popularity"),
+            min_popularity=_coerce_optional_int(data.get("min_popularity"), "min_popularity"),
             logic=data.get("logic", LOGIC_AND),
-            limit=data.get("limit", DEFAULT_TRACK_LIMIT),
+            limit=_coerce_int(data.get("limit", DEFAULT_TRACK_LIMIT), "limit"),
             is_dynamic=data.get("is_dynamic", True),
             genre_names={int(k): v for k, v in raw_genre_names.items()},
             artist_names={int(k): v for k, v in raw_artist_names.items()},
             album_names={int(k): v for k, v in raw_album_names.items()},
-            year_from=data.get("year_from"),
-            year_to=data.get("year_to"),
+            year_from=_coerce_optional_int(data.get("year_from"), "year_from"),
+            year_to=_coerce_optional_int(data.get("year_to"), "year_to"),
             seed_artist_uri=data.get("seed_artist_uri"),
             seed_artist_name=data.get("seed_artist_name"),
             seed_artist_library_only=data.get("seed_artist_library_only", False),
@@ -109,7 +125,7 @@ class SmartPlaylistRules:
             excluded_album_names={
                 int(k): v for k, v in data.get("excluded_album_names", {}).items()
             },
-            dedup_hours=data.get("dedup_hours"),
+            dedup_hours=_coerce_optional_int(data.get("dedup_hours"), "dedup_hours"),
         )
 
     def human_readable(self) -> str:
