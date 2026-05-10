@@ -78,8 +78,7 @@ def build_aiohttp_app(fake_ws: FakeWebserver) -> Any:
             stem = path[:-2]
             app.router.add_route(method, f"{stem}/{{tail:.*}}", handler)
         else:
-            normalized = method if method != "*" else "GET"
-            app.router.add_route(normalized, path, handler)
+            app.router.add_route(method, path, handler)
     return app
 
 
@@ -152,11 +151,11 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.player_queues.play_index = AsyncMock()
     mass.player_queues.set_shuffle = AsyncMock()
     mass.player_queues.transfer_queue = AsyncMock()
-    mass.player_queues.clear = AsyncMock()
+    mass.player_queues.clear = MagicMock()
 
     mass.players = MagicMock()
     mass.players.all_players = MagicMock(return_value=[])
-    mass.players.get = MagicMock(return_value=None)
+    mass.players.get_player = MagicMock(return_value=None)
     mass.players.cmd_power = AsyncMock()
     mass.players.cmd_group = AsyncMock()
     mass.players.cmd_volume_set = AsyncMock()

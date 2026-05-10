@@ -81,7 +81,7 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         if clear is None:
             msg = "mass.player_queues.clear is not available on this MA build"
             raise RuntimeError(msg)
-        await clear(queue_id)
+        clear(queue_id)
 
     @sub.tool(
         tags={Tag.CONTROL_PLAYBACK},

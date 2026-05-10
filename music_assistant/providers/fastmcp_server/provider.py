@@ -51,7 +51,9 @@ class MCPServerProvider(PluginProvider):
         """Apply config changes — hot-swap when possible, restart otherwise."""
         if self._runtime is None:
             return
-        if changed_keys.issubset(HOT_SWAPPABLE_KEYS):
+        normalized_keys = {k.removeprefix("values/") for k in changed_keys}
+        if normalized_keys.issubset(HOT_SWAPPABLE_KEYS):
+            self.config = config
             await self._runtime.apply_permission_change(config)
         else:
             await self._runtime.stop()

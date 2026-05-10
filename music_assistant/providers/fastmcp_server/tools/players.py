@@ -51,7 +51,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_player(player_id: str) -> PlayerBrief | None:
         """Return a single player by id, or ``None`` if it doesn't exist."""
-        player = mass.players.get(player_id) if hasattr(mass.players, "get") else None
+        player = mass.players.get_player(player_id)
         return to_brief_player(player) if player is not None else None
 
     @sub.tool(

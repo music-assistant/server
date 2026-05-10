@@ -18,7 +18,7 @@ def register_player_resources(mcp: Any, mass: MusicAssistant) -> None:
     @mcp.resource("player://{player_id}", tags={Tag.QUERY_PLAYERS})  # type: ignore[untyped-decorator, unused-ignore]
     async def player_resource(player_id: str) -> Any:
         """Player snapshot by id."""
-        player = mass.players.get(player_id) if hasattr(mass.players, "get") else None
+        player = mass.players.get_player(player_id)
         return to_brief_player(player) if player is not None else None
 
     @mcp.resource("queue://{queue_id}", tags={Tag.QUERY_QUEUE})  # type: ignore[untyped-decorator, unused-ignore]

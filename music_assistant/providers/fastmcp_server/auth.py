@@ -50,7 +50,7 @@ def _extract_jwt_audience(token: str) -> str | list[str] | None:
     except (binascii.Error, ValueError, UnicodeDecodeError):
         return None
     aud = claims.get("aud") if isinstance(claims, dict) else None
-    if isinstance(aud, str | list) or aud is None:
+    if isinstance(aud, (str, list)) or aud is None:
         return aud
     return None
 

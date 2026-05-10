@@ -46,28 +46,28 @@ def _decliner() -> object:
 
 async def test_clear_queue_runs_when_user_accepts(mock_mass: MagicMock) -> None:
     """User accepts the elicitation prompt → clear_queue dispatches to MA."""
-    mock_mass.player_queues.clear = AsyncMock()
+    mock_mass.player_queues.clear = MagicMock()
     mcp = _server(mock_mass, require_confirmation=True)
 
     async with Client(mcp, elicitation_handler=_accepter()) as client:
         await client.call_tool("queue_clear_queue", {"queue_id": "q1"})
-    mock_mass.player_queues.clear.assert_awaited_once_with("q1")
+    mock_mass.player_queues.clear.assert_called_once_with("q1")
 
 
 async def test_clear_queue_blocked_when_user_declines(mock_mass: MagicMock) -> None:
     """User declines → tool raises ToolError, no MA call is made."""
-    mock_mass.player_queues.clear = AsyncMock()
+    mock_mass.player_queues.clear = MagicMock()
     mcp = _server(mock_mass, require_confirmation=True)
 
     async with Client(mcp, elicitation_handler=_decliner()) as client:
         with pytest.raises(Exception):  # noqa: B017,PT011
             await client.call_tool("queue_clear_queue", {"queue_id": "q1"})
-    mock_mass.player_queues.clear.assert_not_awaited()
+    mock_mass.player_queues.clear.assert_not_called()
 
 
 async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
     """With require_confirmation=False, elicitation is skipped entirely."""
-    mock_mass.player_queues.clear = AsyncMock()
+    mock_mass.player_queues.clear = MagicMock()
     mcp = _server(mock_mass, require_confirmation=False)
 
     elicit_called = False
@@ -80,7 +80,7 @@ async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
     async with Client(mcp, elicitation_handler=handler) as client:
         await client.call_tool("queue_clear_queue", {"queue_id": "q1"})
     assert elicit_called is False
-    mock_mass.player_queues.clear.assert_awaited_once_with("q1")
+    mock_mass.player_queues.clear.assert_called_once_with("q1")
 
 
 async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
