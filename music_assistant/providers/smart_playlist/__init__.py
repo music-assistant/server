@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import time
 import uuid as _uuid
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -195,12 +197,16 @@ class SmartPlaylistProvider(PluginProvider):
 
         Returns a full batch on page 0; empty list on subsequent pages.
         Because is_dynamic=True, MA always calls with force_refresh so results stay fresh.
+        For dynamic playlists a small buffer of 5 tracks is returned per call so that
+        dedup and shuffle stay effective across successive refreshes.
         """
         if page > 0:
             return []
         rules = self._rules_store.get(prov_playlist_id)
         if rules is None:
             return []
+        if rules.is_dynamic:
+            rules = dc_replace(rules, limit=5)
         return await self._evaluate_rules(rules)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
@@ -358,19 +364,17 @@ class SmartPlaylistProvider(PluginProvider):
             for playlist_id, rules in self._rules_store.items()
         ]
 
-    async def count_tracks(self, rules: dict[str, Any]) -> int:
-        """Return the number of tracks produced by the validated rules.
-
-        The count is based on the same evaluated result set used for playlist generation
-        and should be treated as approximate (limited by rules.limit and shuffling).
+    async def count_tracks(self, rules: dict[str, Any]) -> dict[str, Any]:
+        """Return the track count and approximate total duration for the given rules.
 
         :param rules: SmartPlaylistRules fields as dict.
-        :return: Number of matching tracks in the evaluated result set.
+        :return: Dict with ``count`` (int) and ``duration_seconds`` (int).
         """
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
         tracks = await self._evaluate_rules(parsed_rules)
-        return len(tracks)
+        duration = sum(t.duration or 0 for t in tracks)
+        return {"count": len(tracks), "duration_seconds": duration}
 
     async def preview_tracks(
         self,
@@ -468,11 +472,24 @@ class SmartPlaylistProvider(PluginProvider):
         """Evaluate the rules and return a list of matching Track objects."""
         has_genre_filter = bool(rules.genre_ids)
 
-        if rules.seed_track_uri:
-            # Seed mode: the similar-tracks pool is the exclusive source.
-            # artist_ids and album_ids are ignored per design; genre, favorites,
-            # popularity and year are applied as post-filters on the pool.
-            tracks = await self._get_similar_tracks(rules.seed_track_uri, MAX_SIMILAR_TRACKS)
+        if rules.seed_track_uri or rules.seed_artist_uri:
+            # Seed mode: a similar-tracks/artists pool is the exclusive source.
+            # artist_ids and album_ids are ignored per design.
+            if rules.seed_track_uri:
+                tracks = await self._get_similar_tracks(rules.seed_track_uri, MAX_SIMILAR_TRACKS)
+            else:
+                tracks = await self._get_similar_artists_tracks(
+                    rules.seed_artist_uri,
+                    MAX_SIMILAR_TRACKS,  # type: ignore[arg-type]
+                    library_only=rules.seed_artist_library_only,
+                )
+            tracks = await self._apply_seed_post_filters(tracks, rules, has_genre_filter)
+        else:
+            if rules.logic == LOGIC_AND:
+                tracks = await self._evaluate_and(rules)
+            else:
+                tracks = await self._evaluate_or(rules)
+
             if rules.min_popularity is not None:
                 tracks = [
                     t
@@ -481,27 +498,7 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity is not None
                     and t.metadata.popularity >= rules.min_popularity
                 ]
-            if rules.favorites_only:
-                tracks = [t for t in tracks if t.favorite]
-            if has_genre_filter and rules.logic == LOGIC_AND:
-                # Best-effort: filter seed tracks by genre name.
-                # Resolve names from library for any IDs not already in genre_names.
-                # Tracks without genre metadata are kept (don't exclude for missing data).
-                genre_id_to_name = dict(rules.genre_names)
-                for genre_id in rules.genre_ids:
-                    if genre_id not in genre_id_to_name:
-                        with suppress(Exception):
-                            genre = await self.mass.music.genres.get_library_item(genre_id)
-                            genre_id_to_name[genre_id] = genre.name
-                allowed_genre_names = {v.lower() for v in genre_id_to_name.values()}
-                if allowed_genre_names:
-                    tracks = [
-                        t
-                        for t in tracks
-                        if not t.metadata
-                        or not t.metadata.genres
-                        or any(g.lower() in allowed_genre_names for g in t.metadata.genres)
-                    ]
+
             if rules.year_from is not None or rules.year_to is not None:
                 tracks = [
                     t
@@ -513,14 +510,40 @@ class SmartPlaylistProvider(PluginProvider):
                         and (rules.year_to is None or t.album.year <= rules.year_to)
                     )
                 ]
-            random.shuffle(tracks)
-            return tracks[: rules.limit]
 
-        if rules.logic == LOGIC_AND:
-            tracks = await self._evaluate_and(rules)
-        else:
-            tracks = await self._evaluate_or(rules)
+        # Apply exclusions and dedup regardless of source mode
+        tracks = self._apply_exclusions(tracks, rules)
+        if rules.dedup_hours is not None:
+            deduped = self._apply_dedup(tracks, rules.dedup_hours)
+            if len(deduped) >= rules.limit:
+                tracks = deduped
+            elif deduped:
+                # Pool partially exhausted: fill remainder with least-recently-played tracks
+                # so playback never stops when the dedup window covers most of the library.
+                deduped_uris = {t.uri for t in deduped}
+                played_remainder = sorted(
+                    (t for t in tracks if t.uri not in deduped_uris),
+                    key=lambda t: t.last_played,
+                )
+                tracks = deduped + played_remainder[: rules.limit - len(deduped)]
+            else:
+                # All matching tracks were played recently — ignore dedup entirely so
+                # the playlist never goes empty.
+                self.logger.debug(
+                    "dedup_hours=%d exhausted the full track pool; ignoring dedup",
+                    rules.dedup_hours,
+                )
 
+        random.shuffle(tracks)
+        return tracks[: rules.limit]
+
+    async def _apply_seed_post_filters(
+        self,
+        tracks: list[Track],
+        rules: SmartPlaylistRules,
+        has_genre_filter: bool,
+    ) -> list[Track]:
+        """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
         if rules.min_popularity is not None:
             tracks = [
                 t
@@ -529,7 +552,26 @@ class SmartPlaylistProvider(PluginProvider):
                 and t.metadata.popularity is not None
                 and t.metadata.popularity >= rules.min_popularity
             ]
-
+        if rules.favorites_only:
+            tracks = [t for t in tracks if t.favorite]
+        if has_genre_filter and rules.logic == LOGIC_AND:
+            # Best-effort genre filter: resolve names then match against track genre metadata.
+            # Tracks without genre metadata are kept (don't exclude for missing data).
+            genre_id_to_name = dict(rules.genre_names)
+            for genre_id in rules.genre_ids:
+                if genre_id not in genre_id_to_name:
+                    with suppress(Exception):
+                        genre = await self.mass.music.genres.get_library_item(genre_id)
+                        genre_id_to_name[genre_id] = genre.name
+            allowed_genre_names = {v.lower() for v in genre_id_to_name.values()}
+            if allowed_genre_names:
+                tracks = [
+                    t
+                    for t in tracks
+                    if not t.metadata
+                    or not t.metadata.genres
+                    or any(g.lower() in allowed_genre_names for g in t.metadata.genres)
+                ]
         if rules.year_from is not None or rules.year_to is not None:
             tracks = [
                 t
@@ -541,9 +583,49 @@ class SmartPlaylistProvider(PluginProvider):
                     and (rules.year_to is None or t.album.year <= rules.year_to)
                 )
             ]
+        return tracks
 
-        random.shuffle(tracks)
-        return tracks[: rules.limit]
+    def _apply_exclusions(self, tracks: list[Track], rules: SmartPlaylistRules) -> list[Track]:
+        """Filter out tracks whose artist, album, or URI is in the exclusion lists."""
+        if (
+            not rules.excluded_artist_ids
+            and not rules.excluded_album_ids
+            and not rules.excluded_track_uris
+        ):
+            return tracks
+        excl_artists = set(rules.excluded_artist_ids)
+        excl_albums = set(rules.excluded_album_ids)
+        excl_uris = set(rules.excluded_track_uris)
+        result = []
+        for track in tracks:
+            if track.uri and track.uri in excl_uris:
+                continue
+            if excl_artists and {int(a.item_id) for a in track.artists if a.item_id} & excl_artists:
+                continue
+            if (
+                excl_albums
+                and track.album
+                and track.album.item_id
+                and int(track.album.item_id) in excl_albums
+            ):
+                continue
+            result.append(track)
+        return result
+
+    def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
+        """Filter out tracks last played within dedup_hours hours."""
+        cutoff_ts = time.time() - dedup_hours * 3600
+        result = []
+        for track in tracks:
+            if track.last_played is None:
+                result.append(track)
+                continue
+            try:
+                if track.last_played.timestamp() < cutoff_ts:
+                    result.append(track)
+            except (OSError, OverflowError):
+                result.append(track)
+        return result
 
     async def _evaluate_and(self, rules: SmartPlaylistRules) -> list[Track]:
         """Evaluate rules with AND logic: track must match ALL active filters."""
@@ -657,6 +739,78 @@ class SmartPlaylistProvider(PluginProvider):
         except Exception as exc:
             self.logger.warning("Could not get similar tracks for %s: %s", seed_track_uri, exc)
             return []
+
+    async def _get_similar_artists_tracks(
+        self, seed_artist_uri: str, limit: int, library_only: bool = True
+    ) -> list[Track]:
+        """Get tracks for artists similar to the given seed artist URI."""
+        try:
+            _media_type, provider, item_id = await parse_uri(seed_artist_uri)
+        except Exception:
+            self.logger.warning("Cannot parse seed_artist_uri: %s", seed_artist_uri)
+            return []
+        try:
+            similar_artists = await self.mass.music.artists.similar_artists(
+                item_id=item_id,
+                provider_instance_id_or_domain=provider,
+                limit=20,
+            )
+        except Exception as exc:
+            self.logger.warning("Could not get similar artists for %s: %s", seed_artist_uri, exc)
+            return []
+
+        similar_names = {a.name.lower() for a in similar_artists}
+        if not similar_names:
+            return []
+
+        if library_only:
+            # Match against library tracks by artist name.
+            all_tracks = await self._get_library_tracks(limit=min(limit * 20, 2000))
+            result: dict[str, Track] = {}
+            for track in all_tracks:
+                for artist in track.artists:
+                    if artist.name.lower() in similar_names and track.uri:
+                        result[track.uri] = track
+                        break
+            return list(result.values())
+
+        # Provider mode: fetch top tracks for each similar artist directly from the provider.
+        result_provider: dict[str, Track] = {}
+        per_artist = max(1, limit // max(len(similar_artists), 1))
+        self.logger.debug(
+            "seed_artist provider mode: %d similar artists, per_artist=%d",
+            len(similar_artists),
+            per_artist,
+        )
+        for artist in similar_artists:
+            if len(result_provider) >= limit:
+                break
+            mapping = next(
+                (m for m in artist.provider_mappings if m.provider_instance == provider),
+                None,
+            ) or next(iter(artist.provider_mappings), None)
+            if not mapping:
+                self.logger.debug("No mapping found for artist %s", artist.name)
+                continue
+            try:
+                artist_tracks = await self.mass.music.artists.get_provider_artist_toptracks(
+                    item_id=mapping.item_id,
+                    provider_instance_id_or_domain=mapping.provider_instance,
+                )
+                self.logger.debug(
+                    "Artist %s (%s): %d top tracks",
+                    artist.name,
+                    mapping.item_id,
+                    len(artist_tracks),
+                )
+            except Exception as exc:
+                self.logger.debug("Error fetching tracks for artist %s: %s", artist.name, exc)
+                continue
+            for track in artist_tracks[:per_artist]:
+                if track.uri:
+                    result_provider[track.uri] = track
+        self.logger.debug("seed_artist provider mode: %d total tracks", len(result_provider))
+        return list(result_provider.values())
 
     async def _update_playlist_description(
         self, library_item_id: int | str, rules: SmartPlaylistRules

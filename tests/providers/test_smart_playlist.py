@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+import time as _time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -348,3 +350,229 @@ async def test_limit_is_respected() -> None:
     rules = SmartPlaylistRules(limit=5)
     result = await plugin._evaluate_rules(rules)
     assert len(result) <= 5
+
+
+# ---------------------------------------------------------------------------
+# New feature tests: seed_artist, exclusions, dedup, validation, count_tracks
+# ---------------------------------------------------------------------------
+
+
+class TestNewValidation:
+    """Validate new mutual-exclusion and range checks."""
+
+    def _make_plugin(self) -> SmartPlaylistProvider:
+        mass = MagicMock()
+        manifest = MagicMock()
+        manifest.domain = "smart_playlist"
+        config = MagicMock()
+        config.get_value.return_value = "GLOBAL"
+        return SmartPlaylistProvider(mass, manifest, config, set())
+
+    def test_seed_track_and_seed_artist_mutually_exclusive(self) -> None:
+        """Setting both seed_track_uri and seed_artist_uri raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(
+            seed_track_uri="library://track/1",
+            seed_artist_uri="library://artist/2",
+        )
+        with pytest.raises(InvalidDataError, match="mutually exclusive"):
+            plugin._validate_rules(rules)
+
+    def test_dedup_hours_out_of_range_raises(self) -> None:
+        """dedup_hours outside 1-8760 raises InvalidDataError."""
+        plugin = self._make_plugin()
+        with pytest.raises(InvalidDataError, match="dedup_hours"):
+            plugin._validate_rules(SmartPlaylistRules(dedup_hours=0))
+        with pytest.raises(InvalidDataError, match="dedup_hours"):
+            plugin._validate_rules(SmartPlaylistRules(dedup_hours=9000))
+
+    def test_dedup_hours_valid_passes(self) -> None:
+        """dedup_hours within 1-8760 does not raise."""
+        plugin = self._make_plugin()
+        plugin._validate_rules(SmartPlaylistRules(dedup_hours=24))  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_seed_artist_uses_similar_artists_tracks() -> None:
+    """seed_artist_uri calls _get_similar_artists_tracks instead of _get_similar_tracks."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    similar_tracks = [_make_mock_track("10", "library://track/10")]
+    cast("Any", plugin)._get_similar_artists_tracks = AsyncMock(return_value=similar_tracks)
+    cast("Any", plugin)._get_similar_tracks = AsyncMock(return_value=[])
+
+    rules = SmartPlaylistRules(seed_artist_uri="library://artist/5", limit=10)
+    result = await plugin._evaluate_rules(rules)
+
+    cast("Any", plugin)._get_similar_artists_tracks.assert_awaited_once()
+    cast("Any", plugin)._get_similar_tracks.assert_not_awaited()
+    assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_exclusion_filters_out_excluded_artist() -> None:
+    """Tracks from excluded artists are removed from the result."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    included = _make_mock_track("1", "library://track/1", artist_ids=["10"])
+    excluded = _make_mock_track("2", "library://track/2", artist_ids=["99"])
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[included, excluded])
+
+    rules = SmartPlaylistRules(excluded_artist_ids=[99], limit=10)
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris
+    assert "library://track/2" not in uris
+
+
+@pytest.mark.asyncio
+async def test_exclusion_filters_out_excluded_uri() -> None:
+    """Tracks whose URI is in excluded_track_uris are removed."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    t1 = _make_mock_track("1", "library://track/1")
+    t2 = _make_mock_track("2", "library://track/2")
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[t1, t2])
+
+    rules = SmartPlaylistRules(excluded_track_uris=["library://track/2"], limit=10)
+    result = await plugin._evaluate_rules(rules)
+    assert all(t.uri != "library://track/2" for t in result)
+
+
+@pytest.mark.asyncio
+async def test_dedup_removes_recently_played() -> None:
+    """Tracks played within dedup_hours are excluded; others are kept."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    recent = _make_mock_track("1", "library://track/1")
+    recent.last_played = datetime.datetime.fromtimestamp(_time.time() - 60)  # 1 minute ago
+
+    old = _make_mock_track("2", "library://track/2")
+    old.last_played = datetime.datetime.fromtimestamp(_time.time() - 7200)  # 2 hours ago
+
+    never = _make_mock_track("3", "library://track/3")
+    never.last_played = None
+
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[recent, old, never])
+
+    rules = SmartPlaylistRules(dedup_hours=1, limit=2)  # limit <= non-recent count
+    result = await plugin._evaluate_rules(rules)
+    uris = {t.uri for t in result}
+    assert "library://track/1" not in uris
+    assert "library://track/2" in uris
+    assert "library://track/3" in uris
+
+
+@pytest.mark.asyncio
+async def test_dedup_fallback_when_pool_exhausted() -> None:
+    """When all tracks were recently played, dedup is ignored and the full pool is returned."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    tracks = []
+    for i in range(5):
+        t = _make_mock_track(str(i), f"library://track/{i}")
+        t.last_played = datetime.datetime.fromtimestamp(_time.time() - 30)  # 30 sec ago
+        tracks.append(t)
+
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
+
+    rules = SmartPlaylistRules(dedup_hours=1, limit=5)
+    result = await plugin._evaluate_rules(rules)
+    # Pool exhausted → fallback to full pool
+    assert len(result) == 5
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_dynamic_limit_5(tmp_path: Any) -> None:
+    """get_playlist_tracks uses limit=5 for dynamic playlists."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(50)]
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
+
+    rules = SmartPlaylistRules(limit=100, is_dynamic=True)
+    plugin._rules_store["abc"] = rules
+
+    result = await plugin.get_playlist_tracks("abc")
+    assert len(result) <= 5
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_static_uses_full_limit(tmp_path: Any) -> None:
+    """get_playlist_tracks uses full rules.limit for static (non-dynamic) playlists."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(50)]
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
+
+    rules = SmartPlaylistRules(limit=20, is_dynamic=False)
+    plugin._rules_store["xyz"] = rules
+
+    result = await plugin.get_playlist_tracks("xyz")
+    assert len(result) <= 20
+    assert len(result) > 5  # proves limit was not capped at 5
+
+
+@pytest.mark.asyncio
+async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
+    """count_tracks returns a dict with count and duration_seconds."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    tracks = []
+    for i in range(3):
+        t = _make_mock_track(str(i), f"library://track/{i}")
+        t.duration = 200
+        t.last_played = None
+        tracks.append(t)
+
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
+
+    result = await plugin.count_tracks(SmartPlaylistRules(limit=10).to_dict())
+    assert result["count"] == 3
+    assert result["duration_seconds"] == 600

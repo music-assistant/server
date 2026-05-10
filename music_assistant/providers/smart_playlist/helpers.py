@@ -36,6 +36,15 @@ class SmartPlaylistRules:
     album_names: dict[int, str] = field(default_factory=dict)
     year_from: int | None = None
     year_to: int | None = None
+    seed_artist_uri: str | None = None
+    seed_artist_name: str | None = None
+    seed_artist_library_only: bool = False
+    excluded_artist_ids: list[int] = field(default_factory=list)
+    excluded_album_ids: list[int] = field(default_factory=list)
+    excluded_track_uris: list[str] = field(default_factory=list)
+    excluded_artist_names: dict[int, str] = field(default_factory=dict)
+    excluded_album_names: dict[int, str] = field(default_factory=dict)
+    dedup_hours: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
@@ -55,6 +64,15 @@ class SmartPlaylistRules:
             "album_names": {str(k): v for k, v in self.album_names.items()},
             "year_from": self.year_from,
             "year_to": self.year_to,
+            "seed_artist_uri": self.seed_artist_uri,
+            "seed_artist_name": self.seed_artist_name,
+            "seed_artist_library_only": self.seed_artist_library_only,
+            "excluded_artist_ids": self.excluded_artist_ids,
+            "excluded_album_ids": self.excluded_album_ids,
+            "excluded_track_uris": self.excluded_track_uris,
+            "excluded_artist_names": {str(k): v for k, v in self.excluded_artist_names.items()},
+            "excluded_album_names": {str(k): v for k, v in self.excluded_album_names.items()},
+            "dedup_hours": self.dedup_hours,
         }
 
     @classmethod
@@ -79,6 +97,19 @@ class SmartPlaylistRules:
             album_names={int(k): v for k, v in raw_album_names.items()},
             year_from=data.get("year_from"),
             year_to=data.get("year_to"),
+            seed_artist_uri=data.get("seed_artist_uri"),
+            seed_artist_name=data.get("seed_artist_name"),
+            seed_artist_library_only=data.get("seed_artist_library_only", False),
+            excluded_artist_ids=[int(x) for x in data.get("excluded_artist_ids", [])],
+            excluded_album_ids=[int(x) for x in data.get("excluded_album_ids", [])],
+            excluded_track_uris=list(data.get("excluded_track_uris", [])),
+            excluded_artist_names={
+                int(k): v for k, v in data.get("excluded_artist_names", {}).items()
+            },
+            excluded_album_names={
+                int(k): v for k, v in data.get("excluded_album_names", {}).items()
+            },
+            dedup_hours=data.get("dedup_hours"),
         )
 
     def human_readable(self) -> str:
@@ -97,7 +128,24 @@ class SmartPlaylistRules:
             parts.append(f"Albums: {', '.join(names)}")
         if self.seed_track_uri:
             label = self.seed_track_name or self.seed_track_uri
-            parts.append(f"Similar to: {label}")
+            parts.append(f"Similar to track: {label}")
+        if self.seed_artist_uri:
+            label = self.seed_artist_name or self.seed_artist_uri
+            parts.append(f"Similar to artist: {label}")
+        if self.excluded_artist_ids:
+            names = [
+                self.excluded_artist_names.get(aid, str(aid)) for aid in self.excluded_artist_ids
+            ]
+            parts.append(f"Excl. artists: {', '.join(names)}")
+        if self.excluded_album_ids:
+            names = [
+                self.excluded_album_names.get(aid, str(aid)) for aid in self.excluded_album_ids
+            ]
+            parts.append(f"Excl. albums: {', '.join(names)}")
+        if self.excluded_track_uris:
+            parts.append(f"Excl. {len(self.excluded_track_uris)} track(s)")
+        if self.dedup_hours is not None:
+            parts.append(f"No repeat within {self.dedup_hours}h")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
         if self.year_from is not None or self.year_to is not None:
@@ -133,6 +181,12 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
             f"year_from must be less than or equal to year_to, got "
             f"{rules.year_from}>{rules.year_to}"
         )
+        raise InvalidDataError(msg)
+    if rules.seed_track_uri and rules.seed_artist_uri:
+        msg = "seed_track_uri and seed_artist_uri are mutually exclusive"
+        raise InvalidDataError(msg)
+    if rules.dedup_hours is not None and not (1 <= rules.dedup_hours <= 8760):
+        msg = f"dedup_hours must be between 1 and 8760, got {rules.dedup_hours}"
         raise InvalidDataError(msg)
 
 
