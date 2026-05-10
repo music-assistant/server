@@ -71,10 +71,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             if ProviderFeature.SIMILAR_ARTISTS not in prov.supported_features:
                 continue
             try:
-                if result := await prov.get_similar_artists(
+                return await prov.get_similar_artists(
                     prov_artist_id=prov_mapping.item_id, limit=limit
-                ):
-                    return result
+                )
             except NotImplementedError:
                 continue
         return []
