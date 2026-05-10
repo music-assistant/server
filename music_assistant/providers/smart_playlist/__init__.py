@@ -600,12 +600,17 @@ class SmartPlaylistProvider(PluginProvider):
         for track in tracks:
             if track.uri and track.uri in excl_uris:
                 continue
-            if excl_artists and {int(a.item_id) for a in track.artists if a.item_id} & excl_artists:
+            if excl_artists and {
+                int(a.item_id)
+                for a in track.artists
+                if a.item_id and str(a.item_id).isdigit()
+            } & excl_artists:
                 continue
             if (
                 excl_albums
                 and track.album
                 and track.album.item_id
+                and str(track.album.item_id).isdigit()
                 and int(track.album.item_id) in excl_albums
             ):
                 continue
@@ -786,7 +791,11 @@ class SmartPlaylistProvider(PluginProvider):
             if len(result_provider) >= limit:
                 break
             mapping = next(
-                (m for m in artist.provider_mappings if m.provider_instance == provider),
+                (
+                    m
+                    for m in artist.provider_mappings
+                    if provider in {m.provider_instance, m.provider_domain}
+                ),
                 None,
             ) or next(iter(artist.provider_mappings), None)
             if not mapping:
