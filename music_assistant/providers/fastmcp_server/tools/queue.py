@@ -36,9 +36,12 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         queue = mass.player_queues.get_active_queue(player_id)
         if queue is None:
             return None
-        raw = mass.player_queues.items(queue.queue_id)
-        items = list(raw)[: max(0, include_items)] if include_items > 0 else []
-        return to_brief_queue(queue, items=items)
+        items = (
+            mass.player_queues.items(queue.queue_id, limit=max(1, include_items))
+            if include_items > 0
+            else []
+        )
+        return to_brief_queue(queue, items=list(items))
 
     @sub.tool(
         tags={Tag.EDIT_QUEUE},

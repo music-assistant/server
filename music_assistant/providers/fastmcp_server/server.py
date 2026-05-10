@@ -55,7 +55,8 @@ class MCPServerRuntime:
         self._mass = mass
         self._config = config
         self._logger = logger
-        self._mount_path: str = str(config.get_value(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
+        raw_path = str(config.get_value(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
+        self._mount_path: str = "/" + raw_path.strip("/")
         self._mcp: Any = None
         self._unmount: Callable[[], None] | None = None
         self._unmount_well_known: Callable[[], None] | None = None

@@ -40,8 +40,11 @@ def parse_resource_uri(uri: str) -> ResourceURI:
         raise ValueError(msg)
 
     if "/" in rest:
+        if scheme != "library":
+            msg = f"{scheme}:// URIs must not contain a path separator, got {uri!r}"
+            raise ValueError(msg)
         type_, _, identifier = rest.partition("/")
-        if scheme == "library" and type_ not in ALLOWED_TYPES:
+        if type_ not in ALLOWED_TYPES:
             msg = f"Unknown library type: {type_!r}"
             raise ValueError(msg)
         if not identifier or not _ID_RE.match(identifier):

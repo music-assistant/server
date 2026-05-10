@@ -23,9 +23,9 @@ def register_player_resources(mcp: Any, mass: MusicAssistant) -> None:
 
     @mcp.resource("queue://{queue_id}", tags={Tag.QUERY_QUEUE})  # type: ignore[untyped-decorator, unused-ignore]
     async def queue_resource(queue_id: str) -> Any:
-        """Queue snapshot by id (includes all queue items)."""
-        queue = mass.player_queues.get(queue_id) if hasattr(mass.player_queues, "get") else None
+        """Queue snapshot by id (up to 500 items — MA's default page size)."""
+        queue = mass.player_queues.get(queue_id)
         if queue is None:
             return None
-        items = mass.player_queues.items(queue_id) if hasattr(mass.player_queues, "items") else []
+        items = mass.player_queues.items(queue_id, limit=500)
         return to_brief_queue(queue, items=list(items))
