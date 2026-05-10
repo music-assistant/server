@@ -62,11 +62,10 @@ def build_config_entries(
     :param mass: MusicAssistant instance, used to compose the info label.
     :param values: Current config values (may be empty on first setup).
     """
-    del values  # currently unused — schema is static; kept for future action hooks
     base_url = getattr(mass.webserver, "base_url", "").rstrip("/")
+    mount_path = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
     info_label = (
-        f"MCP endpoint: {base_url}{DEFAULT_MOUNT_PATH}\n"
-        "Create tokens in Settings → Security → Tokens."
+        f"MCP endpoint: {base_url}{mount_path}\nCreate tokens in Settings → Security → Tokens."
     )
 
     return (
