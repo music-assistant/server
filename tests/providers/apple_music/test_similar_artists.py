@@ -45,6 +45,7 @@ def mock_api() -> MagicMock:
 
 @pytest.fixture
 def manager(mock_api: MagicMock) -> AppleMusicRecommendationManager:
+    """Return an AppleMusicRecommendationManager wired to a mock API client."""
     provider = MagicMock()
     provider.instance_id = "apple_music_test"
     provider.domain = "apple_music"
