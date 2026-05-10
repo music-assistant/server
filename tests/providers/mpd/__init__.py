@@ -1,1 +1,0 @@
-"""MPD provider tests."""
