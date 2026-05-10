@@ -21,6 +21,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from music_assistant.providers.fastmcp_server.connect.actions import handle_open_connect_action
+from music_assistant.providers.fastmcp_server.connect.clients import CLIENTS, lookup_client
+from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard
+
 from .conftest import FakeWebserver, build_aiohttp_app
 
 if TYPE_CHECKING:
@@ -56,8 +60,6 @@ def wizard_mass(mock_user: MagicMock) -> MagicMock:
 @pytest.fixture
 async def wizard_client(wizard_mass: MagicMock) -> AsyncIterator[TestClient]:
     """Mount the wizard on /mcp/v1 and yield an aiohttp TestClient."""
-    from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard  # noqa: PLC0415
-
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
@@ -110,8 +112,6 @@ async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
 
 async def test_info_reflects_enabled_tags(wizard_mass: MagicMock) -> None:
     """``info.permissions`` reflects whatever ``enabled_tags_provider()`` returns."""
-    from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard  # noqa: PLC0415
-
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
@@ -270,8 +270,6 @@ async def test_origin_rejection(wizard_client: TestClient) -> None:
 
 async def test_mount_unmount_cycle(wizard_mass: MagicMock) -> None:
     """``mount_connect_wizard`` registers 5 routes; the returned callback removes all."""
-    from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard  # noqa: PLC0415
-
     fake_ws = wizard_mass.webserver
     assert fake_ws.routes == []
     unmount = await mount_connect_wizard(
@@ -288,8 +286,6 @@ async def test_mount_unmount_cycle(wizard_mass: MagicMock) -> None:
 
 async def test_mount_path_relative(wizard_mass: MagicMock) -> None:
     """Wizard routes are nested under whatever ``mount_path`` is given."""
-    from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard  # noqa: PLC0415
-
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/custom",
@@ -311,8 +307,6 @@ async def test_action_handler_signals_url_with_bootstrap(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
     """Action handler mints a bootstrap token and signals a URL containing it."""
-    from music_assistant.providers.fastmcp_server.connect.actions import handle_open_connect_action  # noqa: PLC0415
-
     await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
@@ -338,8 +332,6 @@ async def test_action_handler_signals_url_with_bootstrap(
 
 async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) -> None:
     """Without a current user we still open the wizard, but without a bootstrap query."""
-    from music_assistant.providers.fastmcp_server.connect.actions import handle_open_connect_action  # noqa: PLC0415
-
     wizard_mass.webserver.auth.create_token.reset_mock()
 
     await handle_open_connect_action(
@@ -362,8 +354,6 @@ async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) 
 
 def test_cursor_template_round_trips() -> None:
     """The Cursor template renders to valid JSON with url + Authorization Bearer header."""
-    from music_assistant.providers.fastmcp_server.connect.clients import lookup_client  # noqa: PLC0415
-
     cursor = lookup_client("cursor")
     assert cursor is not None
     rendered = cursor.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
@@ -377,8 +367,6 @@ def test_cursor_template_round_trips() -> None:
 
 def test_all_clients_have_required_fields() -> None:
     """Every client spec has the fields the JS UI relies on."""
-    from music_assistant.providers.fastmcp_server.connect.clients import CLIENTS  # noqa: PLC0415
-
     seen_ids: set[str] = set()
     for spec in CLIENTS:
         assert spec.id
