@@ -66,8 +66,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         sorted_mappings = sorted(
             ref_item.provider_mappings,
             key=lambda m: (
-                provider_instance_id_or_domain
-                not in {m.provider_instance, m.provider_domain},
+                provider_instance_id_or_domain not in {m.provider_instance, m.provider_domain},
                 m.provider_instance,
                 m.item_id,
             ),
@@ -80,12 +79,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.SIMILAR_ARTISTS not in prov.supported_features:
                 continue
-            try:
-                return await prov.get_similar_artists(
-                    prov_artist_id=prov_mapping.item_id, limit=limit
-                )
-            except NotImplementedError:
-                continue
+            return await prov.get_similar_artists(prov_artist_id=prov_mapping.item_id, limit=limit)
         return []
 
     async def library_count(
