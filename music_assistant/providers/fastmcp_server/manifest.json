@@ -9,7 +9,7 @@
     "[FastMCP](https://github.com/jlowin/fastmcp)",
     "[Model Context Protocol](https://modelcontextprotocol.io/)"
   ],
-  "requirements": ["fastmcp>=3.2,<4.0"],
+  "requirements": ["fastmcp==3.2.4"],
   "documentation": "https://github.com/trudenboy/ma-provider-mcp",
   "multi_instance": false,
   "builtin": false
