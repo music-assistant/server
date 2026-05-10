@@ -194,7 +194,11 @@ class GWClient:
         result_json = await url_response.json()
 
         if error := result_json["data"][0].get("errors"):
-            msg = "Received an error from API"
+            error_code = error[0].get("code") if isinstance(error, list) and error else None
+            if error_code == 2002:
+                msg = f"Track {track_id} not available: insufficient streaming rights"
+            else:
+                msg = "Received an error from API"
             raise DeezerGWError(msg, error)
 
         media_list = result_json["data"][0].get("media", [])

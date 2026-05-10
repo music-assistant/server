@@ -76,6 +76,14 @@ if TYPE_CHECKING:
         GetFlowConfigsMeFlowConfigsGenresEdgesNode,
         GetFlowConfigsMeFlowConfigsMoodsEdgesNode,
     )
+    from deezer_python_gql.generated.search import (
+        SearchSearchResultsAlbumsEdgesNode,
+        SearchSearchResultsArtistsEdgesNode,
+        SearchSearchResultsLivestreamsEdgesNode,
+        SearchSearchResultsPlaylistsEdgesNode,
+        SearchSearchResultsPodcastsEdgesNode,
+        SearchSearchResultsTracksEdgesNode,
+    )
     from deezer_python_gql.generated.search_flows import (
         SearchFlowsSearchResultsFlowConfigsEdgesNode,
     )
@@ -121,11 +129,15 @@ def _provider_mapping(
 # -- GQL model parsers --
 
 
-def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0) -> Track:
+def parse_track(
+    provider: DeezerProvider,
+    track: TrackFields | SearchSearchResultsTracksEdgesNode,
+    position: int = 0,
+) -> Track:
     """Parse a GQL track model to Music Assistant Track.
 
     :param provider: The Deezer provider instance.
-    :param track: A GQL track model inheriting from TrackFields.
+    :param track: A GQL track model (fragment-based or slim search result).
     :param position: Position in a track list (for playlist ordering).
     """
     artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -173,9 +185,9 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
     name, version = parse_title_and_version(track.title)
     disc_number = 0
     track_number = position
-    if track.disk_info is not None:
-        disc_number = track.disk_info.disk_number or 0
-        track_number = track.disk_info.track_number or position
+    if (disk_info := getattr(track, "disk_info", None)) is not None:
+        disc_number = disk_info.disk_number or 0
+        track_number = disk_info.track_number or position
 
     item = Track(
         item_id=track.id,
@@ -191,16 +203,18 @@ def parse_track(provider: DeezerProvider, track: TrackFields, position: int = 0)
         position=position,
         disc_number=disc_number,
     )
-    if track.isrc:
-        item.external_ids.add((ExternalID.ISRC, track.isrc))
-    if track.is_favorite:
+    if isrc := getattr(track, "isrc", None):
+        item.external_ids.add((ExternalID.ISRC, isrc))
+    if getattr(track, "is_favorite", False):
         item.favorite = True
-    if track.popularity is not None:
-        item.metadata.popularity = int(track.popularity)
+    if (popularity := getattr(track, "popularity", None)) is not None:
+        item.metadata.popularity = int(popularity)
     return item
 
 
-def _parse_track_metadata(provider: DeezerProvider, track: TrackFields) -> MediaItemMetadata:
+def _parse_track_metadata(
+    provider: DeezerProvider, track: TrackFields | SearchSearchResultsTracksEdgesNode
+) -> MediaItemMetadata:
     """Parse track metadata (images, explicit flag, lyrics) from a GQL track model."""
     metadata = MediaItemMetadata(explicit=track.is_explicit)
     if track.album is not None:
@@ -221,16 +235,18 @@ def _parse_track_metadata(provider: DeezerProvider, track: TrackFields) -> Media
     return metadata
 
 
-def parse_artist(provider: DeezerProvider, artist: ArtistFields) -> Artist:
+def parse_artist(
+    provider: DeezerProvider, artist: ArtistFields | SearchSearchResultsArtistsEdgesNode
+) -> Artist:
     """Parse a GQL artist model to Music Assistant Artist."""
     images: UniqueList[MediaItemImage] = UniqueList()
     if img := _cover_image(provider, artist.picture):
         images.append(img)
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
-    if artist.bio:
-        metadata.description = artist.bio.summary or artist.bio.full
-    if artist.fans_count is not None:
-        metadata.popularity = int(artist.fans_count)
+    if bio := getattr(artist, "bio", None):
+        metadata.description = bio.summary or bio.full
+    if (fans_count := getattr(artist, "fans_count", None)) is not None:
+        metadata.popularity = int(fans_count)
     item = Artist(
         item_id=artist.id,
         provider=provider.instance_id,
@@ -239,12 +255,14 @@ def parse_artist(provider: DeezerProvider, artist: ArtistFields) -> Artist:
         provider_mappings={_provider_mapping(provider, artist.id)},
         metadata=metadata,
     )
-    if artist.is_favorite:
+    if getattr(artist, "is_favorite", False):
         item.favorite = True
     return item
 
 
-def parse_album(provider: DeezerProvider, album: AlbumFields) -> Album:
+def parse_album(
+    provider: DeezerProvider, album: AlbumFields | SearchSearchResultsAlbumsEdgesNode
+) -> Album:
     """Parse a GQL album model to Music Assistant Album."""
     name, version = parse_title_and_version(album.display_title)
     artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -282,26 +300,28 @@ def parse_album(provider: DeezerProvider, album: AlbumFields) -> Album:
         media_type=MediaType.ALBUM,
         provider_mappings={_provider_mapping(provider, album.id)},
         metadata=MediaItemMetadata(
-            explicit=album.is_explicit,
+            explicit=getattr(album, "is_explicit", None),
             images=images,
-            label=album.label,
-            copyright=album.copyright,
+            label=getattr(album, "label", None),
+            copyright=getattr(album, "copyright", None),
         ),
     )
-    if album.fans_count is not None:
-        item.metadata.popularity = int(album.fans_count)
-    if album.is_favorite:
+    if (fans_count := getattr(album, "fans_count", None)) is not None:
+        item.metadata.popularity = int(fans_count)
+    if getattr(album, "is_favorite", False):
         item.favorite = True
     return item
 
 
 def parse_playlist(
-    provider: DeezerProvider, playlist: PlaylistFields, is_editable: bool = False
+    provider: DeezerProvider,
+    playlist: PlaylistFields | SearchSearchResultsPlaylistsEdgesNode,
+    is_editable: bool = False,
 ) -> Playlist:
     """Parse a GQL playlist model to Music Assistant Playlist.
 
     :param provider: The Deezer provider instance.
-    :param playlist: A GQL playlist model inheriting from PlaylistFields.
+    :param playlist: A GQL playlist model (fragment-based or slim search result).
     :param is_editable: Whether the current user owns this playlist.
     """
     images: UniqueList[MediaItemImage] = UniqueList()
@@ -314,10 +334,10 @@ def parse_playlist(
             is_editable = True
 
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
-    if playlist.fans_count is not None:
-        metadata.popularity = int(playlist.fans_count)
-    if playlist.description:
-        metadata.description = playlist.description
+    if (fans_count := getattr(playlist, "fans_count", None)) is not None:
+        metadata.popularity = int(fans_count)
+    if description := getattr(playlist, "description", None):
+        metadata.description = description
     item = Playlist(
         item_id=playlist.id,
         provider=provider.instance_id,
@@ -328,23 +348,25 @@ def parse_playlist(
         is_editable=is_editable,
         owner=owner_name,
     )
-    if playlist.is_favorite or is_editable:
+    if getattr(playlist, "is_favorite", False) or is_editable:
         item.favorite = True
     return item
 
 
-def parse_radio(provider: DeezerProvider, livestream: LivestreamFields) -> Radio:
+def parse_radio(
+    provider: DeezerProvider, livestream: LivestreamFields | SearchSearchResultsLivestreamsEdgesNode
+) -> Radio:
     """Parse a GQL Livestream model to Music Assistant Radio.
 
     :param provider: The Deezer provider instance.
-    :param livestream: A GQL livestream model inheriting from LivestreamFields.
+    :param livestream: A GQL livestream model (fragment-based or slim search result).
     """
     images: UniqueList[MediaItemImage] = UniqueList()
     if img := _cover_image(provider, livestream.cover):
         images.append(img)
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
-    if livestream.description:
-        metadata.description = livestream.description
+    if description := getattr(livestream, "description", None):
+        metadata.description = description
     return Radio(
         item_id=livestream.id,
         provider=provider.instance_id,
@@ -355,21 +377,23 @@ def parse_radio(provider: DeezerProvider, livestream: LivestreamFields) -> Radio
     )
 
 
-def parse_podcast(provider: DeezerProvider, podcast: PodcastFields) -> Podcast:
+def parse_podcast(
+    provider: DeezerProvider, podcast: PodcastFields | SearchSearchResultsPodcastsEdgesNode
+) -> Podcast:
     """Parse a GQL podcast model to Music Assistant Podcast.
 
     :param provider: The Deezer provider instance.
-    :param podcast: A GQL podcast model inheriting from PodcastFields.
+    :param podcast: A GQL podcast model (fragment-based or slim search result).
     """
     images: UniqueList[MediaItemImage] = UniqueList()
     if img := _cover_image(provider, podcast.cover):
         images.append(img)
     metadata = MediaItemMetadata(
         images=images,
-        explicit=podcast.is_explicit,
+        explicit=getattr(podcast, "is_explicit", None),
     )
-    if podcast.description:
-        metadata.description = podcast.description
+    if description := getattr(podcast, "description", None):
+        metadata.description = description
     item = Podcast(
         item_id=podcast.id,
         provider=provider.instance_id,
@@ -378,7 +402,7 @@ def parse_podcast(provider: DeezerProvider, podcast: PodcastFields) -> Podcast:
         provider_mappings={_provider_mapping(provider, podcast.id)},
         metadata=metadata,
     )
-    if podcast.is_favorite:
+    if getattr(podcast, "is_favorite", False):
         item.favorite = True
     return item
 
@@ -475,14 +499,16 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     return item
 
 
-def parse_audiobook_from_album(provider: DeezerProvider, album: AlbumFields) -> Audiobook:
+def parse_audiobook_from_album(
+    provider: DeezerProvider, album: AlbumFields | SearchSearchResultsAlbumsEdgesNode
+) -> Audiobook:
     """Create an Audiobook from an AlbumFields result (search context).
 
     Used when an album search result is identified as an audiobook via
     check_audiobook_ids. Provides basic metadata from the album fields.
 
     :param provider: The Deezer provider instance.
-    :param album: A GQL album model inheriting from AlbumFields.
+    :param album: A GQL album model (fragment-based or slim search result).
     """
     images: UniqueList[MediaItemImage] = UniqueList()
     if img := _cover_image(provider, album.cover):
@@ -502,7 +528,7 @@ def parse_audiobook_from_album(provider: DeezerProvider, album: AlbumFields) -> 
         provider_mappings={_provider_mapping(provider, album.id)},
         metadata=MediaItemMetadata(
             images=images,
-            explicit=album.is_explicit,
+            explicit=getattr(album, "is_explicit", None),
         ),
     )
 
