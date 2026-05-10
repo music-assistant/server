@@ -26,8 +26,11 @@ if TYPE_CHECKING:
 
 # Make the provider/ package importable as a top-level "provider" module without
 # requiring a full ``pip install -e .`` step in ad-hoc test runs.
+# Guard: only add when a "provider/" sibling directory exists so that the
+# synced copy at tests/providers/fastmcp_server/conftest.py does NOT add
+# tests/providers/ to sys.path and shadow installed packages.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
+if (_REPO_ROOT / "provider").is_dir() and str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
