@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
 from typing import Any
 
@@ -58,15 +58,7 @@ from .constants import (
 )
 from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
 
-
-async def read_file_to_string(file_path: str) -> str:
-    """Read file content and return as string."""
-
-    def sync_read() -> str:
-        with open(file_path, encoding="utf-8") as file:
-            return file.read().strip()
-
-    return await asyncio.to_thread(sync_read)
+MAX_CACHE_SIZE = 10
 
 
 class PandoraStationSession:
@@ -98,7 +90,7 @@ class PandoraProvider(MusicProvider):
     _sessions: dict[str, PandoraStationSession]
     _socks_proxy: bool = False
     _high_quality_available: bool = False
-    _audio_cache: dict[str, bytes] = {}  # musicId → raw audio bytes
+    _audio_cache: OrderedDict[str, bytes] = OrderedDict()  # musicId → raw audio bytes
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -116,9 +108,7 @@ class PandoraProvider(MusicProvider):
             self._socks_proxy = True
         else:
             self.http_session = self.mass.http_session
-        if token_file := os.environ.get("PANDORA_AUTHTOKEN_FILE"):
-            if os.path.exists(token_file):
-                self._auth_token = await read_file_to_string(token_file)
+        self._auth_token = os.environ.get("PANDORA_AUTHTOKEN")
         await self._authenticate(username, password)
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -308,7 +298,6 @@ class PandoraProvider(MusicProvider):
             },
         )
         stations = response.get("stations", [])
-        self.logger.warning("Retrieved %d stations from Pandora", len(stations))
         for station in stations:
             yield self._parse_station(station)
 
@@ -344,12 +333,16 @@ class PandoraProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        self.logger.warning(f"get playlist {prov_playlist_id}")
         async for station in self._get_stations():
             if station.item_id == prov_playlist_id:
-                self.logger.warning(f"returning playlist station {station.name}")
                 return station
         raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
+
+    def _add_audio(self, key: str, value: bytes) -> None:
+        # If the cache is full, pop the oldest item
+        if len(self._audio_cache) >= MAX_CACHE_SIZE:
+            self._audio_cache.popitem(last=False)
+        self._audio_cache[key] = value
 
     async def get_playlist_tracks(self, station_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given station id."""
@@ -357,11 +350,19 @@ class PandoraProvider(MusicProvider):
             return []
 
         session = self._get_or_create_session(station_id)
-        self.logger.warning(
-            f"getting tracks for {station_id} -- {len(session.fragments)} {session.last_track_started}"
-        )
-
-        tracks = await self._get_fragment_data(session, len(session.fragments))
+        fragment = [] if len(session.fragments) == 0 else session.fragments[-1]
+        tracks = []
+        fragment_index = max(0, len(session.fragments) - 1)
+        for i in range(2):
+            fragment = await self._get_fragment_data(session, fragment_index + i)
+            for track in fragment:
+                if not track["cached"]:
+                    async with self.mass.http_session.get(track["audioURL"]) as resp:
+                        self._add_audio(track["musicId"], await resp.read())
+                    track["cached"] = True
+                    tracks.append(track)
+                    if len(tracks) >= 2:
+                        return [self._parse_track(track) for track in tracks]
         return [self._parse_track(track) for track in tracks]
 
     def _parse_station(self, station: dict[str, Any]) -> Playlist:
@@ -480,12 +481,9 @@ class PandoraProvider(MusicProvider):
         await super().loaded_in_mass()
         for player in self.mass.players.all_players(return_disabled=True):
             items = self.mass.player_queues.items(player.player_id)
-            self.logger.warning(f"player {player.provider_id}, {player.player_id} {len(items)}")
             if items:
                 if track := items[-1].media_item:
-                    self.logger.warning(f"item {track.provider}, {track.name}")
                     if track.provider == self.domain and self._find_track(track.item_id) == {}:
-                        self.logger.warning(f"please clear this queue {items[-1].queue_id}")
                         self.mass.player_queues.clear(items[-1].queue_id)
 
     async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
@@ -515,9 +513,6 @@ class PandoraProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Return bytes of track from local _audio_cache."""
         track_id = streamdetails.item_id.split("_")[-1]
-        self.logger.warning(
-            f"getting audio for {track_id} -- {len(self._audio_cache)} {track_id in self._audio_cache}"
-        )
         audio = self._audio_cache.pop(track_id, b"")
         for i in range(0, len(audio), 65536):
             yield audio[i : i + 65536]
@@ -558,9 +553,8 @@ class PandoraProvider(MusicProvider):
             tracks = []
             for track in result.get("tracks", []):
                 if "curator message" not in track.get("songTitle", "").lower():
-                    if url := track.get("audioURL"):
-                        async with self.mass.http_session.get(url) as resp:
-                            self._audio_cache[track["musicId"]] = await resp.read()
+                    if track.get("audioURL"):
+                        track["cached"] = False
                         tracks.append(track)
 
             # Store in session cache
