@@ -977,12 +977,15 @@ class StreamsController(CoreController):
         music_prov = cast("MusicProvider", music_prov)
 
         try:
-            await self.mass.music.get_controller(media_type).get_provider_item(
-                item_id, provider_instance_id_or_domain
+            await self.mass.music.get_item(
+                media_type,
+                item_id,
+                provider_instance_id_or_domain,
+                allow_update_metadata=False,
             )
-        except MediaNotFoundError:
+        except MediaNotFoundError as err:
             msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(msg) from err
 
         streamdetails = await music_prov.get_stream_details(item_id, media_type)
         pcm_format = AudioFormat(
