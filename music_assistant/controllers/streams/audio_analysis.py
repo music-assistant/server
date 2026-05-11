@@ -33,8 +33,9 @@ BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
-# One PCM chunk equals one audio-second of decoded data; 1.0s paces dispatch at real-time.
-REAL_TIME_PACE_INTERVAL_SECONDS = 1.0
+# One PCM chunk equals one audio-second of decoded data; 0.9s paces just above real-time
+# so the live buffer stays slightly ahead of playback rather than running dead-even.
+REAL_TIME_PACE_INTERVAL_SECONDS = 0.9
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
