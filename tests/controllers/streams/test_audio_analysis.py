@@ -263,7 +263,9 @@ async def test_run_background_scan_uses_union_candidate_query(
 
     streaming_calls: list[str] = []
 
-    async def _track_streaming(streamdetails: MagicMock, _providers: object) -> None:
+    async def _track_streaming(
+        streamdetails: MagicMock, _providers: object, **_kwargs: object
+    ) -> None:
         streaming_calls.append(streamdetails.item_id)
 
     monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
@@ -371,7 +373,9 @@ async def test_run_background_scan_concurrency_semaphore(
     in_flight = 0
     max_in_flight = 0
 
-    async def _track_streaming(_streamdetails: MagicMock, _providers: object) -> None:
+    async def _track_streaming(
+        _streamdetails: MagicMock, _providers: object, **_kwargs: object
+    ) -> None:
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
@@ -397,7 +401,9 @@ async def test_background_streaming_cancellation_cleans_up(
 
     session_key = streamdetails.uri
 
-    async def _inner_cancelled(_session_key: str, _sd: object, _providers: object) -> None:
+    async def _inner_cancelled(
+        _session_key: str, _sd: object, _providers: object, **_kwargs: object
+    ) -> None:
         # Simulate the inner having registered the session before being cancelled.
         controller._active_sessions[session_key] = {"p1"}
         raise asyncio.CancelledError
@@ -444,7 +450,7 @@ async def test_run_background_scan_defers_past_run_budget(
 
     streaming_called = False
 
-    async def _track_streaming(_sd: object, _providers: object) -> None:
+    async def _track_streaming(_sd: object, _providers: object, **_kwargs: object) -> None:
         nonlocal streaming_called
         streaming_called = True
 
