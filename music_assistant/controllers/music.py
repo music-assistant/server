@@ -3212,6 +3212,8 @@ class MusicController(CoreController):
 
     def library_favorites_edit_supported(self, provider: Provider, media_type: MediaType) -> bool:
         """Return whether the provider supports favorites add/remove for the given media type."""
+        if provider.type != ProviderType.MUSIC:
+            return False
         if media_type == MediaType.ARTIST:
             return provider.supports_feature(ProviderFeature.FAVORITE_ARTISTS_EDIT)
         if media_type == MediaType.ALBUM:
@@ -3230,8 +3232,6 @@ class MusicController(CoreController):
 
     def library_sync_back_enabled(self, provider: Provider, media_type: MediaType) -> bool:
         """Return whether library sync back is enabled for the provider+media_type."""
-        if CONF_ENTRY_LIBRARY_SYNC_BACK.key not in provider.config.values:
-            return False
         conf_value = provider.config.get_value(
             CONF_ENTRY_LIBRARY_SYNC_BACK.key, CONF_ENTRY_LIBRARY_SYNC_BACK.default_value
         )

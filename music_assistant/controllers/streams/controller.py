@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlayerFeature,
+    ProviderType,
     StreamType,
     VolumeNormalizationMode,
 )
@@ -970,8 +971,10 @@ class StreamsController(CoreController):
         """Create a 30 seconds preview audioclip for the given media item."""
         if not (music_prov := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError
-        if TYPE_CHECKING:
-            assert isinstance(music_prov, MusicProvider)
+        if music_prov.type != ProviderType.MUSIC:
+            msg = f"{provider_instance_id_or_domain} is not a music provider"
+            raise InvalidDataError(msg)
+        music_prov = cast("MusicProvider", music_prov)
 
         try:
             await self.mass.music.get_controller(media_type).get_provider_item(
@@ -979,7 +982,7 @@ class StreamsController(CoreController):
             )
         except MediaNotFoundError:
             msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
-            raise InvalidDataError(msg) from None
+            raise InvalidDataError(msg)
 
         streamdetails = await music_prov.get_stream_details(item_id, media_type)
         pcm_format = AudioFormat(
