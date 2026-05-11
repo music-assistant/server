@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, StreamType
@@ -36,7 +36,7 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
 @pytest.mark.asyncio
 async def test_distribute_chunk_evicts_provider_on_timeout() -> None:
-    """A provider whose process_pcm_chunk exceeds CHUNK_PROCESS_TIMEOUT_SECONDS is evicted."""
+    """A provider whose process_pcm_chunk exceeds max_interval is evicted."""
     controller = _make_controller()
     session_key = "track://provider/abc"
     controller._active_sessions[session_key] = {"slow", "fast"}
@@ -49,8 +49,7 @@ async def test_distribute_chunk_evicts_provider_on_timeout() -> None:
     provider_map = {"slow": slow, "fast": fast}
     controller.mass.get_provider = MagicMock(side_effect=provider_map.get)  # type: ignore[method-assign]
 
-    with patch.object(audio_analysis_mod, "CHUNK_PROCESS_TIMEOUT_SECONDS", 0.05):
-        await controller._distribute_chunk(session_key, b"\x00" * 1024)
+    await controller._distribute_chunk(session_key, b"\x00" * 1024, max_interval=0.05)
 
     assert "slow" not in controller._active_sessions[session_key]
     assert "fast" in controller._active_sessions[session_key]
