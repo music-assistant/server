@@ -35,7 +35,7 @@ BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 # Per-chunk dispatch interval bounds. One PCM chunk = one audio-second of decoded data:
 # the floor is the fastest pace allowed; the ceiling is both the slowest pace and the
 # per-chunk processing timeout that evicts unresponsive providers.
-REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.5
+REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 1.0
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
