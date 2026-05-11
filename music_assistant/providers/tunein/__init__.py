@@ -310,7 +310,7 @@ class TuneInProvider(MusicProvider):
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=img,
+                        path=img.replace("http://", "https://", 1),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
@@ -388,7 +388,7 @@ class TuneInProvider(MusicProvider):
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=img,
+                        path=img.replace("http://", "https://", 1),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
