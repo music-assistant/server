@@ -33,6 +33,8 @@ BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
+# One PCM chunk equals one audio-second of decoded data; 1.0s paces dispatch at real-time.
+REAL_TIME_PACE_INTERVAL_SECONDS = 1.0
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -493,11 +495,16 @@ class AudioAnalysisController:
         self._active_sessions[session_key] = accepted
 
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
+        next_allowed = time.monotonic()
         async for chunk in audio_source:
             if session_key not in self._active_sessions:
                 # all providers evicted — bail early
                 break
+            now = time.monotonic()
+            if now < next_allowed:
+                await asyncio.sleep(next_allowed - now)
             await self._distribute_chunk(session_key, chunk)
+            next_allowed = time.monotonic() + REAL_TIME_PACE_INTERVAL_SECONDS
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
@@ -648,13 +655,18 @@ class AudioAnalysisController:
 
     async def _chunk_worker(self, session_key: str, queue: asyncio.Queue[bytes | None]) -> None:
         """Background worker that processes queued PCM chunks via _distribute_chunk."""
+        next_allowed = time.monotonic()
         while True:
             chunk = await queue.get()
             if chunk is None:
                 break
             if session_key not in self._active_sessions:
                 break
+            now = time.monotonic()
+            if now < next_allowed:
+                await asyncio.sleep(next_allowed - now)
             await self._distribute_chunk(session_key, chunk)
+            next_allowed = time.monotonic() + REAL_TIME_PACE_INTERVAL_SECONDS
             if session_key not in self._active_sessions:
                 # all providers evicted by _distribute_chunk
                 self._workers.pop(session_key, None)
