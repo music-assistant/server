@@ -276,6 +276,7 @@ class TuneInProvider(MusicProvider):
                 item_id="trending",
                 provider=self.instance_id,
                 name="Trending",
+                translation_key="trending_stations",
                 items=UniqueList(stations),
             )
         ]
@@ -309,7 +310,7 @@ class TuneInProvider(MusicProvider):
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=img,
+                        path=img.replace("http://", "https://", 1),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
@@ -387,7 +388,7 @@ class TuneInProvider(MusicProvider):
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=img,
+                        path=img.replace("http://", "https://", 1),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
