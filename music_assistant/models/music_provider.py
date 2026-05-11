@@ -500,24 +500,6 @@ class MusicProvider(Provider):
         """
         return path
 
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_artist(prov_item_id)
-        if media_type == MediaType.ALBUM:
-            return await self.get_album(prov_item_id)
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_playlist(prov_item_id)
-        if media_type == MediaType.RADIO:
-            return await self.get_radio(prov_item_id)
-        if media_type == MediaType.AUDIOBOOK:
-            return await self.get_audiobook(prov_item_id)
-        if media_type == MediaType.PODCAST:
-            return await self.get_podcast(prov_item_id)
-        if media_type == MediaType.PODCAST_EPISODE:
-            return await self.get_podcast_episode(prov_item_id)
-        return await self.get_track(prov_item_id)
-
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """Browse this provider's items.
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from mashumaro import field_options, pass_through
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import ContentType, ProviderFeature, StreamType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerSource
@@ -272,16 +272,6 @@ class PluginProvider(Provider):
         :param prov_playlist_id: Provider-scoped playlist id.
         :param page: Zero-based page index for paginated results.
         """
-        raise NotImplementedError
-
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """
-        Get a single MediaItem owned by this plugin.
-
-        Plugins currently surface only Playlists; other media types raise.
-        """
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_playlist(prov_item_id)
         raise NotImplementedError
 
     async def resolve_image(self, path: str) -> str | bytes:

@@ -25,7 +25,12 @@ from music_assistant_models.enums import (
     StreamType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import AudioError, InvalidDataError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    AudioError,
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -968,9 +973,13 @@ class StreamsController(CoreController):
         if TYPE_CHECKING:
             assert isinstance(music_prov, MusicProvider)
 
-        if not await music_prov.get_item(media_type, item_id):
+        try:
+            await self.mass.music.get_controller(media_type).get_provider_item(
+                item_id, provider_instance_id_or_domain
+            )
+        except MediaNotFoundError:
             msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(msg) from None
 
         streamdetails = await music_prov.get_stream_details(item_id, media_type)
         pcm_format = AudioFormat(
