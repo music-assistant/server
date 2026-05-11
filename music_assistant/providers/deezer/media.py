@@ -247,16 +247,19 @@ class DeezerMediaManager:
         self.logger.debug("search called with media_types=%s", media_types)
         need_albums = MediaType.ALBUM in media_types
         need_audiobooks = MediaType.AUDIOBOOK in media_types
-        albums_limit = limit if (need_albums or need_audiobooks) else 0
+
+        # Deezer Pipe API enforces a query complexity limit of 25,000.
+        # Cap per-type limit to stay within budget regardless of how many types are requested.
+        capped = min(limit, 25)
 
         result = await self.provider.gql_client.search(
             query=search_query,
-            tracks_first=limit if MediaType.TRACK in media_types else 0,
-            albums_first=albums_limit,
-            artists_first=limit if MediaType.ARTIST in media_types else 0,
-            playlists_first=limit if MediaType.PLAYLIST in media_types else 0,
-            livestreams_first=limit if MediaType.RADIO in media_types else 0,
-            podcasts_first=limit if MediaType.PODCAST in media_types else 0,
+            tracks_first=capped if MediaType.TRACK in media_types else 0,
+            albums_first=capped if (need_albums or need_audiobooks) else 0,
+            artists_first=capped if MediaType.ARTIST in media_types else 0,
+            playlists_first=capped if MediaType.PLAYLIST in media_types else 0,
+            livestreams_first=capped if MediaType.RADIO in media_types else 0,
+            podcasts_first=capped if MediaType.PODCAST in media_types else 0,
         )
         search_results = SearchResults()
         if result is None:
