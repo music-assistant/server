@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.mass import MusicAssistant
 
 from .provider import AirPlayProvider
@@ -36,7 +37,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
 
 async def setup(

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import plistlib
 import socket
+from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import cast
 
@@ -12,8 +15,10 @@ from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.constants import CONF_ENABLED, CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
+    format_ip_for_url,
     get_ip_pton,
     get_primary_ip_address_from_zeroconf,
     select_free_port,
@@ -39,12 +44,156 @@ from .sendspin_bridge import SendspinBridgeManager
 # even if we are not actively streaming to it.
 
 
+DEFAULT_AIRPLAY_PORT = 7000
+DEFAULT_RAOP_PORT = 5000
+MANUAL_DISCOVERY_TIMEOUT = 5.0
+
+
+@dataclass(frozen=True)
+class ManualAirPlayDiscovery:
+    """Discovery result for a manually configured AirPlay target."""
+
+    display_name: str
+    device_id: str
+    service_infos: tuple[AsyncServiceInfo, ...]
+
+
+def _normalize_manual_airplay_host(address: str) -> str:
+    """Normalize a manual AirPlay IP address or hostname."""
+    host = address.strip()
+    if not host:
+        raise ValueError("Address is empty")
+    if any(char in host for char in ("/", "?", "#")):
+        raise ValueError("Only IP addresses or hostnames are supported")
+
+    ip_candidate = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        parsed_ip = ip_address(ip_candidate)
+    except ValueError:
+        pass
+    else:
+        if parsed_ip.is_unspecified:
+            raise ValueError("Address is unspecified")
+        return str(parsed_ip)
+
+    if ":" in host:
+        raise ValueError("Custom ports are not supported")
+    if any(char.isspace() for char in host):
+        raise ValueError("Address contains whitespace")
+    return host
+
+
+def _stringify_airplay_info_value(value: object) -> str | None:
+    """Convert an AirPlay /info plist value to a TXT-record-compatible string."""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return f"0x{value:x}"
+    if isinstance(value, float):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _normalize_airplay_device_id(value: object) -> str | None:
+    """Normalize a device ID/MAC address into 12 uppercase hex chars."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.replace(":", "").replace("-", "").upper()
+    if len(normalized) != 12:
+        return None
+    try:
+        int(normalized, 16)
+    except ValueError:
+        return None
+    if normalized in ("000000000000", "FFFFFFFFFFFF"):
+        return None
+    return normalized
+
+
+def _device_id_from_airplay_info(info: Mapping[str, object]) -> str | None:
+    """Return the stable device ID from AirPlay /info metadata."""
+    for key in ("deviceID", "deviceid", "macAddress", "mac_address"):
+        if device_id := _normalize_airplay_device_id(info.get(key)):
+            return device_id
+    return None
+
+
+def _airplay_info_to_txt_properties(info: Mapping[str, object]) -> dict[str, str]:
+    """Map an AirPlay /info plist response to mDNS TXT-like properties."""
+    properties: dict[str, str] = {"txtvers": "1"}
+    for key, value in info.items():
+        if txt_value := _stringify_airplay_info_value(value):
+            properties[key] = txt_value
+
+    if device_id := _device_id_from_airplay_info(info):
+        properties["deviceid"] = ":".join(device_id[i : i + 2] for i in range(0, 12, 2))
+
+    if source_version := info.get("sourceVersion"):
+        if txt_value := _stringify_airplay_info_value(source_version):
+            properties["srcvers"] = txt_value
+
+    if status_flags := info.get("statusFlags"):
+        if txt_value := _stringify_airplay_info_value(status_flags):
+            properties["sf"] = txt_value
+            properties["flags"] = txt_value
+    properties.setdefault("sf", properties.get("flags", "0x0"))
+    properties.setdefault("flags", properties["sf"])
+
+    if model := properties.get("model"):
+        properties.setdefault("am", model)
+
+    return properties
+
+
+def _display_name_from_airplay_info(info: Mapping[str, object], fallback: str) -> str:
+    """Return display name from AirPlay /info metadata."""
+    for key in ("name", "deviceName", "displayName", "sourceDisplayName"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
+def _parse_airplay_info_response(response: bytes) -> dict[str, object] | None:
+    """Parse a HTTP/RTSP /info response body into a plist dictionary."""
+    if b"\r\n\r\n" not in response:
+        return None
+    header_bytes, body = response.split(b"\r\n\r\n", 1)
+    header_lines = header_bytes.decode("utf-8", "ignore").split("\r\n")
+    status_line = header_lines[0] if header_lines else ""
+    if " 200 " not in f" {status_line} ":
+        return None
+    headers: dict[str, str] = {}
+    for line in header_lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        headers[key.strip().lower()] = value.strip()
+    if content_length := headers.get("content-length"):
+        with suppress(ValueError):
+            body = body[: int(content_length)]
+    try:
+        parsed = plistlib.loads(body)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return cast("dict[str, object]", parsed)
+
+
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
+    _manual_ip_config: tuple[str, ...] = ()
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
@@ -53,6 +202,14 @@ class AirPlayProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        manual_ip_config = cast(
+            "list[str]",
+            self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key, []),
+        )
+        self._manual_ip_config = tuple(
+            address.strip() for address in manual_ip_config if address.strip()
+        )
+
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
 
@@ -79,6 +236,10 @@ class AirPlayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
+
+    async def discover_players(self) -> None:
+        """Discover manually configured AirPlay players."""
+        await self._setup_manual_players()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -131,16 +292,32 @@ class AirPlayProvider(PlayerProvider):
             await self.mass.discovery.aiozc.async_unregister_service(self._dacp_info)
 
     async def _setup_player(
-        self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
+        self,
+        player_id: str,
+        display_name: str,
+        discovery_info: AsyncServiceInfo,
+        discovery_infos: tuple[AsyncServiceInfo, ...] = (),
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
         # return early if player is disabled in config
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+        if not self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLED, True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
-        raop_discovery_info: AsyncServiceInfo | None = None
-        airplay_discovery_info: AsyncServiceInfo | None = None
-        if discovery_info.type == RAOP_DISCOVERY_TYPE:
+
+        if discovery_infos:
+            raop_discovery_info = next(
+                (info for info in discovery_infos if info.type == RAOP_DISCOVERY_TYPE),
+                None,
+            )
+            airplay_discovery_info = next(
+                (info for info in discovery_infos if info.type == AIRPLAY_DISCOVERY_TYPE),
+                None,
+            )
+            if raop_discovery_info:
+                self.logger.debug("Discovered RAOP service for %s", display_name)
+            if airplay_discovery_info:
+                self.logger.debug("Discovered AirPlay service for %s", display_name)
+        elif discovery_info.type == RAOP_DISCOVERY_TYPE:
             # RAOP service discovered - try to also find the AirPlay service
             raop_discovery_info = discovery_info
             self.logger.debug("Discovered RAOP service for %s", display_name)
@@ -163,7 +340,10 @@ class AirPlayProvider(PlayerProvider):
             return  # should not happen, but guard just in case
 
         prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
-        address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
+        primary_discovery_info = airplay_discovery_info or raop_discovery_info or discovery_info
+        address = get_primary_ip_address_from_zeroconf(
+            primary_discovery_info, prefer_ipv6=prefer_ipv6
+        )
         if not address:
             return  # should not happen, but guard just in case
 
@@ -182,7 +362,12 @@ class AirPlayProvider(PlayerProvider):
                     for prov in self.mass.get_provider_instances("airplay_receiver")
                     if (port := getattr(prov, "airplay_port", None)) is not None
                 }
-                if discovery_info.port in receiver_ports:
+                discovered_ports = {
+                    info.port
+                    for info in (raop_discovery_info, airplay_discovery_info)
+                    if info is not None
+                }
+                if discovered_ports.intersection(receiver_ports):
                     return
 
         # if we reach this point, all preflights are ok and we can create the player
@@ -227,6 +412,199 @@ class AirPlayProvider(PlayerProvider):
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.setup_bridge(player)
+
+    async def _setup_manual_players(self) -> None:
+        """Set up manually configured AirPlay players."""
+        for address in self._manual_ip_config:
+            try:
+                discovery = await self._probe_manual_airplay_device(address)
+            except Exception as err:
+                self.logger.warning(
+                    "Unexpected error probing manual AirPlay device %s: %s",
+                    address,
+                    err,
+                    exc_info=err,
+                )
+                continue
+            if discovery is None:
+                self.logger.debug(
+                    "Ignoring manual AirPlay device %s: no AirPlay/RAOP info found",
+                    address,
+                )
+                continue
+            player_id = f"ap{discovery.device_id.lower()}"
+            if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
+                for service_info in discovery.service_infos:
+                    player.set_discovery_info(service_info, discovery.display_name)
+                continue
+            await self._setup_player(
+                player_id,
+                discovery.display_name,
+                discovery.service_infos[0],
+                discovery_infos=discovery.service_infos,
+            )
+
+    async def _probe_manual_airplay_device(self, address: str) -> ManualAirPlayDiscovery | None:
+        """Probe a manually configured host for AirPlay/RAOP /info metadata."""
+        try:
+            host = _normalize_manual_airplay_host(address)
+        except ValueError as err:
+            self.logger.warning("Ignoring invalid manual AirPlay address %s: %s", address, err)
+            return None
+
+        resolved_addresses = await self._resolve_manual_airplay_addresses(host)
+        if not resolved_addresses:
+            return None
+
+        for resolved_address in resolved_addresses:
+            service_infos: list[AsyncServiceInfo] = []
+            display_name: str | None = None
+            device_id: str | None = None
+
+            for port in (DEFAULT_AIRPLAY_PORT, DEFAULT_RAOP_PORT):
+                parsed_info = await self._request_airplay_info(resolved_address, port)
+                if parsed_info is None:
+                    continue
+                parsed_device_id = _device_id_from_airplay_info(parsed_info)
+                if parsed_device_id is None:
+                    self.logger.debug(
+                        "Manual AirPlay device %s:%s did not report a stable device ID",
+                        resolved_address,
+                        port,
+                    )
+                    continue
+                if device_id and parsed_device_id != device_id:
+                    self.logger.debug(
+                        "Ignoring AirPlay info from %s:%s with mismatched device ID %s",
+                        resolved_address,
+                        port,
+                        parsed_device_id,
+                    )
+                    continue
+                device_id = parsed_device_id
+                display_name = _display_name_from_airplay_info(parsed_info, address.strip())
+                discovery_info = await self._create_manual_service_info(
+                    resolved_address,
+                    port,
+                    parsed_info,
+                    display_name,
+                    device_id,
+                    RAOP_DISCOVERY_TYPE if port == DEFAULT_RAOP_PORT else AIRPLAY_DISCOVERY_TYPE,
+                )
+                service_infos.append(discovery_info)
+
+            if device_id and service_infos:
+                return ManualAirPlayDiscovery(
+                    display_name=display_name or address.strip(),
+                    device_id=device_id,
+                    service_infos=tuple(service_infos),
+                )
+        return None
+
+    async def _resolve_manual_airplay_addresses(self, host: str) -> list[str]:
+        """Resolve a manual AirPlay target to concrete IP addresses."""
+        try:
+            parsed_target_ip = ip_address(host)
+        except ValueError:
+            pass
+        else:
+            if parsed_target_ip.is_unspecified:
+                return []
+            return [str(parsed_target_ip)]
+
+        try:
+            addr_infos = await self.mass.loop.getaddrinfo(
+                host,
+                DEFAULT_AIRPLAY_PORT,
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as err:
+            self.logger.debug("Failed to resolve manual AirPlay host %s: %s", host, err)
+            return []
+
+        addresses: list[str] = []
+        for _family, _type, _proto, _canonname, sockaddr in addr_infos:
+            resolved_address = str(sockaddr[0])
+            if "%" in resolved_address:
+                resolved_address = resolved_address.split("%", 1)[0]
+            with suppress(ValueError):
+                parsed_ip = ip_address(resolved_address)
+                if parsed_ip.is_unspecified:
+                    continue
+            if resolved_address not in addresses:
+                addresses.append(resolved_address)
+        return addresses
+
+    async def _request_airplay_info(self, address: str, port: int) -> dict[str, object] | None:
+        """Request and parse AirPlay /info metadata from a host/port."""
+        for protocol in ("RTSP/1.0", "HTTP/1.1"):
+            parsed = await self._request_airplay_info_once(address, port, protocol)
+            if parsed is not None:
+                return parsed
+        return None
+
+    async def _request_airplay_info_once(
+        self, address: str, port: int, protocol: str
+    ) -> dict[str, object] | None:
+        """Request AirPlay /info once using a specific HTTP/RTSP protocol string."""
+        response: bytes = b""
+        writer: asyncio.StreamWriter | None = None
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(address, port),
+                timeout=MANUAL_DISCOVERY_TIMEOUT,
+            )
+            host_header = f"{format_ip_for_url(address)}:{port}"
+            dacp_id = getattr(self, "dacp_id", self.mass.server_id[:16].upper())
+            request = (
+                f"GET /info {protocol}\r\n"
+                f"Host: {host_header}\r\n"
+                "CSeq: 1\r\n"
+                f"DACP-ID: {dacp_id}\r\n"
+                f"Active-Remote: {dacp_id}\r\n"
+                "User-Agent: Music Assistant\r\n"
+                "Connection: close\r\n\r\n"
+            )
+            if writer is None:
+                return None
+            writer.write(request.encode())
+            await writer.drain()
+            response = await asyncio.wait_for(reader.read(), timeout=MANUAL_DISCOVERY_TIMEOUT)
+        except (OSError, TimeoutError):
+            return None
+        finally:
+            if writer is not None:
+                writer.close()
+                with suppress(Exception):
+                    await writer.wait_closed()
+        return _parse_airplay_info_response(response)
+
+    async def _create_manual_service_info(
+        self,
+        address: str,
+        port: int,
+        info: Mapping[str, object],
+        display_name: str,
+        device_id: str,
+        service_type: str,
+    ) -> AsyncServiceInfo:
+        """Create synthetic Zeroconf service info from manual AirPlay metadata."""
+        properties = _airplay_info_to_txt_properties(info)
+        formatted_device_id = ":".join(device_id[i : i + 2] for i in range(0, 12, 2))
+        properties["deviceid"] = formatted_device_id
+        if service_type == RAOP_DISCOVERY_TYPE:
+            service_name = f"{device_id}@{display_name}.{service_type}"
+        else:
+            service_name = f"{display_name}.{service_type}"
+
+        return AsyncServiceInfo(
+            service_type,
+            name=service_name,
+            addresses=[await get_ip_pton(address)],
+            port=port,
+            properties=properties,
+            server=f"{display_name.replace(' ', '-')}.local.",
+        )
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
